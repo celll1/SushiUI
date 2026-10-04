@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import uuid
+import hashlib
 
 from api.param_defaults import TAGGER_DIAGNOSTIC_DEFAULTS
 
@@ -17,8 +18,8 @@ _jobs: dict[str, subprocess.Popen] = {}
 
 
 def directory(run):
-    if (run.config or {}).get("architecture") not in ("foveatag_phase3", "foveatag_joint_review"):
-        raise ValueError("Diagnostics currently support registered FoveaTag comparisons only")
+    if (run.config or {}).get("architecture", "siglip2") not in ("siglip2", "foveatag", "foveatag_phase3", "foveatag_joint_review"):
+        raise ValueError("Unsupported tagger diagnostic architecture")
     return Path(run.output_dir).resolve() / "diagnostics"
 
 
@@ -52,14 +53,20 @@ def configure(run, settings):
     return status(run)
 
 
-def schedule(run, *, force=False):
+def schedule(run, *, force=False, filename=None):
     """Copy an atomic resume checkpoint before allowing training to overwrite it."""
-    if run.config.get("architecture") == "foveatag_joint_review":
+    if run.config.get("architecture") != "foveatag_phase3":
         import torch
         path = directory(run) / "latest_training_snapshot.pt"
+        if filename is not None:
+            item = next((item for item in status(run)["items"] if item["filename"] == filename), None)
+            snapshot_name = (item or {}).get("snapshot_filename")
+            if not snapshot_name or Path(snapshot_name).name != snapshot_name:
+                raise ValueError("Published diagnostic has no retained snapshot")
+            path = directory(run) / snapshot_name
         if not path.is_file():
             raise ValueError("No captured training-step sample is available yet")
-        return schedule_training(run, torch.load(path, map_location="cpu", weights_only=False), force=force)
+        return schedule_training(run, torch.load(path, map_location="cpu", weights_only=False), force=force, update_latest=filename is None)
     with _lock:
         state = status(run)
         if any(job.poll() is None for job in _jobs.values()) or (not force and not state["settings"]["enabled"]):
@@ -106,7 +113,7 @@ def training_due(run, step):
     return settings["enabled"] and step % settings["interval_steps"] == 0
 
 
-def schedule_training(run, snapshot, *, force=False):
+def schedule_training(run, snapshot, *, force=False, update_latest=True):
     """Publish the actual training forward, never substitute a fixed image."""
     import torch
     with _lock:
@@ -115,8 +122,11 @@ def schedule_training(run, snapshot, *, force=False):
         if not force and not state["settings"]["enabled"]:
             return False
         step = int(snapshot["step"])
-        if any(item.get("prediction_origin") == "training_forward_before_optimizer_update"
-               and item["step"] == step for item in state["items"]):
+        settings = state["settings"]
+        threshold_settings = {key: settings[key] for key in ("threshold_mode", "threshold", "min_samples_for_per_tag", "min_best_thr")}
+        revision = hashlib.sha256(json.dumps(threshold_settings, sort_keys=True).encode()).hexdigest()[:16]
+        if any(item.get("prediction_origin") == snapshot.get("prediction_origin")
+               and item["step"] == step and item.get("threshold_revision") == revision for item in state["items"]):
             return False
         reason = snapshot.get("skip_reason")
         if not reason and any(job.poll() is None for job in _jobs.values()):
@@ -130,11 +140,16 @@ def schedule_training(run, snapshot, *, force=False):
         job_dir.mkdir(parents=True)
         try:
             torch.save(snapshot, job_dir / "training_snapshot.pt")
-            temporary = root / "latest_training_snapshot.pt.tmp"
-            shutil.copyfile(job_dir / "training_snapshot.pt", temporary)
-            os.replace(temporary, root / "latest_training_snapshot.pt")
+            snapshot_name = "snapshot_" + job_dir.name.removeprefix("job-") + ".pt"
+            shutil.copyfile(job_dir / "training_snapshot.pt", root / snapshot_name)
+            if update_latest:
+                temporary = root / "latest_training_snapshot.pt.tmp"
+                shutil.copyfile(job_dir / "training_snapshot.pt", temporary)
+                os.replace(temporary, root / "latest_training_snapshot.pt")
             write_json(job_dir / "request.json", {"comparison": str(root.parent), "catalog_step": step,
-                "arguments": run.config["joint_review"], "training_snapshot": True})
+                "arguments": run.config.get("joint_review", {"max_source_pixels": run.config.get("fovea_max_source_pixels"),
+                    "vocabulary_path": str(root.parent / "vocabulary.json")}), "training_snapshot": True,
+                "snapshot_filename": snapshot_name, "threshold_settings": threshold_settings, "threshold_revision": revision})
             worker = Path(__file__).resolve().parents[1] / "core/tagger/foveatag/diagnostic_worker.py"
             _jobs[run.run_id] = subprocess.Popen([sys.executable, str(worker), str(job_dir)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -155,3 +170,14 @@ def image_path(run, name):
     if path.parent != root or not path.is_file():
         raise FileNotFoundError("Diagnostic image unavailable")
     return path
+
+
+def schedule_training_safe(run, snapshot):
+    try:
+        return schedule_training(run, snapshot)
+    except Exception as exc:
+        try:
+            write_json(directory(run) / "error.json", {"error": f"Diagnostic capture failed ({type(exc).__name__}); training continues"})
+        except OSError:
+            pass
+        return False

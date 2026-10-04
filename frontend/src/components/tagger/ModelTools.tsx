@@ -12,9 +12,11 @@ import NumberInput from "@/components/common/NumberInput";
 interface ModelToolsProps {
   modelLoaded: boolean;
   modelType: string;
+  architecture?: string;
 }
 
-export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) {
+export default function ModelTools({ modelLoaded, modelType, architecture }: ModelToolsProps) {
+  const nativeFovea = architecture === "foveatag";
   const [mergeOutput,    setMergeOutput]    = useState("");
   const [onnxOutput,     setOnnxOutput]     = useState("");
   const [maxPatches,     setMaxPatches]     = useState(256);
@@ -120,6 +122,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
       {/* ── Export ONNX ── */}
       <div className="space-y-2">
         <h4 className="text-xs font-medium text-gray-300">Export ONNX</h4>
+        {nativeFovea && <p className="text-xs text-gray-400">Exports overview, router and classifier stages. Native crops and selection run on the host; canvas sizes and local budget come from the checkpoint. Max Num Patches does not apply.</p>}
         {modelType === "onnx" && (
           <p className={disabledNote}>Already an ONNX model</p>
         )}
@@ -146,7 +149,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
             value={maxPatches}
             defaultValue={256}
             onCommit={(v) => setMaxPatches(v)}
-            disabled={!modelLoaded}
+            disabled={!modelLoaded || nativeFovea}
             className={inputCls}
           />
         </div>
@@ -206,7 +209,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
       <div className="space-y-2">
         <h4 className="text-xs font-medium text-gray-300">Extract Encoder from HuggingFace</h4>
         <div>
-          <label className={labelCls}>HuggingFace Repo ID</label>
+          <label className={labelCls}>HuggingFace Repo ID / local FoveaTag checkpoint</label>
           <input
             type="text"
             value={extractRepoId}

@@ -7,6 +7,12 @@
   ],
   "scope": "Per-option inventory and bounded evidence, not a blanket feature-parity claim. Native implementation refers to the isolated branch, not live deployment. The original comparison retains its immutable budget and stays paused until the requested integration is complete. Shared-path static review records consumption and applicability, not live end-to-end behavior or external service reproducibility.",
   "options": [
+    {"name": "fovea_learned_routing", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
+    {"name": "fovea_candidate_count", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
+    {"name": "fovea_random_count", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
+    {"name": "fovea_oracle_interval", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
+    {"name": "fovea_oracle_chunk_size", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
+    {"name": "fovea_router_weight", "in_defaults": true, "in_request": true, "status": "native_learned_router_cpu_verified_not_deployed"},
     {
       "name": "architecture",
       "in_defaults": true,

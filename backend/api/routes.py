@@ -20983,6 +20983,12 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     fovea_feature_dim: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_feature_dim"], ge=1)
     fovea_max_source_pixels: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_max_source_pixels"], ge=1)
     fovea_seed: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_seed"], ge=0)
+    fovea_learned_routing: bool = TAGGER_TRAINING_DEFAULTS["fovea_learned_routing"]
+    fovea_candidate_count: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_candidate_count"], ge=1)
+    fovea_random_count: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_random_count"], ge=0)
+    fovea_oracle_interval: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_oracle_interval"], ge=1)
+    fovea_oracle_chunk_size: int = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_oracle_chunk_size"], ge=1)
+    fovea_router_weight: float = Field(default=TAGGER_TRAINING_DEFAULTS["fovea_router_weight"], ge=0)
     run_name: Optional[str] = TAGGER_TRAINING_DEFAULTS["run_name"]
     vision_encoder_path: str
     dataset_configs: List[Dict[str, Any]]          # [{dataset_id, caption_types}]
@@ -21377,6 +21383,11 @@ class FoveaJointReviewRequest(BaseModel):
     log_every: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["log_every"], ge=1)
     review_steps: int = Field(default=TAGGER_JOINT_REVIEW_DEFAULTS["review_steps"], ge=1)
     external_flash: bool = TAGGER_JOINT_REVIEW_DEFAULTS["external_flash"]
+    save_tag_metrics: bool = TAGGER_TRAINING_DEFAULTS["save_tag_metrics"]
+    train_f1_eval_every_n_steps: int = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_eval_every_n_steps"], ge=0)
+    train_f1_threshold_search_every_n_steps: int = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_threshold_search_every_n_steps"], ge=0)
+    train_f1_initial_threshold: float = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_initial_threshold"], ge=0, le=1)
+    train_f1_buffer_batches: int = Field(default=TAGGER_TRAINING_DEFAULTS["train_f1_buffer_batches"], ge=1)
 
     @model_validator(mode="after")
     def validate_budget(self):
@@ -21465,9 +21476,11 @@ def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_trai
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
     result = run.to_list_dict()
-    if (run.config or {}).get("architecture") == "foveatag":
+    architecture = (run.config or {}).get("architecture")
+    if architecture in ("foveatag", "foveatag_joint_review"):
         from core.tagger.foveatag.inference_bundle import published_inference_paths
-        result["inference_checkpoint_paths"] = [entry for name in ("latest", "best_f1")
+        names = ("review", "best_joint") if architecture == "foveatag_joint_review" else ("latest", "best_f1")
+        result["inference_checkpoint_paths"] = [entry for name in names
             for entry in published_inference_paths(run.output_dir, name)]
     return result
 
@@ -21774,6 +21787,9 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 row.status = "running"
                 db.commit()
 
+            from api.tagger_diagnostics import training_due, schedule_training_safe
+            from types import SimpleNamespace
+            diagnostic_run = SimpleNamespace(run_id=run_id, output_dir=output_dir, config=config)
             result = run_tagger_training(
                 run_id=run_id,
                 config=config,
@@ -21782,6 +21798,8 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 progress_callback=callback,
                 resume_from_checkpoint=resume_from_checkpoint,
                 trainer_holder=trainer_holder,
+                diagnostic_due=lambda step: training_due(diagnostic_run, step),
+                diagnostic_callback=lambda snapshot: schedule_training_safe(diagnostic_run, snapshot),
             )
             # Keep the vocabulary snapshot with the run's detailed history.
             vocab_path = os.path.join(output_dir, "vocabulary.json")
@@ -21949,6 +21967,10 @@ class TaggerDiagnosticSettings(BaseModel):
     enabled: bool = TAGGER_DIAGNOSTIC_DEFAULTS["enabled"]
     interval_steps: int = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["interval_steps"], ge=1000, le=1000000)
     focus_preview: bool = TAGGER_DIAGNOSTIC_DEFAULTS["focus_preview"]
+    threshold_mode: Literal["training", "global", "per_tag"] = TAGGER_DIAGNOSTIC_DEFAULTS["threshold_mode"]
+    threshold: float = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["threshold"], ge=0, le=1)
+    min_samples_for_per_tag: int = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["min_samples_for_per_tag"], ge=1)
+    min_best_thr: float = Field(default=TAGGER_DIAGNOSTIC_DEFAULTS["min_best_thr"], ge=0, le=1)
 
     class Config:
         extra = "forbid"
@@ -21980,16 +22002,18 @@ def set_tagger_diagnostics(run_id: str, request: TaggerDiagnosticSettings, train
 
 
 @router.post("/tagger-training/runs/{run_id}/diagnostics")
-def create_tagger_diagnostic(run_id: str, training_db: Session = Depends(get_training_db)):
+def create_tagger_diagnostic(run_id: str, request: Optional[Dict[str, str]] = Body(default=None), training_db: Session = Depends(get_training_db)):
     from api.tagger_diagnostics import schedule, status
     from api.foveatag_training import _lifecycle_lock
     with _lifecycle_lock:
         run = _diagnostic_run(run_id, training_db)
         training_db.refresh(run)
-        if run.status in ("running", "starting"):
+        if request is not None and set(request) - {"filename"}:
+            raise HTTPException(422, "Only a published diagnostic filename may be supplied")
+        if run.config.get("architecture") == "foveatag_phase3" and run.status in ("running", "starting"):
             raise HTTPException(409, "Manual generation requires a paused run; periodic generation runs at training-step intervals")
         try:
-            schedule(run, force=True)
+            schedule(run, force=True, filename=(request or {}).get("filename"))
             return status(run)
         except (ValueError, OSError) as exc:
             raise HTTPException(422, "Diagnostic checkpoint unavailable") from exc

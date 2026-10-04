@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { editFoveaJointConfig, TaggerTrainingRun } from "@/utils/api";
+import { useStartup } from "@/contexts/StartupContext";
 
 const fields = [
   ["epochs", "Epochs"], ["batch_size", "Batch size"], ["workers", "Workers"],
@@ -9,17 +10,28 @@ const fields = [
   ["candidate_count", "Candidates"], ["selection_budget", "Focus budget K"], ["random_count", "Random exploration slots"],
   ["oracle_interval", "Oracle interval"], ["oracle_chunk_size", "Oracle chunk size"], ["router_weight", "Router loss weight"],
   ["checkpoint_every_steps", "Checkpoint interval"], ["log_every", "Log interval"], ["review_steps", "Bounded-start review steps"],
+  ["train_f1_eval_every_n_steps", "Training F1 interval (0 = off)"],
+  ["train_f1_threshold_search_every_n_steps", "Common-threshold search interval (0 = off)"],
+  ["train_f1_initial_threshold", "Initial common threshold (resume restores learned value)"],
+  ["train_f1_buffer_batches", "Rolling F1 batches"],
 ] as const;
 
 export default function FoveaJointConfigEditor({ run, active, onSaved, onClose }: {
   run: TaggerTrainingRun; active: boolean; onSaved: (run: TaggerTrainingRun) => void; onClose: () => void;
 }) {
+  const { taggerTrainingDefaults } = useStartup();
   const [draft, setDraft] = useState<Record<string, number | boolean>>(() => {
     const plan = run.config.joint_review as Record<string, number | boolean>;
-    return Object.fromEntries([...fields.map(([key]) => [key, plan[key]]), ["external_flash", plan.external_flash]]);
+    return Object.fromEntries([...fields.map(([key]) => [key, plan[key] ?? taggerTrainingDefaults?.[key]]),
+      ["external_flash", plan.external_flash], ["save_tag_metrics", plan.save_tag_metrics ?? taggerTrainingDefaults?.save_tag_metrics]]) as Record<string, number | boolean>;
   });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  useEffect(() => {
+    if (!taggerTrainingDefaults) return;
+    setDraft(previous => Object.fromEntries(Object.entries(previous).map(([key, value]) =>
+      [key, value ?? taggerTrainingDefaults[key]])) as Record<string, number | boolean>);
+  }, [taggerTrainingDefaults]);
   const save = async () => {
     setPending(true); setError("");
     try { onSaved(await editFoveaJointConfig(run.run_id, draft)); onClose(); }
@@ -33,7 +45,7 @@ export default function FoveaJointConfigEditor({ run, active, onSaved, onClose }
     <div className="grid grid-cols-2 gap-2">
       {fields.map(([key, label]) => <label key={key} className="text-xs text-gray-300 flex flex-col gap-1">
         {label}
-        <input type="number" step="any" value={String(draft[key])} disabled={pending}
+        <input type="number" step="any" value={draft[key] === undefined ? "" : String(draft[key])} disabled={pending}
           onChange={event => setDraft({ ...draft, [key]: Number(event.target.value) })}
           className="bg-gray-800 rounded p-1" />
       </label>)}
@@ -41,6 +53,10 @@ export default function FoveaJointConfigEditor({ run, active, onSaved, onClose }
     <label className="text-xs text-gray-300 flex gap-2">
       <input type="checkbox" checked={Boolean(draft.external_flash)} disabled={pending}
         onChange={event => setDraft({ ...draft, external_flash: event.target.checked })} />External FlashAttention
+    </label>
+    <label className="text-xs text-gray-300 flex gap-2">
+      <input type="checkbox" checked={Boolean(draft.save_tag_metrics)} disabled={pending}
+        onChange={event => setDraft({ ...draft, save_tag_metrics: event.target.checked })} />Save per-tag metrics and calibration
     </label>
     {error && <p className="text-xs text-red-400">{error}</p>}
     <div className="flex gap-2">

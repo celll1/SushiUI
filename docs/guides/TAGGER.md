@@ -59,8 +59,8 @@ If source metadata is unavailable, or the CPU renderer is busy, the
 attempt is recorded as skipped. Rendering uses an isolated CPU process without
 copying the full optimizer checkpoint. Neither a numeric
 gate nor the agent's inspection of generated images substitutes for owner
-review. Normal inference-manager integration and repeated refinement remain
-separate unfinished production work.
+review. Direct-joint artifacts can use the common inference manager; repeated
+refinement and a live joint-run prediction handle remain separate work.
 
 Registered `foveatag_phase3` comparison monitors expose optional diagnostic
 panels under `/tagger-training/runs/{run_id}/diagnostics`. They default to OFF;
@@ -86,8 +86,14 @@ input footprints, not causal attribution or a trained router. The monitor suppor
 older/newer navigation and step selection; polling does not move a selected older
 panel. All published panels remain in the history (no 12-entry truncation).
 Disabling generation does not delete prior images or cancel an in-flight worker.
-This diagnostic option supports registered comparisons and joint-review runs, not general
-SigLIP2/native trainer runs. Frontend build/type-check remains owner-run.
+The same option now supports SigLIP2 and shared native training. Actual batches
+retain disk or online-download source provenance and capture pre-update
+probabilities, masks, vocabulary and available per-tag statistics. Settings select
+the saved training threshold, a user global threshold, or per-tag thresholds with
+minimum support and a scalar fallback. Immutable captured forwards can be
+re-rendered on CPU from history without inference, optimizer changes, or replacing
+the latest snapshot. These panels are training diagnostics, not held-out accuracy.
+Frontend build/type-check remains owner-run.
 
 | Concern | Owner |
 |---|---|
@@ -192,12 +198,18 @@ outputs and gradients for global, shifted/padded, FP16/BF16 and checkpointed
 execution. These checks do not establish end-to-end speedups or UI deployment.
 
 On the isolated design branch, standard run creation also accepts
-`architecture=foveatag` and the six `fovea_*` defaults exposed by the schema.
+`architecture=foveatag` and the native input/routing defaults exposed by the schema.
 Full training accepts an empty encoder path for random initialization; LoRA
 requires a local scratch-pretrained encoder. SigLIP2 pooling dimensions and
 repository initialization are refused. The configuration form exposes the
 native input settings alongside shared training options. Deployment and live
 UI verification remain pending; the frozen comparison uses its import endpoint.
+New native runs enable learned routing by default. Legacy configurations without
+that field retain sampled locals on edit. Candidate count, selected K, exploration,
+oracle interval/chunk and router loss weight are explicit settings. Router state
+is preserved with model/optimizer bundles and full/compact/merged exports. Oracle
+utility uses the actual configured masked classification criterion. No external
+tagger teacher or weights are introduced.
 
 The native shared training-model prediction handle accepts coordinate-aware
 views, uses deterministic validation sampling without consuming training RNG,
@@ -214,9 +226,12 @@ come from the artifact, not NaFlex patch settings or a downloaded processor.
 Sibling vocabulary and calibration/OOD artifacts follow the native metadata
 reference. Native OOD uses overview-plus-mixed-evidence features, not the MIL
 classifier input. Model-only `best_f1` files do not require optimizer state.
-Native ONNX and inference-manager merge operations are explicitly refused;
-the trainer already produces native merged exports. Live API/UI deployment
-remains pending.
+Native inference-manager LoRA merge and local scratch-encoder extraction are
+implemented. Native ONNX export produces overview, optional router and classifier
+graphs with a host crop-selection contract. The CPU runtime validates graph hashes
+and reproduces staged selected-only inference; fixed graph batch/canvas/K do not
+limit the capped external image resolution. Max Num Patches is SigLIP2-specific
+and is not used for native export. Live API/UI deployment remains pending.
 
 Native shared training holds the handle's reentrant model lock from forward
 through optimizer update, and for head expansion. Prediction, offload/restore

@@ -13,9 +13,12 @@ from .views import ViewConfig
 
 
 def view_config(config):
+    learned = config.get("fovea_learned_routing", False)
     return ViewConfig(
         overview_size=config["fovea_overview_size"],
-        local_size=config["fovea_local_size"], local_views=config["fovea_local_views"],
+        local_size=config["fovea_local_size"], local_views=(config["fovea_candidate_count"] if learned else config["fovea_local_views"]),
+        overview_resize_mode="stretch" if learned else "letterbox",
+        local_border_mode="shift_inside" if learned else "pad",
     )
 
 
@@ -44,6 +47,9 @@ def validate_config(config, *, resuming=False):
         if is_repo:
             raise ValueError("FoveaTag requires a local scratch artifact, not a SigLIP2 repository or URL")
     view_config(config)
+    if config.get("fovea_learned_routing") and not (
+            0 <= config["fovea_random_count"] < config["fovea_local_views"] <= config["fovea_candidate_count"]):
+        raise ValueError("router requires 0 <= random < local views <= candidates")
 
 
 def build_model(config, num_tags, *, vocabulary, lineage, resume_path=None):
@@ -81,12 +87,21 @@ def build_model(config, num_tags, *, vocabulary, lineage, resume_path=None):
             value[key] = tuple(value[key])
         encoder_config = FoveaEncoderConfig(**value)
     architecture = FoveaArtifactConfig(num_tags=num_tags)
+    routing = None
+    if config.get("fovea_learned_routing"):
+        routing = {"candidate_count": config["fovea_candidate_count"], "selection_budget": config["fovea_local_views"],
+            "random_count": config["fovea_random_count"], "oracle_interval": config["fovea_oracle_interval"],
+            "oracle_chunk_size": config["fovea_oracle_chunk_size"], "router_weight": config["fovea_router_weight"],
+            "routing_dim": architecture.routing_dim, "routing_slots": architecture.routing_slots}
+    if resume_path is not None and metadata.get("routing") != routing:
+        raise ValueError("native routing settings differ from resume checkpoint")
     model = FoveaTrainerModel(
         num_tags, encoder_config=encoder_config, feature_dim=config["fovea_feature_dim"],
         evidence_slots=architecture.evidence_slots_per_view,
         pool_heads=architecture.pool_heads, temperature=architecture.temperature,
         training_method=method, lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"],
         encoder_path=base_path or None,
+        routing=routing,
     )
     flash = config["use_flash_attention"]
     if flash:

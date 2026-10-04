@@ -101,13 +101,15 @@ def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
         def emit(event, data):
             if event == "train":
                 callback(run_id, "step", {"step": data["global_step"], "epoch": data["epoch"] + 1,
-                    "loss": data["classification"], "progress": (data["epoch"] + data["sample_offset"] / plan["epoch_samples"]) / plan["epochs"]})
+                    "loss": data["classification"], "lr": data.get("lr"), "progress": (data["epoch"] + data["sample_offset"] / plan["epoch_samples"]) / plan["epochs"]})
             elif event == "validation":
                 callback(run_id, "epoch", {"step": data["global_step"], "epoch": data["epoch"] + 1,
                     "loss": data["mean_loss"], "f1": data["macro_f1"], "precision": data["macro_precision"],
                     "recall": data["macro_recall"], "threshold": data["threshold"]})
             elif event == "resumed":
                 callback(run_id, "resume", {"resumed_from_step": data["global_step"]})
+            elif event == "train_f1":
+                callback(run_id, "train_f1", data)
             session = TrainingSessionLocal()
             try:
                 row = session.query(TaggerTrainingRun).filter_by(run_id=run_id).one()
@@ -141,10 +143,14 @@ def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
                 row.status = "running"
                 session.commit()
                 checkpoint = Path(row.output_dir) / "latest.pt"
+                from api.param_defaults import TAGGER_TRAINING_DEFAULTS
+                metric_keys = ("save_tag_metrics", "train_f1_eval_every_n_steps", "train_f1_threshold_search_every_n_steps",
+                    "train_f1_initial_threshold", "train_f1_buffer_batches")
                 result = run_direct_joint(plan, progress_callback=emit, run_control=control,
                     resume=checkpoint if checkpoint.exists() else None,
                     segment_steps=None if continuous else plan["review_steps"],
-                    diagnostic_due=lambda step: training_due(diagnostic_run, step), diagnostic_callback=diagnostic)
+                    diagnostic_due=lambda step: training_due(diagnostic_run, step), diagnostic_callback=diagnostic,
+                    common_metrics_config={key: plan.get(key, TAGGER_TRAINING_DEFAULTS[key]) for key in metric_keys})
                 session.expire_all()
                 row = session.query(TaggerTrainingRun).filter_by(run_id=run_id).one()
                 row.status = "completed" if result["status"] == "complete" else "stopped"
@@ -184,7 +190,7 @@ def start_joint_review(run, db, threads, callback_factory, *, continuous=False):
 
 def edit_joint_config(run_id, updates, db):
     from api.routes import FoveaJointReviewRequest
-    from api.param_defaults import TAGGER_JOINT_REVIEW_DEFAULTS
+    from api.param_defaults import TAGGER_JOINT_REVIEW_DEFAULTS, TAGGER_TRAINING_DEFAULTS
     from core.tagger.foveatag.joint_checkpoint import EDITABLE_JOINT_FIELDS
     from core.tagger.foveatag.supervised_run import _write_json_atomic
     from database.models import TaggerTrainingRun
@@ -202,13 +208,14 @@ def edit_joint_config(run_id, updates, db):
         original = run.config["joint_review"]
         try:
             request = FoveaJointReviewRequest(source_run_id="config-edit", output_dir=run.output_dir,
-                **{**{key: original[key] for key in TAGGER_JOINT_REVIEW_DEFAULTS}, **updates})
+                **{**{key: original[key] for key in (*TAGGER_JOINT_REVIEW_DEFAULTS, *EDITABLE_JOINT_FIELDS) if key in original}, **updates})
         except ValidationError as exc:
             raise HTTPException(422, "Invalid training values or routing budget") from exc
         if request.epochs < (run.current_epoch or 0):
             raise HTTPException(422, "Epoch target cannot precede the saved epoch")
         plan = {**original, **{key: request.model_dump()[key] for key in EDITABLE_JOINT_FIELDS}}
-        changes = {key: {"before": original[key], "after": plan[key]} for key in EDITABLE_JOINT_FIELDS if original[key] != plan[key]}
+        changes = {key: {"before": original.get(key, TAGGER_TRAINING_DEFAULTS.get(key)), "after": plan[key]}
+            for key in EDITABLE_JOINT_FIELDS if original.get(key, TAGGER_TRAINING_DEFAULTS.get(key)) != plan[key]}
         if not changes:
             return run.to_list_dict()
         revisions = [*run.config.get("joint_config_history", []),

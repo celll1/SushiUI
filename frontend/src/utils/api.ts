@@ -9146,6 +9146,12 @@ export interface TaggerTrainingRunCreateRequest {
   fovea_feature_dim?: number;
   fovea_max_source_pixels?: number;
   fovea_seed?: number;
+  fovea_learned_routing?: boolean;
+  fovea_candidate_count?: number;
+  fovea_random_count?: number;
+  fovea_oracle_interval?: number;
+  fovea_oracle_chunk_size?: number;
+  fovea_router_weight?: number;
   run_name: string;
   training_method: "full" | "lora";
   vision_encoder_path: string;
@@ -9701,6 +9707,9 @@ export interface FoveaJointReviewRequest {
   weight_decay?: number; warmup_steps?: number; router_weight?: number;
   checkpoint_every_steps?: number; log_every?: number; review_steps?: number;
   external_flash?: boolean;
+  save_tag_metrics?: boolean; train_f1_eval_every_n_steps?: number;
+  train_f1_threshold_search_every_n_steps?: number; train_f1_initial_threshold?: number;
+  train_f1_buffer_batches?: number;
 }
 export const createFoveaJointReview = async (request: FoveaJointReviewRequest): Promise<TaggerTrainingRun> =>
   (await api.post("/tagger-training/foveatag/joint-review", request)).data;
@@ -9709,6 +9718,10 @@ export interface TaggerDiagnosticSettings {
   enabled: boolean;
   interval_steps: number;
   focus_preview: boolean;
+  threshold_mode: "training" | "global" | "per_tag";
+  threshold: number;
+  min_samples_for_per_tag: number;
+  min_best_thr: number;
 }
 export interface TaggerDiagnosticStatus {
   settings: TaggerDiagnosticSettings;
@@ -9721,6 +9734,10 @@ export interface TaggerDiagnosticStatus {
     native_focus_used: boolean; focus_preview: boolean;
     prediction_origin?: string;
     tag_labels?: "vocabulary" | "anonymous";
+    threshold_mode?: "training" | "global" | "per_tag";
+    per_tag_threshold_count?: number;
+    threshold_fallback_count?: number;
+    snapshot_filename?: string | null;
     training_window?: {
       start_step: number; end_step: number; samples: number; batches: number; threshold: number;
       tp: number; fp: number; fn: number; known_negative: number;
@@ -9733,8 +9750,8 @@ export const getTaggerDiagnostics = async (runId: string): Promise<TaggerDiagnos
   (await api.get(`/tagger-training/runs/${runId}/diagnostics`)).data;
 export const setTaggerDiagnostics = async (runId: string, settings: TaggerDiagnosticSettings): Promise<TaggerDiagnosticStatus> =>
   (await api.put(`/tagger-training/runs/${runId}/diagnostics`, settings)).data;
-export const createTaggerDiagnostic = async (runId: string): Promise<TaggerDiagnosticStatus> =>
-  (await api.post(`/tagger-training/runs/${runId}/diagnostics`)).data;
+export const createTaggerDiagnostic = async (runId: string, filename?: string): Promise<TaggerDiagnosticStatus> =>
+  (await api.post(`/tagger-training/runs/${runId}/diagnostics`, filename ? {filename} : undefined)).data;
 export const taggerDiagnosticImageUrl = (runId: string, name: string): string =>
   `/api/v1/tagger-training/runs/${encodeURIComponent(runId)}/diagnostics/images/${encodeURIComponent(name)}`;
 export const getTaggerDiagnosticImage = async (runId: string, name: string): Promise<Blob> =>

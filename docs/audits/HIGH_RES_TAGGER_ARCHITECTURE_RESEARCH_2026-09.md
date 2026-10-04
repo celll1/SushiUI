@@ -10,6 +10,78 @@ specific to the listed checkpoints, datasets, and RTX 6000 Ada.
 
 ## 1. Decision
 
+### Common-tagger parity revision (2026-10-04)
+
+The owner requires all previous tagger capabilities outside focus to remain
+available in FoveaTag, and step-native diagnostic images with variable/global
+or per-tag thresholds in SigLIP2 training as well. Architecture-specific input
+or encoder identifiers need equivalents, not silent acceptance of unused flags.
+An option is complete only when API/defaults/UI, execution, resume, publication
+and applicable inference consume it. A control without execution is a defect.
+
+At the initial audit, native shared training had common lifecycle capabilities
+but sampled locals; the active direct-joint router run bypassed that lifecycle.
+The target is shared lifecycle/features with a routing-specific training adapter;
+the current resumable run must not be reset or silently converted to sampled focus.
+
+| Capability group | Shared native implementation at audit | Active router path at audit | Required remaining integration |
+|---|---|---|---|
+| Full/LoRA, head inheritance/growth and vocabulary lineage | Present | Full, fixed vocabulary | Attach learned routing to shared model/data/optimizer lifecycle; preserve router state in exports |
+| Optimizer choice, head LR, loss variants/parameters, precision, checkpointing and FlashAttention | Present | AdamW/default ASL, limited edits | Use common validated settings and execution; resume incompatibilities must be explicit |
+| Dataset split/filter/categories/aliases, refresh and drift checks | Present | Frozen benchmark-derived split | Common run creation and dataset pipeline without replacing existing split/offset |
+| Online collection, injection, deficiency/co-occurrence/query expansion | Present | Absent | Shared collector and router batches; masked labels, head growth and bound collector resume |
+| Rolling F1/common threshold, tag-specific thresholds and calibration/OOD | Present | Common epoch threshold only | Share masked accumulators, settings, live inference, checkpoint/runtime and artifacts |
+| LR/context conditional inference, Rating/Quality selection, batch sidecar editing | Present for native shared artifacts | Direct-joint artifact not connected | Routed artifact/live handle adapter to common inference and browser operations |
+| Step/epoch/best saving, retention, merged/compact exports, resume and GPU coordination | Present | Basic joint checkpoint/export | Common publication/bundle protocol plus router state and current-run migration verification |
+| ONNX export/loads | SigLIP2 only; native explicitly refused | Absent | Native graph export plus host routing/preprocessing; do not label a refusal as parity |
+| Actual-step diagnostic PNG, interval/history and threshold selection | Router only, common scalar threshold | Present | Common capture/render service for all trainer paths and editable global/per-tag thresholds |
+| Config creation/editing, progress/loss/LR/F1/scatter and errors | Shared native form present | Limited config/metrics | Common UI/API contract, all applicable controls, and live verification |
+
+This table is an implementation backlog, not a completion claim. Tests and
+runtime evidence must update each row. No A/B/C gate, manual evidence-box
+annotation, external teacher or agent inspection of diagnostic images is required.
+
+#### Implementation status on the design branch
+
+The shared native trainer now has learned routing: fixed overview, metadata-only
+candidates, selected source-local tensors, periodic masked classification-loss
+oracle and retained random exploration. Full/LoRA training, vocabulary growth,
+online injection, common optimizers/losses/head LR, checkpoint/runtime bundles,
+calibration/OOD and prediction handles remain shared rather than reimplemented.
+Actual-forward focus metadata travels with the diagnostic snapshot. Ordinary
+inference encodes the overview once and renders only the selected K crops.
+
+The common diagnostic service now supports SigLIP2, shared native and joint runs.
+It retains each actual-step CPU snapshot, captured vocabulary/masks/probabilities
+and threshold statistics. History supports CPU-only re-rendering using the saved
+training threshold, a user scalar, or supported per-tag thresholds with a scalar
+fallback. Re-rendering old history never replaces the latest captured forward.
+Training panels show actual TP/FP/FN tag names; no rating restriction is imposed.
+These are training-annotation diagnostics, not held-out evaluation accuracy.
+
+Native PyTorch artifacts now support common-manager loading, LoRA merging and
+scratch encoder extraction. Native ONNX exports use separate overview/router/
+classifier graphs and host-side source cropping/top-K; graph hashes, fixed batch
+one, canvas sizes and local budget are explicit. The external source resolution
+does not become the graph's token count. CPU ONNX Runtime loading is implemented;
+WebGPU graph splitting alone is not a browser host-routing implementation.
+
+The active legacy joint path receives common rolling masked F1, threshold search,
+per-tag statistics, config edits, self-contained statistics resume and published
+inference bundles without resetting its optimizer. It remains AdamW/default-ASL
+and fixed-dataset compatibility code: arbitrary optimizer/loss selection,
+collection-driven vocabulary growth, native live prediction-handle migration and
+compact-caption feature-provider support are not established for that legacy run.
+Do not silently migrate its frozen data/schedule into a new shared run.
+
+Verification completed on the isolated branch includes routed full/LoRA gradients,
+exact shared-loop stop/resume, captured-source/mask handling, per-tag fallback,
+direct-artifact common prediction and staged ONNX numerical comparison. Remaining
+work: complete regression/static-contract review, production-dtype routing probes,
+deployment preserving the active run, and record live API evidence. Frontend build
+and type-check are owner-run. This section does not certify all requested parity
+as complete while those compatibility boundaries remain.
+
 ### Current owner-directed revision (supersedes the staged A/B/C gates below)
 
 The owner has explicitly rejected further A/B/C training as unnecessary for the

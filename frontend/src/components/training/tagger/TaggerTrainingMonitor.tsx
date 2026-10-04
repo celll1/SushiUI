@@ -915,9 +915,8 @@ export default function TaggerTrainingMonitor({
           </div>
 
           <div className="space-y-4 min-w-0">
-            {(run.config.architecture === "foveatag_phase3" || run.config.architecture === "foveatag_joint_review") && (
-              <TaggerDiagnosticsPanel runId={run.run_id} active={run.status === "running" || run.status === "starting"} />
-            )}
+            <TaggerDiagnosticsPanel runId={run.run_id} active={run.status === "running" || run.status === "starting"}
+              legacyComparison={run.config.architecture === "foveatag_phase3"} />
             <DanbooruMetricsPanel
               runId={run.run_id}
               active={run.status === "running" || run.status === "starting"}

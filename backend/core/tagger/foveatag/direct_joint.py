@@ -43,7 +43,7 @@ def validate_plan(plan):
 
 
 def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segment_steps=None,
-        diagnostic_due=None, diagnostic_callback=None):
+        diagnostic_due=None, diagnostic_callback=None, common_metrics_config=None):
     cfg = validate_plan(plan)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for direct joint training")
@@ -89,6 +89,10 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
         scheduler=scheduler)
     trainer.diagnostic_due = diagnostic_due
     trainer.diagnostic_callback = diagnostic_callback
+    trainer.diagnostic_vocabulary = vocab.to_dict()
+    if common_metrics_config is not None:
+        from .joint_metrics import JointMetricsRuntime
+        trainer.common_metrics = JointMetricsRuntime(vocab, common_metrics_config)
     contract = json.loads(json.dumps(plan))
     contract["router_objective"] = ROUTER_OBJECTIVE_VERSION
     epoch = offset = step = 0
@@ -101,6 +105,10 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
         epoch, offset, step = saved["epoch"], saved["sample_offset"], saved["global_step"]
         best, threshold = saved["best_validation_f1"], saved["best_threshold"]
         history, accumulator = saved["history"], saved["epoch_accumulator"]
+        if saved.get("metrics_runtime") is not None:
+            if trainer.common_metrics is None:
+                raise ValueError("resume requires the saved common metrics runtime")
+            trainer.common_metrics.restore(root, saved["metrics_runtime"], step)
         prior_objective = saved["run_contract"].get("router_objective", "positive_margin_v1")
         if prior_objective not in ("positive_margin_v1", ROUTER_OBJECTIVE_VERSION):
             raise ValueError("Unsupported prior router objective")
@@ -155,10 +163,14 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
                         "stage": "direct_joint_owner_review", "acceptance": "awaiting_owner_visual_review",
                         "global_step": step, "epoch": epoch, "threshold": threshold,
                         "router_objective": ROUTER_OBJECTIVE_VERSION})
+                _publish_review_artifact(root, "best_joint", trainer, vocab, plan)
             epoch, offset, accumulator = epoch + 1, 0, None
+            if trainer.common_metrics is not None:
+                trainer.common_metrics.accumulator.rotate_epoch()
             save_joint_checkpoint(root / "latest.pt", model, router, optimizer, scheduler=scheduler,
                 epoch=epoch, sample_offset=offset, global_step=step, best_validation_f1=best,
-                best_threshold=threshold, run_contract=contract, history=history)
+                best_threshold=threshold, run_contract=contract, history=history,
+                metrics_runtime=trainer.common_metrics.save(root, step) if trainer.common_metrics is not None else None)
             checkpoint()
             if segment_steps is not None and step - start_step >= segment_steps:
                 status = "stopped_for_owner_review"
@@ -168,6 +180,7 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
                 "stage": "direct_joint_owner_review", "acceptance": "awaiting_owner_visual_review",
                 "global_step": step, "epoch": epoch, "threshold": threshold,
                 "router_objective": ROUTER_OBJECTIVE_VERSION})
+        _publish_review_artifact(root, "review", trainer, vocab, plan)
         summary = {"status": status, "global_step": step, "epoch": epoch, "sample_offset": offset, "train": train_summary,
             "acceptance": "awaiting_owner_visual_review", "history": history,
             "router_objective": ROUTER_OBJECTIVE_VERSION}
@@ -178,6 +191,28 @@ def run_direct_joint(plan, *, progress_callback, run_control, resume=None, segme
         del trainer, optimizer, scheduler, model, router
         gc.collect()
         torch.cuda.empty_cache()
+
+
+def _publish_review_artifact(root, name, trainer, vocab, plan):
+    from .direct_inference import normalize_metadata
+    from .inference_bundle import publish_inference_bundle
+    path = root / f"{name}.safetensors"
+    metadata_path = root / f"{name}_metadata.json"
+    metadata = normalize_metadata(json.loads(metadata_path.read_text(encoding="utf-8")), path)
+    metadata.update(max_source_pixels=plan["max_source_pixels"], fovea_seed=plan["seed"],
+        mixed_precision="bf16" if trainer.mixed_precision == torch.bfloat16 else "fp16",
+        attention_requested="flash_attention_2" if plan["external_flash"] else "sdpa",
+        normalization_execution="fp32_statistics_v1")
+    _write_json_atomic(metadata_path, metadata)
+    _write_json_atomic(root / f"{name}_vocabulary.json", vocab.to_dict())
+    optional = []
+    if trainer.common_metrics is not None and trainer.common_metrics.config["save_tag_metrics"]:
+        temporary = root / f"{name}_tag_metrics.tmp.npz"
+        trainer.common_metrics.accumulator.save(str(temporary),
+            tag_names=[vocab.idx_to_tag[index] for index in range(vocab.num_tags)])
+        temporary.replace(root / f"{name}_tag_metrics.npz")
+        optional.append("_tag_metrics.npz")
+    publish_inference_bundle(root, name, optional_suffixes=optional)
 
 
 def _rebase_schedule(optimizer, step, plan, total):

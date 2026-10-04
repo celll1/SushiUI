@@ -1209,7 +1209,9 @@ class DanbooruSampleBuffer:
                 "timestamp":  time.time(),
             })
 
-        return (pixel_values, pixel_attention_mask, spatial_shapes, raw_tags)
+        from .diagnostic_capture import DiagnosticBatch
+        return DiagnosticBatch((pixel_values, pixel_attention_mask, spatial_shapes, raw_tags),
+            ({"source_bytes": img_bytes, "source_index": int(post.get("id", 0)), "source_kind": "online_collection"},))
 
 
 
@@ -1327,13 +1329,15 @@ class MixedDataLoader:
             return None
         voc = self._vocabulary if self._vocabulary is not None else self._buffer._vocabulary
         built = []
-        for (pv_d, pam_d, ss_d, raw_tags) in items:
+        for item in items:
+            pv_d, pam_d, ss_d, raw_tags = item
             lbl, lm = _build_label_and_mask_standalone(
                 raw_tags, voc,
                 quality_masking_mode=self._quality_masking,
                 alias_resolver=self._alias_resolver,
             )
-            built.append((pv_d, pam_d, ss_d, lbl, lm))
+            from .diagnostic_capture import DiagnosticBatch
+            built.append(DiagnosticBatch((pv_d, pam_d, ss_d, lbl, lm), getattr(item, "diagnostic_sources", (None,))))
         return tagger_collate_fn(built)
 
     def __iter__(self):
@@ -1369,7 +1373,9 @@ class MixedDataLoader:
                     labels     = F.pad(labels,     (0, pad), value=0.0)
                     loss_masks = F.pad(loss_masks, (0, pad), value=1.0)
 
-            yield ((pv, pam, ss, labels, loss_masks), False)
+            from .diagnostic_capture import DiagnosticBatch
+            yield (DiagnosticBatch((pv, pam, ss, labels, loss_masks),
+                getattr(batch, "diagnostic_sources", ())), False)
             base_step += 1
 
             # ③ Interrupt batch: every injection_interval base batches,

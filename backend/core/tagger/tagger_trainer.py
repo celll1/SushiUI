@@ -846,12 +846,16 @@ class TaggerTrainer:
         progress_callback: Optional[Callable] = None,
         old_vocabulary: Optional[TagVocabulary] = None,
         vocab_lineage: Optional[Dict[str, List[str]]] = None,
+        diagnostic_due: Optional[Callable] = None,
+        diagnostic_callback: Optional[Callable] = None,
     ) -> None:
         self.run_id = run_id
         self.config = config
         self.vocabulary = vocabulary
         self.output_dir = output_dir
         self.callback = progress_callback
+        self.diagnostic_due = diagnostic_due
+        self.diagnostic_callback = diagnostic_callback
         self.old_vocabulary = old_vocabulary
         # new_tag -> [old_predecessor, ...] for head / optimizer-state inheritance
         # across vocab renames (alias) and merges (comma re-join). See vocab_lineage.py.
@@ -1674,7 +1678,8 @@ class TaggerTrainer:
                     native_cursor.complete(batch_idx, is_injection=is_injection_batch,
                         readable=True, injection_interval=max(1, cfg.get("danbooru_injection_interval", 4)))
 
-                pv         = pv.to(device)
+                if not getattr(model, "routing", None):
+                    pv = pv.to(device)
                 pam        = pam.to(device)
                 ss         = ss.to(device)
                 labels     = labels.to(device)
@@ -1686,22 +1691,24 @@ class TaggerTrainer:
                         _ood_cap_once[0] = True
                     if use_amp:
                         with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                            logits = model(pv, pam, ss)
-                            loss = criterion(logits, labels, loss_masks)
+                            from .diagnostic_capture import training_forward
+                            logits, classification_loss, loss, diagnostic_focus = training_forward(model, pv, pam, ss,
+                                labels, loss_masks, criterion, global_step)
                     else:
-                        logits = model(pv, pam, ss)
-                        loss   = criterion(logits, labels, loss_masks)
+                        from .diagnostic_capture import training_forward
+                        logits, classification_loss, loss, diagnostic_focus = training_forward(model, pv, pam, ss,
+                            labels, loss_masks, criterion, global_step)
 
                     if _save_ood_ref_enabled and _ood_cap_buf:
                         _ood_emb_acc.update(_ood_cap_buf.pop().numpy())
-                    loss_val = loss.item()
-                    if loss_val != loss_val or loss_val == float("inf"):
+                    loss_val = classification_loss.item()
+                    if not torch.isfinite(loss):
                         print(f"[TaggerTrainer] WARNING: NaN/Inf loss at step {global_step}, skipping batch")
                         optimizer.zero_grad(set_to_none=True)
                         if scaler is not None:
                             scaler.update()
                         continue
-                    if _n2_eval > 0 or _train_count_on or (native_run and _save_tag_metrics_enabled):
+                    if _n2_eval > 0 or _train_count_on or _save_tag_metrics_enabled:
                         _step_probs = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
                         _step_labels = labels.detach().bool().cpu()
                     if scaler is not None:
@@ -1740,17 +1747,11 @@ class TaggerTrainer:
                 # Append to training F1 rolling buffer (F1 only); accumulate
                 # tag_count whenever F1 metrics OR train-count augmentation is on.
                 if _n2_eval > 0:
-                    if native_run:
-                        from .foveatag.metrics_runtime import masked_metric_inputs
-                        _train_f1_buffer.append(masked_metric_inputs(_step_probs, _step_labels, loss_masks.detach().cpu()))
-                    else:
-                        _train_f1_buffer.append((_step_probs, _step_labels))
-                if _n2_eval > 0 or _train_count_on or (native_run and _save_tag_metrics_enabled):
-                    if native_run:
-                        _tag_metrics_acc.update(_step_probs, _step_labels,
-                            observation_mask=(loss_masks.detach() > 0).cpu())
-                    else:
-                        _tag_metrics_acc.update(_step_probs, _step_labels)
+                    from .foveatag.metrics_runtime import masked_metric_inputs
+                    _train_f1_buffer.append(masked_metric_inputs(_step_probs, _step_labels, loss_masks.detach().cpu()))
+                if _n2_eval > 0 or _train_count_on or _save_tag_metrics_enabled:
+                    _tag_metrics_acc.update(_step_probs, _step_labels,
+                        observation_mask=(loss_masks.detach() > 0).cpu())
 
                 if native_run:
                     from .foveatag.run_control import wait_for_gpu_release
@@ -1764,7 +1765,7 @@ class TaggerTrainer:
                     self._emit("step", {
                         "step": global_step,
                         "epoch": epoch,
-                        "loss": loss.item(),
+                        "loss": loss_val,
                         "lr": current_lr,
                         "progress": global_step / total_steps,
                     })
@@ -1824,6 +1825,10 @@ class TaggerTrainer:
                         "fp_fn_scatter": _scatter_data,
                     })
                     del _buf_p, _buf_l
+
+                if self.diagnostic_due is not None and self.diagnostic_due(global_step):
+                    self._capture_diagnostic(batch, pv, logits, labels, loss_masks, global_step, epoch,
+                        _f1_threshold, _tag_metrics_acc if _metrics_runtime_needed else None, focus=diagnostic_focus)
 
                 if native_run and not native_best_only and save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
                     _save_step_checkpoint()
@@ -2107,7 +2112,8 @@ class TaggerTrainer:
                 if batch is None:
                     continue
                 pv, pam, ss, labels, loss_masks = batch
-                pv  = pv.to(device)
+                if not getattr(model, "routing", None):
+                    pv = pv.to(device)
                 pam = pam.to(device)
                 ss  = ss.to(device)
                 with handle.model_access() if native and handle is not None else nullcontext():
@@ -2178,6 +2184,27 @@ class TaggerTrainer:
         }
 
 
+    def _capture_diagnostic(self, batch, inputs, logits, labels, masks, step, epoch, threshold, accumulator, focus=None):
+        if self.diagnostic_callback is None:
+            return
+        from .diagnostic_capture import capture_forward
+        supplied_focus = focus
+        if supplied_focus is not None:
+            focus = lambda index: supplied_focus[index]
+        elif self.config.get("architecture") == "foveatag":
+            def focus(index):
+                valid = inputs.local_view_mask[index].detach().cpu()
+                return {"boxes": inputs.local_geometry[index, :, :4].detach().float().cpu()[valid],
+                    "random_slots": torch.ones(int(valid.sum()), dtype=torch.bool),
+                    "local_size": int(inputs.local_images.shape[-1]), "focus_kind": "sampled"}
+        try:
+            snapshot = capture_forward(batch, logits, labels, masks, step=step, epoch=epoch,
+                threshold=threshold, vocabulary=self.vocabulary,
+                tag_metrics=accumulator.compute_metrics() if accumulator is not None else None, focus=focus)
+            self.diagnostic_callback(snapshot)
+        except Exception as exc:
+            self.diagnostic_callback({"step": step, "skip_reason": "capture_failed_" + type(exc).__name__})
+
     def _make_metadata(
         self, epoch: int, step: int, best_f1: float, best_threshold: float
     ) -> Dict[str, Any]:
@@ -2243,6 +2270,8 @@ def run_tagger_training(
     progress_callback: Optional[Callable] = None,
     resume_from_checkpoint: Optional[str] = None,
     trainer_holder: Optional[List] = None,
+    diagnostic_due: Optional[Callable] = None,
+    diagnostic_callback: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """Top-level function to build everything and start training.
 
@@ -3042,6 +3071,8 @@ def run_tagger_training(
             progress_callback=progress_callback,
             old_vocabulary=old_vocabulary,
             vocab_lineage=vocab_lineage,
+            diagnostic_due=diagnostic_due,
+            diagnostic_callback=diagnostic_callback,
         )
         # Expose trainer reference so the API can call trainer.stop()
         if trainer_holder is not None:

@@ -26,6 +26,7 @@ class FoveaTrainerModel(nn.Module):
         feature_dim: int, evidence_slots: int, pool_heads: int, temperature: float,
         training_method: str, lora_rank: int, lora_alpha: float,
         encoder_path: str | None = None,
+        routing: dict | None = None,
     ) -> None:
         super().__init__()
         if training_method not in ("full", "lora"):
@@ -45,6 +46,15 @@ class FoveaTrainerModel(nn.Module):
         self.lora_alpha = lora_alpha
         self._lora_modules = {}
         self._ood_tap = nn.Identity()
+        self.routing = dict(routing) if routing else None
+        self.router = None
+        if routing:
+            from .router import EvidenceRouter
+            if not (0 <= routing["random_count"] < routing["selection_budget"] <= routing["candidate_count"]):
+                raise ValueError("invalid learned routing budget")
+            if min(routing["oracle_interval"], routing["oracle_chunk_size"]) <= 0 or routing["router_weight"] < 0:
+                raise ValueError("invalid learned routing optimization settings")
+            self.router = EvidenceRouter(encoder_config.widths[2], routing_dim=routing["routing_dim"], routing_slots=routing["routing_slots"])
         if encoder_path:
             from .pretraining_checkpoint import load_pretrained_encoder
             load_pretrained_encoder(encoder_path, self.core.encoder)
@@ -69,6 +79,8 @@ class FoveaTrainerModel(nn.Module):
     def forward(self, views: FoveaViewTensorBatch, pixel_attention_mask=None, spatial_shapes=None):
         if not isinstance(views, FoveaViewTensorBatch):
             raise TypeError("FoveaTag requires native coordinate-aware view tensors")
+        if self.router is not None:
+            return self.forward_routed(views)[0]
         capture = bool(self._ood_tap._forward_pre_hooks)
         result = self.core(
             views.overview_images, views.overview_geometry,
@@ -84,8 +96,93 @@ class FoveaTrainerModel(nn.Module):
         self._ood_tap(torch.cat((result.global_features, local_mean), dim=1).detach())
         return result.logits
 
+    def forward_routed(self, views, labels=None, masks=None, criterion=None, global_step=0):
+        from .router import select_training_proposals, select_proposals
+        from .joint_training import gather_selected_views
+        from .router_training import evaluate_dense_candidates, router_objective
+        cfg = self.routing
+        if cfg is None or views.local_images.shape[1] != cfg["candidate_count"]:
+            raise ValueError("routed view count differs from the recorded candidate contract")
+        device = next(self.parameters()).device
+        geometry = views.local_geometry.to(device)
+        candidate_valid = views.local_view_mask.to(device)
+        overview_images = views.overview_images.to(device)
+        overview_geometry = views.overview_geometry.to(device)
+        boxes = geometry[..., :4]
+        training = self.training and labels is not None and torch.is_grad_enabled()
+        oracle = None
+        if training and global_step % cfg["oracle_interval"] == 0:
+            oracle = evaluate_dense_candidates(self.core, overview_images, overview_geometry,
+                views.local_images, geometry, candidate_mask=candidate_valid, chunk_size=cfg["oracle_chunk_size"])
+        overview = self.core.encoder(overview_images, overview_geometry)
+        with torch.no_grad():
+            routing = self.router(overview.local_map.detach(), overview.local_coordinates.detach(), boxes, candidate_valid)
+            if training:
+                selected = select_training_proposals(routing.scores, boxes, budget=cfg["selection_budget"],
+                    random_count=cfg["random_count"], candidate_mask=candidate_valid)
+            else:
+                selected = select_proposals(routing.scores, boxes, budget=cfg["selection_budget"], candidate_mask=candidate_valid)
+        chosen = gather_selected_views(views, selected.to(views.local_view_mask.device)).to(device)
+        capture_ood = bool(self._ood_tap._forward_pre_hooks)
+        result = self.core.classify_encoded_overview(overview, chosen.local_images, chosen.local_geometry,
+            local_view_mask=chosen.local_view_mask, return_details=capture_ood)
+        logits = result.logits if capture_ood else result
+        if capture_ood:
+            valid = chosen.local_view_mask.repeat_interleave(self.core.evidence_slots_per_view, dim=1)
+            evidence = result.head_output.mixed_evidence
+            local_mean = (evidence * valid[..., None]).sum(1) / valid.sum(1).clamp_min(1)[:, None]
+            self._ood_tap(torch.cat((result.global_features, local_mean), dim=1).detach())
+        auxiliary = logits.sum() * 0
+        if oracle is not None:
+            objective = router_objective(self.router, oracle, boxes, labels, loss_mask=masks,
+                candidate_mask=candidate_valid, criterion=criterion)
+            auxiliary = objective.loss * cfg["router_weight"]
+        positions = torch.arange(selected.shape[1], device=selected.device).expand_as(selected)
+        focus = tuple({"boxes": boxes[index][selected[index][selected[index] >= 0]].detach().float().cpu(),
+            "random_slots": (positions[index][selected[index] >= 0] >= cfg["selection_budget"] - (cfg["random_count"] if training else 0)).cpu(),
+            "local_size": int(views.local_images.shape[-1]), "focus_kind": "learned_router"} for index in range(len(selected)))
+        return logits, auxiliary, focus
+
     def register_ood_feature_hook(self, hook):
         return self._ood_tap.register_forward_pre_hook(hook)
+
+    @torch.inference_mode()
+    def predict_native(self, image, processor):
+        from .batch import collate_view_batches
+        from .views import build_views, sample_local_specs, fit_local_spec, ViewBatch, render_source_view
+        from .router import select_proposals
+        if self.router is None or self.training or processor.training:
+            raise ValueError("staged prediction requires an evaluation learned-router model")
+        config = processor.config
+        if processor.max_source_pixels is not None and image.width * image.height > processor.max_source_pixels:
+            raise ValueError("native source image exceeds the pixel cap")
+        specs = sample_local_specs(image.width, image.height, config,
+            seed=processor.image_seed(image), training=False)
+        if config.local_border_mode == "shift_inside":
+            specs = tuple(fit_local_spec(spec, image.width, image.height) for spec in specs)
+        if len(specs) != self.routing["candidate_count"]:
+            raise ValueError("inference candidates differ from the recorded router contract")
+        device = next(self.parameters()).device
+        overview_views = build_views(image, config, seed=0, training=False, specs=())
+        overview_batch = collate_view_batches([overview_views]).to(device)
+        overview = self.core.encoder(overview_batch.overview_images, overview_batch.overview_geometry)
+        geometry = torch.tensor([spec.normalized_geometry(image.width, image.height) for spec in specs],
+            device=device, dtype=overview.local_map.dtype)[None]
+        valid = torch.ones((1, len(specs)), dtype=torch.bool, device=device)
+        routing = self.router(overview.local_map, overview.local_coordinates, geometry[..., :4], valid)
+        selected = select_proposals(routing.scores, geometry[..., :4],
+            budget=self.routing["selection_budget"], candidate_mask=valid)[0]
+        selected_specs = tuple(specs[index] for index in selected[selected >= 0].tolist())
+        rendered = ViewBatch(overview_views.overview, overview_views.overview_spec,
+            tuple(render_source_view(image, spec, config.pad_color) for spec in selected_specs), selected_specs, config.local_size)
+        chosen = collate_view_batches([rendered]).to(device)
+        details = self.core.classify_encoded_overview(overview, chosen.local_images, chosen.local_geometry,
+            local_view_mask=chosen.local_view_mask, return_details=True)
+        valid = chosen.local_view_mask.repeat_interleave(self.core.evidence_slots_per_view, dim=1)
+        evidence = details.head_output.mixed_evidence
+        local_mean = (evidence * valid[..., None]).sum(1) / valid.sum(1).clamp_min(1)[:, None]
+        self._ood_tap(torch.cat((details.global_features, local_mean), dim=1).detach())
+        return details.logits
 
     def replace_head(self, head):
         if head.in_features != self.head.in_features:
@@ -136,6 +233,7 @@ class FoveaTrainerModel(nn.Module):
             "contains_frozen_base": True,
             "ood_feature_definition": "overview_plus_masked_mean_mixed_evidence_v1",
             "resume_weight_mode": "full_unmerged",
+            "routing": self.routing,
         })
         if self.training_method == "lora" and mode != "full":
             export_path = directory / f"{name}_export.safetensors"
@@ -199,6 +297,10 @@ def load_native_checkpoint(path, *, base_encoder_path=None):
     """Load model-only artifacts without requiring optimizer/resume files."""
     path = Path(path)
     metadata = json.loads(path.with_name(f"{path.stem}_metadata.json").read_text(encoding="utf-8"))
+    from .direct_inference import normalize_metadata, DirectJointInferenceAdapter
+    metadata = normalize_metadata(metadata, path)
+    if metadata.get("kind") == "foveatag_direct_joint_weights":
+        return DirectJointInferenceAdapter(path).eval(), metadata
     if metadata.get("kind") == "foveatag_inference_export":
         return load_inference_export(path, base_encoder_path=base_encoder_path)
     if (metadata.get("format_version") != 1 or metadata.get("architecture") != "foveatag"
@@ -216,6 +318,7 @@ def load_native_checkpoint(path, *, base_encoder_path=None):
         pool_heads=metadata["pool_heads"], temperature=metadata["temperature"],
         training_method=metadata["training_method"], lora_rank=metadata["lora_rank"],
         lora_alpha=metadata["lora_alpha"],
+        routing=metadata.get("routing"),
     )
     instance.load_state_dict(state, strict=True)
     return instance.eval(), metadata
@@ -242,6 +345,7 @@ def load_inference_export(path, *, base_encoder_path=None):
         training_method="lora" if mode == "lora" else "full",
         lora_rank=metadata["lora_rank"], lora_alpha=metadata["lora_alpha"],
         encoder_path=str(base_encoder_path) if mode == "lora" else None,
+        routing=metadata.get("routing"),
     )
     if mode == "lora":
         if instance.frozen_encoder_fingerprint() != metadata.get("frozen_encoder_tensor_sha256"):

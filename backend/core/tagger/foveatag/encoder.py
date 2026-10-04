@@ -113,6 +113,8 @@ class DepthwiseGatedBlock(nn.Module):
 
 
 def _rotate_half(value: torch.Tensor) -> torch.Tensor:
+    if torch.onnx.is_in_onnx_export():
+        return torch.stack((-value[:, :, :, 1::2], value[:, :, :, 0::2]), dim=4).reshape_as(value)
     first, second = value.reshape(*value.shape[:-1], -1, 2).unbind(-1)
     return torch.stack((-second, first), dim=-1).flatten(-2)
 
@@ -132,13 +134,18 @@ def apply_2d_rope(
     frequency = theta ** (-frequency / axis_dim)
 
     def rotate_axis(value: torch.Tensor, position: torch.Tensor) -> torch.Tensor:
+        if torch.onnx.is_in_onnx_export():
+            angle = position.float().unsqueeze(2) * frequency[None, None]
+            cosine = angle.cos().unsqueeze(3).expand(-1,-1,-1,2).reshape(position.shape[0],position.shape[1],axis_dim).unsqueeze(1)
+            sine = angle.sin().unsqueeze(3).expand(-1,-1,-1,2).reshape(position.shape[0],position.shape[1],axis_dim).unsqueeze(1)
+            return value * cosine.to(value.dtype) + _rotate_half(value) * sine.to(value.dtype)
         angle = position.to(torch.float32)[..., None] * frequency
         cosine = torch.repeat_interleave(angle.cos(), 2, dim=-1).unsqueeze(1).to(value.dtype)
         sine = torch.repeat_interleave(angle.sin(), 2, dim=-1).unsqueeze(1).to(value.dtype)
         return value * cosine + _rotate_half(value) * sine
 
-    query_x, query_y = query.split(axis_dim, dim=-1)
-    key_x, key_y = key.split(axis_dim, dim=-1)
+    query_x, query_y = query[:, :, :, :axis_dim], query[:, :, :, axis_dim:]
+    key_x, key_y = key[:, :, :, :axis_dim], key[:, :, :, axis_dim:]
     x = coordinates[..., 0]
     y = coordinates[..., 1]
     return (
@@ -168,7 +175,12 @@ class SpatialAttention(nn.Module):
     ) -> torch.Tensor:
         batch, tokens, _ = value.shape
         qkv = self.qkv(value).reshape(batch, tokens, 3, self.heads, self.head_dim)
-        query, key, content = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        if torch.onnx.is_in_onnx_export():
+            query = qkv[:, :, 0].permute(0,2,1,3)
+            key = qkv[:, :, 1].permute(0,2,1,3)
+            content = qkv[:, :, 2].permute(0,2,1,3)
+        else:
+            query, key, content = qkv.permute(2, 0, 3, 1, 4).unbind(0)
         query, key = apply_2d_rope(query, key, coordinates)
         if self.use_external_flash and _flash_eligible(query) and (allowed is None or packed_plan is not None):
             attended = _external_flash_attention(query, key, content, packed_plan, training=self.training)
@@ -233,8 +245,12 @@ class WindowAttentionBlock(nn.Module):
         x = value.permute(0, 2, 3, 1)
         x = F.pad(x, (0, 0, 0, padded_width - width, 0, padded_height - height))
         coords = F.pad(coordinates, (0, 0, 0, padded_width - width, 0, padded_height - height))
-        valid = torch.zeros((batch, padded_height, padded_width), dtype=torch.bool, device=value.device)
-        valid[:, :height, :width] = True
+        if torch.onnx.is_in_onnx_export():
+            rows = [[y < int(height) and x < int(width) for x in range(padded_width)] for y in range(padded_height)]
+            valid = torch.tensor([rows] * int(batch), dtype=torch.bool, device=value.device)
+        else:
+            valid = torch.zeros((batch, padded_height, padded_width), dtype=torch.bool, device=value.device)
+            valid[:, :height, :width] = True
         regions = _shift_regions(batch, padded_height, padded_width, window, self.shift, value.device)
         if self.shift:
             x = torch.roll(x, shifts=(-self.shift, -self.shift), dims=(1, 2))
@@ -245,9 +261,9 @@ class WindowAttentionBlock(nn.Module):
         valid_windows = _window_partition(valid[..., None], window).squeeze(-1)
         region_windows = _window_partition(regions[..., None], window).squeeze(-1)
         allowed = valid_windows[:, :, None] & valid_windows[:, None, :]
-        allowed &= region_windows[:, :, None] == region_windows[:, None, :]
+        allowed = allowed & (region_windows[:, :, None] == region_windows[:, None, :])
         identity = torch.eye(window * window, dtype=torch.bool, device=value.device)
-        allowed |= (~valid_windows)[:, :, None] & identity[None]
+        allowed = allowed | ((~valid_windows)[:, :, None] & identity[None])
         plan = None
         if self.attention.use_external_flash:
             plan = _window_flash_plan(batch, height, width, window, self.shift, str(value.device))
@@ -268,6 +284,12 @@ def _shift_regions(
     shift: int,
     device: torch.device,
 ) -> torch.Tensor:
+    if torch.onnx.is_in_onnx_export():
+        def region(position, length):
+            return 0 if position < length - window else 1 if position < length - shift else 2
+        rows = [[region(y, height) * 3 + region(x, width) if shift else 0
+            for x in range(width)] for y in range(height)]
+        return torch.tensor([rows] * int(batch), dtype=torch.long, device=device)
     if not shift:
         return torch.zeros((batch, height, width), dtype=torch.long, device=device)
     labels = torch.zeros((1, height, width), dtype=torch.long, device=device)

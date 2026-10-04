@@ -28,6 +28,16 @@ class FoveaProcessor:
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
 
+    def image_seed(self, image, sample_index=None):
+        if self.training and sample_index is not None:
+            identity = f"{self.seed}:{self.epoch}:{sample_index}:{image.width}:{image.height}"
+            digest = hashlib.sha256(identity.encode("utf-8")).digest()
+            return int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
+        if self.training:
+            return int(torch.randint(0, 2**63 - 1, ()).item())
+        digest = hashlib.sha256(image.resize((8, 8)).convert("RGB").tobytes()).digest()
+        return (int.from_bytes(digest[:8], "little") ^ self.seed) & ((1 << 63) - 1)
+
     def __call__(self, *, images: Sequence[Image.Image], return_tensors: str,
                  sample_index: int | None = None) -> dict:
         if return_tensors != "pt":
@@ -36,16 +46,7 @@ class FoveaProcessor:
         for image in images:
             if self.max_source_pixels is not None and image.width * image.height > self.max_source_pixels:
                 raise ValueError("native source image exceeds the pixel cap")
-            # Validation views are repeatable across workers and resumed runs.
-            if self.training and sample_index is not None:
-                identity = f"{self.seed}:{self.epoch}:{sample_index}:{image.width}:{image.height}"
-                digest = hashlib.sha256(identity.encode("utf-8")).digest()
-                seed = int.from_bytes(digest[:8], "little") & ((1 << 63) - 1)
-            elif self.training:
-                seed = int(torch.randint(0, 2**63 - 1, ()).item())
-            else:
-                digest = hashlib.sha256(image.resize((8, 8)).convert("RGB").tobytes()).digest()
-                seed = (int.from_bytes(digest[:8], "little") ^ self.seed) & ((1 << 63) - 1)
+            seed = self.image_seed(image, sample_index)
             views.append(build_views(image, self.config, seed=seed, training=self.training))
         return {"fovea_views": collate_view_batches(views)}
 

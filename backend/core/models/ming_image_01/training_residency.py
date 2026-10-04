@@ -14,6 +14,19 @@ class MingTrainingResidency:
         modes = configured_modes({"latent_encoding_mode": latent_mode, "text_encoding_mode": text_mode})
         self.components, self.device, self.modes = components, torch.device(device), modes
         self.active = None
+        self.defer_restore = False
+
+    @contextmanager
+    def continuous_refill(self):
+        if self.active is not None or self.defer_restore:
+            raise RuntimeError("Ming refill phases must not overlap")
+        self.defer_restore = True
+        try:
+            yield
+        finally:
+            self.defer_restore = False
+            if self.device.type != "cpu":
+                move_component(self.components.transformer, self.device)
 
     def _report_memory(self, phase, stage):
         if self.device.type == "cuda":
@@ -53,7 +66,7 @@ class MingTrainingResidency:
                         torch.cuda.empty_cache()
             finally:
                 try:
-                    if swap:
+                    if swap and not self.defer_restore:
                         move_component(self.components.transformer, self.device)
                     self._report_memory(phase, "released")
                 finally:

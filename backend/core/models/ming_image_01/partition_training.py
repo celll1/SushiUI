@@ -13,7 +13,7 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
         debug_save_path=None,debug_captions=None,debug_reference_image_paths=None):
     if not math.isfinite(backward_scale) or backward_scale < 0:
         raise ValueError("Ming partition backward scale must be finite and nonnegative")
-    clean=batch.clean.to(device=trainer.device,dtype=trainer.training_dtype)
+    clean=batch.clean.to(device=trainer.device,dtype=trainer.training_dtype,non_blocking=True)
     noise=noise.to(clean)
     sigma=sigma.to(clean)
     if noise.shape != clean.shape or sigma.shape != (clean.shape[0],):
@@ -32,7 +32,7 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
     from .partition_timing import MingPartitionTiming
     timing=MingPartitionTiming(trainer,clean)
     weights=batch.frame_weights.to(device=clean.device,dtype=torch.float32)
-    conditioning=MingConditioning(batch.conditioning.queries.to(clean),batch.conditioning.direct.to(clean))
+    conditioning=MingConditioning(batch.conditioning.queries.to(clean,non_blocking=True),batch.conditioning.direct.to(clean,non_blocking=True))
     references=None if batch.reference_latents is None else [None if v is None else v.to(clean) for v in batch.reference_latents]
     noisy,target,time=flow_training_pair(clean,noise,sigma)
     condition,selection,selected=prepare_guidance(trainer,sigma,drop_mask)

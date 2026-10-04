@@ -58,6 +58,23 @@ def test_trainable_conditioner_stays_resident_for_backward():
     assert events == [("dit", "cpu"), ("te", "cuda"), ("dit", "cuda")]
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_continuous_refill_restores_dit_once_even_on_failure(fail):
+    _, events, residency = setup()
+    try:
+        with residency.continuous_refill():
+            with residency("vae"): pass
+            assert ("dit", "cuda") not in events
+            with residency("conditioner"):
+                if fail:
+                    raise RuntimeError("encode failed")
+    except RuntimeError:
+        assert fail
+    assert events.count(("dit", "cuda")) == 1
+    assert events[-1] == ("dit", "cuda")
+    assert residency.active is None and not residency.defer_restore
+
+
 @pytest.mark.parametrize("phase,name", [("vae", "vae"), ("conditioner", "te")])
 def test_swap_releases_allocator_pools_before_next_component(monkeypatch, phase, name):
     _, events, residency = setup()

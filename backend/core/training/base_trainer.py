@@ -4260,7 +4260,8 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Using pre-loaded dataset {dataset.unique_id} for "
                       f"epoch {epoch + 1} ({len(dataset.items)} items)")
 
-        if getattr(self, "is_ming_image_01", False):
+        if getattr(self, "is_ming_image_01", False) and any(
+                "_ming_record" not in item for dataset in datasets for item in dataset.items):
             self._annotate_ming_items(datasets)
 
         # Video items carry their VideoBucketManager annotation (bucket dims,

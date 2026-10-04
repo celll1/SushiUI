@@ -4478,7 +4478,7 @@ class BaseTrainer(ABC):
         if self.is_ming_image_01:
             self.model_path = checkpoint_path
             from core.training.ops import ming_image_01_ops
-            ming_image_01_ops.load_components(self)
+            ming_image_01_ops.load_components(self, resuming=True)
             return
 
         if self.is_ltx2:

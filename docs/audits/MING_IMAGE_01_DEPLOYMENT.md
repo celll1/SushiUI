@@ -25,6 +25,15 @@ literal-default call. The production code triggering those failures predates
 this change. Run 172 was restarted from the original base for GPU verification;
 successful updates and normal checkpoint acceptance are still pending here.
 
+The cache-release retry also exhausted VRAM during first moment allocation
+(gradient norm 1.743109); its GPU-to-CPU emergency move failed, so only its
+training-state JSON was saved and quarantined. Allocate neutral AdamW moments
+before the batch work starts, preserving every restored state and leaving step
+counters at zero. The Ming activation dispatcher subtracts missing CUDA
+gradient storage from live headroom, excluding existing/CPU/frozen gradients
+and fused-backward ownership. The six targeted memory checks and materialized
+INT8 Full pending-gradient resume oracle passed. A fresh GPU retry is underway.
+
 Date: 2026-10-04. Owner explicitly authorized main GPU/API use and API restart.
 
 ## Deployed packages

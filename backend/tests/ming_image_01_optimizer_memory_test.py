@@ -3,6 +3,8 @@ import pytest
 import torch
 from optimizer_option_threading_test import _StubTrainer, _run_setup_optimizer
 from core.training.optimizer_factory import OptimizerFactory
+from core.models.ming_image_01.training_memory import initialize_full_adamw_state, pending_gradient_bytes
+from types import SimpleNamespace
 
 
 @pytest.mark.parametrize("full,ming,expected", [(True, True, False), (False, True, None), (True, False, None)])
@@ -29,6 +31,7 @@ def test_bounded_adamw_matches_scalar_reference_updates(dtype):
     reference = torch.nn.Parameter(actual.detach().clone())
     optimizer = OptimizerFactory.create_optimizer("adamw", [actual], 5e-5,
         betas=(.85, .95), eps=1e-6, weight_decay=.05, foreach=False)
+    initialize_full_adamw_state(SimpleNamespace(trains_base_weights=True, optimizer=optimizer))
     oracle = torch.optim.AdamW([reference], lr=5e-5, betas=(.85, .95),
         eps=1e-6, weight_decay=.05, foreach=False)
     for _ in range(3):
@@ -39,3 +42,26 @@ def test_bounded_adamw_matches_scalar_reference_updates(dtype):
         torch.testing.assert_close(actual, reference, rtol=0, atol=0)
         for key in ("exp_avg", "exp_avg_sq"):
             torch.testing.assert_close(optimizer.state[actual][key], oracle.state[reference][key], rtol=0, atol=0)
+        prior = optimizer.state[actual]["exp_avg"].clone()
+        initialize_full_adamw_state(SimpleNamespace(trains_base_weights=True, optimizer=optimizer))
+        torch.testing.assert_close(optimizer.state[actual]["exp_avg"], prior, rtol=0, atol=0)
+        assert optimizer.state[actual]["step"].item() == oracle.state[reference]["step"].item()
+
+
+def test_gradient_budget_counts_only_missing_device_gradients():
+    class DeviceParameter(torch.nn.Parameter):
+        @property
+        def device(self):
+            return torch.device("cuda")
+
+    missing = DeviceParameter(torch.zeros(8, dtype=torch.bfloat16))
+    present = DeviceParameter(torch.zeros(4))
+    present.grad = torch.zeros(4)
+    frozen = DeviceParameter(torch.zeros(16), requires_grad=False)
+    host = torch.nn.Parameter(torch.zeros(16))
+    trainer = SimpleNamespace(trains_base_weights=True, use_fused_backward=False,
+        fused_optimizer_groups=None, optimizer=SimpleNamespace(param_groups=[
+            {"params": [missing, present, frozen, host]}, {"params": [missing]}]))
+    assert pending_gradient_bytes(trainer) == 16
+    trainer.use_fused_backward = True
+    assert pending_gradient_bytes(trainer) == 0

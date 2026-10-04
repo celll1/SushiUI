@@ -1,7 +1,7 @@
 """Bounded native CPU buffers over the resolved epoch batch suffix."""
 
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 
@@ -75,9 +75,25 @@ class MingBatchBuffer:
             for index in range(start, min(start+self.text_interval, len(self.batches))):
                 self.trainer._check_stop_requested()
                 pairs = self.batches[index]
-                source = prepare_record_conditioning(self.trainer.ming_image_01_components,
-                    self._items(index, pairs), resolution=self.trainer.ming_prompt_resolution,
-                    cache_context=shared_conditioning_context(self.trainer, pairs), residency=grouped)
+                context = shared_conditioning_context(self.trainer, pairs)
+                if context is None and all(item["_ming_record"].profile == "generation_edit"
+                        and not item["_ming_record"].references for item, _ in pairs):
+                    from .prompting import prepare_inputs
+                    from .training_data import MingConditioningBatch
+                    for item, _ in pairs:
+                        verify_record_content(item["_ming_record"])
+                    item = pairs[0][0]
+                    prepared = prepare_inputs(self.trainer.ming_image_01_components.processor,
+                        [item.get("caption", "") for item, _ in pairs], references=[[] for _ in pairs],
+                        width=item.get("bucket_width") or item["width"],
+                        height=item.get("bucket_height") or item["height"],
+                        resolution=self.trainer.ming_prompt_resolution)
+                    source = MingConditioningBatch(prepared, self.trainer.ming_image_01_components.conditioner,
+                                                   residency=grouped)
+                else:
+                    source = prepare_record_conditioning(self.trainer.ming_image_01_components,
+                        self._items(index, pairs), resolution=self.trainer.ming_prompt_resolution,
+                        cache_context=context, residency=grouped)
                 condition = source.for_step().detached()
                 condition.queries, condition.direct = condition.queries.cpu(), condition.direct.cpu()
                 self.conditions[index] = (batch_identity(pairs), condition)
@@ -88,6 +104,17 @@ class MingBatchBuffer:
         identity = batch_identity(pairs)
         for item, _dataset in pairs:
             verify_record_content(item["_ming_record"])
+        frozen = self.trainer.ming_image_01_components.conditioner.cacheable
+        latent_due = (self.policy.modes["latent_encoding_mode"] == "swap_onthefly"
+                      and (index not in self.latents or self.latents[index][0] != identity))
+        condition_due = (frozen and self.policy.modes["text_encoding_mode"] == "swap_onthefly"
+                         and (index not in self.conditions or self.conditions[index][0] != identity))
+        refill = getattr(self.policy, "continuous_refill", None)
+        with self.preparation_lock, refill() if latent_due and condition_due and refill else nullcontext():
+            if latent_due:
+                self._fill_latents(index)
+            if condition_due:
+                self._fill_conditions(index)
         with self.preparation_lock:
             if self.policy.modes["latent_encoding_mode"] == "swap_onthefly":
                 if index not in self.latents or self.latents[index][0] != identity:
@@ -97,7 +124,6 @@ class MingBatchBuffer:
                     prepared = prepare_shared_items_latents(self.trainer, pairs, self._items(index, pairs))
             else:
                 prepared = prepare_shared_items_latents(self.trainer, pairs, self._items(index, pairs))
-        frozen = self.trainer.ming_image_01_components.conditioner.cacheable
         if frozen and self.policy.modes["text_encoding_mode"] == "swap_onthefly":
             if index not in self.conditions or self.conditions[index][0] != identity:
                 self._fill_conditions(index)

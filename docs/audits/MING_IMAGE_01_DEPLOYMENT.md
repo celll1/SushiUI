@@ -162,3 +162,19 @@ compiled/imported without initializing CUDA. Initialization progress now retains
 the explicit `Validating Ming images` detail instead of a generic loading label.
 The running child was not restarted; these changes apply to subsequent training
 processes, and a cache must first be populated by a successful validation pass.
+# Training refill and transfer follow-up (2026-10-04)
+
+Ming coincident latent/conditioning refills now defer restoring DiT until both
+encoder phases finish, including failure/stop cleanup. Plain Design batches
+without references or persistent conditioning caches prepare text inputs from
+captions and bucket geometry without decoding target pixels. Layer/reference
+and persistent-cache paths retain their paired-pixel preparation. Source hashes
+remain verified, including buffered consumption; no weaker mtime-only check is
+introduced. Full-frame and partition input copies use non-blocking transfers,
+matching the shared Qwen/SDXL path; this alone does not promise transfer overlap.
+
+CPU buffer/residency/guidance regression: 59 passed. Existing async activation
+offloader CUDA value/gradient/lifetime regression: 3 passed. Run 170 stopped
+normally and saved step 209 before changing its existing activation transfer
+mode to async with the configured 2048 MiB pinned arena and synchronous overflow
+fallback. End-to-end throughput improvements have not yet been measured.

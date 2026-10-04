@@ -22,8 +22,8 @@ from ming_image_01_cache_test import cached_record_setup
 from ming_image_01_training_batch_test import trainer
 
 
-def setup(tmp_path, *, trainable=False):
-    value, item, _ = cached_record_setup(tmp_path)
+def setup(tmp_path, *, trainable=False, profile="layer_decompose"):
+    value, item, _ = cached_record_setup(tmp_path, profile=profile)
     value.conditioner.set_trainable({"language", "queries", "connector", "projections"} if trainable else set())
     owner = trainer(value)
     owner.ming_image_01_components, owner.ming_cache_context = value, None
@@ -121,6 +121,21 @@ def test_caption_change_invalidates_prefilled_conditioning(tmp_path):
     second = buffer.prepare(1, batches[1])
     assert ("enter", "conditioner") in events
     assert second.for_step().conditioning.direct.shape[1] > previous_length
+    buffer.close()
+
+
+def test_plain_design_conditioning_matches_without_pixel_decode(tmp_path, monkeypatch):
+    from core.models.ming_image_01.dataset import prepare_record_conditioning
+    value, owner, batches, buffer, _, _ = setup(tmp_path, profile="generation_edit")
+    expected = prepare_record_conditioning(value, buffer._items(0, batches[0]),
+        resolution=owner.ming_prompt_resolution).for_step().detached()
+    def forbidden(*args):
+        raise AssertionError("Text-only Design refill decoded target pixels")
+    monkeypatch.setattr(buffer, "_items", forbidden)
+    buffer._fill_conditions(0)
+    actual = buffer.conditions[0][1]
+    torch.testing.assert_close(actual.queries, expected.queries)
+    torch.testing.assert_close(actual.direct, expected.direct)
     buffer.close()
 
 

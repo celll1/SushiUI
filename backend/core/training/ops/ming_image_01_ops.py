@@ -12,9 +12,9 @@ from core.training.mnt import training_noise_like
 def train_step(trainer, batch, *, timesteps=None, cfg_drop_mask=None, guidance_drop_mask=None,
                debug_save_path=None, debug_captions=None, debug_reference_image_paths=None):
     device, dtype = trainer.device, trainer.training_dtype
-    clean = batch.clean.to(device=device, dtype=dtype)
-    conditioning = MingConditioning(batch.conditioning.queries.to(device=device, dtype=dtype),
-                                    batch.conditioning.direct.to(device=device, dtype=dtype))
+    clean = batch.clean.to(device=device, dtype=dtype, non_blocking=True)
+    conditioning = MingConditioning(batch.conditioning.queries.to(device=device, dtype=dtype, non_blocking=True),
+                                    batch.conditioning.direct.to(device=device, dtype=dtype, non_blocking=True))
     references = None if batch.reference_latents is None else [
         None if item is None else item.to(device=device, dtype=dtype) for item in batch.reference_latents]
     if timesteps is None:

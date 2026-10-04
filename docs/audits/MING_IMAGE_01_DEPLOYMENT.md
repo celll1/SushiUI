@@ -131,3 +131,10 @@ guided losses and aligned U-Net cases, plus four existing Qwen coverage cases.
 The learned-padding test fixtures now initialize tokens that production obtains
 from the checkpoint instead of relying on `torch.empty` contents.
 Run 170 retains the 24-image subset and a total five-epoch/120-step target.
+
+The next GPU continuation passed the partition planner and reached step 5, then
+exposed full-frame BF16 guidance sharing one autocast scope between its no-grad
+null pass and trainable pass. That cached detached FP32-to-BF16 weight casts and
+removed the positive loss graph. Separate the two autocast scopes, as the tiled
+path already does. The CPU cast-cache regression and existing guidance suite
+passed 21 cases; saved step-5 LoRA/optimizer state is used for continuation.

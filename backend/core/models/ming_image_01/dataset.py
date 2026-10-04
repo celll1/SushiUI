@@ -258,7 +258,7 @@ def annotate_datasets(datasets, *, profile):
             raise ValueError("Ming datasets require an explicit dataset_root")
         primaries, loose = [], []
         for item in dataset.items:
-            if item.get("item_type", "image") != "image":
+            if item.get("item_type", "single") not in {"single", "image"}:
                 raise ValueError("Ming training targets are images, not video/audio")
             if profile == "layer_decompose" and not sidecar_path(item["image_path"]).exists():
                 loose.append(item)

@@ -34,6 +34,7 @@ def components(profile):
 
 
 def trainer(value, **kw):
+    kw.setdefault("config", {})
     return SimpleNamespace(transformer=value.transformer, device=torch.device("cpu"),
         training_dtype=torch.float32, timestep_sampler=None, mixed_precision=False,
         reconstruction_loss_weight=.25, _collect_concept_sample_loss=True, **kw)

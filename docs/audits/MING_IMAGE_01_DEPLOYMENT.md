@@ -22,8 +22,8 @@ CUDA forbidden. The broader optimizer-option/resume suite reported 67 passes
 and seven existing fixture/contract failures: six lack current fused-gradient
 probe attributes and one assumes every stochastic-rounding config read is a
 literal-default call. The production code triggering those failures predates
-this change. Run 172 was restarted from the original base for GPU verification;
-successful updates and normal checkpoint acceptance are still pending here.
+this change. Subsequent retries started from the original base, avoiding the
+partially initialized emergency optimizer state.
 
 The cache-release retry also exhausted VRAM during first moment allocation
 (gradient norm 1.743109); its GPU-to-CPU emergency move failed, so only its
@@ -32,7 +32,33 @@ before the batch work starts, preserving every restored state and leaving step
 counters at zero. The Ming activation dispatcher subtracts missing CUDA
 gradient storage from live headroom, excluding existing/CPU/frozen gradients
 and fused-backward ownership. The six targeted memory checks and materialized
-INT8 Full pending-gradient resume oracle passed. A fresh GPU retry is underway.
+INT8 Full pending-gradient resume oracle passed.
+
+GPU verdict: run 172 failed before any successful optimizer update. Neutral
+moments allocated successfully (DiT plus moments: 34.66 GiB); VAE and all 256
+caption encodes passed, with conditioner peak 42.14 GiB. At the first training
+batch (latent 128x184), subtracting missing full gradients made live headroom
+-2.4 GiB. Same-batch offload at 256 KiB and the strongest retry still failed.
+BF16 weights, full gradients and two AdamW moments require about 46 GiB before
+activation/workspace and other CUDA/desktop residency. U-Net reduces token work,
+not this persistent parameter/gradient/optimizer storage. This same-AdamW preset
+has not passed Full GPU acceptance on the current 48 GiB environment.
+
+The step-0 native bundle, state and neutral optimizer saved successfully;
+CPU inspection confirmed the requested topology and all 521 AdamW counters at
+zero, with no pending gradients (package 32,530,174,796 bytes; optimizer
+24,581,787,406 bytes). The failed batch's state is not a completed-batch seam;
+all three entries are quarantined under `failed_activation_budget_20261004`
+and excluded from automatic `latest` lookup. The trainer exited and GPU use
+returned to approximately 1 GiB. Initial failed
+weight/optimizer duplicates were removed after retaining diagnostic JSON/logs;
+the newest step-0 bundle remains, with approximately 97.6 GiB free on M:.
+Changing to the standard Full AdamW8bit preset changes optimizer semantics;
+maintaining native AdamW would require additional host-state streaming work.
+The owner was asked to choose that next verification policy. A read-back draft
+in ignored `local/deployment/ming_run172_adamw8bit_candidate.json` changes only
+`optimizer` from `adamw` to `adamw8bit`; it has not been applied. No learning-
+config change, frontend build or five-epoch completion is claimed.
 
 Date: 2026-10-04. Owner explicitly authorized main GPU/API use and API restart.
 

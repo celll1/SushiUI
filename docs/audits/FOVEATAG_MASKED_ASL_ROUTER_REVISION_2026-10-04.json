@@ -1,0 +1,48 @@
+{
+  "kind": "foveatag_masked_asl_router_revision",
+  "date": "2026-10-04",
+  "run_id": "bcb720cc-2077-4314-b794-33f11c730345",
+  "previous_objective": "positive_margin_v1",
+  "new_objective": "masked_asl_delta_v2",
+  "implementation_branch_commit": "fab3b694",
+  "deployed_commit": "18d86603",
+  "saved_step_before_revision": 12224,
+  "preserved_checkpoint": "pre_masked_asl_step_12224.pt",
+  "live_checkpoint_verified": {
+    "global_step": 12250,
+    "router_objective": "masked_asl_delta_v2",
+    "optimizer_states": 240,
+    "min_adam_step": 766,
+    "max_adam_step": 12250,
+    "scheduler_epoch": 12250,
+    "cuda_rng_present": true
+  },
+  "live_training_window_verified": {
+    "start_step": 12276,
+    "end_step": 12300,
+    "samples": 200,
+    "batches": 25,
+    "threshold": 0.35,
+    "scope": "training_annotations_pre_update"
+  },
+  "verification": {
+    "focused_cpu_tests_passed": 70,
+    "changed_backend_modules_compile_and_import_passed": 7,
+    "cuda_initialized_by_verification": false,
+    "generated_diagnostic_images_opened_or_read": false,
+    "frontend_static_review": "types, optional historical metadata, null rates, selection/history, cancellation and error paths",
+    "frontend_build_and_typecheck": "owner-run; not executed by agent",
+    "frontend_training_http_status": 200,
+    "diagnostics_enabled": true,
+    "diagnostic_interval_steps": 1000,
+    "first_new_diagnostic_due_step": 13000
+  },
+  "limitations": [
+    "No measured FP improvement or generalization gain is claimed at deployment.",
+    "Training windows use dataset annotations and exclude unknown labels; they are not held-out accuracy.",
+    "Resumes and threshold changes start new metric windows with explicit step bounds; unflushed pre-stop windows are not replayed.",
+    "The current epoch loss accumulator includes the prior router objective; revision boundaries are recorded.",
+    "Candidate utility measures independent views, not guaranteed combined-set improvement.",
+    "No A/B/C training, fixed-image prerequisite, teacher weights, new threshold or ASL hyperparameter changes were introduced."
+  ]
+}

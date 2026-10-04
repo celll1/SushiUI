@@ -11,7 +11,7 @@ Status: 初版実装（2026-09-23）。GPU を使う実学習での検証は未�
 ## 2. 現行実装と限界
 
 - `base_trainer.py::save_training_state()` は、checkpoint と同じ step の state JSON に epoch、次の絶対 `batch_idx`、バッチ生成前の RNG 状態、全体の dataset fingerprint、batch 数、crop fingerprint を保存する。バッチ列の中身は保存しない。
-- 通常・priority path は dataset fingerprint または batch 数が変わると `global_step` と optimizer 状態を維持し、epoch の記帳を 0 からやり直す。concept path は構造変更を拒否する。concept path は計画 digest も照合するが、計画本体は持たない。
+- 通常・priority・concept path は dataset fingerprint または batch 数が変わると `global_step` と optimizer 状態を維持し、epoch の記帳を 0 からやり直す。concept path も新データ全体で順序を組み直す（2026-10-04修正）。concept設定変更は引き続き拒否し、データ構成が不変なら計画 digest を照合して厳密に再開する。
 - 全体の fingerprint は dataset ID 列、画像パス集合、件数が中心で、変更が「選択リストのみ」か「既存データセット内部」かを判別できない。キャプションは意図的に画像パス fingerprint から除外されている。concept の分類 hash は別にある。priority の設定・分類結果の照合値は state にない。
 - `train_runner.py::get_dataset_items_cached()` の per-dataset キャッシュは snapshot の高速化用で、任意の過去 checkpoint の不変な計画台帳ではない。キャッシュや選択解除したデータセットへのアクセスを再開の正しさの前提にしない。
 - `CropPlanner.spec_for()` は seed・epoch・画像パス・寸法等から個別に決まるが、現在の crop fingerprint は全データセットの fingerprint を含むため、選択リスト変更だけでも不一致になる。
@@ -20,11 +20,11 @@ Status: 初版実装（2026-09-23）。GPU を使う実学習での検証は未�
 
 ## 3. 選択可能な再開方針
 
-新しい設定 `resume_dataset_change_policy` を設ける。既定値は `existing` とし、現行の通常・priority path の再開始挙動、および concept path の拒否を変えない。`rebase_remaining` はユーザーが明示した場合のみ実行する。`strict` は構造不一致を全 mode で拒否する。新設定を checkpoint に保存し、途中で変えた場合は明示的な移行操作として記録する。
+設定 `resume_dataset_change_policy` の既定値は `existing` とする。通常・priority・conceptとも、データ構成変更時は重み・optimizer・stepを保持し、旧バッチ位置を破棄して新エポックから開始する。これは未処理分のみの継続ではなく、処理済み画像も再提示され得る。`rebase_remaining` はユーザーが明示した場合のみ実行する。`strict` は構造不一致を全 mode で拒否する。
 
 | 方針 | データ構成が不変 | データセットの選択のみ変更 | 既存データセット内部の順序入力が変更 |
 |---|---|---|---|
-| `existing` | 現行どおりの厳密再開 | 現行の mode 別挙動 | 現行の mode 別挙動 |
+| `existing` | 現行どおりの厳密再開 | epoch位置をリセットして新しい順序で開始 | epoch位置をリセットして新しい順序で開始（concept設定変更は拒否） |
 | `rebase_remaining` | 厳密再開 | 本書の計画改訂 | 拒否 |
 | `strict` | 厳密再開 | 拒否 | 拒否 |
 

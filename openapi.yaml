@@ -27485,7 +27485,9 @@ components:
           example: rebase_remaining
           description: |
             Mid-epoch resume policy when the selected training datasets change.
-            `existing` keeps each batch mode's current behavior; `strict` refuses
+            `existing` keeps weights, optimizer and global step, resetting epoch
+            and batch position on structure changes, including concept order;
+            `strict` refuses
             a changed batch structure; `rebase_remaining` uses a checkpoint-bound
             batch ledger to retain completed batches and revise only the suffix.
             The ledger must have been enabled before the checkpoint was saved.

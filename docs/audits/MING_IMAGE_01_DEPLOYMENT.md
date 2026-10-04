@@ -138,3 +138,7 @@ null pass and trainable pass. That cached detached FP32-to-BF16 weight casts and
 removed the positive loss graph. Separate the two autocast scopes, as the tiled
 path already does. The CPU cast-cache regression and existing guidance suite
 passed 21 cases; saved step-5 LoRA/optimizer state is used for continuation.
+The corrected GPU continuation reached step 8/120 with finite loss 7.6341295,
+LR 1.75e-6 and status `running`; step 6-8 checkpoints were saved. Five-epoch
+completion is not claimed. Browser reconnection timed out, so this continuation
+was verified through the trainer log and REST status rather than a new UI capture.

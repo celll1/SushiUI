@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from api.param_defaults import TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
 from core.model_loader import ModelLoader
-from core.training.arch import resolve_arch_name
+from core.training.arch import ARCH_REGISTRY, resolve_arch_name
 from core.training.base_trainer import BaseTrainer
 from core.training.full_parameter_trainer import FullParameterTrainer
 from core.training.lora_trainer import LoRATrainer
@@ -34,6 +34,10 @@ class _ConcreteTrainer(BaseTrainer):
 
     def load_checkpoint(self, *args, **kwargs):
         raise NotImplementedError
+
+
+for _arch in ARCH_REGISTRY:
+    setattr(_ConcreteTrainer, f"is_{_arch}", False)
 
 
 def test_sensenova_prediction_and_timestep_defaults():
@@ -345,6 +349,7 @@ def test_phase_eviction_toggle_off_does_not_install_selector():
 def test_lora_train_always_tears_down_phase_eviction(fails):
     calls = []
     trainer = LoRATrainer.__new__(LoRATrainer)
+    trainer.resume_from_checkpoint = None
     trainer.log_prefix = "[test]"
     trainer.sensenova_phase_evictor = SimpleNamespace(
         teardown=lambda: calls.append("teardown")
@@ -366,6 +371,7 @@ def test_teardown_error_does_not_mask_train_result(train_fails, capsys):
         raise RuntimeError("teardown failed")
 
     trainer = LoRATrainer.__new__(LoRATrainer)
+    trainer.resume_from_checkpoint = None
     trainer.log_prefix = "[test]"
     trainer.sensenova_phase_evictor = SimpleNamespace(teardown=teardown)
     effect = RuntimeError("train failed") if train_fails else None

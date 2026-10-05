@@ -73,6 +73,51 @@ Batch-scoped occurrence RNG isolation makes caption prefill and resume preparati
 independent of subsequent timestep/noise/null draws. The architecture's timestep
 distribution, MNT stratification and sampler state remain authoritative.
 
+## Architecture contracts
+
+`core/training/concept_support.py` is the CPU-only authority for concept ordering.
+The training registry and API capability table require an entry for every training
+architecture. The same validator runs for API recipes, runner preflight, the shared
+trainer and the YuE2 native loop. Unavailable checkpoint paths defer architecture
+checking to runner preflight; exposure/cache incompatibility is still checked
+immediately. Disabled settings retain their saved values without arming a feature.
+
+| Architectures / path | Boundary |
+| --- | --- |
+| SD1.5, SDXL, Z-Image, FLUX.2, Anima, Lens, Ideogram4, MiniT2I, Krea2, Qwen-Image 2.1, Ming-Image 0.1, SenseNova SDXL Chimera | Shared image planner, occurrence captions, text buffers and resume; each architecture's existing method/CFG/cache restrictions still apply. |
+| SenseNova U1.5 ordinary image generation | Uses the shared planner and its native packed-prefix encoder; explicit `task_views` are refused because their owner regroups items and replaces captions. Existing `rebase_remaining` restrictions remain. CPU routing verified; GPU acceptance pending. |
+| LTX-2.3, MiniMax-H3, ACE-Step | Unsupported: their clip/audio duration and modality batch owners are not implemented by this image planner. |
+| YuE2 | Unsupported: native ABC examples are tokenized before the loop and do not own occurrence-aware captions or batch ledgers. Configurations are refused instead of ignored. |
+| VAE-only, tagger, style-encoder training | Outside the image-generation conditioning contract. |
+
+Clients read `training_feature_unsupported[arch].concept_batch_order` and the
+SenseNova advisory from the capability schema. VAE-only requests are rejected by
+the method-specific API and YAML preflight checks.
+The form prevents enabling unsupported combinations and lets an imported enabled
+recipe turn the feature off without discarding its multiplier settings.
+
+Future image architectures that use `BaseTrainer.train` inherit occurrence RNG,
+caption resolution, encoder windows, pending-gradient saves and batch-ledger
+continuation. Add an explicit support entry and run the registry-wide contract test.
+A native loop must validate the setting and implement those owners before declaring
+support; otherwise declare a factual refusal. There is no supported-by-omission
+fallback for a newly registered architecture.
+
+An architecture with additional batch compatibility constraints may annotate
+`_concept_batch_signature` with a JSON-serializable identity before planning.
+The shared bucket metadata carries it; the planner, boundary swaps, ledger and
+resume identity include it. Annotate every affected item consistently. Existing
+Ming signatures retain their original encoding and default plan digests.
+
+The 2026-10-05 registry audit covers all 17 handlers: public API acceptance/refusal,
+per-image-architecture shared caption/buffer/suffix resolution, SenseNova packed
+prefix routing, native/YAML refusal before dataset work and custom batch signatures.
+These are CPU contract tests, not real-model loss or GPU validation for every model.
+The architecture expansion passed 221 regression tests and compilation/real imports
+of all nine changed backend modules without initializing CUDA. Frontend capability
+types, imported-state preservation, checkbox recovery and submit errors were reviewed
+statically; build/type-check remain owner-run.
+
 ## Resume and accounting
 
 Multiplied plans use concept plan v2 and batch ledger v2. The ledger stores

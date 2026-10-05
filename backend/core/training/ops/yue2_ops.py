@@ -228,6 +228,12 @@ def train_abc_ar_loop(trainer, *, datasets, num_epochs=1, total_steps=None,
                       resume_from_checkpoint=None, max_step_saves_to_keep=10,
                       max_optimizer_saves_to_keep=1, **_unused):
     """Token-native ABC planner loop; it never enters image/latent cache code."""
+    from core.training.concept_batch_order import ConceptOrderConfig
+    from core.training.concept_support import validate_concept_order
+    from api.param_defaults import TRAINING_DEFAULTS
+    concept = ConceptOrderConfig.parse(_unused.get("concept_batch_order", (trainer.config or {}).get("concept_batch_order")))
+    validate_concept_order("yue2", concept,
+        text_encoding_mode=(trainer.config or {}).get("text_encoding_mode", TRAINING_DEFAULTS["text_encoding_mode"]))
     if batch_size < 1 or gradient_accumulation_steps < 1:
         raise ValueError("YuE2 batch size and gradient accumulation must be positive")
     if getattr(trainer, "trains_base_weights", False):

@@ -13,6 +13,7 @@ from typing import Any
 
 from api.param_defaults import TRAINING_DEFAULTS
 from .sample_occurrence import CAPTION_RNG_VERSION, make_occurrence, stable_seed
+from .concept_support import concept_batch_key
 
 
 PLAN_VERSION = 1
@@ -34,11 +35,7 @@ def _item_id(pair: tuple[dict, Any]) -> tuple[str, str]:
 
 
 def _bucket_key(item: dict) -> tuple:
-    spatial = (int(item.get("bucket_width") or item.get("width") or 0),
-               int(item.get("bucket_height") or item.get("height") or 0))
-    if "_ming_batch_signature" in item:
-        return (*spatial, *item["_ming_batch_signature"])
-    return (*spatial, bool(item.get("reference_images") or item.get("_ve_reconstruction_mode")))
+    return concept_batch_key(item)
 
 
 def _caption_matches(caption: str, aliases: list[str]) -> bool:

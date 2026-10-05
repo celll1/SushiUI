@@ -36,6 +36,8 @@ def _batch_key(item: dict) -> str:
                 item.get("condition_image_path"), item.get("_crop_spec")]
     if "_ming_supervision_identity" in item:
         identity.extend([item["_ming_batch_signature"], item["_ming_supervision_identity"]])
+    if "_concept_batch_signature" in item:
+        identity.append(item["_concept_batch_signature"])
     return digest(identity)
 
 
@@ -63,6 +65,8 @@ def dataset_manifest(datasets: list[Any], mode: str, *, exposures=False) -> dict
                             item.get("is_tags_format"), item.get("_captions_by_type")])
             if exposures:
                 row.append(item.get("_caption_processing_config"))
+            if "_concept_batch_signature" in item:
+                row.append(item["_concept_batch_signature"])
             rows.append(row)
             captions.append([path, item.get("raw_caption"), item.get("tag_data")])
         result[dataset_id] = {

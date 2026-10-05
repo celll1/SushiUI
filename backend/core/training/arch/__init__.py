@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any, Dict, Type
 
 from core.training.arch.base_arch import ArchHandler
+from core.training.concept_support import CONCEPT_ORDER_SUPPORT
 from core.training.arch.sd15 import SD15ArchHandler
 from core.training.arch.sdxl import SDXLArchHandler
 from core.training.arch.zimage import ZImageArchHandler
@@ -59,6 +60,9 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
 }
 
 # R6 invariant: registry keys == _build_cache_namespace arch strings.
+assert set(ARCH_REGISTRY) == set(CONCEPT_ORDER_SUPPORT), (
+    "Every training architecture must declare its concept-order contract"
+)
 _EXPECTED_ARCH_KEYS = {
     "sd15", "sdxl", "zimage", "anima", "lens",
     "ideogram4", "minit2i", "krea2", "qwen_image_21", "flux2", "ltx2", "acestep",

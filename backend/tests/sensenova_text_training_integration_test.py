@@ -163,7 +163,7 @@ def test_full_ft_native_scope_groups_are_separate():
     transformer = nn.Module()
     transformer.vision_model = nn.Linear(2, 3)
     transformer.language_model = _Language()
-    transformer.fm_modules = nn.Linear(3, 2)
+    transformer.fm_modules = nn.ModuleDict({"flow": nn.Linear(3, 2)})
     trainer = SimpleNamespace(
         transformer=transformer,
         train_unet=False,

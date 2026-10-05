@@ -204,7 +204,7 @@ iterations were about 4–8 seconds. Historical missing WebPs are not regenerate
 
 ## Caption encoding: static assessment
 
-No caption-path edits or additional GPU benchmarks were made for this review.
+The initial static review made no caption-path edits or GPU benchmarks.
 The current batch-1 swap window processes 256 batches sequentially in
 `MingTrainingBatchBuffer._fill_conditions`. Residency is grouped for the whole
 window, so it does not reload the conditioner for every caption. The frozen
@@ -299,6 +299,14 @@ Local reproducibility: `local/deployment/benchmark_ming_captions.py --execute`
 and `--execute --pairs-only`, using the repository venv with training stopped.
 JSON measurements are retained under `local/deployment/ming_caption_benchmark*.json`;
 these local artifacts are not checkpoint payloads or dataset disk caches.
+
+After applying the commit, #172 resumed from step 1439 with all 521 named
+optimizer tensors restored and none starting fresh. Its remaining 171-item
+latent/caption refill completed with the existing progress phases; the conditioner
+was released before training (CUDA allocated 0.01 GiB at that phase boundary).
+The first native optimizer update reached step 1440 with finite loss 0.584264
+and gradient norm 0.370451. The first iteration's 324-second elapsed time includes
+the initial swap refill and is not a steady-state per-step timing.
 
 ## Prior audit validation
 

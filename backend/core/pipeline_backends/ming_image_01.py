@@ -131,10 +131,12 @@ class MingImage01Mixin:
             raise ValidationError("Ming partitioned generation currently excludes Reference Guide and Style Transfer")
         pending = [key for key in ("text_encoder_quantization", "enable_block_swap",
                                   "keep_models_hot", "loop_decode", "vae_tile_threshold", "vae_tile_mode",
-                                  "vae_tile_global_norm", "color_flatten_strength")
+                                  "vae_tile_global_norm")
                    if resolved[key] != defaults[key]]
         if pending:
             raise ValidationError("Ming options awaiting runtime wiring: " + ", ".join(pending))
+        if type(resolved["color_flatten_strength"]) is not int or not 0 <= resolved["color_flatten_strength"] <= 100:
+            raise ValidationError("Ming Color Flatten strength must be an integer in [0, 100]")
         if resolved["unet_quantization"] not in (defaults["unet_quantization"], "none", "int8"):
             raise ValidationError("Ming runtime DiT quantization currently supports INT8 only")
         from core.vram_optimization import apply_runtime_int8_quantization
@@ -205,7 +207,8 @@ class MingImage01Mixin:
                     cancelled=lambda: self.cancel_requested, step_callback=callback, phase_context=phase,
                     reference_guides=guides,partition_plan=plan,
                     style_transfers=styles,style_combine_mode=combine_mode,
-                    preview_callback=preview if progress_callback is not None else None)
+                    preview_callback=preview if progress_callback is not None else None,
+                    color_flatten_strength=resolved["color_flatten_strength"])
             except MingGenerationCancelled as exc:
                 raise RuntimeError("Generation cancelled by user") from exc
             model_info["dit_rewiring_spec"] = topology

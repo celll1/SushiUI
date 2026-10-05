@@ -62,6 +62,42 @@ config change, frontend build or five-epoch completion is claimed.
 
 Date: 2026-10-04. Owner explicitly authorized main GPU/API use and API restart.
 
+## CPU pixel lookahead implementation (2026-10-05)
+
+Swap-on-the-fly latent refill now prepares the next original batch's pixels in
+one CPU worker while the caller prepares prompts and encodes the current batch.
+The VAE and prompt processor remain single-owner; original epoch/batch crop
+coordinates, Layer/reference transforms, source hashes, shape-transition CUDA
+cache release and existing progress callback phases are retained. This adds no
+disk tensor cache and changes neither VAE precision nor training batch size.
+
+Admission uses a 512 MiB estimated combined working-set budget for current and
+next batches, including source decode scratch, normalized outputs and compressed
+file bytes. This is a conservative admission estimate, not a codec allocator
+hard limit. Oversized pairs and file-stat failures use serial preparation.
+Cancellation is checked while waiting; consumer failures close the generator,
+cancel queued work and join any active pixel load before encoder residency exits.
+
+Changed modules compiled and imported without initializing CUDA. Six new CPU
+checks plus ten existing buffer checks passed (16 total), covering exact native
+Design/Layer latent and reference equality, original indices, overlap, oversized
+fallback, worker errors and cleanup. Static review confirms existing progress,
+stop and error paths remain wired; no frontend/API contract changes are needed.
+
+A warmed FP32/B1 VAE-only comparison used six actual JPEG/PNG/WebP Design sources
+at fixed 1024x1024, eight Torch CPU threads and serial/prefetch/prefetch/serial
+order. Mean elapsed time fell from 1.617 s to 1.387 s (14.3% less time; 16.6%
+more images/sec). All four passes produced exactly equal latents. Peak allocated
+CUDA memory across the comparison was 5.41 GiB. This small comparison excludes
+prompt processing, mixed epoch buckets and full training/optimizer residency;
+it does not establish a whole-training step/sec improvement. Reproduction and
+results: ignored `local/deployment/ming_pixel_prefetch_gpu_benchmark.{py,json}`.
+
+The code applies to newly started training children; no run was restarted or
+its configuration changed. Run 172's separate Full AdamW memory limit remains
+unresolved. Same-shape grouping, larger VAE batches and encoder BF16 remain
+unimplemented candidates requiring separate memory/numerical acceptance.
+
 ## Latent encode performance investigation (2026-10-04)
 
 This follow-up is source inspection, read-only API comparison and a bounded CPU

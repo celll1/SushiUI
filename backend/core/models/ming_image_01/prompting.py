@@ -1,6 +1,7 @@
 """Shared native prompt/vision preparation and ordered RGBA references."""
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 
 import numpy as np
 from PIL import Image
@@ -70,5 +71,6 @@ def encode_inputs(conditioner, prepared: MingPreparedInputs, *, requires_grad: b
     dtype = next(conditioner.parameters()).dtype
     inputs = {key: value.to(device=device, dtype=dtype if value.is_floating_point() else value.dtype)
               for key, value in prepared.model_inputs.items()}
-    with torch.set_grad_enabled(requires_grad):
+    vision = getattr(conditioner, "training_vision", None)
+    with vision("pixel_values" in inputs) if vision else nullcontext(), torch.set_grad_enabled(requires_grad):
         return conditioner(**inputs)

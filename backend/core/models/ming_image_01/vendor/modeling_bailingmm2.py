@@ -34,6 +34,12 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn_2 = True
 
+    @property
+    def device(self):
+        # The vision tower may be offloaded during text-only conditioning.
+        model = getattr(self, "model", None)
+        return model.device if model is not None else super().device
+
     def __init__(
         self,
         config: BailingMM2Config,

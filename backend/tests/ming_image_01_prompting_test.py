@@ -100,6 +100,39 @@ def test_text_only_native_batch_and_frozen_inference():
     assert not result.direct.requires_grad
 
 
+@pytest.mark.parametrize("references", [False, True])
+def test_frozen_caption_vision_is_staged_only_for_references(monkeypatch, references):
+    model = make_conditioner().eval()
+    model.set_trainable(set())
+    images = [[Image.new("RGB", (32, 32), "red")]] if references else [[]]
+    prepared = prepare_inputs(processor(), ["word5"], references=images, **options())
+    expected = encode_inputs(model, prepared, requires_grad=False)
+    model.stage_training_caption("cpu")
+    events = []
+    for module in model.component_groups()["vision"]:
+        original = module.to
+        def tracked(*args, _original=original, **kwargs):
+            events.append(str(kwargs["device"]))
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(module, "to", tracked)
+    actual = encode_inputs(model, prepared, requires_grad=False)
+    torch.testing.assert_close(actual.queries, expected.queries, rtol=0, atol=0)
+    torch.testing.assert_close(actual.direct, expected.direct, rtol=0, atol=0)
+    assert events == (["cpu"] * 4 if references else [])
+    assert not actual.direct.requires_grad
+
+
+def test_caption_device_follows_language_when_vision_is_elsewhere():
+    model = make_conditioner().eval()
+    model.set_trainable(set())
+    model.native.vision.to("meta")
+    assert next(model.parameters()).device.type == "meta"
+    assert model.native.device.type == "cpu"
+    prepared = prepare_inputs(processor(), ["word5"], references=[[]], **options())
+    result = encode_inputs(model, prepared, requires_grad=False)
+    assert result.direct.device.type == "cpu"
+
+
 @pytest.mark.parametrize("change,match", [
     ({"references": [["https://example.invalid/image"]]}, "decoded PIL"),
     ({"references": []}, "per prompt"),

@@ -259,7 +259,8 @@ def is_cuda_oom_error(exc: BaseException) -> bool:
 
 def optimizer_state_is_host_resident(optimizer) -> bool:
     """True when this optimizer allocates its bulk 8-bit state on the host."""
-    return getattr(optimizer, "get_state_buffer", None) is not None
+    # bitsandbytes also has a class method with this name; it allocates on GPU.
+    return vars(optimizer).get("get_state_buffer") is not None
 
 
 def finalize_loaded_state_devices(optimizer, device, host_resident: bool) -> int:
@@ -6379,6 +6380,13 @@ class BaseTrainer(ABC):
                 )
                 if _converted is not None:
                     optimizer_state = _converted
+                elif type(optimizer).__name__ in {"AdamW8bit", "PagedAdamW8bit"} and any(
+                    isinstance(entry, dict) and "exp_avg" in entry and "state1" not in entry
+                    for entry in optimizer_state.get("state", {}).values()
+                ):
+                    print(f"{self.log_prefix} [OptConvert] refusing unconverted floating "
+                          "moments in an 8-bit optimizer; starting fresh")
+                    return False
             except Exception as _conv_err:
                 print(f"{self.log_prefix} [OptConvert] conversion skipped: {_conv_err}")
 
@@ -11947,6 +11955,16 @@ class BaseTrainer(ABC):
                     measured_threshold_bytes=(info[7] if len(info) > 7 else None),
                     lt=lt,
                     recover_base_from_offload=(family != "qwen_image_21"))
+                if record_mode == "offload" and stats is not None:
+                    key = (family, lh, lw, lt, bs, "offload_measured")
+                    if key not in self._actdispatch_logged:
+                        self._actdispatch_logged.add(key)
+                        print(f"{self.log_prefix} [ActDispatch] offload measured "
+                              f"bucket={lw}x{lh}x{lt} bs{bs} "
+                              f"CPU transfer={offloaded_gb:.3f} GiB "
+                              f"async={stats.get('async_bytes', 0) / 1024**3:.3f} GiB "
+                              f"sync fallback={stats.get('sync_fallback_bytes', 0) / 1024**3:.3f} GiB "
+                              f"peak={peak_gb:.2f} GiB", flush=True)
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
                 if family == "sensenova_text":

@@ -157,6 +157,27 @@ equivalence, fused/coincident/error paths, reference/text-only output equality,
 and native vision/language gradients. The active run was not interrupted;
 new training children pick up the fix on their next start.
 
+Run 172 subsequently switched only the optimizer to `adamw8bit`, then changed
+save cadence to five epochs and model/optimizer retention to one generation at
+the owner's request. Ordinary bitsandbytes `get_state_buffer` is a GPU allocator
+method, not the ring-buffer host allocator: residency detection now requires an
+explicit instance allocator. AdamW BF16/FP16 moments are promoted to FP32 for
+the existing blockwise conversion; unconverted floating moments cannot be
+loaded into an 8-bit optimizer. An incorrectly labeled step-zero optimizer
+artifact from the first attempt is preserved under
+`invalid_8bit_resume_20261005/`; resumed model weights remain unchanged and
+optimizer state starts fresh.
+
+Five CPU cases verify native bitsandbytes conversion and malformed-state
+refusal; 35 existing host-resume cases and eight subtests pass independently.
+Three small CUDA activation-offload cases pass: synchronous/asynchronous
+gradient equality, bounded pinned-arena fallback and reuse after exception.
+Per-bucket successful offload logs now report actual CPU transfer, async and
+fallback bytes and peak allocated VRAM. Before the final test restart, native
+Ming caption staging measured 17.60 GiB allocated and 18.16 GiB peak, versus
+the pre-fix 41.55 GiB staging observation. These encoder measurements alone
+do not prove full-finetuning updates succeed.
+
 The native training-batch bridge now preserves RGBA target frames independently
 through VAE encoding and keeps ragged edit references outside target supervision.
 `MingTrainingBatch` slices both conditioning streams, frame weights and references

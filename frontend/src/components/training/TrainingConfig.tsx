@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { getDiTRewiringSchema, createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, SenseNovaTaskView, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns, trainingMethodUnsupportedReason, trainingFeatureUnsupportedReason, trainingRequiredValues, TrainingRequiredValue, trainingFeatureAdvisory, TrainingFeatureAdvisory, archDisplayName, cfgUncondDropDefault, trainingSampleParameterSupported, trainingSampleNote, trainableAdapterAlgorithms, adapterTrainingRefusalReason, weightDecomposeTrainable, decomposedAdapterFamily, getLrSchedulePreview, LrSchedulePreview, getDatasetLatentCache, LatentCacheStatus } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
+import { fetchTrainingDefaults } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import NumberInput from "../common/NumberInput";
@@ -388,7 +389,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [priorityText, setPriorityText] = useState("");  // newline-separated entries
   const [priorityMultiplier, setPriorityMultiplier] = useState(1);
   const [priorityExpanded, setPriorityExpanded] = useState(false);  // expand textarea modal
-  const conceptDefaults = (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.concept_batch_order;
+  const [freshConceptDefaults, setFreshConceptDefaults] = useState<TrainingRunCreateRequest["concept_batch_order"]>();
+  useEffect(() => {
+    let cancelled = false;
+    // Startup defaults can predate a backend update in a long-lived tab.
+    fetchTrainingDefaults().then(defaults => {
+      if (!cancelled) setFreshConceptDefaults(
+        (defaults as Partial<TrainingRunCreateRequest>).concept_batch_order);
+    }).catch(error => console.warn("Could not refresh concept defaults", error));
+    return () => { cancelled = true; };
+  }, []);
+  const conceptDefaults = freshConceptDefaults
+    ?? (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.concept_batch_order;
   const conceptOrder = conceptDefaults
     ? { ...conceptDefaults, ...params.concept_batch_order }
     : params.concept_batch_order;
@@ -2185,7 +2197,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         setError(conceptOrderUnsupported);
         return;
       }
-      if (!conceptDefaults) {
+      if (!conceptDefaults || conceptDefaults.batch_multiplier === undefined
+          || conceptDefaults.batch_multiplier_min === undefined
+          || conceptDefaults.batch_multiplier_max === undefined) {
         setError("Wait for training defaults to load before saving concept settings.");
         return;
       }

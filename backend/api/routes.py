@@ -16906,6 +16906,10 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
             # Default: look up in train section with same name
             value = train.get(field_name, default)
 
+        if field_name == "concept_batch_order" and isinstance(value, dict):
+            # Legacy recipes omit exposure fields; preserve every saved value.
+            value = {**default.model_dump(), **value}
+
         if field_name == "qwen_guidance_loss_mix_mode" and field_name not in train:
             value = "blend"
 

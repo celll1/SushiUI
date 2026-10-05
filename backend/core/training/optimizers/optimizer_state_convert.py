@@ -20,10 +20,10 @@ Supported pairs (both directions):
 - bnb AdamW8bit  <-> AdamW8bit_RingBuffer   (standard 8-bit, not schedule-free)
 - bnb Lion8bit   <-> Lion8bit_RingBuffer    (standard 8-bit, not schedule-free)
 
-The one supported 32-bit -> 8-bit migration is:
+The supported floating-state -> 8-bit migration is:
 - torch ``AdamW`` -> bitsandbytes ``AdamW8bit``
 
-For that migration the fp32 first and second moments are quantized with bnb's
+For that migration floating moments are promoted to fp32 and quantized with bnb's
 native blockwise quantizer (block size 256, signed first moment and unsigned
 second moment). Parameters below the TARGET optimizer's ``min_8bit_size`` keep
 fp32 ``state1`` / ``state2`` buffers, exactly as a fresh AdamW8bit state would.
@@ -114,8 +114,8 @@ def detect_state_format(
         exp_avg_sq = st.get("exp_avg_sq")
         if isinstance(exp_avg, torch.Tensor) and \
                 isinstance(exp_avg_sq, torch.Tensor) and \
-                exp_avg.dtype == torch.float32 and \
-                exp_avg_sq.dtype == torch.float32:
+                exp_avg.dtype in (torch.float32, torch.float16, torch.bfloat16) and \
+                exp_avg_sq.dtype == exp_avg.dtype:
             return "torch_adamw"
         # Do not fall through and reinterpret a state that contradicts its
         # AdamW identity as bnb/ring-buffer merely because those keys happen to
@@ -275,7 +275,7 @@ def _convert_torch_adamw_to_bnb(
     saved_state_dict: dict,
     target_optimizer,
 ) -> Tuple[dict, int]:
-    """Convert torch AdamW fp32 moments into a bnb AdamW8bit state dict.
+    """Convert torch AdamW floating moments into a bnb AdamW8bit state dict.
 
     Parameter IDs are optimizer-state serialization details, so source IDs are
     mapped to target IDs by group and position. The group layout and every
@@ -355,9 +355,9 @@ def _convert_torch_adamw_to_bnb(
                     f"(checkpoint={tuple(exp_avg.shape)}/{tuple(exp_avg_sq.shape)}, "
                     f"target={expected_shape})"
                 )
-            if exp_avg.dtype != torch.float32 or exp_avg_sq.dtype != torch.float32:
+            if exp_avg.dtype not in (torch.float32, torch.float16, torch.bfloat16) or exp_avg_sq.dtype != exp_avg.dtype:
                 raise ValueError(
-                    f"AdamW moments for group {gindex} param {pindex} must be fp32"
+                    f"AdamW moments for group {gindex} param {pindex} must have matching fp32/fp16/bf16 dtypes"
                 )
 
             try:

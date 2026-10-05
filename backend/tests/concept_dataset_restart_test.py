@@ -131,13 +131,11 @@ def test_completed_epoch_switches_plan_without_restarting_completed_epochs(guard
     assert scope["self"]._concept_order_seed == 123
 
 
-@pytest.mark.parametrize("change", ["cursor", "dataset", "gas", "mnt", "crop", "strict", "unknown_version"])
+@pytest.mark.parametrize("change", ["cursor", "gas", "mnt", "crop", "strict", "unknown_version"])
 def test_plan_switch_requires_a_verified_clean_epoch_boundary(guard, tmp_path, change):
     scope = boundary_context(tmp_path)
     if change == "cursor":
         scope["resume_training_state"]["batch_idx"] -= 1
-    elif change == "dataset":
-        scope["self"]._dataset_fingerprint = {"image_paths_hash": "changed"}
     elif change == "gas":
         scope["gradient_accumulation_steps"] = 2
     elif change == "mnt":
@@ -161,3 +159,16 @@ def test_resume_after_switch_counts_only_remaining_random_epochs(guard, tmp_path
     exec(guard, scope)
     assert scope["resume_training_state"] is state
     assert scope["actual_total_steps"] == 116 + sum(range(95, 100)) - 7
+
+
+def test_completed_epoch_dataset_and_concept_change_follow_existing_policy(guard, tmp_path):
+    scope = boundary_context(tmp_path)
+    scope["self"]._dataset_fingerprint = {"image_paths_hash": "changed"}
+    optimizer = scope["self"].optimizer
+    exec(guard, scope)
+    assert (scope["start_epoch"], scope["resume_batch_idx"]) == (0, 0)
+    assert scope["global_step"] == 116
+    assert scope["self"].optimizer is optimizer
+    assert scope["self"]._resume_structure_changed
+    assert scope["resume_training_state"] is None
+    assert scope["actual_total_steps"] == 116 + sum(range(90, 100))

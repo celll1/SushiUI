@@ -135,11 +135,14 @@ version cannot silently apply the old cursor to a new plan.
 
 Under `existing`, a completed concept epoch may adopt a new v1/v2 configuration
 from the next epoch while retaining weights, optimizer, step and concept seed.
-The saved cursor and batch count must agree, the dataset must be unchanged, MNT
-must match, both saved/current GAS must be 1, and neither a batch ledger, pending
+The saved cursor and batch count must agree, MNT must match, both saved/current
+GAS must be 1, and neither a batch ledger, pending
 gradient sidecar nor crop planner may be present. Other configuration changes
 remain refused. Random-plan resume totals count only the remaining epochs/batches
 after the saved step, including when an old unmultiplied run is extended.
+If the dataset also changed at that boundary, `existing` resets dataset epoch
+bookkeeping to epoch 1, as it does for dataset-only changes; it keeps completed
+global steps and optimizer and plans the configured epoch target on the new data.
 
 Inside GAS, shared trainers save named pending gradients and GradScaler state in
 an atomic `_gradients.pt` sidecar referenced by the checkpoint state. This can

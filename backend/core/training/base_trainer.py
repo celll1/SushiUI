@@ -17074,12 +17074,17 @@ class BaseTrainer(ABC):
                     and resume_training_state.get("multi_noise_timesteps") == multi_noise_timesteps
                     and not resume_training_state.get("resume_batch_plan")
                     and not resume_training_state.get("occurrence_gradients")
-                    and self.crop_planner is None
-                    and not self._check_dataset_fingerprint_changed(
-                        resume_training_state.get("dataset_fingerprint"), self._dataset_fingerprint)):
+                    and self.crop_planner is None):
                 _concept_epoch_transition = True
-                start_epoch = resume_training_state["epoch"] + 1
+                _transition_dataset_changed = self._check_dataset_fingerprint_changed(
+                    resume_training_state.get("dataset_fingerprint"), self._dataset_fingerprint)
+                start_epoch = (0 if _transition_dataset_changed
+                               else resume_training_state["epoch"] + 1)
                 resume_batch_idx = 0
+                if _transition_dataset_changed:
+                    self._resume_structure_changed = True
+                    print(f"{self.log_prefix} Dataset changed with concept settings at a completed epoch; "
+                          "existing policy restarts dataset epoch bookkeeping at epoch 1.")
                 print(f"{self.log_prefix} Concept settings changed at a completed epoch; "
                       f"starting epoch {start_epoch + 1} with the new plan, keeping step {global_step} and optimizer.")
         if _ledger_resume and resume_from_checkpoint:

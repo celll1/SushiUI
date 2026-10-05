@@ -58,6 +58,9 @@ machine-local working material.
 
 ## Training and data
 
+[Training Edit Config preservation audit](../audits/TRAINING_CONFIG_EDIT_PRESERVATION.md)
+records restore/transport and asynchronous-default repairs with regression scope.
+
 Frozen VAE encode batching assessment (all training architectures, Ming GPU
 measurements and proposed independent configuration):
 [VAE_ENCODE_BATCHING_ASSESSMENT.md](../audits/VAE_ENCODE_BATCHING_ASSESSMENT.md).

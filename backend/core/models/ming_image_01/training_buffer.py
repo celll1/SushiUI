@@ -1,7 +1,7 @@
 """Bounded native CPU buffers over the resolved epoch batch suffix."""
 
 import threading
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 
 import torch
 
@@ -9,6 +9,7 @@ from .cache import identity_key
 from .dataset import (load_shared_items, prepare_shared_items_latents, prepare_record_conditioning,
                       shared_conditioning_context, supervision_identity, verify_record_content)
 from .training_residency import grouped_encoder_phase
+from .pixel_prefetch import prefetch_pixels
 
 
 def batch_identity(pairs):
@@ -60,8 +61,9 @@ class MingBatchBuffer:
         completed = 0
         self._progress("latent_cache", 0, total)
         previous_shape = None
-        with grouped_encoder_phase(self.policy, "vae") as grouped:
-            for index in range(start, min(start+self.latent_interval, len(self.batches))):
+        pixels = prefetch_pixels(self.batches, start, end, self._items, self.trainer._check_stop_requested)
+        with grouped_encoder_phase(self.policy, "vae") as grouped, closing(pixels):
+            for index, items in pixels:
                 self.trainer._check_stop_requested()
                 pairs = self.batches[index]
                 shape = tuple((item.get("bucket_width") or item.get("width"),
@@ -71,7 +73,8 @@ class MingBatchBuffer:
                     torch.cuda.empty_cache()
                 previous_shape = shape
                 identity = batch_identity(pairs)
-                prepared = prepare_shared_items_latents(self.trainer, pairs, self._items(index, pairs), residency=grouped)
+                prepared = prepare_shared_items_latents(self.trainer, pairs, items, residency=grouped)
+                del items
                 prepared.residency = self.policy
                 prepared.clean = prepared.clean.detach().cpu()
                 if prepared.reference_latents is not None:

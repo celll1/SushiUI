@@ -1074,8 +1074,8 @@ class VaeTrainer:
 
     def _trainable_state_dict(self, use_ema: bool = False) -> Dict[str, torch.Tensor]:
         if use_ema and self.ema is not None:
-            return {k: v.detach().cpu().clone() for k, v in self.ema.items()}
-        return {name: param.detach().cpu().clone()
+            return {k: v.detach().to(device="cpu", copy=True) for k, v in self.ema.items()}
+        return {name: param.detach().to(device="cpu", copy=True)
                 for name, param in zip(self.trainable_names, self.trainable_params)}
 
     def save_checkpoint(self, step: int, final: bool = False) -> Path:

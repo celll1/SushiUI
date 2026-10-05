@@ -225,7 +225,8 @@ def prepare_record_conditioning(components, items, *, resolution, cache_context=
     options = record_cache_options(components, items, resolution=resolution, cache_context=cache_context)
     height, width = items[0].pixels.shape[-2:]
     prepared = prepare_inputs(components.processor, [item.caption for item in items],
-        references=[item.references for item in items], width=width, height=height, resolution=resolution)
+        references=[item.references for item in items], width=width, height=height, resolution=resolution,
+        vae_references=False)
     return MingConditioningBatch(prepared, components.conditioner,
         tensor_cache=options.get("tensor_cache"), conditioning_key=options.get("conditioning_key"), residency=residency)
 

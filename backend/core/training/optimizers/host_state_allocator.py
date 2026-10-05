@@ -67,12 +67,8 @@ class HostOptimizerStateAllocator:
         self.pinned_bytes = 0
 
     def __call__(self, p: torch.Tensor, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
-        buffer = torch.zeros(p.numel(), dtype=dtype, device="cpu")
+        buffer = torch.zeros(p.numel(), dtype=dtype, device="cpu", pin_memory=self.pin)
         if self.pin:
-            # Allocated unpinned then pinned (one copy of a zero buffer at
-            # allocation time only) because torch has no "allocate pinned"
-            # constructor; the transient original is dropped on return.
-            buffer = buffer.pin_memory()
             self.pinned_bytes += buffer.numel() * buffer.element_size()
         self.bytes += buffer.numel() * buffer.element_size()
         self.tensors += 1

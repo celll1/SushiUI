@@ -19,7 +19,7 @@ class ParameterChangeTracker:
       C - Cumulative drift:  ||θ_t - θ_0||_F / ||θ_0||_F  (relative change from start)
 
     All computation and storage happens on CPU (fp16) → zero VRAM overhead.
-    CPU RAM usage: ~2 × sum(component_param_bytes / 2) for full FT SDXL ≈ 14 GB total.
+    FP16 snapshots share initially; metrics retain two copies plus per-parameter scratch.
     """
 
     def __init__(self, components: Dict[str, torch.nn.Module], interval: int = 100):
@@ -44,7 +44,7 @@ class ParameterChangeTracker:
 
     def _snapshot(self, module: torch.nn.Module) -> List[torch.Tensor]:
         """Copy all trainable parameters to CPU as fp16 tensors."""
-        return [p.detach().cpu().to(torch.float16)
+        return [p.detach().to(device="cpu", dtype=torch.float16, copy=True)
                 for p in module.parameters() if p.requires_grad]
 
     @staticmethod
@@ -71,15 +71,16 @@ class ParameterChangeTracker:
             snap = self._snapshot(module)
             self._reference[name] = snap
             self._reference_norms[name] = self._norm_sq(snap) ** 0.5
-            # Deep copy for prev (independent list of cloned tensors)
-            self._prev[name] = [t.clone() for t in snap]
+            # Read-only tensors may share until the first metric replaces each slot.
+            self._prev[name] = list(snap)
             n = sum(t.numel() for t in snap)
             total_params += n
             total_bytes += n * 2  # fp16 = 2 bytes per element
             print(f"[ParamTracker]   {name}: {n / 1e6:.1f}M params snapshot stored")
         print(f"[ParamTracker] Initialized. "
               f"Total tracked: {total_params / 1e6:.1f}M params, "
-              f"~{total_bytes * 2 / 1e9:.1f} GB CPU RAM (ref + prev snapshots)")
+              f"~{total_bytes / 1e9:.1f} GB CPU RAM initially, "
+              f"~{total_bytes * 2 / 1e9:.1f} GB after first metric")
 
     def compute(self, step: int) -> Optional[Dict[str, Dict[str, float]]]:
         """
@@ -96,17 +97,27 @@ class ParameterChangeTracker:
         cumulative_drifts: Dict[str, float] = {}
 
         for name, module in self.components.items():
-            curr = self._snapshot(module)
-
-            # B: update norm since last checkpoint
-            update_norms[name] = self._delta_norm_sq(curr, self._prev[name]) ** 0.5
-
-            # C: normalized cumulative drift from reference
-            drift = self._delta_norm_sq(curr, self._reference[name]) ** 0.5
+            previous, reference = self._prev[name], self._reference[name]
+            parameters = [p for p in module.parameters() if p.requires_grad]
+            if len(parameters) != len(previous):
+                # Dynamic trainability retains the previous full-snapshot semantics.
+                current = self._snapshot(module)
+                update_sq = self._delta_norm_sq(current, previous)
+                drift_sq = self._delta_norm_sq(current, reference)
+                self._prev[name] = current
+                update_norms[name] = update_sq ** 0.5
+                ref_norm = self._reference_norms[name]
+                cumulative_drifts[name] = drift_sq ** 0.5 / ref_norm if ref_norm > 0 else 0.0
+                continue
+            update_sq = drift_sq = 0.0
+            for index, parameter in enumerate(parameters):
+                current = parameter.detach().to(device="cpu", dtype=torch.float16, copy=True)
+                update_sq += self._delta_norm_sq([current], [previous[index]])
+                drift_sq += self._delta_norm_sq([current], [reference[index]])
+                previous[index] = current
+            update_norms[name] = update_sq ** 0.5
+            drift = drift_sq ** 0.5
             ref_norm = self._reference_norms[name]
             cumulative_drifts[name] = drift / ref_norm if ref_norm > 0 else 0.0
-
-            # Update prev for next B computation
-            self._prev[name] = curr
 
         return {'update_norm': update_norms, 'cumulative_drift': cumulative_drifts}

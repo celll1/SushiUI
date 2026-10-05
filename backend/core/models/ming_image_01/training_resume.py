@@ -31,7 +31,7 @@ def capture_runtime(trainer):
         "torch_cuda": torch.cuda.get_rng_state(device).cpu() if device.type == "cuda" else None,
         "numpy": [numpy[0], numpy[1].tolist(), numpy[2], numpy[3], numpy[4]],
         "python": random.getstate(),
-        "gradients": {name: parameter.grad.detach().cpu().clone()
+        "gradients": {name: parameter.grad.detach().to(device="cpu", copy=True)
             for name, parameter in _parameters(trainer).items() if parameter.grad is not None},
         "grad_scaler": trainer.grad_scaler.state_dict() if trainer.use_grad_scaler else None}
 
@@ -77,7 +77,7 @@ def restore_runtime(trainer):
         raise ValueError("Ming saved gradient scaler mode differs from this training run")
     for name, parameter in parameters.items():
         value = gradients.get(name)
-        parameter.grad = None if value is None else value.to(device=parameter.device).clone()
+        parameter.grad = None if value is None else value.to(device=parameter.device, copy=True)
     if scaler is not None:
         trainer.grad_scaler.load_state_dict(scaler)
     numpy = runtime["numpy"]

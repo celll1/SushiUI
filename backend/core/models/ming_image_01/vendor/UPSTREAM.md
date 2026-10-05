@@ -18,3 +18,5 @@ Additional adaptations preserve native default/partial RoPE, expose an explicit 
 Local style attention integration lives outside this vendor directory: `../attention.py` retains its Apache-2.0 native processor notice and delegates scoped target-only K/V capture/injection to `../style_transfer.py`; `../residual_unet.py` reports current target token counts at coarse main layers. Shared style algebra and its retained community MIT notice are recorded in the provenance ledger. This does not enable public style generation by itself.
 
 The local pipeline rejects nonfinite decoded pixels before PNG postprocessing.
+
+Conditioning calls the MLLM and connector decoders directly, avoiding unused vocabulary logits while retaining native hidden states and gradients. MoE token counts use a one-dimensional scatter-add; native top-k routing selects distinct experts per token.

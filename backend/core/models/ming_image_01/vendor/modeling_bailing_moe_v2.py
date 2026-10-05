@@ -828,12 +828,11 @@ class BailingMoeV2SparseMoeBlock(nn.Module):
 
     @torch.no_grad()
     def moe_infer(self, x, topk_ids, topk_weight):
-        cnts = topk_ids.new_zeros((topk_ids.shape[0], len(self.experts)))
-        cnts.scatter_(1, topk_ids, 1)
-        tokens_per_expert = cnts.sum(dim=0)
+        # Native top-k selects distinct experts per token; avoid a tokens×experts workspace.
+        tokens_per_expert = topk_ids.new_zeros(len(self.experts))
+        tokens_per_expert.scatter_add_(0, topk_ids.reshape(-1), torch.ones_like(topk_ids).reshape(-1))
         idxs = topk_ids.view(-1).argsort()
         sorted_tokens = x[idxs // topk_ids.shape[1]]
-        sorted_tokens_shape = sorted_tokens.shape
         tokens_per_expert = tokens_per_expert.cpu().numpy()
         outputs = []
         start_idx = 0

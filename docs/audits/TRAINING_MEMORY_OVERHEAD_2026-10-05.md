@@ -252,6 +252,54 @@ hidden layers for direct conditioning and runs a separate query connector.
 Removing these native operations would change conditioning, not optimize it.
 No speedup multiplier is justified until isolated equivalence and timing tests.
 
+### Caption implementation and native checks
+
+Ming now invokes the MLLM and query connector decoders directly. Both LM
+wrappers previously computed unused vocabulary logits. Selected hidden layers,
+query/direct streams and live conditioning gradients are retained. Sparse MoE
+counting uses a one-dimensional scatter-add instead of a tokens-by-experts
+allocation; expert dispatch still synchronizes counts to CPU and executes each
+nonempty expert separately. This change does not claim to remove that bottleneck.
+Qwen 2.1 limits its unused logits to one token while preserving the scoped
+final-RMSNorm bypass. CPU native-model oracles match outputs and gradients exactly;
+the combined Ming conditioning/quantized tests passed 40 cases and the actual
+small Qwen3VL caption oracle passed one case. Changed modules pass compilation
+and real imports without initializing CUDA.
+
+Run #172 was stopped once and saved a complete model/optimizer/state at step
+1439 for isolated native GPU checks. The packed Ming Design conditioner used
+BF16, eager attention as in training, actual dataset captions, square 1024
+geometry and native prompt resolution 1536. DiT, VAE and vision stayed off GPU.
+Timings include CPU output transport, two warmups and three measured repetitions.
+
+| Native input tokens | Path | Median seconds/image | Peak allocated GiB | Single-caption output comparison |
+| --- | --- | --- | --- | --- |
+| 425 | Original, batch 1 | 0.970 | 17.975 | Reference |
+| 425 | Decoder only, batch 1 | 1.000 | 17.806 | Exact |
+| 425 | Decoder + sparse counts, batch 1 | 0.965 | 17.806 | Exact |
+| 425 | Optimized, batch 2 | 0.497 | 18.001 | Both exact |
+| 425 | Optimized, batch 4 | 0.274 | 18.401 | Failed: query max absolute difference 1368 |
+| 209 | Optimized, batch 2 | 0.488 | 17.877 | Both exact |
+| 602 | Optimized, batch 2 | 0.505 | 18.114 | Failed: query max absolute difference 1335.5 |
+| 810 | Optimized, batch 2 | 0.510 | 18.236 | Failed: query max absolute difference 520 |
+
+All tested optimized **single-caption** outputs match the old LM-wrapper path
+exactly, including the longer captions. The batch-1 timing difference is too
+small/noisy to claim a speedup; vocabulary projection removal reduces peak
+allocated memory by about 0.17 GiB in the 425-token case. Batching clearly reduces
+per-image time but is **not adopted**: even equal native token lengths do not
+guarantee numerical equivalence for this conditioner. The large discrepancy is
+not attributed to padding or a particular kernel without a layer-level oracle.
+Training batch size, ordering, conditioning cache identity and run configuration
+remain unchanged. A future independent encoder microbatch option needs to resolve
+these numerical discrepancies before API/UI wiring, rather than selecting a
+limit from one successful shape.
+
+Local reproducibility: `local/deployment/benchmark_ming_captions.py --execute`
+and `--execute --pairs-only`, using the repository venv with training stopped.
+JSON measurements are retained under `local/deployment/ming_caption_benchmark*.json`;
+these local artifacts are not checkpoint payloads or dataset disk caches.
+
 ## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization

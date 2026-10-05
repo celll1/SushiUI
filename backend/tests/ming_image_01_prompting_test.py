@@ -89,6 +89,17 @@ def test_mixed_reference_counts_preserved_for_training_and_refused_for_generatio
         prepared.generation_references()
 
 
+def test_conditioning_only_skips_rgba_copies_without_changing_native_inputs():
+    native = processor()
+    references = [[Image.new("RGBA", (60, 40), (70, 80, 90, 100))]]
+    original = prepare_inputs(native, ["word5"], references=references, **options())
+    compact = prepare_inputs(native, ["word5"], references=references, vae_references=False, **options())
+    assert compact.references == [None]
+    assert compact.texts == original.texts
+    for key, expected in original.model_inputs.items():
+        torch.testing.assert_close(compact.model_inputs[key], expected, rtol=0, atol=0)
+
+
 def test_text_only_native_batch_and_frozen_inference():
     prepared = prepare_inputs(processor(), ["word5", "word6 word7"], references=[[], []], **options())
     assert prepared.generation_references() is None

@@ -9592,7 +9592,7 @@ class BaseTrainer(ABC):
                 seen_names.add(name)
                 self._ema_param_order.append((name, param))
                 shadow_device = param.device if self.ema_device == "cuda" else torch.device("cpu")
-                self.ema_shadow[name] = param.detach().to(dtype=torch.float32, device=shadow_device).clone()
+                self.ema_shadow[name] = param.detach().to(dtype=torch.float32, device=shadow_device, copy=True)
 
         if unnamed:
             print(f"{self.log_prefix} WARNING: {unnamed} trainable EMA tensor(s) could not be matched "
@@ -20712,9 +20712,13 @@ class BaseTrainer(ABC):
                                 except Exception as lr_err:
                                     print(f"{self.log_prefix} [CUDA Recovery] LR scheduler step failed: {lr_err}")
                         elif should_step_optimizer:
-                            if getattr(self, "is_ming_image_01", False) and getattr(self, "trains_base_weights", False) and torch.cuda.is_available():
-                                # Return fragmented activation pools before allocating AdamW moments.
+                            if (getattr(self, "is_ming_image_01", False)
+                                    and getattr(self, "trains_base_weights", False)
+                                    and not getattr(self, "_ming_optimizer_cache_trimmed", False)
+                                    and torch.cuda.is_available()):
+                                # Trim once before lazy moments; later steps reuse activation pools.
                                 torch.cuda.empty_cache()
+                                self._ming_optimizer_cache_trimmed = True
                             four_phase = (
                                 None if _sensenova_text_batch_active else
                                 getattr(self, "sensenova_four_phase", None)
@@ -20858,12 +20862,6 @@ class BaseTrainer(ABC):
                             elif should_step_optimizer and _weights_updated:
                                 self._advance_optimizer_update(timestep_sampler)
 
-                        # Force CUDA memory cleanup between MNT iterations to prevent
-                        # VRAM fragmentation and accumulation. Skip on last iteration
-                        # since batch cleanup follows immediately.
-                        if multi_noise_timesteps > 1 and mnt_idx < multi_noise_timesteps - 1:
-                            torch.cuda.empty_cache()
-
                     # Noisy-vs-clean gradient cosine for the window just finished.
                     # Emitted through the generic extra-metrics channel, so it
                     # rides the next completed step's row (the same way
@@ -20900,7 +20898,7 @@ class BaseTrainer(ABC):
                     # (TensorBoard buffers events internally, can accumulate GBs over long training)
                     if global_step % 100 == 0:
                         self.writer.flush()
-                        # Also clear CUDA cache to prevent fragmented memory accumulation
+                        # Also bound cached pools for variable video/audio shapes.
                         torch.cuda.empty_cache()
 
                     # Save checkpoint (check against global_step which increments per MNT iteration)

@@ -23,7 +23,7 @@ class MingPreparedInputs:
         return None if counts == {0} else torch.stack(self.references)
 
 
-def prepare_inputs(processor, prompts, *, references, width, height, resolution):
+def prepare_inputs(processor, prompts, *, references, width, height, resolution, vae_references=True):
     """The processor owns MLLM vision geometry; requested grids own VAE references."""
     if not isinstance(prompts, list) or not prompts or any(not isinstance(p, str) for p in prompts):
         raise ValueError("Ming prompts must be a nonempty string batch")
@@ -48,7 +48,7 @@ def prepare_inputs(processor, prompts, *, references, width, height, resolution)
         if vision is not None:
             vision_images.extend(vision)
         rgba = []
-        for image in images:
+        for image in images if vae_references else ():
             resized = image.convert("RGBA").resize((width, height), Image.Resampling.BILINEAR)
             pixels = torch.from_numpy(np.asarray(resized).copy()).permute(2, 0, 1).float()
             rgba.append(pixels / 127.5 - 1.0)

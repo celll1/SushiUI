@@ -129,6 +129,8 @@ def prepare_latent_batch(components, *, prompts, references, target_pixels, fram
             payload.update({f"reference_{index}": value.detach().cpu()
                             for index, value in enumerate(latent_references) if value is not None})
             tensor_cache.write("latents", latent_key, payload)
+    # Conditioning uses native processor inputs, not the already-encoded RGBA copies.
+    prepared.references = [None] * batch
     return MingLatentBatch(clean, prepared, frame_weights.detach(),
                            latent_references if any_reference else None, components.conditioner,
                            tensor_cache=tensor_cache, conditioning_key=conditioning_key, residency=residency)

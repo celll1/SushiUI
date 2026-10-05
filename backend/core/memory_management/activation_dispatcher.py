@@ -56,7 +56,11 @@ _GB = 1024 ** 3
 class _AsyncSavedTensor:
     cpu: torch.Tensor
     device: torch.device
-    d2h_ready: torch.cuda.Event
+    d2h_ready: Optional[torch.cuda.Event] = None
+    future: object = None
+    index: int = -1
+    source: object = None
+    version: int = -1
 
 
 class AsyncActivationOffloader:
@@ -78,12 +82,15 @@ class AsyncActivationOffloader:
         self._h2d_stream = None
         self._active = False
         self.allocation_failure: Optional[str] = None
+        self.staging = None
+        self.stats = {}
 
-    def begin(self) -> None:
+    def begin(self, stats=None) -> None:
         if self._active:
             raise RuntimeError("async activation offloader context is already active")
         self._active = True
         self._offset = 0
+        self.stats = stats if stats is not None else {}
 
     def _ensure_runtime(self, device: torch.device) -> bool:
         if self.allocation_failure is not None:
@@ -103,6 +110,10 @@ class AsyncActivationOffloader:
             self._device = torch.device(device)
             self._d2h_stream = torch.cuda.Stream(device=device)
             self._h2d_stream = torch.cuda.Stream(device=device)
+        if self.staging is None and self.budget_bytes >= 8*1024**2:
+            from .activation_staging import ActivationStaging
+            self.staging = ActivationStaging(self._arena, self._device,
+                self._d2h_stream, self._h2d_stream, self.stats)
         return True
 
     def pack(self, tensor: torch.Tensor) -> Optional[_AsyncSavedTensor]:
@@ -111,7 +122,14 @@ class AsyncActivationOffloader:
         nbytes = tensor.numel() * tensor.element_size()
         alignment = max(256, tensor.element_size())
         offset = (self._offset + alignment - 1) // alignment * alignment
-        if offset + nbytes > self.budget_bytes:
+        persistent = self.budget_bytes if self.staging is None else self.budget_bytes-2*self.staging.size
+        if offset + nbytes > persistent:
+            if self.staging is not None and tensor.is_contiguous():
+                saved = _AsyncSavedTensor(cpu=None, device=tensor.device,
+                    source=weakref.ref(tensor), version=tensor._version)
+                if self.staging.pack(tensor, saved):
+                    self.staging.register(saved)
+                    return saved
             return None
         raw = self._arena.narrow(0, offset, nbytes)
         cpu = raw.view(tensor.dtype).view(tensor.shape)
@@ -122,9 +140,23 @@ class AsyncActivationOffloader:
             ready = self._d2h_stream.record_event()
         tensor.record_stream(self._d2h_stream)
         self._offset = offset + nbytes
-        return _AsyncSavedTensor(cpu=cpu, device=tensor.device, d2h_ready=ready)
+        saved = _AsyncSavedTensor(cpu=cpu, device=tensor.device, d2h_ready=ready,
+            source=weakref.ref(tensor), version=tensor._version)
+        if self.staging is not None:
+            self.staging.register(saved)
+        return saved
+
+    def register_pageable(self, cpu, device):
+        saved = _AsyncSavedTensor(cpu=cpu, device=device)
+        self.staging.register(saved)
+        return saved
 
     def unpack(self, saved: _AsyncSavedTensor) -> torch.Tensor:
+        source = saved.source() if saved.source is not None else None
+        if source is not None and source._version != saved.version:
+            raise RuntimeError("An asynchronously saved activation was modified in place")
+        if self.staging is not None:
+            return self.staging.unpack(saved)
         current = torch.cuda.current_stream(saved.device)
         with torch.cuda.stream(self._h2d_stream):
             self._h2d_stream.wait_event(saved.d2h_ready)
@@ -140,12 +172,17 @@ class AsyncActivationOffloader:
     def end(self) -> None:
         if not self._active:
             return
-        if self._d2h_stream is not None:
-            self._d2h_stream.synchronize()
-        if self._h2d_stream is not None:
-            self._h2d_stream.synchronize()
-        self._offset = 0
-        self._active = False
+        try:
+            if self.staging is not None:
+                self.staging.close()
+        finally:
+            self.staging = None
+            if self._d2h_stream is not None:
+                self._d2h_stream.synchronize()
+            if self._h2d_stream is not None:
+                self._h2d_stream.synchronize()
+            self._offset = 0
+            self._active = False
 
     @property
     def arena_bytes(self) -> int:
@@ -161,7 +198,8 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
     """Offload large saved activations to CPU during forward, restore in backward.
 
     ``sync`` uses blocking pageable copies. ``async`` uses a fixed pinned arena,
-    dedicated D2H/H2D streams and events; exhaustion falls back to ``sync``.
+    bounded pageable staging and one speculative GPU restore. Oversized saves
+    retain the synchronous fallback.
     Both preserve tensor values. ``enabled=False`` is a no-op (zero overhead).
 
     Must wrap BOTH the forward and the backward pass: ``saved_tensors_hooks``
@@ -191,7 +229,7 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
         raise ValueError("activation offload transfer_mode must be 'sync' or 'async'")
     if transfer_mode == "async":
         engine = async_engine or AsyncActivationOffloader(pinned_budget_bytes)
-        engine.begin()
+        engine.begin(stats)
     else:
         engine = None
 
@@ -230,6 +268,8 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
                     stats["sync_fallback_bytes"] = stats.get(
                         "sync_fallback_bytes", 0
                     ) + t.numel() * t.element_size()
+            if engine is not None and engine.staging is not None:
+                return remember(t, key, ("async_cpu", engine.register_pageable(cpu, t.device)))
             return remember(t, key, ("cpu", cpu, t.device))
         return ("gpu", t)
 

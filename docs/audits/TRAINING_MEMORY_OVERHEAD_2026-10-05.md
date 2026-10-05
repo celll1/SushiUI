@@ -126,7 +126,40 @@ it does not change the persistent host-state budget.
 - Integrity validation, checkpoint rollback, pending-gradient persistence and
   OOM recovery are kept even where they have measurable costs.
 
-## Validation
+## Follow-up implementation: activation transfers and EMA export
+
+Async activation offload now reserves two staging planes inside the existing
+pinned budget, each capped at 256 MiB. Saved activations exceeding persistent
+pinned storage use bounded GPU-to-pinned-to-pageable copies; oversized or
+noncontiguous saves retain synchronous fallback. A single speculative reverse
+save-order restore overlaps H2D with backward compute, observes a 2 GiB free
+VRAM margin, and stops speculating after eight attempts with under 25% hits.
+With the run's 2 GiB pinned budget, persistent storage is 1.5 GiB and each
+staging plane is 256 MiB. Pending source tensors and the speculative restore
+are individually bounded at 512 MiB; the pinned budget does not grow.
+
+EMA export stores live weights on temporary disk one parameter at a time,
+then restores the same parameter objects even after export failure. It avoids
+a complete GPU live-weight clone and a complete additional RAM snapshot.
+Temporary storage must hold the live trainable weights plus 1 GiB margin;
+failed restoration retains rollback files and aborts instead of continuing
+with EMA weights. This trades extra disk I/O for lower memory consumption.
+
+Interrupted and emergency saves now prune prior generations only after model,
+training state and optimizer/EMA state all succeed. Stopping run 172 exposed
+the previous bug: ENOSPC during optimizer save was followed by deletion of the
+old optimizer. Step 491 model/state survived, but its optimizer must start
+fresh; the new guard prevents this deletion on subsequent save failures.
+
+Focused CUDA/CPU transfer, exact-gradient/retained-graph, EMA rollback and
+checkpoint retention tests pass: 67 cases. Final changed-module compilation
+and real imports pass without CUDA initialization. A short 16-sine-chain
+microbenchmark measured 22.22 ms before and 23.02 ms after (five-run medians,
+64 MiB pinned budget): synchronous fallback fell from 72 MiB to zero, but
+staging overhead made this short-compute case 3.6% slower. This is not evidence
+of universal speedup; native model measurements are required.
+
+## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization
 disabled. CPU gates cover repeated parameter metrics against the full-snapshot

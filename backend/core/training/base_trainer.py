@@ -6861,6 +6861,15 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Deleting old optimizer state: {path.name}")
             self._safe_unlink(path)
 
+    def _cleanup_complete_interrupted_save(self, checkpoint_saved, state_saved,
+                                           optimizer_saved, keep, optimizer_keep, step):
+        if not (checkpoint_saved and state_saved and optimizer_saved):
+            print(f"{self.log_prefix} Incomplete save: preserving previous checkpoint generations")
+            return False
+        self._cleanup_old_checkpoints(keep)
+        self._cleanup_old_optimizer_states(optimizer_keep, current_step=step)
+        return True
+
     def _run_checkpoint_cleanup(self, keep: int, global_step: int = 0, save_every_n_steps: int = 0):
         """Dispatch to whichever ``_cleanup_old_checkpoints`` signature this
         trainer has (ControlNet overrides it with the same 1-arg shape; a
@@ -9696,7 +9705,7 @@ class BaseTrainer(ABC):
         etc.) instead of reimplementing any of the 20+ per-arch/per-method
         save formats. Mechanism:
 
-          1. Stash each live trainable parameter's `.data` (clone).
+          1. Stash live parameters on temporary disk, one CPU tensor at a time.
           2. Copy the EMA shadow value into that SAME nn.Parameter object's
              `.data`, in place. These are the exact objects registered with
              the optimizer (see _setup_ema / _build_ema_param_name_map) and
@@ -9720,17 +9729,22 @@ class BaseTrainer(ABC):
         if not self._ema_param_order:
             return
 
-        stash: Dict[str, torch.Tensor] = {}
-        with torch.no_grad():
-            for name, param in self._ema_param_order:
-                stash[name] = param.data.detach().clone()
+        from .ema_stash import EmaParameterStash
+        stash = EmaParameterStash(self._ema_param_order)
+        try:
+            stash.capture()
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: EMA checkpoint skipped before weight changes: {e}")
+            return
 
         original_run_name = self.run_name
         try:
+            stash.mutating = True
             with torch.no_grad():
                 for name, param in self._ema_param_order:
                     ema_val = self.ema_shadow[name].to(dtype=param.dtype, device=param.device, non_blocking=True)
                     param.data.copy_(ema_val)
+                    del ema_val
             self.run_name = f"{original_run_name}{EMA_RUN_NAME_SUFFIX}"
             self.save_checkpoint(step, epoch)
             print(f"{self.log_prefix} Saved EMA-averaged checkpoint (loadable, run_name={self.run_name})")
@@ -9738,9 +9752,10 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} WARNING: Failed to save EMA checkpoint: {e}")
         finally:
             self.run_name = original_run_name
-            with torch.no_grad():
-                for name, param in self._ema_param_order:
-                    param.data.copy_(stash[name])
+            try:
+                stash.restore()
+            finally:
+                stash.close()
 
 
     def _has_fp8_text_encoder(self) -> bool:
@@ -11969,6 +11984,8 @@ class BaseTrainer(ABC):
                               f"CPU transfer={offloaded_gb:.3f} GiB "
                               f"async={stats.get('async_bytes', 0) / 1024**3:.3f} GiB "
                               f"sync fallback={stats.get('sync_fallback_bytes', 0) / 1024**3:.3f} GiB "
+                              f"staged={stats.get('staged_bytes', 0) / 1024**3:.3f} GiB "
+                              f"prefetch hit/miss={stats.get('prefetch_hits', 0)}/{stats.get('prefetch_misses', 0)} "
                               f"duplicate saves avoided={stats.get('deduplicated_bytes', 0) / 1024**3:.3f} GiB "
                               f"peak={peak_gb:.2f} GiB", flush=True)
             if self.debug_vram:
@@ -21373,18 +21390,19 @@ class BaseTrainer(ABC):
                 import traceback
                 traceback.print_exc()
 
-            # Try to cleanup old checkpoints (even if above failed)
             try:
-                self._cleanup_old_checkpoints(max_step_saves_to_keep)
-                self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep,
-                                                   current_step=global_step)
+                self._cleanup_complete_interrupted_save(
+                    checkpoint_saved, state_saved, optimizer_saved,
+                    max_step_saves_to_keep, max_optimizer_saves_to_keep, global_step)
             except Exception as e:
                 print(f"{self.log_prefix} ERROR: Failed to cleanup old checkpoints: {e}")
                 import traceback
                 traceback.print_exc()
 
-            if checkpoint_saved and state_saved:
+            if checkpoint_saved and state_saved and optimizer_saved:
                 print(f"{self.log_prefix} Checkpoint and state saved successfully, exiting...")
+            elif checkpoint_saved and state_saved:
+                print(f"{self.log_prefix} Weights and training state saved; optimizer save failed, exiting...")
             elif checkpoint_saved:
                 print(f"{self.log_prefix} Checkpoint saved (but state save failed), exiting...")
             elif state_saved:
@@ -21546,18 +21564,14 @@ class BaseTrainer(ABC):
                 except Exception as opt_error:
                     print(f"{self.log_prefix} [EMERGENCY] Failed to save optimizer state: {opt_error}")
 
-                # Try to cleanup old checkpoints (only if this emergency save actually
-                # wrote a new checkpoint -- mirrors the KeyboardInterrupt handler above).
-                # Wrapped so a cleanup failure can never mask the original emergency.
-                if checkpoint_saved:
-                    try:
-                        self._cleanup_old_checkpoints(max_step_saves_to_keep)
-                        self._cleanup_old_optimizer_states(max_optimizer_saves_to_keep,
-                                                           current_step=global_step)
-                    except Exception as cleanup_error:
-                        print(f"{self.log_prefix} [EMERGENCY] Failed to cleanup old checkpoints: {cleanup_error}")
-                        import traceback
-                        traceback.print_exc()
+                try:
+                    self._cleanup_complete_interrupted_save(
+                        checkpoint_saved, state_saved, optimizer_saved,
+                        max_step_saves_to_keep, max_optimizer_saves_to_keep, global_step)
+                except Exception as cleanup_error:
+                    print(f"{self.log_prefix} [EMERGENCY] Failed to cleanup old checkpoints: {cleanup_error}")
+                    import traceback
+                    traceback.print_exc()
 
             # Summary
             if checkpoint_saved or state_saved or optimizer_saved:

@@ -12,15 +12,48 @@ refusal from the quantized-base gate that named the wrong cause.
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from core.training.base_trainer import (  # noqa: E402
+    BaseTrainer,
     _checkpoint_step_from_name,
     _interrupted_save_steps,
     _is_provisional_shard,
     _list_checkpoint_entries,
 )
+
+
+@pytest.mark.parametrize("saved", [
+    (False, True, True), (True, False, True), (True, True, False),
+    (False, False, False),
+])
+def test_incomplete_bundle_preserves_previous_generation(tmp_path, saved):
+    previous = _touch(tmp_path, "run_step_000100_optimizer.pt")
+    trainer = SimpleNamespace(
+        log_prefix="[test]",
+        _cleanup_old_checkpoints=lambda keep: previous.unlink(),
+        _cleanup_old_optimizer_states=lambda keep, current_step: previous.unlink(),
+    )
+    assert not BaseTrainer._cleanup_complete_interrupted_save(
+        trainer, *saved, 1, 1, 200)
+    assert previous.exists()
+
+
+def test_complete_bundle_applies_configured_retention():
+    calls = []
+    trainer = SimpleNamespace(
+        log_prefix="[test]",
+        _cleanup_old_checkpoints=lambda keep: calls.append(("model", keep)),
+        _cleanup_old_optimizer_states=lambda keep, current_step: calls.append(
+            ("optimizer", keep, current_step)),
+    )
+    assert BaseTrainer._cleanup_complete_interrupted_save(
+        trainer, True, True, True, 2, 1, 200)
+    assert calls == [("model", 2), ("optimizer", 1, 200)]
 
 
 def _touch(directory: Path, name: str) -> Path:

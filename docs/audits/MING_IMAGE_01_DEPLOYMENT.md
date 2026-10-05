@@ -365,6 +365,8 @@ that forbid `PngImageFile.load()` during new-image preflight and preserve the
 old supervision identity. On the same 32 images, uncached validation took
 0.727 s with full decoding versus 0.0276 s with metadata-only inspection
 (about 26x); both read the same source bytes for SHA-256.
+The metadata-cache read limit is 128 MiB so the 116,606-image run is not rejected
+by the previous 32 MiB bound; an oversized legacy-bound warm-cache case is tested.
 The combined dataset/progress CPU suite passed 49 cases, and edited modules
 compiled/imported without initializing CUDA. Initialization progress now retains
 the explicit `Validating Ming images` detail instead of a generic loading label.

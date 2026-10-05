@@ -469,7 +469,8 @@ def test_cancelled_preflight_does_not_replace_disk_cache(tmp_path):
     assert cache.read_bytes()==original and "_ming_record" not in value.items[0]
 
 
-def test_warm_plain_preflight_never_reads_image_payload(tmp_path, monkeypatch):
+@pytest.mark.parametrize("reported_cache_size", [None, 40 * 1024**2])
+def test_warm_plain_preflight_never_reads_image_payload(tmp_path, monkeypatch, reported_cache_size):
     from types import SimpleNamespace
     import core.models.ming_image_01.dataset as native
     primary = tmp_path / "image.png"
@@ -480,6 +481,13 @@ def test_warm_plain_preflight_never_reads_image_payload(tmp_path, monkeypatch):
     first = dataset()
     native.annotate_datasets([first], profile="generation_edit", validation_cache_path=cache)
     identity = first.items[0]["_ming_supervision_identity"]
+    if reported_cache_size is not None:
+        original_stat = Path.stat
+        def stat(path, *args, **kwargs):
+            if path == cache:
+                return SimpleNamespace(st_size=reported_cache_size)
+            return original_stat(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "stat", stat)
     original = Path.read_bytes
     def read(path):
         if path == primary:

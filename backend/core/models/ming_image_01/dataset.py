@@ -341,7 +341,7 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
     if validation_cache_path is not None and profile == "generation_edit":
         cache_path = Path(validation_cache_path)
         try:
-            if cache_path.stat().st_size <= 32 * 1024 * 1024:
+            if cache_path.stat().st_size <= 128 * 1024 * 1024:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
                 if isinstance(cached, dict) and type(cached.get("version")) is int and cached["version"] in (1, 2) and isinstance(cached.get("sizes"), dict):
                     validated_sizes = cached["sizes"]

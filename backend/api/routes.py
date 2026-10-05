@@ -45,6 +45,7 @@ from utils.upload_names import recover_upload_filename
 from config.settings import settings
 from api.websocket import manager
 from api.training_media import PreviewSize
+from core.datasets.previews import DatasetPreviewSize
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, IMG2TXT_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
@@ -14419,7 +14420,7 @@ def get_dataset_item_preview(
     dataset_id: int,
     item_id: int,
     request: Request,
-    size: Literal[128, 256, 512] = DATASET_DEFAULTS["preview_size"],
+    size: DatasetPreviewSize = DatasetPreviewSize(DATASET_DEFAULTS["preview_size"]),
     db: Session = Depends(get_datasets_db),
 ):
     from core.datasets.previews import PreviewUnavailableError, get_or_create_preview

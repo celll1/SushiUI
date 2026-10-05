@@ -10389,7 +10389,7 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}
         '422':
-          description: Preview cannot be decoded
+          description: Unsupported preview size or preview cannot be decoded
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ErrorResponse'}

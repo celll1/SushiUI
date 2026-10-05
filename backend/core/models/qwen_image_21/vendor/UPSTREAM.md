@@ -5,3 +5,5 @@ The files in this directory derive from Hugging Face Diffusers commit
 
 Local changes are limited to imports that bind the components to SushiUI's
 installed Diffusers package and to integration fixes recorded in git history.
+
+Caption encoding limits unused vocabulary logits to one token and retains the scoped final-RMSNorm bypass required by the released DiT's conditioning.

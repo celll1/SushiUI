@@ -703,7 +703,8 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 #     embed()
                 # torch.distributed.barrier()
 
-                outputs = self.model.forward(
+                # Conditioning consumes decoder states, never vocabulary logits.
+                outputs = self.model.model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
@@ -758,7 +759,7 @@ class BailingMM2NativeForConditionalGeneration(PreTrainedModel):
                 scale_embeds = self.proj_in(scale_hidden)
                 seq_shape = scale_embeds.shape
                 with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16, enabled=self.device.type == "cuda"):
-                    scale_embeds = self.connector(
+                    scale_embeds = self.connector.model(
                         inputs_embeds=scale_embeds,
                         attention_mask=torch.ones(seq_shape[0],1,seq_shape[1],seq_shape[1]).to(scale_embeds.device),
                         output_hidden_states=True

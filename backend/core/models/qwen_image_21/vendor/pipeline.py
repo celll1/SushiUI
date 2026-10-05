@@ -289,6 +289,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             "input_ids": model_inputs.input_ids,
             "attention_mask": model_inputs.attention_mask,
             "output_hidden_states": True,
+            "logits_to_keep": 1,
         }
         if not is_t2i and hasattr(model_inputs, "pixel_values"):
             forward_kwargs.update(pixel_values=model_inputs.pixel_values, image_grid_thw=model_inputs.image_grid_thw)

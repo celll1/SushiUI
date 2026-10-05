@@ -50,6 +50,29 @@ from api.routes import (  # noqa: E402
 from core.training.training_config import TrainingConfigGenerator  # noqa: E402
 
 
+def test_legacy_concept_settings_fill_nested_defaults_without_overwriting_saved_values():
+    from api.param_defaults import TRAINING_DEFAULTS
+    saved = {"enabled": True, "focus_batches": 12, "caption_aliases": {"cat": "feline"}}
+    restored = _extract_request_params_from_yaml(
+        {"train": {"concept_batch_order": saved}}, "full_finetune")
+    assert restored["concept_batch_order"] == {
+        **TRAINING_DEFAULTS["concept_batch_order"], **saved}
+    assert saved == {"enabled": True, "focus_batches": 12, "caption_aliases": {"cat": "feline"}}
+
+
+def test_random_concept_settings_preserve_counts_and_explicit_invalid_values():
+    saved = {"enabled": True, "batch_multiplier": 4,
+             "batch_multiplier_mode": "uniform_int",
+             "batch_multiplier_min": 3, "batch_multiplier_max": 5}
+    restored = _extract_request_params_from_yaml(
+        {"train": {"concept_batch_order": saved}}, "full_finetune")
+    assert all(restored["concept_batch_order"][key] == value for key, value in saved.items())
+    saved["batch_multiplier_min"] = 0
+    restored = _extract_request_params_from_yaml(
+        {"train": {"concept_batch_order": saved}}, "full_finetune")
+    assert restored["concept_batch_order"]["batch_multiplier_min"] == 0
+
+
 def _accepts_none(annotation: Any) -> bool:
     return (annotation is Any or annotation is None
             or type(None) in get_args(annotation))

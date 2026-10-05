@@ -6261,6 +6261,15 @@ class BaseTrainer(ABC):
                         raise RuntimeError(f"duplicate optimizer parameter name {name!r}")
                     saved_by_name[name] = saved_state[saved_id]
 
+        if (getattr(self, "_concept_multiplier_active", False) and not saved_state
+                and saved_names == current_names
+                and optimizer_state.get("_sushi_opt_class") == type(optimizer).__name__):
+            # Before the first GAS update, empty moments still have a valid owner.
+            optimizer.load_state_dict({key: value for key, value in optimizer_state.items()
+                                       if key != "_sushi_param_names"})
+            print(f"{self.log_prefix} Restored empty pre-update exposure optimizer from {label}")
+            return True
+
         live = optimizer.state_dict()
         remapped, fresh_ids, fresh_groups = {}, set(), set()
         if len(current_names) != len(optimizer.param_groups):
@@ -18734,18 +18743,6 @@ class BaseTrainer(ABC):
                     # exactly one batch's worth of embeddings per outer
                     # iteration so the dict size stays bounded.
                     if te_prefetcher is not None and swap_buffer is not None:
-                        # Evict the previous batch's entries — they were fully
-                        # consumed by the train step we just finished. Without
-                        # this, swap_buffer grows monotonically across the epoch
-                        # and pins ~1 MB of CPU RAM per image (Anima Qwen3
-                        # embeddings) for the entire run.
-                        if batch_idx > 0:
-                            for prev_entry in batches[batch_idx - 1]:
-                                prev_item, _ = prev_entry if isinstance(prev_entry, tuple) else (prev_entry, None)
-                                if isinstance(prev_item, dict):
-                                    ip = prev_item.get("image_path")
-                                    if ip is not None:
-                                        swap_buffer.pop(ip, None)
                         # Only top up when the entries for the *current* batch
                         # aren't already in the buffer (the worker writes
                         # ahead in batch order). We pull until we've covered
@@ -18759,7 +18756,7 @@ class BaseTrainer(ABC):
                             if pulled_idx < 0:
                                 # Sentinel — worker is done; nothing more to drain.
                                 break
-                            # Merge into swap_buffer keyed by image_path
+                            # Keep only the current batch, including occurrence keys.
                             swap_buffer.clear()
                             swap_buffer.update(payload)
                             next_swap_at_step = pulled_idx + 1

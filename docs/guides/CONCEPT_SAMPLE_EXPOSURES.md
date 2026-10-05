@@ -95,7 +95,8 @@ pending gradients and checkpoint rotation removes their sidecar. Native Ming
 retains its existing optimizer-payload runtime owner instead of duplicating the
 same gradients in another file. Matching optimizer restoration is required before
 pending shared gradients are restored. MNT checkpoint boundaries remain completed
-batch boundaries.
+batch boundaries. Before the first optimizer update, empty moments are accepted
+only with matching optimizer class and ordered parameter names.
 
 Actual batch counts are planned for every epoch when multiplication is active,
 including random counts and partial buckets. Epoch totals are not extrapolated
@@ -116,9 +117,25 @@ buckets, caption/worker isolation, occurrence-aware rebasing, public config
 roundtrip and pending shared gradients. Native Ming shared-loop tests use batch
 size 2, MNT 2 and GAS 3 and compare continuous execution with mid-window resume:
 conditioning, latents, noise, timesteps and final weights match exactly on CPU for
-swap/fixed and CPU-prefetch/random paths. GPU acceptance and owner-run frontend
-build/type-check must be recorded separately. Concept acquisition and image
-quality improvements are unmeasured.
+swap/fixed and CPU-prefetch/random paths.
+
+On 2026-10-05, real Ming Design INT8 LoRA GPU runs #173 (fixed 2) and #174
+(random 2–3) used batch size 2, MNT 2, GAS 3, two-batch encoder windows and
+conditioning dropout 0.5. Both completed four steps, saved pending CUDA gradients,
+then resumed to step eight with the same plan digest and finite losses. With 404
+source images, fixed planning produced 808 exposures / 462 batches, and random
+planning produced 1008 exposures / 623 batches. #174 used one base batch per
+focus segment, exercising multiplier occurrences in the initial training window.
+GPU continuation was checked functionally; exact trace/weight equality was checked
+on CPU. Other architectures were covered through shared-path tests, not real-model
+GPU runs. Existing #172 parameters were preserved.
+
+The regression suite passed 168 tests; focused checks also cover YAML rejection
+before model loading and restoring an empty pre-update optimizer. Backend modules
+passed compilation and real imports without creating a CUDA context. Frontend
+types, default merging, fixed/random controls, edit/copy/save and input error paths
+were reviewed statically; owner-run build/type-check and visual confirmation remain.
+Concept acquisition and image quality improvements are unmeasured.
 
 See the original [concept ordering contract](../plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md)
 for category matching and unsupported task combinations.

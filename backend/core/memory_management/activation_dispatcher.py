@@ -43,6 +43,7 @@ machine-local PoC work log is not a runtime dependency.
 """
 
 import contextlib
+import weakref
 from dataclasses import dataclass
 from typing import Optional
 
@@ -194,9 +195,24 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
     else:
         engine = None
 
+    saved_tensors = {}
+
+    def remember(tensor, key, saved):
+        def expired(reference):
+            if saved_tensors.get(key, (None,))[0] is reference:
+                saved_tensors.pop(key, None)
+        saved_tensors[key] = (weakref.ref(tensor, expired), saved)
+        return saved
+
     def pack(t: torch.Tensor):
         if (t.is_cuda and t.is_floating_point() and not t.is_leaf
                 and t.numel() * t.element_size() >= threshold_bytes):
+            key = (id(t), t._version)
+            previous = saved_tensors.get(key)
+            if previous is not None and previous[0]() is t:
+                if stats is not None:
+                    stats["deduplicated_bytes"] = stats.get("deduplicated_bytes", 0) + t.numel() * t.element_size()
+                return previous[1]
             if engine is not None:
                 saved = engine.pack(t)
                 if saved is not None:
@@ -205,7 +221,7 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
                         stats["async_bytes"] = stats.get("async_bytes", 0) + (
                             t.numel() * t.element_size()
                         )
-                    return ("async_cpu", saved)
+                    return remember(t, key, ("async_cpu", saved))
             cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=use_pinned)
             cpu.copy_(t, non_blocking=False)
             if stats is not None:
@@ -214,7 +230,7 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
                     stats["sync_fallback_bytes"] = stats.get(
                         "sync_fallback_bytes", 0
                     ) + t.numel() * t.element_size()
-            return ("cpu", cpu, t.device)
+            return remember(t, key, ("cpu", cpu, t.device))
         return ("gpu", t)
 
     def unpack(p):

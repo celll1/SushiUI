@@ -185,9 +185,34 @@ latent bucket transferred 21.145 GiB (2.000 GiB async, 19.145 GiB pageable
 fallback), peaking at 36.35 GiB allocated; 192×176 transferred 22.668 GiB and
 peaked at 37.05 GiB. The 2 GiB pinned arena cap is respected and the remaining
 saved tensors use synchronous fallback. No OOM occurred in these checked steps.
-The run remains active toward five epochs with five-epoch saves and one retained
+The run was configured for five epochs with five-epoch saves and one retained
 model/optimizer generation. This is a functional update/offload verification,
 not a completed five-epoch training or final-checkpoint acceptance.
+
+### Shared step overhead reductions (2026-10-05)
+
+After the owner stopped run 172, ordinary non-paged `AdamW8bit` updates were
+changed to synchronize once per device at step end instead of once per
+parameter. The existing bitsandbytes kernels, state format, closure and
+optimizer hooks are retained. Paged and fused/per-parameter update paths
+keep their existing owners. Monitor-only gradient probes reuse the norm
+accumulator; adaptive clipping and global gradient clipping are unchanged.
+
+Activation offload reuses a saved CPU snapshot only for the same live tensor
+object and version. Weak references avoid retaining source GPU tensors; distinct
+versions and views keep independent snapshots. Both sync and async modes use
+this deduplication. Per-bucket logs report avoided duplicate saves separately
+from actual transfer bytes. The pinned budget remains 2 GiB for run 172.
+
+Small CUDA tests verify exact FP32/BF16 optimizer updates and state, state reload,
+step hooks, offload gradient equality, versioned snapshots and bounded async
+fallback. A synthetic 256-parameter BF16 AdamW8bit measurement (65,536 elements
+each, 20 measured updates after warmup) reduced median update time from
+8.77 to 6.13 ms. A repeated-save workload reduced D2H volume from 1 to 0.5 GiB
+and sync forward/backward time from 164 to 134 ms. With the same workload,
+128/512 MiB async budgets measured 98/65 ms respectively. These are isolated
+measurements, not a native Ming full-step speedup; H2D restores still occur
+on demand. Run 172 stays stopped and its training configuration is unchanged.
 
 The native training-batch bridge now preserves RGBA target frames independently
 through VAE encoding and keeps ragged edit references outside target supervision.

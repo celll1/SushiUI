@@ -194,6 +194,64 @@ equivalence for ordinary AdamW and actual 8bit AdamW. Compilation and real
 imports of all changed modules pass with CUDA initialization disabled.
 Run 172 stopped and saved a complete step-1274 bundle before this update.
 
+Native verification: run 172 restored all 521 named optimizer-state tensors
+from step 1274, with no fresh state and no run-parameter changes. At debug
+step 1300, allocation after component parking and VAE loading was 0.52 GiB
+(this is not decode peak). All three decoded WebPs were saved and training
+continued through step 1303 with finite loss. The debug iteration took about
+29 seconds, including CPU parking, decode and restoration; ordinary adjacent
+iterations were about 4–8 seconds. Historical missing WebPs are not regenerated.
+
+## Caption encoding: static assessment
+
+No caption-path edits or additional GPU benchmarks were made for this review.
+The current batch-1 swap window processes 256 batches sequentially in
+`MingTrainingBatchBuffer._fill_conditions`. Residency is grouped for the whole
+window, so it does not reload the conditioner for every caption. The frozen
+encoder runs without gradients and stages vision only for reference inputs.
+
+Priorities for an implementation pass:
+
+1. **Skip unused vocabulary projection.** Ming conditioning calls the full
+   `BailingMoeV2ForCausalLM.forward` with default `num_logits_to_keep=0`, which
+   projects every token into the 157,184-word vocabulary even though only
+   hidden states are consumed. A hidden-state-only decoder path, or initially
+   limiting logits to one token, avoids this work. Preserve layers 5/12/20 and
+   the native query/direct streams. Qwen 2.1 also invokes a conditional-LM
+   wrapper with default full-token logits; its installed forward offers
+   `logits_to_keep`, so the same opportunity deserves a shared review.
+2. **Independent encoder microbatches.** The text-only Ming fast path accepts
+   multiple prompts but receives the training batch size (currently one).
+   Grouping compatible captions into batches of 2–4 may amortize the many
+   small expert launches. Native padding and direct-stream lengths must remain
+   equivalent after splitting results: the direct projection has bias and
+   there is no direct-stream mask in `MingConditioning`. Group equal token
+   lengths and compatible geometry first; test against single-caption output.
+3. **MoE dispatch.** Each MoE layer copies token counts to CPU with
+   `.cpu().numpy()` and loops over nonempty experts in Python. The shipped
+   MLLM has 20 layers and 256 experts per layer. This introduces repeated
+   synchronization and many small GEMMs; grouped expert execution could help,
+   but must support the current INT8 conversion and preserve routing/reduction
+   semantics. Static inspection alone cannot establish the dominant cost.
+4. **Preparation/transport.** Native learnable-token preparation copies IDs
+   and masks GPU→CPU→GPU to manipulate Python lists, and direct-stream bound
+   selection uses `.item()`. Prepare indices on CPU before transfer or use
+   equivalent tensor operations. Each condition is copied back to CPU before
+   the next caption; bounded pinned output buffering could overlap transfer.
+5. **Bounded reuse and smaller intermediates.** Reuse frozen conditioning in
+   RAM only under an exact prompt/geometry/reference/weight identity, with a
+   byte cap. Swap mode currently consumes its entries and recomputes subsequent
+   windows/epochs. Connector output requests every hidden state but uses only
+   the last, while main-LLM selected-layer capture could retain just the needed
+   layers. Repeated image-byte hashing during caption preparation is another
+   candidate for reuse under the existing validated dataset-snapshot contract.
+
+Ming performs more than caption embedding: the released model appends 256
+learnable query tokens plus boundary tokens, runs its MoE MLLM, combines three
+hidden layers for direct conditioning and runs a separate query connector.
+Removing these native operations would change conditioning, not optimize it.
+No speedup multiplier is justified until isolated equivalence and timing tests.
+
 ## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization

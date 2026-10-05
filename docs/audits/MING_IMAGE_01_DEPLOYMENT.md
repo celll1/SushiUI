@@ -357,6 +357,14 @@ zero image payload bytes with the new warm path: 0.0279 s versus 0.00551 s
 (about 5x). The one-time v1 upgrade took 0.0247 s. This does not predict whole
 dataset or network-drive latency. The dataset/buffer/cache/pixel-prefetch CPU
 regression suite passed 109 tests without using the training GPU.
+
+PNG refinement: Pillow's `PNG.getexif()` itself calls `load()` when EXIF is
+absent. Preflight now scans PNG metadata chunks, including EXIF after IDAT,
+without decompressing pixels. The final 51-case dataset suite includes tests
+that forbid `PngImageFile.load()` during new-image preflight and preserve the
+old supervision identity. On the same 32 images, uncached validation took
+0.727 s with full decoding versus 0.0276 s with metadata-only inspection
+(about 26x); both read the same source bytes for SHA-256.
 The combined dataset/progress CPU suite passed 49 cases, and edited modules
 compiled/imported without initializing CUDA. Initialization progress now retains
 the explicit `Validating Ming images` detail instead of a generic loading label.

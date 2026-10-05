@@ -82,7 +82,31 @@ def _file_stamp(path):
 def _header_size(data):
     with Image.open(io.BytesIO(data)) as image:
         size = image.size
-        if image.getexif().get(274) in (5, 6, 7, 8):
+        if image.format == "PNG":
+            from PIL.PngImagePlugin import PngStream
+            # PNG.getexif() calls load(); metadata may also follow IDAT.
+            stream = PngStream(io.BytesIO(data))
+            position = 8
+            try:
+                while position + 12 <= len(data):
+                    length = int.from_bytes(data[position:position + 4], "big")
+                    cid = data[position + 4:position + 8]
+                    end = position + 12 + length
+                    if end > len(data):
+                        raise ValueError("Truncated Ming PNG metadata")
+                    if cid in {b"eXIf", b"iTXt", b"zTXt", b"tEXt"}:
+                        stream.fp.seek(position + 8)
+                        stream.call(cid, position + 8, length)
+                    if cid == b"IEND":
+                        break
+                    position = end
+                image.info.update(stream.im_info)
+            finally:
+                stream.close()
+            orientation = Image.Image.getexif(image).get(274)
+        else:
+            orientation = image.getexif().get(274)
+        if orientation in (5, 6, 7, 8):
             size = size[::-1]
         return size
 

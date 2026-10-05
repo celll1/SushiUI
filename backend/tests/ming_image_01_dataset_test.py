@@ -531,3 +531,26 @@ def test_quick_record_checks_content_and_file_changes_at_use(tmp_path):
         native.verify_record_files(record)
     with pytest.raises(ValueError, match="changed after preflight"):
         native.load_pixels(record, caption="", width=32, height=32)
+
+
+@pytest.mark.parametrize("late_exif", [False, True])
+def test_new_png_preflight_reads_orientation_without_any_pixel_decode(tmp_path, monkeypatch, late_exif):
+    import struct
+    import zlib
+    from PIL.PngImagePlugin import PngImageFile
+    import core.models.ming_image_01.dataset as native
+    primary = tmp_path / "image.png"
+    Image.new("RGB", (32, 48)).save(primary)
+    if late_exif:
+        exif = Image.Exif()
+        exif[274] = 6
+        payload = exif.tobytes()[6:]
+        chunk = (struct.pack(">I", len(payload)) + b"eXIf" + payload
+                 + struct.pack(">I", zlib.crc32(b"eXIf" + payload)))
+        data = primary.read_bytes()
+        primary.write_bytes(data[:-12] + chunk + data[-12:])
+    strict = native.inspect_item(primary, root=tmp_path, profile="generation_edit")
+    monkeypatch.setattr(PngImageFile, "load", lambda *a, **k: pytest.fail("PNG pixels decoded during preflight"))
+    quick = native.inspect_item(primary, root=tmp_path, profile="generation_edit", quick_plain=True)
+    assert quick.source_size == ((48, 32) if late_exif else (32, 48))
+    assert native.supervision_identity(quick) == native.supervision_identity(strict)

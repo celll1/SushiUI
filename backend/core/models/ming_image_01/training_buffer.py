@@ -7,7 +7,7 @@ import torch
 
 from .cache import identity_key
 from .dataset import (load_shared_items, prepare_shared_items_latents, prepare_record_conditioning,
-                      shared_conditioning_context, supervision_identity, verify_record_content)
+                      shared_conditioning_context, supervision_identity, verify_record_files)
 from .training_residency import grouped_encoder_phase
 from .pixel_prefetch import prefetch_pixels
 
@@ -101,7 +101,7 @@ class MingBatchBuffer:
                     from .prompting import prepare_inputs
                     from .training_data import MingConditioningBatch
                     for item, _ in pairs:
-                        verify_record_content(item["_ming_record"])
+                        verify_record_files(item["_ming_record"])
                     item = pairs[0][0]
                     prepared = prepare_inputs(self.trainer.ming_image_01_components.processor,
                         [item.get("caption", "") for item, _ in pairs], references=[[] for _ in pairs],
@@ -126,7 +126,7 @@ class MingBatchBuffer:
             raise ValueError("Invalid Ming batch-buffer cursor")
         identity = batch_identity(pairs)
         for item, _dataset in pairs:
-            verify_record_content(item["_ming_record"])
+            verify_record_files(item["_ming_record"])
         frozen = self.trainer.ming_image_01_components.conditioner.cacheable
         latent_due = (self.policy.modes["latent_encoding_mode"] == "swap_onthefly"
                       and (index not in self.latents or self.latents[index][0] != identity))

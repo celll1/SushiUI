@@ -448,7 +448,7 @@ def test_plain_design_preflight_cache_requires_identical_content(tmp_path, monke
     value=dataset();value.items[0]["reference_images"]=references
     native.annotate_datasets([value],profile="generation_edit",validation_cache_path=cache)
     record=value.items[0]["_ming_record"]
-    assert len(calls)==(0 if change=="none" else 2 if change=="reference" else 1)
+    assert len(calls)==(2 if change=="reference" else 1 if change=="manifest" else 0)
     assert record.source_size==((64,32) if change=="pixels" else (32,32))
     assert record.manifest_path is not None if change=="manifest" else record.manifest_path is None
     native.verify_record_content(record)
@@ -467,3 +467,67 @@ def test_cancelled_preflight_does_not_replace_disk_cache(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         annotate_datasets([value],profile="generation_edit",validation_cache_path=cache,stop_check=cancel)
     assert cache.read_bytes()==original and "_ming_record" not in value.items[0]
+
+
+def test_warm_plain_preflight_never_reads_image_payload(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import core.models.ming_image_01.dataset as native
+    primary = tmp_path / "image.png"
+    Image.new("RGB", (32, 48), "red").save(primary)
+    cache = tmp_path / "cache.json"
+    def dataset():
+        return SimpleNamespace(dataset_root=tmp_path, items=[{"image_path": str(primary)}])
+    first = dataset()
+    native.annotate_datasets([first], profile="generation_edit", validation_cache_path=cache)
+    identity = first.items[0]["_ming_supervision_identity"]
+    original = Path.read_bytes
+    def read(path):
+        if path == primary:
+            raise AssertionError("Unchanged image payload was read")
+        return original(path)
+    monkeypatch.setattr(Path, "read_bytes", read)
+    second = dataset()
+    native.annotate_datasets([second], profile="generation_edit", validation_cache_path=cache)
+    assert second.items[0]["_ming_supervision_identity"] == identity
+    native.verify_record_files(second.items[0]["_ming_record"])
+    assert json.loads(cache.read_text())["version"] == 2
+
+
+def test_legacy_size_cache_upgrades_without_decode_or_identity_change(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import core.models.ming_image_01.dataset as native
+    primary = tmp_path / "image.png"
+    Image.new("RGB", (32, 32), "red").save(primary)
+    record = native.inspect_item(primary, root=tmp_path, profile="generation_edit")
+    cache = tmp_path / "cache.json"
+    cache.write_text(json.dumps({"version": 1, "sizes": {
+        str(primary): {"sha256": record.targets[0].sha256, "source_size": [32, 32]}}}))
+    monkeypatch.setattr(native, "_decode", lambda *a: pytest.fail("Unexpected full decode"))
+    value = SimpleNamespace(dataset_root=tmp_path, items=[{"image_path": str(primary)}])
+    native.annotate_datasets([value], profile="generation_edit", validation_cache_path=cache)
+    assert value.items[0]["_ming_supervision_identity"] == native.supervision_identity(record)
+    assert json.loads(cache.read_text())["sizes"][str(primary)]["file_stamp"]
+
+
+def test_quick_preflight_exif_geometry_matches_actual_decode(tmp_path):
+    import core.models.ming_image_01.dataset as native
+    primary = tmp_path / "image.jpg"
+    exif = Image.Exif()
+    exif[274] = 6
+    Image.new("RGB", (32, 48)).save(primary, exif=exif)
+    record = native.inspect_item(primary, root=tmp_path, profile="generation_edit", quick_plain=True)
+    assert record.source_size == (48, 32)
+    pixels = native.load_pixels(record, caption="", width=48, height=32)
+    assert pixels.pixels.shape == (4, 1, 32, 48)
+
+
+def test_quick_record_checks_content_and_file_changes_at_use(tmp_path):
+    import core.models.ming_image_01.dataset as native
+    primary = tmp_path / "image.png"
+    Image.new("RGB", (32, 32), "red").save(primary)
+    record = native.inspect_item(primary, root=tmp_path, profile="generation_edit", quick_plain=True)
+    Image.new("RGB", (32, 32), "blue").save(primary)
+    with pytest.raises(ValueError, match="changed after preflight"):
+        native.verify_record_files(record)
+    with pytest.raises(ValueError, match="changed after preflight"):
+        native.load_pixels(record, caption="", width=32, height=32)

@@ -58,6 +58,10 @@ machine-local working material.
 
 ## Training and data
 
+Frozen VAE encode batching assessment (all training architectures, Ming GPU
+measurements and proposed independent configuration):
+[VAE_ENCODE_BATCHING_ASSESSMENT.md](../audits/VAE_ENCODE_BATCHING_ASSESSMENT.md).
+
 | Document | Purpose |
 |---|---|
 | [docs/reference/DATASETS.md](../reference/DATASETS.md) | Dataset formats and validation requirements. |

@@ -173,6 +173,31 @@ different buckets. The run remains active for normal training.
 
 ## Prior audit validation
 
+## Debug VAE decode residency follow-up
+
+Deferred debug decode now shares `debug_decode_residency.py` across Ming,
+Qwen 2.1, SenseNova, SDXL Chimera and latent MiniT2I. It parks non-VAE model
+parameters, buffers, accumulated gradients, optimizer state, EMA shadows and
+idle block-swap slots on CPU, preserving object identity and each original
+device. CPU master bindings stay intact. The VAE is released before restoring
+training residency; restoration failure is fatal rather than an optional
+preview warning. Decode itself remains optional if it fails after successful
+restoration. This adds CPU RAM and PCIe transfer work on debug steps only.
+
+MiniT2I formerly decoded during its forward while its graph was live. Its
+CPU preview snapshots now decode after backward, before the training step
+returns. Differentiable crop-decode losses and normal sampling are outside
+this non-training scope.
+
+35 focused tests pass, including native Ming debug/backward invariance,
+decode/save failure cleanup, CPU VAE dtype/mode restoration, mixed CPU/GPU
+buffers, EMA/slot identity, gradient preservation and exact next-update
+equivalence for ordinary AdamW and actual 8bit AdamW. Compilation and real
+imports of all changed modules pass with CUDA initialization disabled.
+Run 172 stopped and saved a complete step-1274 bundle before this update.
+
+## Prior audit validation
+
 Changed backend files pass `py_compile` and real imports with CUDA initialization
 disabled. CPU gates cover repeated parameter metrics against the full-snapshot
 oracle in FP32/BF16/FP16, snapshot independence, unchanged native prompt/vision

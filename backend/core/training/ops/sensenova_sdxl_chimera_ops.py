@@ -777,14 +777,9 @@ def flush_pending_debug_previews(trainer) -> None:
 
     vae = trainer.vae
     parameter = next(vae.parameters())
-    original_device = parameter.device
-    decode_device = torch.device(getattr(trainer, "device", original_device))
-    was_training = vae.training
-    try:
-        if decode_device.type == "cuda":
-            torch.cuda.empty_cache()
-        vae.to(device=decode_device)
-        vae.eval()
+    decode_device = torch.device(getattr(trainer, "device", parameter.device))
+    from core.training.debug_decode_residency import debug_decode_residency
+    with debug_decode_residency(trainer, vae):
         for name, tensor in pending["previews"]:
             image = decode_latents(vae, tensor, device=decode_device)
             image.save(
@@ -793,11 +788,6 @@ def flush_pending_debug_previews(trainer) -> None:
                 quality=80,
                 method=4,
             )
-    finally:
-        vae.to(device=original_device)
-        vae.train(was_training)
-        if decode_device.type == "cuda":
-            torch.cuda.empty_cache()
 
 
 def vae_encode(trainer, image_tensor: torch.Tensor, **_kwargs) -> torch.Tensor:

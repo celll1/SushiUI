@@ -43,6 +43,7 @@ from core.attention import (
     to_diffusers_backend,
 )
 from core.training import training_control_rpc as control_rpc
+from core.training.debug_decode_residency import DebugDecodeRestorationError
 from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_schedules import (
     LR_SCHEDULER_NAMES,
@@ -12584,12 +12585,22 @@ class BaseTrainer(ABC):
         # Free computation graph
         del loss, loss_for_backward, pred_loss, recon_loss
 
-        if self.is_sensenova:
+        if getattr(self, "is_minit2i", False):
+            try:
+                from core.training.ops.minit2i_ops import flush_pending_debug_previews
+                flush_pending_debug_previews(self)
+            except Exception as debug_error:
+                if isinstance(debug_error, DebugDecodeRestorationError):
+                    raise
+                print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
+        elif self.is_sensenova:
             try:
                 from core.training.ops.sensenova_ops import flush_pending_pixel_debug
 
                 flush_pending_pixel_debug(self)
             except Exception as debug_error:
+                if isinstance(debug_error, DebugDecodeRestorationError):
+                    raise
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         elif self.is_sensenova_sdxl_chimera:
             try:
@@ -12599,12 +12610,16 @@ class BaseTrainer(ABC):
 
                 flush_pending_debug_previews(self)
             except Exception as debug_error:
+                if isinstance(debug_error, DebugDecodeRestorationError):
+                    raise
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         elif getattr(self,"is_ming_image_01",False):
             try:
                 from core.models.ming_image_01.training_debug import flush_pending_debug_previews
                 flush_pending_debug_previews(self)
             except Exception as debug_error:
+                if isinstance(debug_error, DebugDecodeRestorationError):
+                    raise
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         elif self.is_qwen_image_21:
             try:
@@ -12612,6 +12627,8 @@ class BaseTrainer(ABC):
 
                 flush_pending_debug_previews(self)
             except Exception as debug_error:
+                if isinstance(debug_error, DebugDecodeRestorationError):
+                    raise
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
 
         return loss_value, pred_loss_value, recon_loss_value
@@ -12651,6 +12668,8 @@ class BaseTrainer(ABC):
             from core.models.ming_image_01.training_debug import flush_pending_debug_previews
             flush_pending_debug_previews(self)
         except Exception as debug_error:
+            if isinstance(debug_error, DebugDecodeRestorationError):
+                raise
             print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         return result
 
@@ -12711,6 +12730,8 @@ class BaseTrainer(ABC):
         try:
             qwen_image_21_ops.flush_pending_debug_previews(self)
         except Exception as debug_error:
+            if isinstance(debug_error, DebugDecodeRestorationError):
+                raise
             print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         self._flush_deferred_predicted_latent()
         self._flush_deferred_controlnet_metrics()

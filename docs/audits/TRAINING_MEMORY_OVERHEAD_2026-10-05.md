@@ -308,6 +308,51 @@ The first native optimizer update reached step 1440 with finite loss 0.584264
 and gradient norm 0.370451. The first iteration's 324-second elapsed time includes
 the initial swap refill and is not a steady-state per-step timing.
 
+## Live I/O follow-up: run 172
+
+The run remained active throughout this investigation. Its epoch-5 bucket logs
+report 18.492–22.276 GiB packed to CPU per measured step, with 3.651–3.744 GiB
+on the synchronous fallback path. These are **pack-side** bytes, not a measured
+D2H+H2D total. The 160x160 bucket reports 348 prefetch hits and 284 misses;
+the latter restores are discarded before the requested tensor is restored.
+Hit/miss counts do not establish the wasted byte volume.
+
+Nonblocking py-spy sampling separates two intervals:
+
+- A 20-second, 49-Hz sample caught the step-1650 debug decode. Most main-thread
+  samples were optimizer/model parking or WebP output. The staging worker was
+  idle; this interval is not representative of normal training.
+- A 30-second, 29-Hz sample after debug decode (starting after step 1656)
+  captured 859 main/autograd-thread samples each. Main-thread synchronous
+  `cpu.copy_` took 103 samples (12.0%); staging queue backpressure took 104
+  (12.1%). The autograd thread spent 176 samples (20.5%) waiting for restore
+  futures, split between speculative prefetch (89) and demand restore (87).
+  Background DB/TensorBoard/progress threads were predominantly idle.
+
+These are stack-residence estimates, not CUDA-event durations or a measured
+GPU-idle percentage; do not add percentages across threads. py-spy reported ten
+sampling errors, and could not resolve some line tables in the large trainer
+method. Transfer-hook and worker frames were available. The raw local traces
+are `local/deployment/ming172_io_speedscope.json` and
+`local/deployment/ming172_io_ordinary_speedscope.json`.
+
+Source inspection explains the sampled waits: one worker serializes D2H staging
+and H2D restoration; a full pending-GPU budget blocks forward in `future.result()`;
+D2H waits for each chunk before the pinned-to-pageable CPU copy. H2D similarly
+waits before reusing its single staging slice. Speculative restores also share
+this worker, and the current reverse-save heuristic misses often enough to
+justify a better policy. Noncontiguous or oversized activations are excluded
+from staged packing, but the current statistics cannot say which accounts for
+the synchronous fallback bytes.
+
+Next changes should measure useful/wasted H2D bytes and wait times, identify
+fallback layout/size/storage ownership, then compare separate D2H/H2D lanes and
+a better bounded restore order against the current implementation. Preserve
+the 2-GiB pinned cap, source-version checks, checkpoint recomputation ordering,
+repeated backward and error cleanup. Increasing the pinned arena or retaining
+extra GPU activations without host/VRAM headroom gates is not a demonstrated fix.
+No backend behavior or run configuration was changed by this follow-up.
+
 ## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization

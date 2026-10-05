@@ -159,6 +159,18 @@ microbenchmark measured 22.22 ms before and 23.02 ms after (five-run medians,
 staging overhead made this short-compute case 3.6% slower. This is not evidence
 of universal speedup; native model measurements are required.
 
+Run 172 resumed from step 491 and completed steps 492–498 with finite losses
+(0.263–0.900), unchanged run parameters, and the configured 200-step optimizer
+rewarmup. For latent bucket 152x224, previous synchronous fallback was
+19.706 GiB of 21.706 GiB transferred; after staging it was 3.743 GiB of
+21.460 GiB (about 81% less fallback). Restore lookahead recorded 348 hits and
+288 misses; peak allocation was 36.76 GiB versus the prior 36.45 GiB. Bucket
+168x216 transferred 24.022 GiB with 3.758 GiB fallback and 37.13 GiB peak.
+These are different training samples and fresh optimizer moments: they verify
+native operation and bounded memory, not an identical-input throughput gain.
+Post-initialization step intervals ranged from 4.2 to 12.5 seconds across
+different buckets. The run remains active for normal training.
+
 ## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization

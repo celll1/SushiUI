@@ -6,6 +6,7 @@ import hashlib
 import os
 import tempfile
 import threading
+from enum import IntEnum
 from pathlib import Path
 
 from PIL import Image, ImageOps
@@ -14,7 +15,13 @@ from database.models import DatasetItem
 from utils.image_utils import dataset_thumbnail_key
 
 
-PREVIEW_SIZES = (128, 256, 512)
+class DatasetPreviewSize(IntEnum):
+    SMALL = 128
+    MEDIUM = 256
+    LARGE = 512
+
+
+PREVIEW_SIZES = tuple(size.value for size in DatasetPreviewSize)
 MAX_CACHE_FILES = 4096
 MAX_CACHE_BYTES = 512 * 1024 * 1024
 _cache_lock = threading.RLock()

@@ -57,11 +57,8 @@ def flush_pending_debug_previews(trainer):
     pending=getattr(trainer,'_pending_ming_debug_previews',None)
     if pending is None:return
     del trainer._pending_ming_debug_previews
-    vae=trainer.vae;parameter=next(vae.parameters())
-    original_device,original_dtype,was_training=parameter.device,parameter.dtype,vae.training
-    device=torch.device(trainer.device)
-    try:
-        vae.to(device=device,dtype=trainer.vae_dtype).eval()
+    from core.training.debug_decode_residency import debug_decode_residency
+    with debug_decode_residency(trainer, trainer.vae, dtype=trainer.vae_dtype):
         from core.training.ops.ming_image_01_ops import vae_decode
         with torch.inference_mode():
             for name,latent in pending['previews']:
@@ -70,5 +67,4 @@ def flush_pending_debug_previews(trainer):
                 array=((pixels[0].float().clamp(-1,1)+1)*127.5).round().byte().permute(1,2,3,0).cpu().numpy()
                 strip=np.concatenate(list(array),axis=1)
                 Image.fromarray(strip).save(pending['path']/f"decode_t{pending['timestep']:.4f}_{name}.webp",'WEBP',lossless=True)
-    finally:
-        vae.to(device=original_device,dtype=original_dtype).train(was_training)
+                del pixels, array, strip

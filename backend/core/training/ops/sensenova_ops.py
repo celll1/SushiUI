@@ -2228,12 +2228,8 @@ def flush_pending_pixel_debug(trainer: Any) -> None:
     original_device = parameter.device
     original_dtype = parameter.dtype
     decode_device = torch.device(getattr(trainer, "device", original_device))
-    was_training = vae.training
-    try:
-        if decode_device.type == "cuda":
-            torch.cuda.empty_cache()
-        vae.to(device=decode_device, dtype=original_dtype)
-        vae.eval()
+    from core.training.debug_decode_residency import debug_decode_residency
+    with debug_decode_residency(trainer, vae, dtype=original_dtype):
         with torch.inference_mode():
             for name, tensor in pending["previews"]:
                 preview = _decode(
@@ -2249,11 +2245,6 @@ def flush_pending_pixel_debug(trainer: Any) -> None:
                     method=4,
                 )
                 del preview
-    finally:
-        vae.to(device=original_device, dtype=original_dtype)
-        vae.train(was_training)
-        if decode_device.type == "cuda":
-            torch.cuda.empty_cache()
 
 
 def _crop_decode_aux_loss(

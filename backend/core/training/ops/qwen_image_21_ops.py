@@ -663,15 +663,8 @@ def flush_pending_debug_previews(trainer) -> None:
     if pending is None:
         return
     delattr(trainer, "_pending_qwen_debug_previews")
-    vae = trainer.vae
-    parameter = next(vae.parameters())
-    original_device, original_dtype = parameter.device, parameter.dtype
-    decode_device = torch.device(trainer.device)
-    was_training = vae.training
-    try:
-        if decode_device.type == "cuda":
-            torch.cuda.empty_cache()
-        vae.to(device=decode_device, dtype=trainer.vae_dtype).eval()
+    from core.training.debug_decode_residency import debug_decode_residency
+    with debug_decode_residency(trainer, trainer.vae, dtype=trainer.vae_dtype):
         with torch.inference_mode():
             for name, grid in pending["previews"]:
                 packed = grid.flatten(2).transpose(1, 2)
@@ -687,10 +680,6 @@ def flush_pending_debug_previews(trainer) -> None:
                     "WEBP", quality=80, method=4,
                 )
                 del decoded, image
-    finally:
-        vae.to(device=original_device, dtype=original_dtype).train(was_training)
-        if decode_device.type == "cuda":
-            torch.cuda.empty_cache()
 
 
 def train_step(

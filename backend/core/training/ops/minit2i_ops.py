@@ -450,30 +450,36 @@ def train_step(
             torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
 
             if will_decode:
-                # Decode the noisy x_t, the predicted x0, and the target latent to
-                # RGB for a visual sanity check / 3-way comparison (noisy ⇔
-                # predicted ⇔ target). VAE tiling keeps this cheap at any res.
-                from core.models.minit2i.minit2i_vae import denormalize_latent
-                from PIL import Image as _Image
-                vae_dev = next(trainer.vae.parameters()).device
-                with torch.no_grad():
-                    for name, lat in (("noisy", x_t[0:1]), ("target", images[0:1]), ("pred_x0", x0_pred[0:1])):
-                        z = denormalize_latent(lat.to(device=vae_dev, dtype=trainer.vae_dtype), trainer.vae)
-                        img = trainer.vae.decode(z).sample  # [1,3,H,W] in ~[-1,1]
-                        arr = ((img[0].float().clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)
-                        arr = arr.permute(1, 2, 0).cpu().numpy()
-                        # WebP (lossy q80) — debug previews accumulate (every N
-                        # steps x 2 images); far smaller than PNG, fine for visual checks.
-                        _Image.fromarray(arr).save(
-                            debug_save_path / f"decode_t{t_val:.4f}_{name}.webp",
-                            "WEBP", quality=80, method=4,
-                        )
+                trainer._pending_minit2i_debug_previews = {
+                    "path": debug_save_path, "timestep": t_val,
+                    "previews": tuple((name, lat.detach().cpu()) for name, lat in (
+                        ("noisy", x_t[0:1]), ("target", images[0:1]), ("pred_x0", x0_pred[0:1]))),
+                }
         except Exception as _dbg_e:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, x_t, target, v_pred, x0_pred, denom
     return loss, pred_loss_value, recon_loss_value
+
+
+@torch.no_grad()
+def flush_pending_debug_previews(trainer):
+    pending = getattr(trainer, "_pending_minit2i_debug_previews", None)
+    if pending is None:
+        return
+    del trainer._pending_minit2i_debug_previews
+    from core.training.debug_decode_residency import debug_decode_residency
+    from core.models.minit2i.minit2i_vae import denormalize_latent
+    from PIL import Image
+    with debug_decode_residency(trainer, trainer.vae, dtype=trainer.vae_dtype):
+        for name, latent in pending["previews"]:
+            z = denormalize_latent(latent.to(device=trainer.device, dtype=trainer.vae_dtype), trainer.vae)
+            pixels = trainer.vae.decode(z).sample
+            array = ((pixels[0].float().clamp(-1, 1) + 1)*127.5).round().byte().permute(1, 2, 0).cpu().numpy()
+            Image.fromarray(array).save(pending["path"]/f"decode_t{pending['timestep']:.4f}_{name}.webp",
+                                       "WEBP", quality=80, method=4)
+            del z, pixels, array
 
 
 # ============================================================

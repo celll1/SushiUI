@@ -656,6 +656,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       archCapabilities, getModelArchitecture(baseModelPath), feature, trainingMethod
     );
   const blockSwapUnsupported = unsupportedTrainingFeature("block_swap");
+  const conceptOrderUnsupported = unsupportedTrainingFeature("concept_batch_order");
+  const conceptOrderAdvisory = trainingFeatureAdvisory(
+    archCapabilities, getModelArchitecture(baseModelPath), "concept_batch_order", trainingMethod);
   const fusedGroupsUnsupported = unsupportedTrainingFeature("fused_optimizer_groups");
   const referenceImagesUnsupported = unsupportedTrainingFeature("reference_images");
   const referenceConditioningEnabled = (
@@ -2178,6 +2181,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     e.preventDefault();
 
     if (conceptOrder?.enabled) {
+      if (conceptOrderUnsupported) {
+        setError(conceptOrderUnsupported);
+        return;
+      }
       if (!conceptDefaults) {
         setError("Wait for training defaults to load before saving concept settings.");
         return;
@@ -7513,10 +7520,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <h3 className="text-sm font-medium text-gray-300">Concept Batch Order</h3>
           <label className="flex items-center gap-2 text-sm text-gray-300">
             <input type="checkbox" checked={conceptOrder?.enabled ?? false}
-              disabled={!conceptOrder}
+              disabled={!conceptOrder || (!!conceptOrderUnsupported && !conceptOrder.enabled)}
               onChange={e => updateConceptOrder({ enabled: e.target.checked })} />
             Group Character or Artist batches during training
           </label>
+          {conceptOrderUnsupported && <p className="text-xs text-yellow-400">{conceptOrderUnsupported}</p>}
+          {conceptOrderAdvisory && <p className="text-xs text-yellow-400">{conceptOrderAdvisory.reason}</p>}
           {conceptOrder?.enabled && (
             <div className="space-y-3 text-xs text-gray-400">
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">

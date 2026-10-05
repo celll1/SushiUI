@@ -86,7 +86,7 @@ API の `concept_batch_order` は省略時に `enabled=false` の object を使�
 |---|---|
 | 解像度 bucket / 動的 crop | `CropPlanner` による当該エポックの crop spec と bucket 割当を先に確定し、その結果で concept batch を作る。priority path の現行「crop 無効化」を流用しない。 |
 | 参照画像 / VE | `separate_by_reference` を保持し、後段の VE 用全体 shuffle が集中順序を壊さないようにする。混合 batch が生じたら分割後も位置を維持する。 |
-| SenseNova | タスク別 batch 化が順序を変えたり画像を落としたりするため、初版は対象外として設定時に明示的に拒否する。対応時はタスク割当を先に確定してから concept plan を作る。 |
+| SenseNova | 通常の画像生成学習は対応済み。明示的な `task_views` は再バッチ化とcaption置換を行うため拒否する。最新の対応境界は `CONCEPT_SAMPLE_EXPOSURES.md` を参照。 |
 | 動画・音声 | 初版は対象外。画像と併用する run では、既存の動画・音声 batch を通常プールに含めるのではなく、設定を拒否する。 |
 | online Danbooru 注入 | 初版は同時指定を拒否する。非同期 collector の到着内容と挿入位置を再現するには、画像を含む確定済み注入計画と checkpoint cursor が別途必要。 |
 | priority training | 両方が有効ならエラー。既存の priority 設定と UI は維持する。 |

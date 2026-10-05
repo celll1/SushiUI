@@ -26116,7 +26116,10 @@ components:
       additionalProperties: false
       description: >-
         Deterministic Character or Artist batch ordering for image generation training.
-        Incompatible with priority training, SenseNova, video/audio, and online Danbooru injection.
+        Supported on all image training architectures, including ordinary SenseNova image generation.
+        Incompatible with priority training, SenseNova explicit task_views, video/audio,
+        YuE2 token-native training, and online Danbooru injection.
+        Architecture availability is exposed as the concept_batch_order training feature.
         A multiplier above one creates sample exposures inside each focus segment and re-batches them;
         each exposure independently resolves enabled caption randomization and conditioning dropout.
         Multiplied exposure captions require swap_onthefly, cpu_prefetch or onthefly_gpu text encoding.

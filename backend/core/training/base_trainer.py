@@ -4227,6 +4227,7 @@ class BaseTrainer(ABC):
         metadata = {
             key: item[key]
             for key in ("_sensenova_task_views", "_captions_by_type",
+                        "_concept_batch_signature",
                         "_ming_record", "_ming_batch_signature", "_ming_supervision_identity")
             if key in item
         }
@@ -15973,17 +15974,13 @@ class BaseTrainer(ABC):
                 self._resume_dataset_manifest = dataset_manifest(
                     datasets, self._resume_plan_mode, exposures=self._concept_multiplier_active)
         if concept_config:
-            if concept_config.multiplied and text_encoding_mode == "pre_encoded_cache":
-                raise ValueError("Concept sample multiplier needs exposure-specific captions: "
-                                 "select swap_onthefly, cpu_prefetch, or onthefly_gpu text encoding")
+            from core.training.concept_support import validate_concept_order
+            validate_concept_order(_arch_name, concept_config,
+                                   text_encoding_mode=text_encoding_mode, datasets=datasets)
             if priority_training:
                 raise ValueError("concept_batch_order cannot be combined with priority_training")
-            if (self.is_sensenova or self._temporal_spec() is not None or
-                    self.is_acestep or self.config.get("danbooru_aug_enable")):
-                raise ValueError("concept_batch_order currently supports image training without SenseNova or online Danbooru augmentation")
-            if any(item.get("item_type") in ("video", "audio")
-                   for dataset in datasets for item in dataset.items):
-                raise ValueError("concept_batch_order does not support video or audio items")
+            if self.config.get("danbooru_aug_enable"):
+                raise ValueError("concept_batch_order does not support online Danbooru augmentation")
 
         self._warn_unused_loss_weighting_keys(_arch_name)
         _sd_ve_arch = _arch_name in ("sd15", "sdxl")

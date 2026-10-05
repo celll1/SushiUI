@@ -16049,9 +16049,19 @@ class TrainingRunCreateRequest(BaseModel):
             if self.training_method == "vae_decoder":
                 raise ValueError("concept_batch_order requires image generation training")
             from core.training.concept_batch_order import ConceptOrderConfig
-            if (ConceptOrderConfig.parse(self.concept_batch_order.model_dump()).multiplied
-                    and self.text_encoding_mode == "pre_encoded_cache"):
-                raise ValueError("Concept sample multiplier requires swap_onthefly, cpu_prefetch or onthefly_gpu text encoding")
+            from core.training.concept_support import validate_concept_order
+            from core.model_loader import ModelLoader
+            concept = ConceptOrderConfig.parse(self.concept_batch_order.model_dump())
+            if concept.multiplied and self.text_encoding_mode == "pre_encoded_cache":
+                raise ValueError("Concept sample multiplier requires per-exposure text encoding")
+            try:
+                concept_arch = ModelLoader.detect_model_type(self.base_model_path)
+            except OSError:
+                return self  # Offline recipes are checked again by runner preflight.
+            validate_concept_order(concept_arch, concept,
+                text_encoding_mode=self.text_encoding_mode,
+                dataset_configs=[row.model_dump() for row in self.dataset_configs or ()],
+                training_method=self.training_method)
         return self
 
     # ReLoRA-specific parameters

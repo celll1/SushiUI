@@ -1662,6 +1662,11 @@ def _prepare_training_process_config(
         raise ValueError("Concept sample multiplier requires per-exposure text encoding; use swap_onthefly, cpu_prefetch, or onthefly_gpu")
     from core.rewiring.training import validate_training_rewiring
     from core.model_loader import ModelLoader
+    from core.training.concept_support import validate_concept_order
+    if concept_order is not None:
+        validate_concept_order(ModelLoader.detect_model_type(base_model_path), concept_order,
+            text_encoding_mode=train_config.get("text_encoding_mode", TRAINING_DEFAULTS["text_encoding_mode"]),
+            dataset_configs=process_config.get("datasets") or (), training_method=network_type)
     if ModelLoader.detect_model_type(base_model_path) == "ming_image_01":
         from core.models.ming_image_01.training_options import preflight_training
         for key in _TRAINING_SCOPE_FLAGS:

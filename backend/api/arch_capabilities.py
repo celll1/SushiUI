@@ -19,6 +19,7 @@ to a non-default value (compared against ``GENERATION_DEFAULTS``).
 from typing import Any, Dict, List, Optional, Tuple
 
 from api.param_defaults import GENERATION_DEFAULTS, TRAINING_DEFAULTS
+from core.training.concept_support import CONCEPT_ORDER_SUPPORT
 
 # Text-result generation is a positive capability axis. It cannot live in
 # ARCH_UNSUPPORTED, whose missing entries mean a parameter is honored.
@@ -282,6 +283,7 @@ TRAINING_DECLARED_ARCHS = frozenset({
 # feature is unavailable for every method.
 # ---------------------------------------------------------------------------
 TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
+    "concept_batch_order": ["concept_batch_order"],
     "block_swap": ["blocks_to_swap", "use_pinned_memory", "block_swap_h2d_only",
                    "block_swap_ring_size"],
     "fused_optimizer_groups": ["num_optimizer_groups"],
@@ -347,6 +349,7 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
 }
 
 TRAINING_FEATURE_LABELS: Dict[str, str] = {
+    "concept_batch_order": "Concept batch order and sample exposure multiplier",
     "block_swap": "Block Swap (per-block CPU offload during training)",
     "fused_optimizer_groups": "Fused Optimizer Groups",
     "reference_images": "reference image conditioning",
@@ -375,6 +378,14 @@ def _add_training_feature_unsupported(arch: str, feature: str, reason: str,
     if methods:
         entry["methods"] = list(methods)
     TRAINING_FEATURE_UNSUPPORTED.setdefault(arch, {})[feature] = entry
+
+
+assert set(CONCEPT_ORDER_SUPPORT) == set(TRAINING_DECLARED_ARCHS), (
+    "Every declared training architecture needs a concept-order contract"
+)
+for _concept_arch, _concept_support in CONCEPT_ORDER_SUPPORT.items():
+    if not _concept_support.supported:
+        _add_training_feature_unsupported(_concept_arch, "concept_batch_order", _concept_support.reason)
 
 
 # Optional controls within the training-sample section are allowlisted here.
@@ -554,6 +565,12 @@ def _add_training_feature_advisory(arch: str, feature: str, level: str,
     if methods:
         entry["methods"] = list(methods)
     TRAINING_FEATURE_ADVISORY.setdefault(arch, {})[feature] = entry
+
+
+_add_training_feature_advisory("sensenova", "concept_batch_order", "experimental",
+    "Ordinary image-generation training only. Explicit task_views are incompatible with "
+    "occurrence captions and focus ordering. CPU prefix routing is verified; real-model GPU "
+    "acceptance remains pending. Existing dataset-selection resume restrictions still apply.")
 
 # ---------------------------------------------------------------------------
 # ARCH_SUPPORTED_VALUES[arch][feature] = the VALUES of the feature's arming

@@ -333,6 +333,16 @@ will not catch the gap.
 
 ## Verification
 
+- Declare concept ordering support or a factual refusal in
+  `backend/core/training/concept_support.py`; registry and API imports check
+  complete coverage. Shared image training inherits occurrence captions,
+  buffers and resume. A native loop must call `validate_concept_order` before
+  preparing examples and cannot declare support while ignoring the option.
+  Preserve `_sample_occurrence` views through rebatching; additional batch
+  constraints use `_concept_batch_signature`. Run
+  `backend/tests/concept_architecture_contract_test.py` and see
+  [the exposure contract](CONCEPT_SAMPLE_EXPOSURES.md#architecture-contracts).
+
 - `py_compile` and a real import
   (`venv/Scripts/python.exe -c "import backend.core.pipeline_backends.<arch>"`)
   on every new/changed backend file.

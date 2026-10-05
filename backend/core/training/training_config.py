@@ -782,7 +782,7 @@ def _build_train_section(
     # Priority training
     if include_priority_training and p.get("priority_training"):
         train["priority_training"] = p["priority_training"]
-    if include_priority_training and (p.get("concept_batch_order") or {}).get("enabled"):
+    if include_priority_training and p.get("concept_batch_order") is not None:
         train["concept_batch_order"] = p["concept_batch_order"]
 
     train["latent_encoding_mode"] = p.get("latent_encoding_mode", "swap_onthefly")

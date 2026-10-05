@@ -31,10 +31,10 @@ def context(tmp_path, *, changed=True, policy="existing", concept=True):
     owner = SimpleNamespace(output_dir=tmp_path, log_prefix="[Test]", config={"seed": -1},
                             _concept_order_seed=456, run_seed_drawn=True,
                             _resume_plan_signature_data=None, _dataset_fingerprint=current_fp if changed else saved_fp,
-                            crop_planner=None, optimizer=object())
+                            crop_planner=None, optimizer=object(), _concept_multiplier_active=False)
     owner._check_dataset_fingerprint_changed = BaseTrainer._check_dataset_fingerprint_changed.__get__(owner)
     return dict(self=owner, resume_training_state=state, concept_config=SimpleNamespace(
-                    fingerprint=lambda: "same") if concept else None,
+                    fingerprint=lambda: "same", multiplied=False, plan_version=1) if concept else None,
                 priority_training=False, resume_dataset_change_policy=policy,
                 resume_from_checkpoint="latest", global_step=116, multi_noise_timesteps=1,
                 batches_per_epoch=17683 if changed else 24, actual_total_steps=88415,

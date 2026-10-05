@@ -259,7 +259,7 @@ def test_loss_chunks_discard_failed_microbatch_prefix_and_keep_image_order():
     from core.training.base_trainer import BaseTrainer
     calls = []
     stub = SimpleNamespace(
-        is_qwen_image_21=False, use_fused_backward=False, fused_optimizer_groups=None,
+        is_qwen_image_21=False, is_ming_image_01=False, use_fused_backward=False, fused_optimizer_groups=None,
         activation_dispatcher=None, log_prefix="[Exposure test]",
         _activation_dispatch_begin=lambda _latents: (None, None),
         _activation_dispatch_end=lambda *_args: None,

@@ -26117,6 +26117,9 @@ components:
       description: >-
         Deterministic Character or Artist batch ordering for image generation training.
         Incompatible with priority training, SenseNova, video/audio, and online Danbooru injection.
+        A multiplier above one creates sample exposures inside each focus segment and re-batches them;
+        each exposure independently resolves enabled caption randomization and conditioning dropout.
+        Multiplied exposure captions require swap_onthefly, cpu_prefetch or onthefly_gpu text encoding.
       properties:
         enabled: {type: boolean, default: false}
         category: {type: string, enum: [character, artist], default: character}
@@ -26140,6 +26143,33 @@ components:
           default: {}
           example: {hatsune_miku: ["Hatsune Miku", "Miku Hatsune"]}
         match_natural_language: {type: boolean, default: false}
+        batch_multiplier:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 1
+          description: Total exposures per focused sample in fixed mode; samples are rebatched within each focus segment.
+          example: 2
+        batch_multiplier_mode:
+          type: string
+          enum: [fixed, uniform_int]
+          default: fixed
+          description: Fixed sample exposure count or an inclusive uniform integer draw per sample and epoch.
+          example: uniform_int
+        batch_multiplier_min:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 1
+          description: Inclusive lower exposure count in uniform_int mode; must not exceed batch_multiplier_max.
+          example: 1
+        batch_multiplier_max:
+          type: integer
+          minimum: 1
+          maximum: 64
+          default: 1
+          description: Inclusive upper exposure count in uniform_int mode. Background samples are not multiplied.
+          example: 3
 
     TrainingRunCreateRequest:
       type: object

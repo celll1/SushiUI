@@ -78,6 +78,7 @@ Shared training memory/iteration audit and equivalent snapshot fixes:
 | [docs/guides/TAGGER.md](TAGGER.md) | Legacy WD and trainable SigLIP2 tagger ownership, safety, and resume contracts. |
 | [docs/plans/COMPACT_CAPTIONER_DESIGN_2026-10.md](../plans/COMPACT_CAPTIONER_DESIGN_2026-10.md) | SigLIP2 captioner foundation and remaining training/API/quality gates; FoveaTag integration remains a future plan after main integration. |
 | [docs/plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md](../plans/CONCEPT_BATCH_ORDER_DESIGN_2026-09.md) | Character/Artist concept batch ordering, caption matching, replay, and resume contract. |
+| [CONCEPT_SAMPLE_EXPOSURES.md](CONCEPT_SAMPLE_EXPOSURES.md) | Local sample exposure multipliers, caption/buffer ownership, versioned resume and GAS persistence. |
 | [docs/plans/RESUME_DATASET_REBASE_DESIGN_2026-09.md](../plans/RESUME_DATASET_REBASE_DESIGN_2026-09.md) | Proposed mid-epoch batch-plan revision after adding or deselecting training datasets. |
 | [docs/plans/STYLE_EMBEDDING_DESIGN_2026-09.md](../plans/STYLE_EMBEDDING_DESIGN_2026-09.md) | Standalone artist-supervised style encoder: training, HSIC comparison, UI, and CPU inference; generation conditioning remains planned. |
 | [docs/decisions/TRAINING_RUN_STORAGE_V2.md](../decisions/TRAINING_RUN_STORAGE_V2.md) | Central catalogue and per-run database contract. |

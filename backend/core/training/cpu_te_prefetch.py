@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
 import torch
+from .sample_occurrence import text_buffer_key
 
 
 def _detach_to_cpu(obj: Any) -> Any:
@@ -169,7 +170,7 @@ class CpuTextEncoderPrefetcher:
                     ip = item.get("image_path")
                     if ip is None:
                         continue
-                    paths.append(ip)
+                    paths.append(text_buffer_key(item))
                     captions.append(item.get("caption", "") or "")
                     lyrics_list.append(item.get("lyrics", "") or "")
 

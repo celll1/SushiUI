@@ -11987,6 +11987,10 @@ class BaseTrainer(ABC):
                               f"sync fallback={stats.get('sync_fallback_bytes', 0) / 1024**3:.3f} GiB "
                               f"staged={stats.get('staged_bytes', 0) / 1024**3:.3f} GiB "
                               f"prefetch hit/miss={stats.get('prefetch_hits', 0)}/{stats.get('prefetch_misses', 0)} "
+                              f"H2D={stats.get('h2d_bytes', 0) / 1024**3:.3f} GiB "
+                              f"wasted={stats.get('prefetch_wasted_bytes', 0) / 1024**3:.3f} GiB "
+                              f"layout staged/fallback={stats.get('staged_layout_bytes', 0) / 1024**3:.3f}/{stats.get('fallback_layout_bytes', 0) / 1024**3:.3f} GiB "
+                              f"pack/restore CPU wait={stats.get('pack_wait_seconds', 0):.3f}/{stats.get('restore_wait_seconds', 0):.3f}s "
                               f"duplicate saves avoided={stats.get('deduplicated_bytes', 0) / 1024**3:.3f} GiB "
                               f"peak={peak_gb:.2f} GiB", flush=True)
             if self.debug_vram:

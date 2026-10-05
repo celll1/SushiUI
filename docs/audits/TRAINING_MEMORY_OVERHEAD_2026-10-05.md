@@ -353,6 +353,48 @@ repeated backward and error cleanup. Increasing the pinned arena or retaining
 extra GPU activations without host/VRAM headroom gates is not a demonstrated fix.
 No backend behavior or run configuration was changed by this follow-up.
 
+### Transfer follow-up implementation
+
+D2H staging and H2D restoration now use independent single-worker queues and
+separate existing pinned slices. A mismatched lookahead is retained for up to
+four unpack requests, so a nearby future use can consume it without another
+restore; a held lookahead prevents another speculative allocation. Expired
+lookahead is cancelled when still queued, or drained with failures propagated.
+The low-hit-rate gate now requires at least half the completed predictions to
+be useful after eight attempts. Misses count actual discards, not every deferred
+request, so old/new hit ratios are not directly comparable.
+
+Noncontiguous sources can use staged packing when their retained storage plus
+contiguous GPU scratch fits the existing staging budget. The reshape runs on
+the D2H stream after its producer event. Oversized storage/layout reservations
+retain the synchronous fallback. The pinned arena remains capped at the run's
+configured 2 GiB and the staging GPU reservation at 512 MiB; there is still only
+one bounded speculative restore. Both queues are drained on errors and shutdown.
+
+Per-bucket logs now report restored H2D bytes, discarded prefetch bytes,
+strided staged/fallback bytes and CPU pack/restore-future wait seconds. These
+CPU timers do not represent complete DMA durations or GPU compute time.
+
+Validation: 27 CPU cases plus 356 bucket subtests; ten CUDA cases cover loss/
+gradient equality, nondefault producer streams, strided inputs, checkpoint
+recomputation, repeated backward, mutation rejection and pack failures. The CPU
+suite additionally checks that restore failures drain both workers. Compilation
+and actual imports passed. This changes the shared offload mechanism, but does
+not establish native performance for every training architecture.
+
+An isolated 2-GiB-arena transfer workload alternated baseline/new/baseline/new,
+with three warmed repetitions per arm and bitwise-equal gradients. The workload
+packed 832 MiB per iteration: synchronous fallback decreased from 384 MiB to
+zero. Baseline medians were 0.162/0.183 seconds; new medians 0.166/0.170 seconds.
+Peak allocated memory was 0.438/0.500 GiB respectively. The timing difference is
+small and does not establish a native step acceleration; the additional memory
+stayed within the staging cap. Local reproduction is
+`local/deployment/benchmark_activation_lanes.py --execute`, with #172 stopped;
+measurements are in `local/deployment/activation_lanes_benchmark.json`.
+
+Run #172 was stopped once at step 1920 with complete model, optimizer and state
+saved for GPU validation. Its configuration is unchanged.
+
 ## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization

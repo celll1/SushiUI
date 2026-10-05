@@ -86,3 +86,50 @@ def test_async_mutation_refuses_silent_snapshot_corruption():
             loss = value.sin().sum()
             value.add_(1)
             loss.backward()
+
+
+@pytest.mark.parametrize("checkpointed", [False, True])
+def test_strided_staging_preserves_repeated_backward_and_checkpoint(checkpointed):
+    from torch.utils.checkpoint import checkpoint
+    gradients = []
+    for enabled in (False, True):
+        leaf = torch.linspace(-.8, .8, 262144, device="cuda", requires_grad=True)
+        stats = {}
+        engine = AsyncActivationOffloader(32*1024**2)
+        with offload_activations(enabled, threshold_bytes=1, transfer_mode="async",
+                                async_engine=engine, stats=stats):
+            if enabled:
+                # Fill the persistent arena so the transpose must use bounded staging.
+                engine.pack(torch.empty(6*1024**2, device="cuda"))
+            value = (leaf*2).reshape(512, 512).t()
+            function = lambda item: item.sin().cos().square().sum()
+            loss = checkpoint(function, value, use_reentrant=False) if checkpointed else function(value)
+            loss.backward(retain_graph=True)
+            first = leaf.grad.clone()
+            leaf.grad = None
+            loss.backward()
+            torch.testing.assert_close(leaf.grad, first, rtol=0, atol=0)
+        gradients.append(first.cpu())
+    torch.testing.assert_close(gradients[0], gradients[1], rtol=0, atol=0)
+    assert stats["staged_layout_bytes"] > 0
+    assert stats.get("sync_fallback_bytes", 0) == 0
+    assert stats["staged_gpu_peak_bytes"] <= 8*1024**2
+
+
+def test_strided_pack_waits_for_nondefault_producer_stream():
+    engine = AsyncActivationOffloader(32*1024**2)
+    stats = {}
+    engine.begin(stats)
+    try:
+        engine.pack(torch.empty(6*1024**2, device="cuda"))
+        producer = torch.cuda.Stream()
+        producer.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(producer):
+            value = torch.arange(262144, dtype=torch.float32, device="cuda").reshape(512, 512).t()
+            value = value.sin()
+            saved = engine.pack(value)
+        restored = engine.unpack(saved)
+        torch.testing.assert_close(restored, value, rtol=0, atol=0)
+    finally:
+        engine.end()
+    assert stats["staged_layout_bytes"] > 0

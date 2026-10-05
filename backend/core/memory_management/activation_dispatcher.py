@@ -124,7 +124,7 @@ class AsyncActivationOffloader:
         offset = (self._offset + alignment - 1) // alignment * alignment
         persistent = self.budget_bytes if self.staging is None else self.budget_bytes-2*self.staging.size
         if offset + nbytes > persistent:
-            if self.staging is not None and tensor.is_contiguous():
+            if self.staging is not None:
                 saved = _AsyncSavedTensor(cpu=None, device=tensor.device,
                     source=weakref.ref(tensor), version=tensor._version)
                 if self.staging.pack(tensor, saved):

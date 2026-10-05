@@ -156,6 +156,9 @@ def test_partial_gas_gradient_sidecar_continues_optimizer_exactly(tmp_path):
     value = torch.tensor([[0.2, 0.7]])
     (model(value).square().mean() / 2).backward()
     reference = save_pending(owner, [opt], 1)
+    saved_optimizer = opt.state_dict()
+    saved_optimizer["_sushi_opt_class"] = type(opt).__name__
+    saved_optimizer["_sushi_param_names"] = [list(dict(model.named_parameters()))]
     expected_gradients = {n: p.grad.clone() for n, p in model.named_parameters()}
     saved_weights = {n: p.detach().clone() for n, p in model.named_parameters()}
     (model(value * 2).square().mean() / 2).backward()
@@ -164,6 +167,10 @@ def test_partial_gas_gradient_sidecar_continues_optimizer_exactly(tmp_path):
     model.load_state_dict(saved_weights)
     opt = torch.optim.AdamW(model.parameters(), lr=0.01)
     opt.zero_grad(set_to_none=True)
+    from core.training.base_trainer import BaseTrainer
+    owner.log_prefix = "[Exposure test]"
+    assert BaseTrainer._load_optimizer_state_by_parameter_name(owner, opt, saved_optimizer,
+        saved_optimizer["_sushi_param_names"], saved_optimizer["_sushi_param_names"], "pre-update")
     restore_pending(owner, [opt], reference)
     assert all(torch.equal(p.grad, expected_gradients[n]) for n, p in model.named_parameters())
     (model(value * 2).square().mean() / 2).backward()
@@ -208,3 +215,12 @@ def test_cpu_prefetch_uses_occurrence_key_without_caption_aliasing():
             assert all(payload[text_buffer_key(item)][2] == item.get("caption") for item, _ in batch)
     finally:
         worker.stop()
+
+
+def test_yaml_multiplier_cache_preflight_precedes_model_loading():
+    from core.training.train_runner import _prepare_training_process_config
+    config = {"config": {"process": [{"train": {
+        "concept_batch_order": {"enabled": True, "batch_multiplier": 2},
+        "text_encoding_mode": "pre_encoded_cache"}, "network": {"type": "lora"}}]}}
+    with pytest.raises(ValueError, match="per-exposure"):
+        _prepare_training_process_config(config, "nonexistent-model")

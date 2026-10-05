@@ -12,6 +12,7 @@ import random
 import hashlib
 from typing import List, Dict, Optional
 from pathlib import Path
+from .sample_occurrence import caption_random
 
 # Debug flag: log reordered tokens only once
 _logged_reordered_tokens = False
@@ -19,6 +20,9 @@ _logged_reordered_tokens = False
 
 def _caption_rng(item_path: str, epoch_num: int, operation: str):
     """Return an isolated, stable RNG for one item/epoch operation."""
+    contextual = caption_random(operation)
+    if contextual is not random:
+        return contextual
     seed_str = f"{item_path}_{operation}_epoch{epoch_num}"
     seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
     return random.Random(seed)
@@ -26,7 +30,7 @@ def _caption_rng(item_path: str, epoch_num: int, operation: str):
 
 def apply_caption_dropout(caption: str, caption_dropout_rate: float = 0.0) -> str:
     """Apply whole-caption dropout without interpreting the caption format."""
-    if caption_dropout_rate > 0 and random.random() < caption_dropout_rate:
+    if caption_dropout_rate > 0 and caption_random().random() < caption_dropout_rate:
         return ""
     return caption
 
@@ -159,7 +163,7 @@ def process_caption(
                 pass
             else:
                 # 確率的にドロップアウト
-                if random.random() > token_dropout_rate:
+                if caption_random().random() > token_dropout_rate:
                     new_token_list.append(token)
         token_list = new_token_list
 
@@ -202,7 +206,7 @@ def process_caption(
                 random_gen = _caption_rng(item_path, epoch_num, f"tag_dropout_{token}")
                 rand = random_gen.random()
             else:
-                rand = random.random()
+                rand = caption_random().random()
 
             # ドロップアウト確率に基づいて保持/削除
             if rand > dropout_rate:
@@ -224,7 +228,9 @@ def process_caption(
                 rng = _caption_rng(item_path, epoch_num, "shuffle")
             else:
                 # 完全ランダムシャッフル
-                rng = random.Random()
+                rng = caption_random("shuffle")
+                if rng is random:
+                    rng = random.Random()
 
             token_list = tag_manager.shuffle_by_groups(
                 tokens=token_list,
@@ -247,7 +253,7 @@ def process_caption(
                     rng.shuffle(shuffleable_tokens)
                 else:
                     # 完全ランダムシャッフル
-                    random.shuffle(shuffleable_tokens)
+                    caption_random().shuffle(shuffleable_tokens)
 
                 token_list = fixed_tokens + shuffleable_tokens
 
@@ -372,7 +378,7 @@ def process_caption_with_tag_data(
     if tag_dropout_rate > 0:
         tag_dropout_rng = (
             _caption_rng(item_path, epoch_num, "tag_dropout")
-            if tag_dropout_per_epoch else random
+            if tag_dropout_per_epoch else caption_random("tag_dropout")
         )
 
         filtered_tags = []
@@ -405,7 +411,7 @@ def process_caption_with_tag_data(
     if shuffle_tokens:
         shuffle_rng = (
             _caption_rng(item_path, epoch_num, "shuffle")
-            if shuffle_per_epoch else random
+            if shuffle_per_epoch else caption_random("shuffle")
         )
 
         # Split into kept and shuffled parts

@@ -15141,6 +15141,16 @@ class ConceptBatchOrderRequest(BaseModel):
     caption_aliases: Dict[str, List[str]] = Field(
         default_factory=lambda: dict(_CONCEPT_DEFAULTS["caption_aliases"]))
     match_natural_language: bool = _CONCEPT_DEFAULTS["match_natural_language"]
+    batch_multiplier: int = Field(default=_CONCEPT_DEFAULTS["batch_multiplier"], ge=1, le=64, strict=True)
+    batch_multiplier_mode: Literal["fixed", "uniform_int"] = _CONCEPT_DEFAULTS["batch_multiplier_mode"]
+    batch_multiplier_min: int = Field(default=_CONCEPT_DEFAULTS["batch_multiplier_min"], ge=1, le=64, strict=True)
+    batch_multiplier_max: int = Field(default=_CONCEPT_DEFAULTS["batch_multiplier_max"], ge=1, le=64, strict=True)
+
+    @model_validator(mode="after")
+    def _multiplier_range(self):
+        if self.batch_multiplier_min > self.batch_multiplier_max:
+            raise ValueError("concept_batch_order multiplier min must not exceed max")
+        return self
 
 class TrainingRunCreateRequest(BaseModel):
     dataset_id: Optional[int] = None  # Deprecated - use dataset_configs instead
@@ -16038,6 +16048,10 @@ class TrainingRunCreateRequest(BaseModel):
                 raise ValueError("concept_batch_order and priority_training cannot be combined")
             if self.training_method == "vae_decoder":
                 raise ValueError("concept_batch_order requires image generation training")
+            from core.training.concept_batch_order import ConceptOrderConfig
+            if (ConceptOrderConfig.parse(self.concept_batch_order.model_dump()).multiplied
+                    and self.text_encoding_mode == "pre_encoded_cache"):
+                raise ValueError("Concept sample multiplier requires swap_onthefly, cpu_prefetch or onthefly_gpu text encoding")
         return self
 
     # ReLoRA-specific parameters

@@ -1654,6 +1654,12 @@ def _prepare_training_process_config(
     train_config = process_config['train']
     network_config = process_config.get('network', {})
     network_type = network_config.get('type', 'lora')
+    from core.training.concept_batch_order import ConceptOrderConfig
+    concept_order = ConceptOrderConfig.parse(train_config.get("concept_batch_order"))
+    if concept_order is not None and concept_order.multiplied and train_config.get(
+        "text_encoding_mode", TRAINING_DEFAULTS["text_encoding_mode"]
+    ) == "pre_encoded_cache":
+        raise ValueError("Concept sample multiplier requires per-exposure text encoding; use swap_onthefly, cpu_prefetch, or onthefly_gpu")
     from core.rewiring.training import validate_training_rewiring
     from core.model_loader import ModelLoader
     if ModelLoader.detect_model_type(base_model_path) == "ming_image_01":
@@ -2693,6 +2699,7 @@ def _process_cached_items(
             processed_item["reference_images"] = item["related_images"]["reference"]
 
         processed_items.append(processed_item)
+        processed_item["_caption_processing_config"] = caption_config
 
         # Progress update every 1000 items (for UI responsiveness)
         if (idx + 1) % 1000 == 0:

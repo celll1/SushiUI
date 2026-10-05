@@ -44,6 +44,7 @@ from core.attention import (
 )
 from core.training import training_control_rpc as control_rpc
 from core.training.debug_decode_residency import DebugDecodeRestorationError
+from core.training.sample_occurrence import text_buffer_key, occurrence_batches
 from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_schedules import (
     LR_SCHEDULER_NAMES,
@@ -1879,7 +1880,7 @@ def _checkpoint_set_files(entry_path: Path) -> List[Path]:
     """Every file one save wrote: weight entry + shards + optimizer/state sidecars."""
     files = list(_checkpoint_member_files(entry_path))
     aux_base = _checkpoint_aux_base(entry_path)
-    for suffix in ("_optimizer.pt", "_state.json"):
+    for suffix in ("_optimizer.pt", "_state.json", "_gradients.pt"):
         aux = entry_path.parent / f"{aux_base}{suffix}"
         if aux.exists():
             files.append(aux)
@@ -1903,7 +1904,7 @@ def _checkpoint_set_byte_parts(entry_path: Path) -> Tuple[int, int]:
     aux_base = _checkpoint_aux_base(entry_path)
     sidecars = sum(
         _file_bytes(entry_path.parent / f"{aux_base}{suffix}")
-        for suffix in ("_optimizer.pt", "_state.json")
+        for suffix in ("_optimizer.pt", "_state.json", "_gradients.pt")
     )
     return weights, sidecars
 
@@ -5584,6 +5585,9 @@ class BaseTrainer(ABC):
             ) else None,
         }
 
+        if getattr(self, "_concept_multiplier_active", False):
+            from core.training.occurrence_checkpoint import save_pending
+            state["occurrence_gradients"] = save_pending(self, all_optimizers(self), step)
         state_serializable = state.copy()
         random_state = state["random_state"]
         state_serializable["random_state"] = {
@@ -6735,6 +6739,7 @@ class BaseTrainer(ABC):
             aux_base = _checkpoint_aux_base(checkpoint_path)
             optimizer_pt_path = checkpoint_path.parent / f"{aux_base}_optimizer.pt"
             state_json_path = checkpoint_path.parent / f"{aux_base}_state.json"
+            gradient_pt_path = checkpoint_path.parent / f"{aux_base}_gradients.pt"
 
             # A sharded save is deleted as a unit: index.json + every shard file.
             member_files = _checkpoint_member_files(checkpoint_path)
@@ -6753,6 +6758,8 @@ class BaseTrainer(ABC):
             if state_json_path.exists():
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
                 self._safe_unlink(state_json_path)
+            if gradient_pt_path.exists():
+                self._safe_unlink(gradient_pt_path)
 
             self._delete_checkpoint_db_row(step_num)
 
@@ -6933,6 +6940,10 @@ class BaseTrainer(ABC):
         parts = self._existing_checkpoint_set_parts()
         sizes = [w + s for w, s in parts]
         required = self._estimate_checkpoint_set_bytes(parts)
+        if getattr(self, "_concept_multiplier_active", False):
+            required += sum(p.grad.numel() * p.grad.element_size()
+                            for optimizer in all_optimizers(self) for group in optimizer.param_groups
+                            for p in group["params"] if p.grad is not None)
         return plan_retention(
             _volume_free_bytes(self.output_dir), required, sizes, requested_keep, floor=floor
         )
@@ -6997,7 +7008,7 @@ class BaseTrainer(ABC):
             marker = f"_step_{int(step):06d}"
             after_entries = set(self.output_dir.iterdir()) if self.output_dir.exists() else set()
             new_entries = [p for p in (after_entries - before_entries) if marker in p.name]
-            aux_markers = ("_optimizer.pt", "_state.json", EMA_ENTRY_MARKER, "vision_encoder")
+            aux_markers = ("_optimizer.pt", "_state.json", "_gradients.pt", EMA_ENTRY_MARKER, "vision_encoder")
             primary = [p for p in new_entries if not any(m in p.name for m in aux_markers)]
             if not primary:
                 return
@@ -15909,6 +15920,8 @@ class BaseTrainer(ABC):
         from core.training.concept_batch_order import ConceptOrderConfig
         concept_config = ConceptOrderConfig.parse(concept_batch_order)
         self._concept_batch_plan_state = None
+        self._concept_multiplier_active = bool(concept_config and concept_config.multiplied)
+        self._occurrence_pending_gradients = None
         self._concept_order_seed = self.run_seed
         if resume_dataset_change_policy not in ("existing", "strict", "rebase_remaining"):
             raise ValueError("Invalid resume_dataset_change_policy")
@@ -15949,8 +15962,11 @@ class BaseTrainer(ABC):
             self._resume_plan_signature = digest(self._resume_plan_signature_data)
             if resume_dataset_change_policy == "strict":
                 self._resume_dataset_manifest = dataset_manifest(
-                    datasets, self._resume_plan_mode)
+                    datasets, self._resume_plan_mode, exposures=self._concept_multiplier_active)
         if concept_config:
+            if concept_config.multiplied and text_encoding_mode == "pre_encoded_cache":
+                raise ValueError("Concept sample multiplier needs exposure-specific captions: "
+                                 "select swap_onthefly, cpu_prefetch, or onthefly_gpu text encoding")
             if priority_training:
                 raise ValueError("concept_batch_order cannot be combined with priority_training")
             if (self.is_sensenova or self._temporal_spec() is not None or
@@ -16508,28 +16524,30 @@ class BaseTrainer(ABC):
             if self._rc_active:
                 raise ValueError("concept_batch_order does not yet support resolution curriculum")
             _preview_pairs = [(item, dataset) for dataset in datasets for item in dataset.items]
-            _preview_counts = []
-            _preview_epochs = range(num_epochs) if self.crop_planner is not None else range(1)
-            for _preview_epoch in _preview_epochs:
-                _prepared = []
-                for _item, _dataset in _preview_pairs:
-                    _copy = dict(_item)
-                    if self.crop_planner is not None:
-                        _ow, _oh = self._get_original_size_for_item(_item)
-                        _spec = self.crop_planner.spec_for(_preview_epoch, _item["image_path"], _ow, _oh)
-                        _copy["bucket_width"], _copy["bucket_height"] = _spec.bucket_w, _spec.bucket_h
-                    elif bucket_manager is not None:
-                        _bucket = bucket_manager.select_bucket(
-                            int(_item.get("width") or 1024), int(_item.get("height") or 1024))
-                        _copy["bucket_width"], _copy["bucket_height"] = _bucket.width, _bucket.height
-                    else:
-                        self._fit_items_to_base_area([_copy], base_resolutions or [1024])
-                    if (_copy.get("bucket_width"), _copy.get("bucket_height")) in self._unfittable_buckets:
-                        continue
-                    _prepared.append((_copy, _dataset))
-                _preview_counts.append(len(build_concept_batch_plan(
-                    _prepared, batch_size, concept_config, _preview_epoch,
-                    self._concept_order_seed).batches))
+            _preview_epochs = range(num_epochs) if self.crop_planner is not None or concept_config.multiplied else range(1)
+            def _preview_concept_counts(plan_seed):
+                counts = []
+                for _preview_epoch in _preview_epochs:
+                    _prepared = []
+                    for _item, _dataset in _preview_pairs:
+                        _copy = dict(_item)
+                        if self.crop_planner is not None:
+                            _ow, _oh = self._get_original_size_for_item(_item)
+                            _spec = self.crop_planner.spec_for(_preview_epoch, _item["image_path"], _ow, _oh)
+                            _copy["bucket_width"], _copy["bucket_height"] = _spec.bucket_w, _spec.bucket_h
+                        elif bucket_manager is not None:
+                            _bucket = bucket_manager.select_bucket(
+                                int(_item.get("width") or 1024), int(_item.get("height") or 1024))
+                            _copy["bucket_width"], _copy["bucket_height"] = _bucket.width, _bucket.height
+                        else:
+                            self._fit_items_to_base_area([_copy], base_resolutions or [1024])
+                        if (_copy.get("bucket_width"), _copy.get("bucket_height")) in self._unfittable_buckets:
+                            continue
+                        _prepared.append((_copy, _dataset))
+                    counts.append(len(build_concept_batch_plan(
+                        _prepared, batch_size, concept_config, _preview_epoch, plan_seed).batches))
+                return counts
+            _preview_counts = _preview_concept_counts(self._concept_order_seed)
             if self.crop_planner is not None:
                 self.crop_planner._batches_per_epoch = _preview_counts
                 self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
@@ -16539,7 +16557,8 @@ class BaseTrainer(ABC):
                 steps_per_epoch = batches_per_epoch * multi_noise_timesteps
                 self._batches_per_epoch = batches_per_epoch
                 if total_steps is None:
-                    actual_total_steps = steps_per_epoch * num_epochs
+                    actual_total_steps = (sum(_preview_counts) * multi_noise_timesteps
+                                          if concept_config.multiplied else steps_per_epoch * num_epochs)
             print(f"{self.log_prefix} [ConceptOrder] Planned batch counts: {_preview_counts[:8]}"
                   f"{'...' if len(_preview_counts) > 8 else ''}")
 
@@ -17040,6 +17059,10 @@ class BaseTrainer(ABC):
         if concept_config and resume_from_checkpoint and global_step > 0 and resume_training_state is None:
             raise ValueError("Cannot resume concept batch order without matching training state")
         if resume_training_state is not None:
+            if self._concept_multiplier_active:
+                self._occurrence_pending_gradients = resume_training_state.get("occurrence_gradients")
+                if resume_training_state.get("gradient_accumulation_steps") != gradient_accumulation_steps:
+                    raise ValueError("Cannot resume sample exposures after changing gradient accumulation")
             if resume_training_state.get("resume_batch_plan") and not _ledger_resume:
                 raise ValueError("Cannot change resume_dataset_change_policy for a checkpoint with a batch ledger")
             if not _ledger_resume and not concept_config and resume_training_state.get("concept_batch_plan") is not None:
@@ -17049,7 +17072,7 @@ class BaseTrainer(ABC):
             if concept_config:
                 saved_concept = resume_training_state["concept_batch_plan"]
                 if not _ledger_resume:
-                    if saved_concept.get("version") != 1:
+                    if saved_concept.get("version") != concept_config.plan_version:
                         raise ValueError("Cannot resume concept batch order: unsupported plan version")
                     if saved_concept.get("config_hash") != concept_config.fingerprint():
                         raise ValueError("Cannot resume concept batch order after changing its configuration")
@@ -17062,6 +17085,19 @@ class BaseTrainer(ABC):
                           f"{saved_seed} (configured seed={self.config.get('seed', -1)})")
                 self._concept_order_seed = saved_seed
                 self.run_seed = saved_seed
+                if concept_config.multiplied:
+                    _preview_counts = _preview_concept_counts(saved_seed)
+                    batches_per_epoch = _preview_counts[start_epoch] if start_epoch < len(_preview_counts) else _preview_counts[0]
+                    self._batches_per_epoch = batches_per_epoch
+                    steps_per_epoch = batches_per_epoch * multi_noise_timesteps
+                    if self.crop_planner is not None:
+                        self.crop_planner._batches_per_epoch = _preview_counts
+                        self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
+                    if total_steps is None:
+                        actual_total_steps = sum(_preview_counts) * multi_noise_timesteps
+                        self._reanchor_lr_schedule_total(actual_total_steps, global_step)
+                        if update_total_steps_callback:
+                            update_total_steps_callback(actual_total_steps)
                 if self._resume_plan_signature_data is not None:
                     from core.training.resume_batch_plan import digest
                     self._resume_plan_signature_data["seed"] = saved_seed
@@ -17918,7 +17954,8 @@ class BaseTrainer(ABC):
                                 concept_plan.batches, concept_plan.labels, concept_plan.replay):
                             if not repeated:
                                 for item, _dataset in group_batch:
-                                    target_items.update(item.get("_concept_exposure_groups", ()))
+                                    if item.get("_sample_occurrence", {}).get("kind", "base") == "base":
+                                        target_items.update(item.get("_concept_exposure_groups", ()))
                         names = {name: name for name in target_items}
                     elif priority_config and priority_config.entries:
                         available = {
@@ -17952,6 +17989,11 @@ class BaseTrainer(ABC):
                           f"uncategorized={concept_plan.uncategorized_items} "
                           f"missing_includes={concept_plan.missing_includes[:8]} "
                           f"digest={concept_plan.digest[:12]}")
+                    if concept_config.multiplied:
+                        print(f"{self.log_prefix} [ConceptOrder] Sample exposures="
+                              f"{self._concept_batch_plan_state['sample_count']} "
+                              f"multiplier_added={self._concept_batch_plan_state['multiplier_samples']} "
+                              "caption_scope=exposure, null_scope=sample")
 
                 if self.is_sensenova:
                     import random as _sensenova_task_rng
@@ -18036,7 +18078,8 @@ class BaseTrainer(ABC):
                     _candidate_plan = make_plan(
                         batches, datasets, self._resume_plan_mode,
                         self._resume_plan_signature, epoch, _priority_keys,
-                        batch_size=batch_size)
+                        batch_size=batch_size,
+                        exposure_version=concept_config.plan_version if concept_config else None)
                     if concept_config:
                         _candidate_plan["placement"] = concept_config.background_placement
                     if epoch == start_epoch and resume_training_state is not None:
@@ -18218,7 +18261,7 @@ class BaseTrainer(ABC):
                             )
                             # Store on CPU to save GPU VRAM, keyed by image_path
                             # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
-                            swap_buffer[image_path] = (
+                            swap_buffer[text_buffer_key(item)] = (
                                 embeddings.cpu(),
                                 self._aux_to_cpu(auxiliary_data),
                                 caption,  # String (CPU memory, minimal overhead)
@@ -18423,6 +18466,7 @@ class BaseTrainer(ABC):
                 # total_steps (the loop stop condition at global_step >= actual_total_steps).
                 if (epoch == start_epoch and self._crop_step_offsets is None
                         and total_steps is None
+                        and not self._concept_multiplier_active
                         and not (_ledger_resume and self._resume_plan_rebased)):
                     # Calculate actual steps per epoch (before mid-epoch slicing)
                     if concept_config or bucket_manager or bool(getattr(
@@ -18481,7 +18525,9 @@ class BaseTrainer(ABC):
                             future_steps = (self._crop_step_offsets[num_epochs]
                                             - self._crop_step_offsets[epoch + 1])
                         else:
-                            future_steps = max(0, num_epochs - epoch - 1) * steps_per_epoch
+                            future_steps = (sum(_preview_counts[epoch + 1:]) * multi_noise_timesteps
+                                            if self._concept_multiplier_active else
+                                            max(0, num_epochs - epoch - 1) * steps_per_epoch)
                         _rebase_target_total = global_step + epoch_steps + future_steps
                         print(f"{self.log_prefix} [BatchRebase] Updated epoch-based total_steps: {_rebase_target_total}")
                         self._reanchor_lr_schedule_total(_rebase_target_total, global_step)
@@ -18529,7 +18575,18 @@ class BaseTrainer(ABC):
                     from core.models.ming_image_01.training_memory import initialize_full_adamw_state
                     initialize_full_adamw_state(self)
 
-                for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
+                if self._occurrence_pending_gradients is not None:
+                    if not optimizer_restored:
+                        raise ValueError("Pending exposure gradients require matching optimizer state")
+                    from core.training.occurrence_checkpoint import restore_pending
+                    restore_pending(self, all_optimizers(self), self._occurrence_pending_gradients)
+                    print(f"{self.log_prefix} Restored pending exposure gradients: "
+                          f"{self._occurrence_pending_gradients['parameter_count']} parameter(s)")
+                    self._occurrence_pending_gradients = None
+
+                for batch_idx, batch in enumerate(tqdm(
+                        occurrence_batches(batches, self.device), total=len(batches),
+                        desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     _exposure_items = batch
                     self._current_batch_position = (
                         int(batch_idx) + int(getattr(self, "_epoch_batch_offset", 0) or 0)
@@ -18703,6 +18760,7 @@ class BaseTrainer(ABC):
                                 # Sentinel — worker is done; nothing more to drain.
                                 break
                             # Merge into swap_buffer keyed by image_path
+                            swap_buffer.clear()
                             swap_buffer.update(payload)
                             next_swap_at_step = pulled_idx + 1
 
@@ -18747,7 +18805,7 @@ class BaseTrainer(ABC):
                                     caption, requires_grad=False, lyrics=item.get("lyrics", "")
                                 )
                                 # Store on CPU to save GPU VRAM, keyed by image_path
-                                swap_buffer[image_path] = (
+                                swap_buffer[text_buffer_key(item)] = (
                                     embeddings.cpu(),
                                     self._aux_to_cpu(auxiliary_data),
                                     caption,  # String (CPU memory, minimal overhead)
@@ -19012,7 +19070,8 @@ class BaseTrainer(ABC):
                                 # Transfer to GPU
                                 latent = latent_cpu.to(self.device, non_blocking=True)
                                 latents_list.append(latent)
-                                item["caption"] = buffer_caption
+                                if "_sample_occurrence" not in item:
+                                    item["caption"] = buffer_caption
                             else:
                                 # Fallback to on-the-fly encoding (image not in buffer)
                                 # This happens when buffer hasn't been refilled yet for this batch
@@ -19300,12 +19359,12 @@ class BaseTrainer(ABC):
                             # cpu_prefetch's daemon worker fills swap_buffer ahead of
                             # time via te_prefetcher.next(); swap_onthefly refills it
                             # synchronously in a separate branch above.
-                            if image_path in swap_buffer or caption_is_cfg_null:
+                            if text_buffer_key(item) in swap_buffer or caption_is_cfg_null:
                                 if caption_is_cfg_null:
                                     embeddings_cpu, auxiliary_cpu = self._cfg_null_blank_encoding
                                     buffer_caption = ""
                                 else:
-                                    embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[image_path]
+                                    embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[text_buffer_key(item)]
                                 # Transfer to GPU
                                 embeddings = embeddings_cpu.to(self.device, non_blocking=True)
                                 auxiliary = self._aux_to_device(auxiliary_cpu)

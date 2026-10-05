@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import tempfile
 from typing import Any
+from .sample_occurrence import OccurrenceItem
 
 
 VERSION = 1
@@ -38,7 +39,7 @@ def _batch_key(item: dict) -> str:
     return digest(identity)
 
 
-def dataset_manifest(datasets: list[Any], mode: str) -> dict[str, dict]:
+def dataset_manifest(datasets: list[Any], mode: str, *, exposures=False) -> dict[str, dict]:
     result = {}
     for dataset in datasets:
         dataset_id = str(dataset.unique_id)
@@ -60,6 +61,8 @@ def dataset_manifest(datasets: list[Any], mode: str) -> dict[str, dict]:
             if mode in ("priority", "concept"):
                 row.extend([item.get("raw_caption"), item.get("tag_data"),
                             item.get("is_tags_format"), item.get("_captions_by_type")])
+            if exposures:
+                row.append(item.get("_caption_processing_config"))
             rows.append(row)
             captions.append([path, item.get("raw_caption"), item.get("tag_data")])
         result[dataset_id] = {
@@ -71,8 +74,9 @@ def dataset_manifest(datasets: list[Any], mode: str) -> dict[str, dict]:
 
 def make_plan(batches: list, datasets: list[Any], mode: str, signature: str,
               epoch: int, priority_keys: set[tuple[str, str]] | None = None,
-              batch_size: int = 1) -> dict:
+              batch_size: int = 1, exposure_version: int | None = None) -> dict:
     counts: Counter[tuple[str, str]] = Counter()
+    exposures = exposure_version == 2 or any("_sample_occurrence" in item for batch in batches for item, _ in batch)
     encoded_batches = []
     for batch in batches:
         encoded_batch = []
@@ -80,15 +84,20 @@ def make_plan(batches: list, datasets: list[Any], mode: str, signature: str,
             key = item_key(item, dataset)
             occurrence = counts[key]
             counts[key] += 1
-            kind = ("priority" if priority_keys and key in priority_keys else
+            exposure = item.get("_sample_occurrence")
+            kind = (exposure["kind"] if exposure else
+                    "priority" if priority_keys and key in priority_keys else
                     "replay" if mode == "concept" and occurrence > 0 else "base")
-            encoded_batch.append([*key, occurrence,
+            entry = [*key, occurrence,
                                   kind, _batch_key(item),
-                                  [*key, 0] if kind == "replay" else None])
+                                  [*key, 0] if kind == "replay" else None]
+            if exposures:
+                entry.append(exposure)
+            encoded_batch.append(entry)
         if encoded_batch:
             encoded_batches.append(encoded_batch)
-    manifest = dataset_manifest(datasets, mode)
-    return {"version": VERSION, "epoch": epoch, "revision": 0,
+    manifest = dataset_manifest(datasets, mode, exposures=exposures)
+    return {"version": 2 if exposures else VERSION, "epoch": epoch, "revision": 0,
             "mode": mode, "signature": signature, "batch_size": batch_size,
             "selected": list(manifest), "history_manifest": manifest,
             "batches": encoded_batches}
@@ -122,14 +131,14 @@ def save_plan(output_dir: Path, run_name: str, plan: dict) -> dict:
         except BaseException:
             temp_path.unlink(missing_ok=True)
             raise
-    return {"version": VERSION, "file": name, "sha256": checksum,
+    return {"version": plan["version"], "file": name, "sha256": checksum,
             "size": path.stat().st_size,
             "epoch": plan["epoch"], "revision": plan["revision"],
             "batch_count": len(plan["batches"])}
 
 
 def load_plan(output_dir: Path, reference: dict) -> dict:
-    if not isinstance(reference, dict) or reference.get("version") != VERSION:
+    if not isinstance(reference, dict) or reference.get("version") not in (1, 2):
         raise ValueError("Cannot resume batch plan: unsupported or absent ledger reference")
     name = reference.get("file")
     if not isinstance(name, str) or Path(name).name != name:
@@ -148,7 +157,7 @@ def load_plan(output_dir: Path, reference: dict) -> dict:
         raise ValueError(f"Cannot resume batch plan: unreadable ledger {name}") from exc
     if sha256(raw).hexdigest() != reference.get("sha256"):
         raise ValueError("Cannot resume batch plan: ledger checksum mismatch")
-    if (plan.get("version") != VERSION or plan.get("epoch") != reference.get("epoch")
+    if (plan.get("version") != reference["version"] or plan.get("epoch") != reference.get("epoch")
             or plan.get("revision") != reference.get("revision")
             or len(plan.get("batches", [])) != reference.get("batch_count")):
         raise ValueError("Cannot resume batch plan: ledger metadata mismatch")
@@ -167,7 +176,13 @@ def _interleave(old: list, added: list) -> list:
     return merged
 
 
+def _occurrence_key(entry):
+    return entry[0], entry[1], (entry[6]["id"] if len(entry) > 6 and entry[6] else entry[2])
+
+
 def rebase_plan(old: dict, cursor: int, candidate: dict) -> tuple[dict, dict]:
+    if old["version"] != candidate["version"]:
+        raise ValueError("Cannot rebase batch plan: exposure plan version changed")
     if old["epoch"] != candidate["epoch"] or old["mode"] != candidate["mode"]:
         raise ValueError("Cannot rebase batch plan: epoch or batch mode changed")
     if (old["signature"] != candidate["signature"]
@@ -198,7 +213,7 @@ def rebase_plan(old: dict, cursor: int, candidate: dict) -> tuple[dict, dict]:
                      "added_occurrences": 0, "removed_occurrences": 0,
                      "caption_changed": caption_changed}
     completed = old["batches"][:cursor]
-    completed_ids = {(entry[0], entry[1], entry[2])
+    completed_ids = {_occurrence_key(entry)
                      for batch in completed for entry in batch}
     retained = set(current)
     removed = set(prior) - retained
@@ -209,8 +224,9 @@ def rebase_plan(old: dict, cursor: int, candidate: dict) -> tuple[dict, dict]:
     incoming = []
     for batch in candidate["batches"]:
         entries = [entry for entry in batch if entry[0] in added
-                   and (entry[0], entry[1], entry[2]) not in completed_ids
-                   and (old["mode"] != "concept" or entry[2] == 0)]
+                   and _occurrence_key(entry) not in completed_ids
+                   and (old["mode"] != "concept" or
+                        (entry[3] != "replay" if old["version"] == 2 else entry[2] == 0))]
         if entries:
             incoming.append(entries)
     if old["mode"] == "priority":
@@ -244,12 +260,16 @@ def resolve_suffix(plan: dict, cursor: int, candidate_batches: list) -> list:
     result = []
     for batch in plan["batches"][cursor:]:
         resolved = []
-        for dataset_id, path, _occurrence, _kind, batch_key, _source in batch:
+        for entry in batch:
+            dataset_id, path, _occurrence, _kind, batch_key, _source = entry[:6]
             key = dataset_id, path
             if key not in lookup:
                 raise ValueError(f"Cannot resume batch plan: missing current item {key}")
             if _batch_key(lookup[key][0]) != batch_key:
                 raise ValueError(f"Cannot resume batch plan: item conditions changed for {key}")
-            resolved.append(lookup[key])
+            pair = lookup[key]
+            if len(entry) > 6 and entry[6] is not None:
+                pair = OccurrenceItem(pair[0], pair[1], entry[6]), pair[1]
+            resolved.append(pair)
         result.append(resolved)
     return result

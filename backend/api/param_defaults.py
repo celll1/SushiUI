@@ -2535,6 +2535,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
         "replay_interval": 0,
         "caption_aliases": {},
         "match_natural_language": False,
+        "batch_multiplier": 1,
+        "batch_multiplier_mode": "fixed",
+        "batch_multiplier_min": 1,
+        "batch_multiplier_max": 1,
     },
     "max_grad_norm": 1.0,
     # Per-parameter outlier clip on fused and ordinary optimizer paths.

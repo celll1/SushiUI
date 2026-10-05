@@ -388,8 +388,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [priorityText, setPriorityText] = useState("");  // newline-separated entries
   const [priorityMultiplier, setPriorityMultiplier] = useState(1);
   const [priorityExpanded, setPriorityExpanded] = useState(false);  // expand textarea modal
-  const conceptOrder = params.concept_batch_order ||
-    (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.concept_batch_order;
+  const conceptDefaults = (trainingDefaults as Partial<TrainingRunCreateRequest> | null)?.concept_batch_order;
+  const conceptOrder = conceptDefaults
+    ? { ...conceptDefaults, ...params.concept_batch_order }
+    : params.concept_batch_order;
   const [conceptAliasText, setConceptAliasText] = useState("{}");
   const [conceptIncludeText, setConceptIncludeText] = useState("");
   const [conceptExcludeText, setConceptExcludeText] = useState("");
@@ -2176,6 +2178,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     e.preventDefault();
 
     if (conceptOrder?.enabled) {
+      if (!conceptDefaults) {
+        setError("Wait for training defaults to load before saving concept settings.");
+        return;
+      }
+      const multiplierValues = [conceptOrder.batch_multiplier, conceptOrder.batch_multiplier_min, conceptOrder.batch_multiplier_max];
+      if (multiplierValues.some(value => !Number.isInteger(value) || value < 1 || value > 64) ||
+          conceptOrder.batch_multiplier_min > conceptOrder.batch_multiplier_max) {
+        setError("Sample exposure counts must be integers from 1 to 64, with minimum ≤ maximum.");
+        return;
+      }
+      const multiplied = conceptOrder.batch_multiplier_mode === "uniform_int"
+        ? conceptOrder.batch_multiplier_max > 1 : conceptOrder.batch_multiplier > 1;
+      if (multiplied && params.text_encoding_mode === "pre_encoded_cache") {
+        setError("Sample exposures need swap_onthefly, cpu_prefetch or onthefly_gpu text encoding.");
+        return;
+      }
       if (priorityEnabled && priorityText.trim()) {
         setError("Concept batch order cannot be combined with Priority Training.");
         return;
@@ -2262,6 +2280,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     const requestData = getRequestData();
     if (requestData.concept_batch_order?.enabled) {
+      requestData.concept_batch_order = { ...conceptOrder! };
       requestData.concept_batch_order.caption_aliases = JSON.parse(conceptAliasText);
       requestData.concept_batch_order.include = conceptIncludeText.split(",").map(s => s.trim()).filter(Boolean);
       requestData.concept_batch_order.exclude = conceptExcludeText.split(",").map(s => s.trim()).filter(Boolean);
@@ -7523,6 +7542,37 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     value={conceptOrder.local_swap_window}
                     onChange={e => updateConceptOrder({ local_swap_window: Number(e.target.value) })} />
                 </label>
+                <label>Sample exposure mode
+                  <select className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                    value={conceptOrder.batch_multiplier_mode}
+                    onChange={e => updateConceptOrder({ batch_multiplier_mode: e.target.value as "fixed" | "uniform_int" })}>
+                    <option value="fixed">Fixed exposures per sample</option>
+                    <option value="uniform_int">Random exposures per sample / epoch</option>
+                  </select>
+                </label>
+                {conceptOrder.batch_multiplier_mode === "uniform_int" ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label>Minimum exposures
+                      <input type="number" min={1} max={64} step={1}
+                        className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                        value={conceptOrder.batch_multiplier_min}
+                        onChange={e => updateConceptOrder({ batch_multiplier_min: Number(e.target.value) })} />
+                    </label>
+                    <label>Maximum exposures
+                      <input type="number" min={1} max={64} step={1}
+                        className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                        value={conceptOrder.batch_multiplier_max}
+                        onChange={e => updateConceptOrder({ batch_multiplier_max: Number(e.target.value) })} />
+                    </label>
+                  </div>
+                ) : (
+                  <label>Total exposures per sample
+                    <input type="number" min={1} max={64} step={1}
+                      className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
+                      value={conceptOrder.batch_multiplier}
+                      onChange={e => updateConceptOrder({ batch_multiplier: Number(e.target.value) })} />
+                  </label>
+                )}
                 <label>Background placement
                   <select className="block w-full bg-gray-800 border border-gray-600 rounded p-1 text-white"
                     value={conceptOrder.background_placement}
@@ -7543,6 +7593,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     onChange={e => updateConceptOrder({ replay_interval: Number(e.target.value) })} />
                 </label>
               </div>
+              <p className="text-gray-400">Exposures stay inside each focus segment and are rebatched by bucket. Background stays at one exposure.
+                Caption randomization and null conditioning are drawn per exposure; focus length counts base batches before multiplication.</p>
+              {(conceptOrder.batch_multiplier_mode === "uniform_int"
+                ? conceptOrder.batch_multiplier_max > 1 : conceptOrder.batch_multiplier > 1) && (
+                <div className="rounded border border-gray-600 p-2 space-y-2">
+                  <p>Exposure captions are fixed by occurrence ID, including epoch shuffle/dropout settings. Use swap_onthefly, cpu_prefetch or onthefly_gpu text encoding.</p>
+                  <p className="text-xs text-gray-400">Illustration with four compatible samples and batch size 2; actual batches depend on the dataset and buckets.</p>
+                  <div className="flex flex-wrap items-center gap-2 font-mono" aria-label="Sample rebatching example">
+                    <span className="rounded bg-blue-900 px-2 py-1">A₀ B₀</span>
+                    <span className="rounded bg-blue-900 px-2 py-1">C₀ D₀</span>
+                    <span aria-hidden="true">→</span>
+                    <span className="rounded bg-purple-900 px-2 py-1">B₁ D₁</span>
+                    <span className="rounded bg-purple-900 px-2 py-1">A₁ C₁</span>
+                  </div>
+                  {conceptOrder.batch_multiplier_mode === "uniform_int" && (
+                    <p>Each sample draws {conceptOrder.batch_multiplier_min}–{conceptOrder.batch_multiplier_max} total exposures;
+                      expected mean {(conceptOrder.batch_multiplier_min + conceptOrder.batch_multiplier_max) / 2}.</p>
+                  )}
+                </div>
+              )}
               <p>{conceptOrder.background_placement === "spread"
                 ? "Spread visits concepts throughout the epoch; stopping early may leave concepts unvisited."
                 : "Front visits concepts early, leaving more background batches after they finish."}</p>

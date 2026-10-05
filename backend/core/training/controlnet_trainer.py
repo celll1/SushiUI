@@ -549,6 +549,9 @@ class ControlNetTrainer(BaseTrainer):
             if state_json_path.exists():
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
                 self._safe_unlink(state_json_path)
+            gradients_path = self.output_dir / f"{self.run_name}_step_{step_num:06d}_gradients.pt"
+            if gradients_path.exists():
+                self._safe_unlink(gradients_path)
 
             self._delete_checkpoint_db_row(step_num)
 

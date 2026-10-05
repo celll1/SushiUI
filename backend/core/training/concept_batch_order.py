@@ -12,6 +12,7 @@ import unicodedata
 from typing import Any
 
 from api.param_defaults import TRAINING_DEFAULTS
+from .sample_occurrence import CAPTION_RNG_VERSION, make_occurrence, stable_seed
 
 
 PLAN_VERSION = 1
@@ -62,6 +63,19 @@ class ConceptOrderConfig:
     replay_interval: int
     caption_aliases: dict[str, tuple[str, ...]]
     match_natural_language: bool
+    batch_multiplier: int
+    batch_multiplier_mode: str
+    batch_multiplier_min: int
+    batch_multiplier_max: int
+
+    @property
+    def multiplied(self):
+        return (self.batch_multiplier > 1 if self.batch_multiplier_mode == "fixed"
+                else self.batch_multiplier_max > 1)
+
+    @property
+    def plan_version(self):
+        return 2 if self.multiplied else PLAN_VERSION
 
     @classmethod
     def parse(cls, value: dict | None) -> ConceptOrderConfig | None:
@@ -89,6 +103,13 @@ class ConceptOrderConfig:
                 raise ValueError(f"concept_batch_order.{key} must be an integer >= {minimum}")
         if data["local_swap_window"] > 32 or data["focus_batches"] > 10000:
             raise ValueError("concept_batch_order focus/swap setting is too large")
+        for key in ("batch_multiplier", "batch_multiplier_min", "batch_multiplier_max"):
+            if type(data[key]) is not int or not 1 <= data[key] <= 64:
+                raise ValueError(f"concept_batch_order.{key} must be an integer in [1, 64]")
+        if data["batch_multiplier_mode"] not in ("fixed", "uniform_int"):
+            raise ValueError("Invalid concept_batch_order batch_multiplier_mode")
+        if data["batch_multiplier_min"] > data["batch_multiplier_max"]:
+            raise ValueError("concept_batch_order multiplier min must not exceed max")
         if not isinstance(data["include"], list) or not isinstance(data["exclude"], list):
             raise ValueError("concept_batch_order include/exclude must be lists")
         if not isinstance(data["caption_aliases"], dict):
@@ -103,10 +124,19 @@ class ConceptOrderConfig:
                    tuple(_name(x) for x in data["exclude"]),
                    data["focus_batches"], data["local_swap_window"],
                    data["background_placement"], data["background_interval"],
-                   data["replay_interval"], aliases, bool(data["match_natural_language"]))
+                   data["replay_interval"], aliases, bool(data["match_natural_language"]),
+                   data["batch_multiplier"], data["batch_multiplier_mode"],
+                   data["batch_multiplier_min"], data["batch_multiplier_max"])
 
     def fingerprint(self) -> str:
-        return _digest(asdict(self))
+        data = asdict(self)
+        if not self.multiplied:
+            data = {key: value for key, value in data.items() if not key.startswith("batch_multiplier")}
+        elif self.batch_multiplier_mode == "fixed":
+            del data["batch_multiplier_min"], data["batch_multiplier_max"]
+        else:
+            del data["batch_multiplier"]
+        return _digest(data)
 
 
 @dataclass
@@ -126,11 +156,18 @@ class ConceptBatchPlan:
     missing_includes: tuple[str, ...]
 
     def state(self, config: ConceptOrderConfig, seed: int, crop_fingerprint: str | None) -> dict:
-        return {"version": PLAN_VERSION, "seed": seed,
+        state = {"version": config.plan_version, "seed": seed,
                 "config_hash": config.fingerprint(),
                 "classification_hash": self.classification_hash,
                 "crop_plan_fingerprint": crop_fingerprint,
                 "batch_count": len(self.batches), "digest": self.digest}
+        if config.multiplied:
+            state["caption_rng_version"] = CAPTION_RNG_VERSION
+            state["sample_count"] = sum(map(len, self.batches))
+            state["multiplier_samples"] = sum(
+                item.get("_sample_occurrence", {}).get("kind") == "multiplier"
+                for batch in self.batches for item, _ in batch)
+        return state
 
 
 def _candidate_tags(item: dict, category: str, tag_manager: Any) -> tuple[set[str], bool, bool]:
@@ -241,6 +278,8 @@ def _batch_digest(batches: list[list[tuple[dict, Any]]],
                       asdict(crop) if is_dataclass(crop) else str(crop))
             if "_ming_supervision_identity" in item:
                 member += (item["_ming_supervision_identity"],)
+            if "_sample_occurrence" in item:
+                member += (item["_sample_occurrence"], item.get("_caption_processing_config"))
             members.append(member)
         digest.update(json.dumps((name, repeated, members), ensure_ascii=False,
                                  sort_keys=True, default=str).encode("utf-8"))
@@ -288,6 +327,56 @@ def build_concept_batch_plan(items: list[tuple[dict, Any]], batch_size: int,
                         focus_labels[pos:pos+width] + focus_labels[pos-width:pos])
                     previous_end = pos + width - 1
 
+    if config.multiplied:
+        expanded_batches, expanded_labels, expanded_segments = [], [], []
+        segment_rounds = Counter()
+        source_segments = {}
+        for name, segment in segments:
+            sid = f"{name}:{segment_rounds[name]}"
+            segment_rounds[name] += 1
+            for batch in segment:
+                for pair in batch:
+                    source_segments[_item_id(pair)] = sid
+        pos = 0
+        segment_rounds.clear()
+        for name, segment in segments:
+            sid = f"{name}:{segment_rounds[name]}"
+            segment_rounds[name] += 1
+            local_batches = [[make_occurrence(pair, epoch=epoch, seed=seed,
+                              segment=source_segments[_item_id(pair)], index=0, kind="base")
+                              for pair in batch]
+                             for batch in focus_batches[pos:pos + len(segment)]]
+            local_labels = focus_labels[pos:pos + len(segment)]
+            pos += len(segment)
+            members = [pair for batch in segment for pair in batch]
+            multiplicities = {}
+            for pair in members:
+                draw = random.Random(stable_seed(seed, epoch, _item_id(pair), "multiplier-v2"))
+                multiplicities[_item_id(pair)] = (config.batch_multiplier
+                    if config.batch_multiplier_mode == "fixed" else
+                    draw.randint(config.batch_multiplier_min, config.batch_multiplier_max))
+            for exposure_index in range(1, max(multiplicities.values())):
+                repeated = [make_occurrence(pair, epoch=epoch, seed=seed, segment=sid,
+                                            index=exposure_index, kind="multiplier")
+                            for pair in members if multiplicities[_item_id(pair)] > exposure_index]
+                round_batches = _make_batches(repeated, batch_size, random.Random(
+                    stable_seed(seed, epoch, sid, exposure_index, "rebatch-v2")))
+                if local_batches and len(round_batches) > 1:
+                    previous = {_item_id(pair) for pair in local_batches[-1]}
+                    candidate = next((i for i, batch in enumerate(round_batches)
+                                      if previous.isdisjoint(_item_id(pair) for pair in batch)), None)
+                    if candidate is not None:
+                        round_batches[0], round_batches[candidate] = round_batches[candidate], round_batches[0]
+                local_batches.extend(round_batches)
+                local_labels.extend([name] * len(round_batches))
+            expanded_batches.extend(local_batches)
+            expanded_labels.extend(local_labels)
+            expanded_segments.append((name, local_batches))
+        focus_batches, focus_labels, segments = expanded_batches, expanded_labels, expanded_segments
+        background_batches = [[make_occurrence(pair, epoch=epoch, seed=seed,
+                              segment="background", index=0, kind="base") for pair in batch]
+                              for batch in background_batches]
+
     base_batches: list[list[tuple[dict, Any]]] = []
     base_labels: list[str | None] = []
     bg_idx = 0
@@ -323,18 +412,31 @@ def build_concept_batch_plan(items: list[tuple[dict, Any]], batch_size: int,
     replay: list[bool] = []
     seen: dict[str, list[list[tuple[dict, Any]]]] = defaultdict(list)
     last_seen: dict[str, int] = {}
+    replay_counts = Counter()
     for idx, (batch, name) in enumerate(zip(base_batches, base_labels)):
         batches.append(batch)
         labels.append(name)
         replay.append(False)
         if name is not None:
-            seen[name].append(batch)
+            if not config.multiplied or all(
+                    pair[0]["_sample_occurrence"]["kind"] == "base" for pair in batch):
+                seen[name].append(batch)
             last_seen[name] = idx
         if config.replay_interval and (idx + 1) % config.replay_interval == 0:
             choices = [n for n in seen if idx - last_seen[n] >= config.replay_interval]
             if choices:
                 selected = rng.choice(sorted(choices))
-                batches.append(rng.choice(seen[selected]))
+                chosen = rng.choice(seen[selected])
+                if config.multiplied:
+                    repeated_batch = []
+                    for pair in chosen:
+                        key = _item_id(pair)
+                        replay_counts[key] += 1
+                        repeated_batch.append(make_occurrence(pair, epoch=epoch, seed=seed,
+                            segment=pair[0]["_sample_occurrence"]["segment"],
+                            index=replay_counts[key], kind="replay"))
+                    chosen = repeated_batch
+                batches.append(chosen)
                 labels.append(selected)
                 replay.append(True)
                 last_seen[selected] = idx

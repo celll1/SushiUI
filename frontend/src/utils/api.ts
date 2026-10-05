@@ -7791,6 +7791,10 @@ export interface ConceptBatchOrderConfig {
   replay_interval: number;
   caption_aliases: Record<string, string[]>;
   match_natural_language: boolean;
+  batch_multiplier: number;
+  batch_multiplier_mode: "fixed" | "uniform_int";
+  batch_multiplier_min: number;
+  batch_multiplier_max: number;
 }
 
 export interface TrainingRunListResponse {

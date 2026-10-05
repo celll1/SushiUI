@@ -17055,6 +17055,33 @@ class BaseTrainer(ABC):
         )
         self._resume_structure_changed = False
         _ledger_resume = resume_dataset_change_policy == "rebase_remaining"
+        _concept_epoch_transition = False
+        if concept_config and resume_training_state is not None:
+            _saved_plan = resume_training_state.get("concept_batch_plan") or {}
+            _concept_changed = (_saved_plan.get("version") != concept_config.plan_version
+                                or _saved_plan.get("config_hash") != concept_config.fingerprint())
+            _saved_count = _saved_plan.get("batch_count")
+            # A completed epoch has no cursor to transplant into the new plan.
+            if (_concept_changed and resume_dataset_change_policy == "existing"
+                    and _saved_plan.get("version") in (1, 2)
+                    and type(_saved_count) is int and _saved_count > 0
+                    and resume_training_state.get("batch_idx") == _saved_count
+                    and resume_training_state.get("batches_per_epoch") == _saved_count
+                    and type(resume_training_state.get("epoch")) is int
+                    and resume_training_state["epoch"] >= 0
+                    and gradient_accumulation_steps == 1
+                    and resume_training_state.get("gradient_accumulation_steps") == 1
+                    and resume_training_state.get("multi_noise_timesteps") == multi_noise_timesteps
+                    and not resume_training_state.get("resume_batch_plan")
+                    and not resume_training_state.get("occurrence_gradients")
+                    and self.crop_planner is None
+                    and not self._check_dataset_fingerprint_changed(
+                        resume_training_state.get("dataset_fingerprint"), self._dataset_fingerprint)):
+                _concept_epoch_transition = True
+                start_epoch = resume_training_state["epoch"] + 1
+                resume_batch_idx = 0
+                print(f"{self.log_prefix} Concept settings changed at a completed epoch; "
+                      f"starting epoch {start_epoch + 1} with the new plan, keeping step {global_step} and optimizer.")
         if _ledger_resume and resume_from_checkpoint:
             if (global_step > 0 and resume_training_state is None) or (
                     resume_training_state is not None and not resume_training_state.get("resume_batch_plan")):
@@ -17078,9 +17105,9 @@ class BaseTrainer(ABC):
             if concept_config:
                 saved_concept = resume_training_state["concept_batch_plan"]
                 if not _ledger_resume:
-                    if saved_concept.get("version") != concept_config.plan_version:
+                    if not _concept_epoch_transition and saved_concept.get("version") != concept_config.plan_version:
                         raise ValueError("Cannot resume concept batch order: unsupported plan version")
-                    if saved_concept.get("config_hash") != concept_config.fingerprint():
+                    if not _concept_epoch_transition and saved_concept.get("config_hash") != concept_config.fingerprint():
                         raise ValueError("Cannot resume concept batch order after changing its configuration")
                     if resume_training_state.get("multi_noise_timesteps") != multi_noise_timesteps:
                         raise ValueError("Cannot resume concept batch order after changing MNT")
@@ -17100,7 +17127,11 @@ class BaseTrainer(ABC):
                         self.crop_planner._batches_per_epoch = _preview_counts
                         self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
                     if total_steps is None:
-                        actual_total_steps = sum(_preview_counts) * multi_noise_timesteps
+                        if _ledger_resume:
+                            actual_total_steps = sum(_preview_counts) * multi_noise_timesteps
+                        else:
+                            _remaining_batches = sum(_preview_counts[start_epoch:]) - resume_batch_idx
+                            actual_total_steps = global_step + max(0, _remaining_batches) * multi_noise_timesteps
                         self._reanchor_lr_schedule_total(actual_total_steps, global_step)
                         if update_total_steps_callback:
                             update_total_steps_callback(actual_total_steps)
@@ -17119,7 +17150,7 @@ class BaseTrainer(ABC):
             fp_changed = self._check_dataset_fingerprint_changed(saved_fp, self._dataset_fingerprint)
             saved_bpe = resume_training_state.get('batches_per_epoch')
             bpe_changed = (saved_bpe is not None and saved_bpe != batches_per_epoch)
-            if fp_changed or bpe_changed:
+            if (fp_changed or bpe_changed) and not _concept_epoch_transition:
                 if resume_dataset_change_policy == "strict":
                     raise ValueError("Cannot resume: dataset or batch structure changed")
                 if _ledger_resume:
@@ -17149,6 +17180,15 @@ class BaseTrainer(ABC):
                 if not _ledger_resume and getattr(self, '_rc_active', False):
                     print(f"{self.log_prefix} WARNING: res-curriculum epoch counter resets to 0; warmup would re-run. "
                           f"Curriculum + dataset swap is unsupported.")
+        if _concept_epoch_transition:
+            if not concept_config.multiplied and total_steps is None:
+                actual_total_steps = global_step + max(0, num_epochs - start_epoch) * steps_per_epoch
+                self._reanchor_lr_schedule_total(actual_total_steps, global_step)
+                if update_total_steps_callback:
+                    update_total_steps_callback(actual_total_steps)
+            if "random_state" in resume_training_state:
+                random.setstate(resume_training_state["random_state"])
+            resume_training_state = None
         if _ledger_resume and resume_training_state is not None and total_steps is not None:
             if actual_total_steps <= global_step:
                 raise ValueError("Cannot continue remaining batches: configured steps already reached")

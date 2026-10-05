@@ -18,6 +18,7 @@ import torch
 class MingAsset:
     path: Path
     sha256: str
+    file_stamp: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -73,22 +74,54 @@ def _decode(data):
         return ImageOps.exif_transpose(image).copy()
 
 
-def inspect_item(primary, *, root, profile, reference_paths=(), validated_sizes=None):
-    """Validate every role and source asset once before bucket/model construction."""
+def _file_stamp(path):
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _header_size(data):
+    with Image.open(io.BytesIO(data)) as image:
+        size = image.size
+        if image.getexif().get(274) in (5, 6, 7, 8):
+            size = size[::-1]
+        return size
+
+
+def inspect_item(primary, *, root, profile, reference_paths=(), validated_sizes=None, quick_plain=False):
+    """Build native supervision identities before bucket/model construction."""
     root = Path(root).resolve(strict=True)
     primary = _inside(root, primary)
     if profile not in {"generation_edit", "layer_decompose"}:
         raise ValueError("Unknown Ming dataset profile")
+    manifest = sidecar_path(primary)
+    plain = profile == "generation_edit" and not manifest.exists() and not reference_paths
+    stamp = _file_stamp(primary) if plain and quick_plain else None
+    if plain and quick_plain:
+        cached = (validated_sizes or {}).get(str(primary))
+        if isinstance(cached, dict) and cached.get("file_stamp") == list(stamp):
+            sha, size = cached.get("sha256"), cached.get("source_size")
+            if (isinstance(sha, str) and len(sha) == 64 and all(c in "0123456789abcdef" for c in sha)
+                    and isinstance(size, list) and len(size) == 2
+                    and all(type(v) is int and v > 0 for v in size)):
+                return MingDatasetRecord(profile, root, None, tuple(size),
+                    (MingAsset(primary, sha, stamp),), (), ("image",), (1.0,), None)
     primary_data = primary.read_bytes()
     primary_sha = hashlib.sha256(primary_data).hexdigest()
-    manifest = sidecar_path(primary)
-    if profile == "generation_edit" and not manifest.exists() and not reference_paths:
+    if plain:
         cached = (validated_sizes or {}).get(str(primary))
         if isinstance(cached, dict) and cached.get("sha256") == primary_sha:
             size = cached.get("source_size")
             if isinstance(size, list) and len(size) == 2 and all(type(v) is int and v > 0 for v in size):
+                if quick_plain and _file_stamp(primary) != stamp:
+                    raise ValueError("Ming dataset asset changed during preflight")
                 return MingDatasetRecord(profile, root, None, tuple(size),
-                    (MingAsset(primary, primary_sha),), (), ("image",), (1.0,), None)
+                    (MingAsset(primary, primary_sha, stamp),), (), ("image",), (1.0,), None)
+        if quick_plain:
+            size = _header_size(primary_data)
+            if _file_stamp(primary) != stamp:
+                raise ValueError("Ming dataset asset changed during preflight")
+            return MingDatasetRecord(profile, root, None, size,
+                (MingAsset(primary, primary_sha, stamp),), (), ("image",), (1.0,), None)
     primary_image = _decode(primary_data)
     source_size = primary_image.size
     manifest_sha = None
@@ -159,6 +192,19 @@ def verify_record_content(record):
     return payloads
 
 
+def verify_record_files(record):
+    """Avoid reading pixels for plain caption-only or already-prefilled batches."""
+    if (record.manifest_path is None and not record.references
+            and all(asset.file_stamp is not None for asset in record.targets)):
+        if sidecar_path(record.targets[0].path).exists():
+            raise ValueError("Ming dataset sidecar changed after preflight; rebuild its record/cache")
+        for asset in record.targets:
+            if _file_stamp(_inside(record.root, asset.path)) != asset.file_stamp:
+                raise ValueError("Ming dataset asset changed after preflight; rebuild its record/cache")
+    else:
+        verify_record_content(record)
+
+
 def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizontal=False):
     if not isinstance(caption, str):
         raise ValueError("Ming dataset caption must be text")
@@ -176,7 +222,10 @@ def load_pixels(record, *, caption, width, height, crop_box=None, flip_horizonta
         raise ValueError("Ming paired crop escapes the source canvas")
     images = []
     for data in verify_record_content(record):
-        image = _decode(data).convert("RGBA").crop((x, y, x + w, y + h))
+        image = _decode(data)
+        if image.size != record.source_size:
+            raise ValueError("Ming dataset source geometry changed after preflight")
+        image = image.convert("RGBA").crop((x, y, x + w, y + h))
         image = image.resize((width, height), Image.Resampling.BILINEAR)
         if flip_horizontal:
             image = ImageOps.mirror(image)
@@ -270,7 +319,7 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
         try:
             if cache_path.stat().st_size <= 32 * 1024 * 1024:
                 cached = json.loads(cache_path.read_text(encoding="utf-8"))
-                if isinstance(cached, dict) and type(cached.get("version")) is int and cached["version"] == 1 and isinstance(cached.get("sizes"), dict):
+                if isinstance(cached, dict) and type(cached.get("version")) is int and cached["version"] in (1, 2) and isinstance(cached.get("sizes"), dict):
                     validated_sizes = cached["sizes"]
         except (OSError, ValueError):
             pass
@@ -294,7 +343,8 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
                 loose.append(item)
                 continue
             record = inspect_item(item["image_path"], root=root, profile=profile,
-                                  reference_paths=item.get("reference_images") or (), validated_sizes=validated_sizes)
+                                  reference_paths=item.get("reference_images") or (), validated_sizes=validated_sizes,
+                                  quick_plain=True)
             primaries.append((item, record))
         assets = {asset.path for _, record in primaries for asset in (*record.targets, *record.references)}
         for item in loose:
@@ -304,7 +354,8 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
         selected.append((dataset, [item for item, _ in primaries]))
     if validation_cache_path is not None and profile == "generation_edit":
         sizes = {str(record.targets[0].path): {"sha256": record.targets[0].sha256,
-                 "source_size": list(record.source_size)} for _, record in pending
+                 "source_size": list(record.source_size),
+                 "file_stamp": list(record.targets[0].file_stamp)} for _, record in pending
                  if record.manifest_path is None and not record.references}
         cache_path = Path(validation_cache_path)
         temporary = None
@@ -313,7 +364,7 @@ def annotate_datasets(datasets, *, profile, progress_callback=None, stop_check=N
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache_path.parent,
                                              prefix=cache_path.name+".", delete=False) as handle:
                 temporary = Path(handle.name)
-                json.dump({"version": 1, "sizes": sizes}, handle, allow_nan=False)
+                json.dump({"version": 2, "sizes": sizes}, handle, allow_nan=False)
             os.replace(temporary, cache_path)
         except OSError as exc:
             print(f"[Ming Dataset] Validation cache could not be saved: {exc}")

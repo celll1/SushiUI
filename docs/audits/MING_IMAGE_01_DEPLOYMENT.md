@@ -341,6 +341,22 @@ do not replace the cache. Per-batch content checks remain in place.
 Eight original dataset-38 images measured 0.233 seconds on first validation and
 0.011 seconds on cached validation (about 22x for that small, OS-cached sample).
 This is not a full-dataset speed guarantee; initial validation remains necessary.
+
+2026-10-05 update: the same filename now carries schema v2 file stamps
+(device/file ID, size, nanosecond modification/creation-or-change times). Unchanged
+plain-Design files reuse SHA-256 and oriented geometry without reading image
+payloads. Old v1 entries are upgraded after one hash read; new/changed plain
+images use oriented headers, deferring full decoding until pixel loading. Layer
+and reference/sidecar records retain full preflight. Content-based supervision,
+crop and tensor-cache identities are unchanged. Pixel loading still checks the
+actual bytes against SHA-256; caption-only/prefilled checks use file stamps.
+Metadata equality is a fast change detector, not a replacement content hash.
+
+An OS-cached 32-image sample read 25,977,857 bytes with the old cache path and
+zero image payload bytes with the new warm path: 0.0279 s versus 0.00551 s
+(about 5x). The one-time v1 upgrade took 0.0247 s. This does not predict whole
+dataset or network-drive latency. The dataset/buffer/cache/pixel-prefetch CPU
+regression suite passed 109 tests without using the training GPU.
 The combined dataset/progress CPU suite passed 49 cases, and edited modules
 compiled/imported without initializing CUDA. Initialization progress now retains
 the explicit `Validating Ming images` detail instead of a generic loading label.

@@ -178,6 +178,17 @@ Ming caption staging measured 17.60 GiB allocated and 18.16 GiB peak, versus
 the pre-fix 41.55 GiB staging observation. These encoder measurements alone
 do not prove full-finetuning updates succeed.
 
+The final native run-172 attempt (`training_20261005_132307.log`) passed eleven
+Full/U-Net training steps with finite losses through the API metrics endpoint.
+Actual activation transfers were measured on multiple buckets: the 152×216
+latent bucket transferred 21.145 GiB (2.000 GiB async, 19.145 GiB pageable
+fallback), peaking at 36.35 GiB allocated; 192×176 transferred 22.668 GiB and
+peaked at 37.05 GiB. The 2 GiB pinned arena cap is respected and the remaining
+saved tensors use synchronous fallback. No OOM occurred in these checked steps.
+The run remains active toward five epochs with five-epoch saves and one retained
+model/optimizer generation. This is a functional update/offload verification,
+not a completed five-epoch training or final-checkpoint acceptance.
+
 The native training-batch bridge now preserves RGBA target frames independently
 through VAE encoding and keeps ragged edit references outside target supervision.
 `MingTrainingBatch` slices both conditioning streams, frame weights and references

@@ -232,6 +232,8 @@ class OptimizerFactory:
                     eps=eps,
                 )
                 print(f"[OptimizerFactory] Created AdamW8bit optimizer")
+                from .optimizers.bnb_step_sync import coalesce_adamw8bit_step
+                coalesce_adamw8bit_step(optimizer)
                 return optimizer
 
             elif optimizer_type == "paged_adamw":

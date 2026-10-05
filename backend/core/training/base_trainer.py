@@ -9039,9 +9039,14 @@ class BaseTrainer(ABC):
         clipper = getattr(self, "_fused_grad_clipper", None)
         if clipper is None:
             return
-        for group in self.optimizer.param_groups:
-            for param in group["params"]:
-                clipper.clip(param, self.optimizer)
+        try:
+            for group in self.optimizer.param_groups:
+                for param in group["params"]:
+                    clipper.clip(param, self.optimizer)
+        finally:
+            if clipper.monitor_only:
+                from .optimizers.fused_grad_norm import attach_grad_norm_accumulator
+                attach_grad_norm_accumulator(self.optimizer, None)
 
     def _warn_fused_clip_ignored(self) -> None:
         """Report an optimizer path that failed to arm the requested clip."""
@@ -11964,6 +11969,7 @@ class BaseTrainer(ABC):
                               f"CPU transfer={offloaded_gb:.3f} GiB "
                               f"async={stats.get('async_bytes', 0) / 1024**3:.3f} GiB "
                               f"sync fallback={stats.get('sync_fallback_bytes', 0) / 1024**3:.3f} GiB "
+                              f"duplicate saves avoided={stats.get('deduplicated_bytes', 0) / 1024**3:.3f} GiB "
                               f"peak={peak_gb:.2f} GiB", flush=True)
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
@@ -21814,8 +21820,16 @@ class BaseTrainer(ABC):
             self._grad_norm_debug_printed = True
 
         if recorded is None:
-            from .optimizers.fused_grad_norm import squared_norms_from_grads
-            recorded = squared_norms_from_grads(param for param, _ in entries)
+            from .optimizers.fused_grad_norm import (
+                FusedGradNormAccumulator, attach_grad_norm_accumulator,
+            )
+            accumulator = FusedGradNormAccumulator()
+            accumulator.enabled = True
+            for param, _ in entries:
+                accumulator.record(param)
+            recorded = accumulator.squared_norms()
+            if getattr(getattr(self, "_fused_grad_clipper", None), "monitor_only", False):
+                attach_grad_norm_accumulator(self.optimizer, accumulator)
 
         total_grad_norm = 0.0
         text_encoder_grad_norm = 0.0

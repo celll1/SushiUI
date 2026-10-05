@@ -103,3 +103,61 @@ def test_existing_mode_cannot_discard_saved_ledger(guard, tmp_path):
     scope["resume_training_state"]["resume_batch_plan"] = {"version": 1}
     with pytest.raises(ValueError, match="Cannot change resume_dataset_change_policy"):
         exec(guard, scope)
+
+
+def boundary_context(tmp_path):
+    scope = context(tmp_path, changed=False)
+    scope.update(num_epochs=10, gradient_accumulation_steps=1,
+                 update_total_steps_callback=lambda total: None)
+    scope["resume_training_state"].update(gradient_accumulation_steps=1)
+    scope["resume_training_state"]["concept_batch_plan"].update(batch_count=24)
+    scope["concept_config"].fingerprint = lambda: "new"
+    scope["concept_config"].plan_version = 2
+    scope["concept_config"].multiplied = True
+    scope["_preview_concept_counts"] = lambda seed: [90 + epoch for epoch in range(10)]
+    scope["self"]._reanchor_lr_schedule_total = lambda total, step: None
+    return scope
+
+
+def test_completed_epoch_switches_plan_without_restarting_completed_epochs(guard, tmp_path):
+    scope = boundary_context(tmp_path)
+    optimizer = scope["self"].optimizer
+    exec(guard, scope)
+    assert (scope["start_epoch"], scope["resume_batch_idx"]) == (5, 0)
+    assert scope["global_step"] == 116
+    assert scope["self"].optimizer is optimizer
+    assert scope["resume_training_state"] is None
+    assert scope["actual_total_steps"] == 116 + sum(range(95, 100))
+    assert scope["self"]._concept_order_seed == 123
+
+
+@pytest.mark.parametrize("change", ["cursor", "dataset", "gas", "mnt", "crop", "strict", "unknown_version"])
+def test_plan_switch_requires_a_verified_clean_epoch_boundary(guard, tmp_path, change):
+    scope = boundary_context(tmp_path)
+    if change == "cursor":
+        scope["resume_training_state"]["batch_idx"] -= 1
+    elif change == "dataset":
+        scope["self"]._dataset_fingerprint = {"image_paths_hash": "changed"}
+    elif change == "gas":
+        scope["gradient_accumulation_steps"] = 2
+    elif change == "mnt":
+        scope["multi_noise_timesteps"] = 2
+    elif change == "crop":
+        scope["self"].crop_planner = object()
+    elif change == "strict":
+        scope["resume_dataset_change_policy"] = "strict"
+    else:
+        scope["resume_training_state"]["concept_batch_plan"]["version"] = 99
+    with pytest.raises(ValueError, match="unsupported plan version"):
+        exec(guard, scope)
+
+
+def test_resume_after_switch_counts_only_remaining_random_epochs(guard, tmp_path):
+    scope = boundary_context(tmp_path)
+    state = scope["resume_training_state"]
+    state.update(epoch=5, batch_idx=7, batches_per_epoch=95)
+    scope.update(start_epoch=5, resume_batch_idx=7)
+    state["concept_batch_plan"].update(version=2, config_hash="new", batch_count=95)
+    exec(guard, scope)
+    assert scope["resume_training_state"] is state
+    assert scope["actual_total_steps"] == 116 + sum(range(95, 100)) - 7

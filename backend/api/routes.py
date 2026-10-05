@@ -16891,6 +16891,14 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
             value = default
         result[field_name] = value
 
+    # Legacy partition values must win over synthesized new-field defaults.
+    for legacy_name in TRAINING_DEFAULTS:
+        if not legacy_name.startswith("qwen_partition_"):
+            continue
+        canonical_name = "dit_partition_" + legacy_name.removeprefix("qwen_partition_")
+        if canonical_name in result and train.get(canonical_name) is None and train.get(legacy_name) is not None:
+            result[canonical_name] = train[legacy_name]
+
     # Editing a legacy YAML must not replace its floor with the new-run default.
     if train.get("lr_floor_ratio") is None:
         from core.training.lr_schedules import _resolve_floor

@@ -69,6 +69,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // the same values. Fallbacks and fixed option tables live in
   // trainingConfigDefinitions.tsx.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
+  const [restoredEditRunId, setRestoredEditRunId] = useState<number | null>(null);
+  const restoredRecipeRef = useRef<Partial<TrainingRunCreateRequest> | null>(null);
   const { trainingDefaults, trainingSampleDefaultsByArch, trainingGuidanceLossDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
   const [rewiringArchitectures, setRewiringArchitectures] = useState<string[]>([]);
   useEffect(() => {
@@ -112,6 +114,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       key: K,
       value: TrainingRunCreateRequest[K]
     ) => {
+      if (key === "optimizer" && restoredRecipeRef.current?.optimizer !== value && restoredRecipeRef.current) {
+        restoredRecipeRef.current = { ...restoredRecipeRef.current, optimizer: undefined };
+      }
       setParams((prev) => ({ ...prev, [key]: value }));
     },
     []
@@ -885,6 +890,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const isMiniMaxH3Model = getModelArchitecture(baseModelPath) === "minimax_h3";
   const isQwenImage21Model = getModelArchitecture(baseModelPath) === "qwen_image_21";
   const isMingImageModel = getModelArchitecture(baseModelPath) === "ming_image_01";
+  const preservingRestoredRecipe = restoredRecipeRef.current?.base_model_path === baseModelPath
+    && restoredRecipeRef.current?.training_method === trainingMethod;
+  useEffect(() => {
+    if (!restoringFromYAMLRef.current && !preservingRestoredRecipe) restoredRecipeRef.current = null;
+  }, [baseModelPath, trainingMethod, preservingRestoredRecipe]);
   const effectiveTrainTextEncoder = isMingImageModel && trainingMethod === "full_finetune"
     ? (params.ming_conditioner_groups == null ? trainTextEncoder : params.ming_conditioner_groups.length > 0)
     : trainTextEncoder;
@@ -940,8 +950,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.train_adapter : null,
       adapter_lr: (trainingMethod === "lora" || trainingMethod === "full_finetune") &&
         (isQwenImage21Model || isAnimaModel(baseModelPath) || isMingImageModel) ? params.adapter_lr : null,
-      qwen_convrot_training_forward: isMingImageModel && trainingMethod === "full_finetune"
-        ? undefined : params.qwen_convrot_training_forward,
+      qwen_convrot_training_forward: params.qwen_convrot_training_forward,
       full_finetune_dequantize_int8_base: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
         ? params.full_finetune_dequantize_int8_base : undefined,
       training_export_format: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
@@ -1127,6 +1136,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
    *      priority_training breakdown).
    */
   const applyParamsToState = useCallback((incoming: any) => {
+    if (incoming.base_model_path !== undefined && incoming.training_method !== undefined) {
+      restoredRecipeRef.current = incoming;
+    }
     if (incoming.sample_steps !== undefined || incoming.sample_cfg_scale !== undefined) {
       sampleDefaultsExplicitlySetRef.current = true;
     }
@@ -1134,6 +1146,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (incoming.base_model_path !== undefined) {
       const bmp = incoming.base_model_path || "";
       lastGuidanceLossModelRef.current = bmp;
+      lastBundleVaeModelRef.current = bmp;
+      lastTimestepModelRef.current = bmp;
       setBaseModelPath(bmp);
       // Reflect a from-scratch MiniT2I sentinel back into the checkbox/selectors.
       if (bmp.startsWith("scratch:minit2i:")) {
@@ -1287,8 +1301,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         (incoming as Record<string, unknown>).cache_latents_to_disk === true) {
       patch.latent_encoding_mode = "pre_encoded_cache";
     }
-    // sample_prompts: only overwrite when non-empty (preserve default)
-    if (incoming.sample_prompts && incoming.sample_prompts.length > 0) {
+    if (Array.isArray(incoming.sample_prompts)) {
       patch.sample_prompts = incoming.sample_prompts;
     } else {
       delete patch.sample_prompts;
@@ -1312,6 +1325,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setRunName("");  // new run needs its own name
       setTimeout(() => { restoringFromYAMLRef.current = false; }, 0);
     } catch (err: any) {
+      restoringFromYAMLRef.current = false;
       console.error("[TrainingConfig] Failed to copy settings from run:", err);
       setError(err?.response?.data?.detail || "Failed to copy settings from run");
     } finally {
@@ -1340,6 +1354,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Populate all form fields from loaded parameters
       setRunName(params.run_name || "");
       applyParamsToState(params);
+      setRestoredEditRunId(runId);
 
       console.log(`[TrainingConfig] Successfully loaded all parameters for training run ${runId}`);
       console.log(`[TrainingConfig] Sample prompts restored:`, params.sample_prompts);
@@ -1536,6 +1551,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // because it arrives asynchronously — a model chosen before it loads must
   // still be re-checked once it does.
   useEffect(() => {
+    if (preservingRestoredRecipe) return;
     if (unsupportedTrainingMethod(trainingMethod)) {
       setTrainingMethod("lora");
     }
@@ -1555,7 +1571,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // `lora_down.weight`.
   const capabilitiesReady = !!archCapabilities && !!baseModelArch;
   useEffect(() => {
-    if (restoringFromYAMLRef.current || !capabilitiesReady) return;
+    if (restoringFromYAMLRef.current || preservingRestoredRecipe || !capabilitiesReady) return;
     if (!adapterAlgorithmChoices.includes(adapterAlgorithm)) {
       updateParam("adapter_algorithm", "lora");
     }
@@ -1570,7 +1586,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // so a value carried over from a previous model is not submitted and refused.
   // Skipped while restoring a run from YAML (that run's own config wins).
   useEffect(() => {
-    if (restoringFromYAMLRef.current) return;
+    if (restoringFromYAMLRef.current || preservingRestoredRecipe || !capabilitiesReady) return;
     if (blockSwapUnsupported) {
       if (params.blocks_to_swap) updateParam("blocks_to_swap", 0);
       if (params.use_pinned_memory) updateParam("use_pinned_memory", false);
@@ -1649,7 +1665,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // SigLIP2 selection is SD/SDXL's reference-conditioning opt-in. Clear it
   // when moving to an architecture whose reference path is unrelated.
   useEffect(() => {
-    if (restoringFromYAMLRef.current || !baseModelPath) return;
+    if (restoringFromYAMLRef.current || preservingRestoredRecipe || !baseModelPath) return;
     if (isSDOrSDXLModel(baseModelPath)) {
       if (!!visionEncoderPath !== useReferenceImages) {
         updateParam("use_reference_images", !!visionEncoderPath);
@@ -1681,7 +1697,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Skipped while restoring a run from YAML: that run's own config wins, and a
   // config that violates the contract must be seen as-is.
   useEffect(() => {
-    if (restoringFromYAMLRef.current) return;
+    if (restoringFromYAMLRef.current || preservingRestoredRecipe || !capabilitiesReady) return;
     const startsNewContract = pinnedForRef.current !== requiredValues;
     pinnedForRef.current = requiredValues;
     const changed = Object.entries(requiredValues)
@@ -1710,7 +1726,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   useEffect(() => {
     // Skip during YAML restoration — params are already being restored correctly
-    if (restoringFromYAMLRef.current) return;
+    if (restoringFromYAMLRef.current || restoredRecipeRef.current?.optimizer === optimizer) return;
 
     const config = OPTIMIZER_CONFIGS[optimizer];
     if (!config) return;
@@ -2152,6 +2168,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
+    if (editRunId && restoredEditRunId !== editRunId) {
+      e.preventDefault();
+      setError("Wait for the saved configuration to load before saving. Reopen Edit Config if loading failed.");
+      return;
+    }
     e.preventDefault();
 
     if (conceptOrder?.enabled) {
@@ -8862,7 +8883,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <button
             type="submit"
             className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={loading}
+            disabled={loading || (!!editRunId && restoredEditRunId !== editRunId)}
           >
             {loading ? (editRunId ? "Updating..." : "Creating...") : (editRunId ? "Update Training Run" : "Create Training Run")}
           </button>

@@ -198,6 +198,28 @@ class NullIsOnlyCoercedWhereItIsIllegalTest(unittest.TestCase):
         self.assertIsNotNone(request.optimizer)
 
 
+class LegacyPartitionEditTest(unittest.TestCase):
+    def test_legacy_values_survive_canonical_defaults(self):
+        saved = {"qwen_partition_training_enabled": True, "qwen_partition_mode": "token_threshold",
+                 "qwen_partition_fixed_count": 4, "qwen_partition_halo_tokens": 6,
+                 "qwen_partition_split_ratio_min": 0.3, "qwen_partition_split_ratio_max": 0.7,
+                 "qwen_partition_seed": 123, "qwen_partition_profile": True,
+                 "qwen_partition_global_adapter_enabled": True, "qwen_partition_global_rank": 32,
+                 "qwen_partition_global_tokens": 12, "qwen_partition_gradient_checkpointing_blocks": 3}
+        params = _extract_request_params_from_yaml({"train": {"steps": 10, **saved}}, "full_finetune")
+        request = TrainingRunCreateRequest.model_validate({**params, "base_model_path": "model", "run_name": "legacy",
+                                                          "training_method": "full_finetune"})
+        for legacy, value in saved.items():
+            canonical = legacy.replace("qwen_partition_", "dit_partition_", 1)
+            self.assertEqual(getattr(request, canonical), value, canonical)
+
+    def test_explicit_canonical_conflicts_are_not_hidden(self):
+        params = _extract_request_params_from_yaml({"train": {"dit_partition_training_enabled": False,
+            "qwen_partition_training_enabled": True}}, "full_finetune")
+        self.assertFalse(params["dit_partition_training_enabled"])
+        self.assertTrue(params["qwen_partition_training_enabled"])
+
+
 class ExtractorContractTest(unittest.TestCase):
     """The excluded fields are excluded on purpose, not by omission."""
 

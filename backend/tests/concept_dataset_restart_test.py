@@ -172,3 +172,30 @@ def test_completed_epoch_dataset_and_concept_change_follow_existing_policy(guard
     assert scope["self"]._resume_structure_changed
     assert scope["resume_training_state"] is None
     assert scope["actual_total_steps"] == 116 + sum(range(90, 100))
+
+
+@pytest.mark.parametrize("dataset_changed", [False, True])
+def test_boundary_restores_saved_random_state_before_later_local_import(tmp_path, dataset_changed):
+    import random
+    scope = boundary_context(tmp_path)
+    if dataset_changed:
+        scope["self"]._dataset_fingerprint = {"image_paths_hash": "changed"}
+    saved = random.Random(123).getstate()
+    scope["resume_training_state"]["random_state"] = saved
+    source = inspect.getsource(BaseTrainer.train)
+    start = source.index("        from core.training.concept_exposure import ConceptExposure")
+    end = source.index("        # Timestep distribution: resolve the EFFECTIVE sampler", start)
+    body = textwrap.indent(textwrap.dedent(source[start:end]), "    ")
+    # Preserve train()'s local binding: an exec-only guard misses UnboundLocalError.
+    wrapper = f"def restore({', '.join(scope)}):\n{body}\n    import random\n    return locals()\n"
+    namespace = {}
+    exec(compile(wrapper, "<resume-function-scope>", "exec"), namespace)
+    previous = random.getstate()
+    try:
+        result = namespace["restore"](**scope)
+        assert result["resume_training_state"] is None
+        assert result["start_epoch"] == (0 if dataset_changed else 5)
+        assert result["global_step"] == 116
+        assert random.getstate() == saved
+    finally:
+        random.setstate(previous)

@@ -17192,7 +17192,8 @@ class BaseTrainer(ABC):
                 if update_total_steps_callback:
                     update_total_steps_callback(actual_total_steps)
             if "random_state" in resume_training_state:
-                random.setstate(resume_training_state["random_state"])
+                import random as _transition_random
+                _transition_random.setstate(resume_training_state["random_state"])
             resume_training_state = None
         if _ledger_resume and resume_training_state is not None and total_steps is not None:
             if actual_total_steps <= global_step:

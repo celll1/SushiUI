@@ -51,6 +51,8 @@ def build_pipeline(components) -> ImageGenerationPipeline:
                                    transformer=MingTransformerBridge(components.transformer),
                                    text_encoder=None, tokenizer=None)
     pipe.set_progress_bar_config(disable=True)
+    from .postprocessing import MingImageProcessor
+    pipe.image_processor = MingImageProcessor.from_config(pipe.image_processor.config)
     return pipe
 
 
@@ -70,7 +72,14 @@ class MingSampler:
     def run(self, *, task: str, conditioning: MingConditioning, width: int, height: int,
             steps: int, cfg: float, seed: int, requested_layers: int,
             reference_pixels=None, negative_prompt: str = "", output_type: str = "pil",
-            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None, partition_plan=None, styles=None, style_combine_mode=None, preview_callback=None) -> list[MingResultGroup]:
+            cancelled: Callable[[], bool] | None = None, step_callback=None, reference_guides=None, partition_plan=None, styles=None, style_combine_mode=None, preview_callback=None, color_flatten_strength=None) -> list[MingResultGroup]:
+        from api.param_defaults import GENERATION_DEFAULTS
+        if color_flatten_strength is None:
+            color_flatten_strength = GENERATION_DEFAULTS["color_flatten_strength"]
+        if type(color_flatten_strength) is not int or not 0 <= color_flatten_strength <= 100:
+            raise ValueError("Ming Color Flatten strength must be an integer in [0, 100]")
+        if output_type != "latent":
+            self.pipe.image_processor.color_flatten_strength = color_flatten_strength
         if negative_prompt:
             raise ValueError("Ming native guidance uses zero conditioning; negative prompts are unsupported")
         if output_type not in {"pil", "latent"}:

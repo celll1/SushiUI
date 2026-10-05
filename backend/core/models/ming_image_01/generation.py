@@ -16,7 +16,7 @@ class MingGenerator:
 
     def run(self, *, prompts, references, task, width, height, resolution,
             steps, cfg, seed, requested_layers, negative_prompt="", output_type="pil",
-            cancelled=None, step_callback=None, phase_context=None, reference_guides=None, partition_plan=None, style_transfers=None, style_combine_mode=None, preview_callback=None):
+            cancelled=None, step_callback=None, phase_context=None, reference_guides=None, partition_plan=None, style_transfers=None, style_combine_mode=None, preview_callback=None, color_flatten_strength=None):
         """Residency contexts belong to the caller; every exit releases their resources."""
         def check_cancel():
             if cancelled is not None and cancelled():
@@ -61,4 +61,5 @@ class MingGenerator:
                 steps=steps, cfg=cfg, seed=seed, requested_layers=requested_layers,
                 reference_pixels=reference_pixels, negative_prompt=negative_prompt, output_type=output_type,
                 cancelled=cancelled, step_callback=step_callback, reference_guides=prepared_guides,partition_plan=partition_plan,
-                styles=prepared_styles,style_combine_mode=style_combine_mode,preview_callback=preview_callback)
+                styles=prepared_styles,style_combine_mode=style_combine_mode,preview_callback=preview_callback,
+                color_flatten_strength=color_flatten_strength)

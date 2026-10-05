@@ -62,6 +62,24 @@ config change, frontend build or five-epoch completion is claimed.
 
 Date: 2026-10-04. Owner explicitly authorized main GPU/API use and API restart.
 
+## Generation Color Flatten wiring (2026-10-05)
+
+Nonzero `color_flatten_strength` previously hit the Ming pending-options guard
+despite being exposed by the shared frontend slider. It now passes through the
+backend, generator and sampler to a native image-processor subclass. Shared
+`flatten_chroma` runs on normalized RGB before PIL quantization; alpha remains
+unchanged for every Design/Layer frame. Each sampling request resets the
+strength from its explicit value or central default, including reuse after an
+enabled request. Latent output bypasses image postprocessing.
+
+CPU regressions passed 23 cases: shared smoothing oracle, alpha equality,
+Design/Layer frame handling, reset-to-off and invalid strength refusal, plus
+existing native sampling checks. Changed modules compiled/imported without
+CUDA. Static frontend review confirms slider range 0..100, API transport and
+queue/inheritance already carry the existing field. No API schema or default
+changed; owner frontend build/type-check was not run. Full-model GPU generation
+with the fix has not been measured in this follow-up.
+
 ## CPU pixel lookahead implementation (2026-10-05)
 
 Swap-on-the-fly latent refill now prepares the next original batch's pixels in

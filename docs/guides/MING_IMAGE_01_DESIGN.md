@@ -130,6 +130,33 @@ be adopted without matching SushiUI cancellation semantics.
 
 ## Training and component lifecycle
 
+### Encoder-phase optimizer and vision residency (2026-10-05)
+
+`core/training/optimizer_residency.py` temporarily parks CUDA optimizer state
+owned by the offloaded main model. Original state devices are restored after
+encoders leave the GPU; CPU step counters and host-resident state stay on CPU.
+The helper covers every optimizer in fused groups and restores on encode errors.
+Ming's coincident latent/caption refill shares one parking scope. The common
+trainer also uses it for caption prefill/cache creation and subsequent
+text/latent refills; existing VAE prefill/cache state relocation now uses the
+same device-preserving implementation rather than blindly moving all tensors.
+
+Frozen Ming conditioners stage language, connector, queries and projections;
+vision and its projection move to GPU only for reference-image encoding, then
+return to CPU. Trainable conditioners keep the existing graph residency through
+backward. Native input/autocast device selection follows the language model,
+because the first registered native component is the independently offloaded
+vision tower.
+
+Run 172's pre-fix log recorded 23.09 GiB allocated after VAE release and
+41.55 GiB after conditioner staging. Approximately 23 GiB of unnecessary AdamW
+state residency motivated this change. These are pre-fix observations, not a
+post-fix VRAM measurement or proof that the full training step fits 48 GB.
+CPU regression coverage verifies original-device restoration, CPU AdamW update
+equivalence, fused/coincident/error paths, reference/text-only output equality,
+and native vision/language gradients. The active run was not interrupted;
+new training children pick up the fix on their next start.
+
 The native training-batch bridge now preserves RGBA target frames independently
 through VAE encoding and keeps ragged edit references outside target supervision.
 `MingTrainingBatch` slices both conditioning streams, frame weights and references

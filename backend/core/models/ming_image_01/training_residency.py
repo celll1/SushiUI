@@ -10,23 +10,38 @@ from .cache import configured_modes
 
 
 class MingTrainingResidency:
-    def __init__(self, components, *, device, latent_mode, text_mode):
+    def __init__(self, components, *, device, latent_mode, text_mode, trainer=None):
         modes = configured_modes({"latent_encoding_mode": latent_mode, "text_encoding_mode": text_mode})
         self.components, self.device, self.modes = components, torch.device(device), modes
         self.active = None
         self.defer_restore = False
+        self.trainer = trainer
+        self.optimizer_stack = None
+
+    def _park_optimizer(self, stack):
+        if self.trainer is not None:
+            from core.training.base_trainer import all_optimizers
+            from core.training.optimizer_residency import park_optimizer_state
+            stack.enter_context(park_optimizer_state(
+                all_optimizers(self.trainer), self.components.transformer.parameters()))
 
     @contextmanager
     def continuous_refill(self):
         if self.active is not None or self.defer_restore:
             raise RuntimeError("Ming refill phases must not overlap")
         self.defer_restore = True
+        self.optimizer_stack = ExitStack()
+        self.optimizer_parked = False
         try:
             yield
         finally:
             self.defer_restore = False
-            if self.device.type != "cpu":
-                move_component(self.components.transformer, self.device)
+            try:
+                if self.device.type != "cpu":
+                    move_component(self.components.transformer, self.device)
+            finally:
+                self.optimizer_stack.close()
+                self.optimizer_stack = None
 
     def _report_memory(self, phase, stage):
         if self.device.type == "cuda":
@@ -48,12 +63,22 @@ class MingTrainingResidency:
         swap = mode in {"swap_onthefly", "pre_encoded_cache"} and self.device.type != "cpu"
         release_encoder = phase == "vae" or encoder.cacheable
         self.active = phase
+        optimizer_stack = ExitStack()
         try:
             if swap:
                 move_component(self.components.transformer, "cpu")
+                if self.optimizer_stack is not None:
+                    if not self.optimizer_parked:
+                        self._park_optimizer(self.optimizer_stack)
+                        self.optimizer_parked = True
+                else:
+                    self._park_optimizer(optimizer_stack)
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
-            encoder.to(device=self.device)
+            if phase == "conditioner" and encoder.cacheable and hasattr(encoder, "stage_training_caption"):
+                encoder.stage_training_caption(self.device)
+            else:
+                encoder.to(device=self.device)
             self._report_memory(phase, "loaded")
             yield
         finally:
@@ -70,13 +95,16 @@ class MingTrainingResidency:
                         move_component(self.components.transformer, self.device)
                     self._report_memory(phase, "released")
                 finally:
-                    self.active = None
+                    try:
+                        optimizer_stack.close()
+                    finally:
+                        self.active = None
 
 
 def configure_training_residency(trainer, *, latent_mode, text_mode):
     components = trainer.ming_image_01_components
     policy = MingTrainingResidency(components, device=trainer.device,
-                                   latent_mode=latent_mode, text_mode=text_mode)
+                                   latent_mode=latent_mode, text_mode=text_mode, trainer=trainer)
     if text_mode == "cpu_prefetch" and not components.conditioner.cacheable:
         raise ValueError("Ming CPU prefetch requires frozen conditioner ownership")
     components.vae.to(device="cpu")

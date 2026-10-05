@@ -10338,67 +10338,33 @@ class BaseTrainer(ABC):
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
 
-    def _relocate_main_model_optimizer_state(self, device):
-        """Move the optimizer's state tensors for main-model params to `device`.
+    def _park_component_optimizer_state(self, name, parameters, device):
+        from core.training.optimizer_residency import park_optimizer_state
 
-        Mirrors _ve_set_device's optimizer-state handling so optimizer steps stay
-        device-consistent when the main model is offloaded for a VAE encode phase.
-        Matches by parameter identity, so it covers both full-finetune (all main-model
-        params trained) and LoRA (only the injected adapter params are in optimizer.state,
-        and those are still parameters of the main model module). It is a no-op until the
-        optimizer exists and has actually been stepped (Adam-family state is allocated
-        lazily on the first gradient), so a fresh run's pre-training encode pays nothing;
-        it matters for resumed runs whose loaded state is GPU-resident.
-        """
-        opt = getattr(self, "optimizer", None)
-        if opt is None:
-            return
-        try:
-            model = self._main_model_module()
-            if model is None:
-                return
-            main_params = set(model.parameters())
-            if not main_params:
-                return
-            for p, st in opt.state.items():
-                if p in main_params:
-                    for k, v in list(st.items()):
-                        if isinstance(v, torch.Tensor):
-                            st[k] = v.to(device)
-        except Exception:
-            pass
+        scopes = getattr(self, "_component_optimizer_parking", None)
+        if scopes is None:
+            scopes = self._component_optimizer_parking = {}
+        if torch.device(device).type == "cpu":
+            if name not in scopes:
+                scope = park_optimizer_state(all_optimizers(self), parameters)
+                scope.__enter__()
+                scopes[name] = scope
+        elif name in scopes:
+            scopes.pop(name).__exit__(None, None, None)
+
+    def _relocate_main_model_optimizer_state(self, device):
+        """Pair temporary offload with restoration of each state's original device."""
+        model = self._main_model_module()
+        self._park_component_optimizer_state(
+            "main", model.parameters() if model is not None else (), device)
 
     def _relocate_text_encoder_optimizer_state(self, device):
-        """Move the optimizer's state tensors for text-encoder params to `device`.
-
-        Companion to _relocate_main_model_optimizer_state for the text encoders
-        (self.text_encoder / self.text_encoder_2 — the same modules
-        move_text_encoder_to_cpu/gpu relocate). Used when the TEs are parked on CPU
-        for a VAE-only encode phase so their Adam/optimizer state (fp32 m/v — as large
-        as the trained params) does not stay pinned on the GPU beside the VAE. Matches
-        by parameter identity, so it is scoped to whatever TE params are actually in the
-        optimizer (full-finetune with train_text_encoder; empty otherwise) and is a
-        no-op until the optimizer exists and has been stepped (Adam-family state is
-        allocated lazily on the first gradient). No-op for frozen / cached-TE setups.
-        """
-        opt = getattr(self, "optimizer", None)
-        if opt is None:
-            return
-        try:
-            te_params = set()
-            if getattr(self, "text_encoder", None) is not None:
-                te_params.update(self.text_encoder.parameters())
-            if getattr(self, "is_sdxl", False) and getattr(self, "text_encoder_2", None) is not None:
-                te_params.update(self.text_encoder_2.parameters())
-            if not te_params:
-                return
-            for p, st in opt.state.items():
-                if p in te_params:
-                    for k, v in list(st.items()):
-                        if isinstance(v, torch.Tensor):
-                            st[k] = v.to(device)
-        except Exception:
-            pass
+        parameters = []
+        for name in ("text_encoder", "text_encoder_2"):
+            encoder = getattr(self, name, None)
+            if encoder is not None:
+                parameters.extend(encoder.parameters())
+        self._park_component_optimizer_state("text", parameters, device)
 
 
     def encode_image(
@@ -15308,9 +15274,11 @@ class BaseTrainer(ABC):
         total_encoded = 0
         total_cached = 0
 
-        self.move_text_encoder_to_gpu()
-
-        try:
+        from core.training.optimizer_residency import encoder_refill_residency
+        main = self._main_model_module()
+        restore_main = main is not None and next(main.parameters()).device.type != "cpu"
+        with encoder_refill_residency(self, text=True, vae=False, restore_main=restore_main):
+            self.move_text_encoder_to_gpu()
             for dataset in datasets:
                 cache_dir = text_encoder_caches[dataset.unique_id]
                 pairs = dataset_captions[dataset.unique_id]
@@ -15414,8 +15382,6 @@ class BaseTrainer(ABC):
                                 total=total_captions,
                             )
 
-        finally:
-            self.move_text_encoder_to_cpu()
 
         print(f"{self.log_prefix} Text encoder cache validation complete:")
         print(f"{self.log_prefix}   - Cached: {total_cached}")
@@ -18162,48 +18128,44 @@ class BaseTrainer(ABC):
                             total=text_encoding_swap_interval
                         )
 
-                    self.move_text_encoder_to_gpu()
-                    # Move main model to CPU to free VRAM
-                    self.move_main_model_to_cpu()
-                    if (_cfg_null_rate and self.arch.cfg_null_stage == "caption"
-                            and getattr(self, "_cfg_null_blank_encoding", None) is None):
-                        blank_emb, blank_aux = self.encode_caption("")
-                        self._cfg_null_blank_encoding = (
-                            blank_emb.detach().cpu(), self._aux_to_cpu(blank_aux))
+                    from core.training.optimizer_residency import encoder_refill_residency
+                    with encoder_refill_residency(self, text=True, vae=False):
+                        self.move_text_encoder_to_gpu()
+                        if (_cfg_null_rate and self.arch.cfg_null_stage == "caption"
+                                and getattr(self, "_cfg_null_blank_encoding", None) is None):
+                            blank_emb, blank_aux = self.encode_caption("")
+                            self._cfg_null_blank_encoding = (
+                                blank_emb.detach().cpu(), self._aux_to_cpu(blank_aux))
 
-                    # Encode captions for first interval
-                    # Use batches (which have bucket info) instead of all_items
-                    buffer_items = []
-                    for batch in batches[:text_encoding_swap_interval]:
-                        buffer_items.extend(batch)
-                    for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
-                        # Abort promptly on user stop (KeyboardInterrupt is caught by
-                        # train()'s handler; the process exits, so device restoration
-                        # of the swapped-out main model is moot).
-                        self._check_stop_requested()
+                        # Encode captions for first interval
+                        # Use batches (which have bucket info) instead of all_items
+                        buffer_items = []
+                        for batch in batches[:text_encoding_swap_interval]:
+                            buffer_items.extend(batch)
+                        for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
+                            self._check_stop_requested()
 
-                        caption = item.get("caption", "")
-                        image_path = item["image_path"]
-                        embeddings, auxiliary_data = self.encode_caption(
-                            caption, requires_grad=False, lyrics=item.get("lyrics", "")
-                        )
-                        # Store on CPU to save GPU VRAM, keyed by image_path
-                        # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
-                        swap_buffer[image_path] = (
-                            embeddings.cpu(),
-                            self._aux_to_cpu(auxiliary_data),
-                            caption,  # String (CPU memory, minimal overhead)
-                        )
-
-                        if progress_callback and idx % 10 == 0:
-                            progress_callback(
-                                phase="text_encoder_cache",
-                                step=idx,
-                                total=len(buffer_items)
+                            caption = item.get("caption", "")
+                            image_path = item["image_path"]
+                            embeddings, auxiliary_data = self.encode_caption(
+                                caption, requires_grad=False, lyrics=item.get("lyrics", "")
+                            )
+                            # Store on CPU to save GPU VRAM, keyed by image_path
+                            # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
+                            swap_buffer[image_path] = (
+                                embeddings.cpu(),
+                                self._aux_to_cpu(auxiliary_data),
+                                caption,  # String (CPU memory, minimal overhead)
                             )
 
-                    self.move_text_encoder_to_cpu()
-                    self.move_main_model_to_gpu()
+                            if progress_callback and idx % 10 == 0:
+                                progress_callback(
+                                    phase="text_encoder_cache",
+                                    step=idx,
+                                    total=len(buffer_items)
+                                )
+
+                        self.move_text_encoder_to_cpu()
 
                     next_swap_at_step = text_encoding_swap_interval
                     print(f"{self.log_prefix} Buffer pre-filled with {len(swap_buffer)} embeddings")
@@ -18247,29 +18209,23 @@ class BaseTrainer(ABC):
                         and next(self.text_encoder_2.parameters()).device.type != "cpu"
                     )
 
-                    self.move_vae_to_gpu()
-                    # Move main model to CPU to free VRAM. move_main_model_to_cpu moves only
-                    # the weights; relocate the optimizer's GPU-resident state here too so it
-                    # does not co-reside with the VAE during this prefill encode (mirrors
-                    # _ve_set_device). Done at the call site rather than inside
-                    # move_main_model_to_cpu because the mid-training latent/TE swaps that
-                    # also call it must keep optimizer state on the GPU for optimizer.step.
-                    # No-op on fresh runs (optimizer state allocated lazily on first step).
-                    self.move_main_model_to_cpu()
-                    self._relocate_main_model_optimizer_state("cpu")
-                    if self.debug_vram:
-                        _vramdiag("after_move_main_model_to_cpu")
-                    # Offload the text encoder(s) + their optimizer state too (no-op when
-                    # already on CPU, e.g. swap/cached-TE modes).
-                    if te_on_gpu or te2_on_gpu:
-                        self.move_text_encoder_to_cpu()
-                        self._relocate_text_encoder_optimizer_state("cpu")
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    if self.debug_vram:
-                        _vramdiag("after_te_offload_and_empty_cache")
-
+                    # Release weights and optimizer state before allocating the VAE.
                     try:
+                        self.move_main_model_to_cpu()
+                        self._relocate_main_model_optimizer_state("cpu")
+                        if self.debug_vram:
+                            _vramdiag("after_move_main_model_to_cpu")
+                        # Offload the text encoder(s) + their optimizer state too (no-op when
+                        # already on CPU, e.g. swap/cached-TE modes).
+                        if te_on_gpu or te2_on_gpu:
+                            self.move_text_encoder_to_cpu()
+                            self._relocate_text_encoder_optimizer_state("cpu")
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        self.move_vae_to_gpu()
+                        if self.debug_vram:
+                            _vramdiag("after_te_offload_and_empty_cache")
+
                         # Encode images for first interval
                         # Use batches (which have bucket info) instead of all_items
                         buffer_items = []
@@ -18695,160 +18651,150 @@ class BaseTrainer(ABC):
                         latent_swap_buffer is not None
                         and batch_idx >= next_latent_swap_at_step
                     )
-                    _coalesced_refill = _text_refill_due and _latent_refill_due
+                    from core.training.optimizer_residency import encoder_refill_residency
+                    with encoder_refill_residency(self, text=_text_refill_due, vae=_latent_refill_due):
+                        if _text_refill_due:
+                            # Calculate next batch range
+                            start_idx = next_swap_at_step
+                            end_idx = min(start_idx + text_encoding_swap_interval, len(batches))
+                            # Use batches (which have bucket info) instead of all_items
+                            buffer_items = []
+                            for batch in batches[start_idx:end_idx]:
+                                buffer_items.extend(batch)
 
-                    if _text_refill_due:
-                        # Calculate next batch range
-                        start_idx = next_swap_at_step
-                        end_idx = min(start_idx + text_encoding_swap_interval, len(batches))
-                        # Use batches (which have bucket info) instead of all_items
-                        buffer_items = []
-                        for batch in batches[start_idx:end_idx]:
-                            buffer_items.extend(batch)
-
-                        print(f"\n{self.log_prefix} Refilling swap buffer (steps {start_idx}-{end_idx})...")
-                        if progress_callback:
-                            progress_callback(
-                                phase="text_encoder_cache",
-                                step=0,
-                                total=len(buffer_items)
-                            )
-
-                        self.move_text_encoder_to_gpu()
-                        self.move_main_model_to_cpu()
-
-                        # Clear old buffer and encode new captions (dict keyed by image_path)
-                        swap_buffer.clear()
-                        for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions", leave=False)):
-                            caption = item.get("caption", "")
-                            image_path = item["image_path"]
-                            embeddings, auxiliary_data = self.encode_caption(
-                                caption, requires_grad=False, lyrics=item.get("lyrics", "")
-                            )
-                            # Store on CPU to save GPU VRAM, keyed by image_path
-                            swap_buffer[image_path] = (
-                                embeddings.cpu(),
-                                self._aux_to_cpu(auxiliary_data),
-                                caption,  # String (CPU memory, minimal overhead)
-                            )
-
-                            if progress_callback and idx % 10 == 0:
+                            print(f"\n{self.log_prefix} Refilling swap buffer (steps {start_idx}-{end_idx})...")
+                            if progress_callback:
                                 progress_callback(
                                     phase="text_encoder_cache",
-                                    step=idx,
+                                    step=0,
                                     total=len(buffer_items)
                                 )
 
-                        self.move_text_encoder_to_cpu()
-                        if not _coalesced_refill:
-                            self.move_main_model_to_gpu()
-                            torch.cuda.empty_cache()
+                            self.move_text_encoder_to_gpu()
 
-                        next_swap_at_step += text_encoding_swap_interval
-                        print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
-
-                    if _latent_refill_due:
-                        # Calculate next batch range
-                        start_idx = next_latent_swap_at_step
-                        end_idx = min(start_idx + latent_encoding_swap_interval, len(batches))
-                        # Use batches (which have bucket info) instead of all_items
-                        buffer_items = []
-                        for batch in batches[start_idx:end_idx]:
-                            buffer_items.extend(batch)
-
-                        print(f"\n{self.log_prefix} Refilling latent swap buffer (steps {start_idx}-{end_idx})...")
-                        if progress_callback:
-                            progress_callback(
-                                phase="latent_cache",
-                                step=0,
-                                total=len(buffer_items)
-                            )
-
-                        self.move_vae_to_gpu()
-                        if not _coalesced_refill:
-                            self.move_main_model_to_cpu()
-
-                        # Clear old buffer and encode new latents (dict keyed by image_path)
-                        latent_swap_buffer.clear()
-                        corrupted_images = []  # Track corrupted images for logging
-                        for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents", leave=False)):
-                            image_path = item["image_path"]
-                            caption = item.get("caption", "")
-                            width = item.get("width") or item.get("bucket_width")
-                            height = item.get("height") or item.get("bucket_height")
-
-                            try:
-                                # LTX-2.3 video clip: encode a 5D clip latent via the
-                                # LTX video VAE (Image.open cannot read .webm).
-                                if self._temporal_spec() is not None and item.get("item_type") == "video":
-                                    latent = self._encode_video_clip(item)
-                                    latent_swap_buffer[image_path] = (latent.cpu(), caption)
-                                    if progress_callback and idx % 10 == 0:
-                                        progress_callback(
-                                            phase="latent_cache",
-                                            step=idx,
-                                            total=len(buffer_items)
-                                        )
-                                    continue
-                                _danb_b = item.get("_danbooru_image_bytes")
-                                if _danb_b is not None:
-                                    # Online Danbooru sample — decode the in-memory
-                                    # bytes lazily here (one at a time, no disk path).
-                                    image = Image.open(BytesIO(_danb_b))
-                                else:
-                                    image = Image.open(image_path)
-                                # Force load to detect truncated images early
-                                image.load()
-                                latent = self.encode_image(
-                                    image=image,
-                                    target_width=width,
-                                    target_height=height,
-                                    bucket_strategy=bucket_strategy
+                            # Clear old buffer and encode new captions (dict keyed by image_path)
+                            swap_buffer.clear()
+                            for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions", leave=False)):
+                                caption = item.get("caption", "")
+                                image_path = item["image_path"]
+                                embeddings, auxiliary_data = self.encode_caption(
+                                    caption, requires_grad=False, lyrics=item.get("lyrics", "")
                                 )
                                 # Store on CPU to save GPU VRAM, keyed by image_path
-                                latent_swap_buffer[image_path] = (
-                                    latent.cpu(),
+                                swap_buffer[image_path] = (
+                                    embeddings.cpu(),
+                                    self._aux_to_cpu(auxiliary_data),
                                     caption,  # String (CPU memory, minimal overhead)
                                 )
-                                if _danb_b is not None:
-                                    # Free the in-memory Danbooru bytes immediately
-                                    # once its latent is buffered (incremental
-                                    # cleanup — keeps CPU RAM bounded).
-                                    item["_danbooru_image_bytes"] = None
-                            except Exception as img_error:
-                                corrupted_images.append(image_path)
-                                self._report_item_failure(img_error, image_path, "Skipping")
-                                continue
 
-                            if progress_callback and idx % 10 == 0:
+                                if progress_callback and idx % 10 == 0:
+                                    progress_callback(
+                                        phase="text_encoder_cache",
+                                        step=idx,
+                                        total=len(buffer_items)
+                                    )
+
+                            self.move_text_encoder_to_cpu()
+
+                            next_swap_at_step += text_encoding_swap_interval
+                            print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
+
+                        if _latent_refill_due:
+                            # Calculate next batch range
+                            start_idx = next_latent_swap_at_step
+                            end_idx = min(start_idx + latent_encoding_swap_interval, len(batches))
+                            # Use batches (which have bucket info) instead of all_items
+                            buffer_items = []
+                            for batch in batches[start_idx:end_idx]:
+                                buffer_items.extend(batch)
+
+                            print(f"\n{self.log_prefix} Refilling latent swap buffer (steps {start_idx}-{end_idx})...")
+                            if progress_callback:
                                 progress_callback(
                                     phase="latent_cache",
-                                    step=idx,
+                                    step=0,
                                     total=len(buffer_items)
                                 )
 
-                        # Terminal tick: same idx % 10 shortfall as the prefill.
-                        if progress_callback:
-                            progress_callback(
-                                phase="latent_cache",
-                                step=len(buffer_items),
-                                total=len(buffer_items)
-                            )
+                            self.move_vae_to_gpu()
+                            # Clear old buffer and encode new latents (dict keyed by image_path)
+                            latent_swap_buffer.clear()
+                            corrupted_images = []  # Track corrupted images for logging
+                            for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents", leave=False)):
+                                image_path = item["image_path"]
+                                caption = item.get("caption", "")
+                                width = item.get("width") or item.get("bucket_width")
+                                height = item.get("height") or item.get("bucket_height")
 
-                        # Log summary of corrupted images
-                        if corrupted_images:
-                            print(f"{self.log_prefix} [ITEM ENCODE] Total skipped in this refill: {len(corrupted_images)}")
-                            for path in corrupted_images:
-                                print(f"{self.log_prefix} [ITEM ENCODE]   - {path}")
+                                try:
+                                    # LTX-2.3 video clip: encode a 5D clip latent via the
+                                    # LTX video VAE (Image.open cannot read .webm).
+                                    if self._temporal_spec() is not None and item.get("item_type") == "video":
+                                        latent = self._encode_video_clip(item)
+                                        latent_swap_buffer[image_path] = (latent.cpu(), caption)
+                                        if progress_callback and idx % 10 == 0:
+                                            progress_callback(
+                                                phase="latent_cache",
+                                                step=idx,
+                                                total=len(buffer_items)
+                                            )
+                                        continue
+                                    _danb_b = item.get("_danbooru_image_bytes")
+                                    if _danb_b is not None:
+                                        # Online Danbooru sample — decode the in-memory
+                                        # bytes lazily here (one at a time, no disk path).
+                                        image = Image.open(BytesIO(_danb_b))
+                                    else:
+                                        image = Image.open(image_path)
+                                    # Force load to detect truncated images early
+                                    image.load()
+                                    latent = self.encode_image(
+                                        image=image,
+                                        target_width=width,
+                                        target_height=height,
+                                        bucket_strategy=bucket_strategy
+                                    )
+                                    # Store on CPU to save GPU VRAM, keyed by image_path
+                                    latent_swap_buffer[image_path] = (
+                                        latent.cpu(),
+                                        caption,  # String (CPU memory, minimal overhead)
+                                    )
+                                    if _danb_b is not None:
+                                        # Free the in-memory Danbooru bytes immediately
+                                        # once its latent is buffered (incremental
+                                        # cleanup — keeps CPU RAM bounded).
+                                        item["_danbooru_image_bytes"] = None
+                                except Exception as img_error:
+                                    corrupted_images.append(image_path)
+                                    self._report_item_failure(img_error, image_path, "Skipping")
+                                    continue
 
-                        self.move_vae_to_cpu()
-                        self.move_main_model_to_gpu()
+                                if progress_callback and idx % 10 == 0:
+                                    progress_callback(
+                                        phase="latent_cache",
+                                        step=idx,
+                                        total=len(buffer_items)
+                                    )
 
-                        # Clear CUDA cache after model movement to free fragmented memory
-                        torch.cuda.empty_cache()
+                            # Terminal tick: same idx % 10 shortfall as the prefill.
+                            if progress_callback:
+                                progress_callback(
+                                    phase="latent_cache",
+                                    step=len(buffer_items),
+                                    total=len(buffer_items)
+                                )
 
-                        next_latent_swap_at_step += latent_encoding_swap_interval
-                        print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")
+                            # Log summary of corrupted images
+                            if corrupted_images:
+                                print(f"{self.log_prefix} [ITEM ENCODE] Total skipped in this refill: {len(corrupted_images)}")
+                                for path in corrupted_images:
+                                    print(f"{self.log_prefix} [ITEM ENCODE]   - {path}")
+
+                            self.move_vae_to_cpu()
+
+
+                            next_latent_swap_at_step += latent_encoding_swap_interval
+                            print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")
 
                     # ============================================================
                     # Batch data preparation (ONCE per batch, OUTSIDE MNT loop)

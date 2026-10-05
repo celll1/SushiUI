@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -84,6 +85,7 @@ class MingConditioner(nn.Module):
                  for name in ("inv_freq", "original_inv_freq")
                  if isinstance(value := getattr(module, name, None), torch.Tensor) and not value.is_meta]
         result = super()._apply(fn, recurse=recurse)
+        self._training_vision_on_demand = False
         # Retain the unrounded frequencies across precision and residency changes.
         for module, name, value in saved:
             setattr(module, name, value.to(device=module.inv_freq.device, dtype=torch.float32))
@@ -93,6 +95,26 @@ class MingConditioner(nn.Module):
         return {"language": (self.native.model,), "vision": (self.native.vision, self.native.linear_proj),
                 "connector": (self.native.connector,), "queries": (self.native.query_tokens_dict,),
                 "projections": (self.native.proj_in, self.native.proj_out, self.native.proj_directvlm)}
+
+    def stage_training_caption(self, device):
+        # Frozen caption-only batches do not execute the vision tower.
+        for name, modules in self.component_groups().items():
+            for module in modules:
+                module.to(device="cpu" if name == "vision" else device)
+        self._training_vision_on_demand = True
+
+    @contextmanager
+    def training_vision(self, required):
+        staged = required and self.cacheable and getattr(self, "_training_vision_on_demand", False)
+        try:
+            if staged:
+                for module in self.component_groups()["vision"]:
+                    module.to(device=self.native.device)
+            yield
+        finally:
+            if staged:
+                for module in self.component_groups()["vision"]:
+                    module.to(device="cpu")
 
     def set_trainable(self, groups: set[str]) -> None:
         components = self.component_groups()

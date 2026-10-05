@@ -395,6 +395,27 @@ measurements are in `local/deployment/activation_lanes_benchmark.json`.
 Run #172 was stopped once at step 1920 with complete model, optimizer and state
 saved for GPU validation. Its configuration is unchanged.
 
+Native acceptance: #172 restored all 521 optimizer tensors with zero fresh
+states and completed its 93-item refill. Updates progressed through step 1947
+with finite loss and no errors. Observed buckets reported zero synchronous
+fallback and zero discarded-lookahead bytes. For 168x216, 3.729 GiB of strided
+saves used staging, packed bytes were 23.446 GiB and H2D bytes 23.457 GiB;
+pack/restore CPU waits were 2.484/1.159 seconds, and peak allocated memory was
+37.35 GiB. Smaller buckets similarly staged 1.595–1.617 GiB of strided saves
+without fallback. Near-zero wasted bytes establish useful transfer behavior,
+not a reduction in the activation bytes inherently needed by backward.
+
+A second nonblocking 30-second/29-Hz ordinary-step sample after restart is
+retained at `local/deployment/ming172_io_after_speedscope.json` (858 samples per
+main/autograd thread; eleven sampling errors). No main-thread synchronous-pack
+leaf was observed. Autograd restore-future waits occupied 94/858 samples (11.0%),
+versus 176/859 (20.5%) before. Forward staging backpressure remains at 221/858
+(25.8%), compared with the earlier separate queue/sync-pack counts of 104/859
+and 103/859. The windows used different buckets and included allocator/shape
+transitions, so these proportions do not prove an end-to-end speedup. Remaining
+forward backpressure is a candidate for bounded double-buffered staging across
+CPU copies and DMA, with another equivalence/timing gate before adoption.
+
 ## Prior audit validation
 
 Changed backend files pass `py_compile` and real imports with CUDA initialization

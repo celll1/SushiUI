@@ -171,8 +171,6 @@ native operation and bounded memory, not an identical-input throughput gain.
 Post-initialization step intervals ranged from 4.2 to 12.5 seconds across
 different buckets. The run remains active for normal training.
 
-## Prior audit validation
-
 ## Debug VAE decode residency follow-up
 
 Deferred debug decode now shares `debug_decode_residency.py` across Ming,

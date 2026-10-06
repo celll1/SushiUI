@@ -49,6 +49,9 @@ nativeの位置IDを生成する際に格子とtensor versionを記録し、未�
 実causal Qwen-Image VAEからAutoencoderKLへの校正、生成用encode/decode、公開loaderの復元、
 学習済みbridgeを再校正しない再開とsharded保存をCPU合成データで検証する。
 Kreaの公式全重みによるswap学習・画質・optimizer付きrun再開は未検証。
+2026-10-06の関連CPU回帰テスト338件、変更Pythonのpy_compileとCUDAを抑止した実importが通過した。
+再起動後の`GET /training/vae-sources?arch=krea2`でもQwen 2.1の64ch/16x codecが選択可能。
+aligned exportはcodec宣言のない復元不能な保存を拒否する。frontendは静的確認済みで、ownerのbuild・画面確認は未了。
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 

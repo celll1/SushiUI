@@ -8,6 +8,11 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+最新到達点: H3公式全重みでtarget-native /32 VAE・paired_spatial・2段U-netを併用した
+Full更新、native bundle保存復元、optimizer精度保持と次更新まで通過。
+公式TE/audio条件付け・生成画質受入と公開Full経路の解放は未完。
+以下は段階別の検証記録であり、途中の未完事項は後続の結果で更新する。
+
 共通mutable conductorの`use_pinned_memory=false`では、連続したCPU tensorをmasterとして
 借用し、dense全重みをpacked planeへ複製しない。pinned指定・非連続tensorは従来経路を維持する。
 CPU master/source file不変の回帰5件、関連VAE/U-net回帰を含む63件、compile/実importが通過。
@@ -29,6 +34,15 @@ H3 readerのSwiGLU変換元をowned file readへ変更し、並べ替えコピ�
 2段U-net（最深4層）を併用。観測RSS最大49.929GiB、CUDA reserved最大約8.002GiB。
 入力conditioning/audioは合成tensorであり、公式TE/audio VAEや画質受入の証拠ではない。
 Full保存・optimizer再開・公式条件付けの検証が残るため、公開Full gateは維持する。
+
+続く公式Full bundle保存は4shard・約38.9GiB（検証用D: `local/verification/h3_official_resume/`）。
+別プロセスでVAE/bridge/U-net込み復元、同一乱数でloss 3.7018637657165527が保存前と一致し、
+638tensor全てがstep=3へ進んだ。optimizerは638tensor全ての値・dtype一致を確認。
+その過程でPyTorch復元がAdafactorのFP32モーメントを半精度parameter dtypeへcastする不具合を
+修正した。共通factoryの通常Adafactorとfused Adafactorの両方に復元精度保持を配線する。
+FP16/BF16/FP32、beta1有無、通常/fused更新の再開後数値一致・入力state非変更を含む
+関連CPU回帰73件、変更Python compile/実import（CUDA未初期化）が通過。
+これは合成conditioning/audioでの機能検証であり、公式条件付け・生成画質の受入は未完。
 
 H3のembedded交換VAEを学習用に読み込む際、native用の一律fp16変換を適用せず、
 保存済みprecision/latent identityを維持する。校正済みpair・codec/model契約を確認し、

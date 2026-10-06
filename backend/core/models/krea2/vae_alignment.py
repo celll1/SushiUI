@@ -49,9 +49,21 @@ def apply_swap(trainer, resolved, *, handler, module=None):
             restore_topology(model,build_spec("krea2",[{"name":"main","block_count":len(model.transformer_blocks)}],
                 topology["regions"],native_config(dict(model.config))))
         return report
+    from core.models.components.gaussian_alignment import POLICY
+    noise_policy = (POLICY if resolved.scale_factor > source_spec.vae_scale_factor
+                    and resolved.latent_channels >= model.img_in.in_features//4 else None)
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.img_in.in_features//4,source_wiring=source_spec,patch_size=2,resize=resize,
-        pending_key="_krea_vae_calibration_source",topology_config=lambda:native_config(dict(model.config)))
+        pending_key="_krea_vae_calibration_source",topology_config=lambda:native_config(dict(model.config)),
+        noise_policy=noise_policy)
+
+
+def noise_kwargs(model, noise):
+    if getattr(getattr(model, NAME, None), "noise_alignment", None) is None:
+        return {}
+    if noise is None or noise.ndim != 3:
+        raise ValueError("Aligned Krea requires its actual packed exposure noise")
+    return {"alignment_noise": noise}
 
 
 def calibrate(trainer,datasets):

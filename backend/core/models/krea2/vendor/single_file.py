@@ -464,6 +464,13 @@ def build_krea2_transformer(
         if missing:
             raise RuntimeError(f"[Krea2] missing transformer keys: {missing[:8]}")
 
+    noise = getattr(getattr(model, "vae_latent_bridge", None), "noise_alignment", None)
+    if noise is not None:
+        prefix = "vae_latent_bridge.noise_alignment."
+        # The sampler's fixed noise definition must bypass compute-dtype conversion.
+        state = {key[len(prefix):]: value.float() if value.is_floating_point() else value
+                 for key, value in diffusers_sd.items() if key.startswith(prefix)}
+        noise.load_state_dict(state, strict=True, assign=True)
     from core.models.components.spatial_swap import validate_loaded
     validate_loaded(model)
     model.eval()

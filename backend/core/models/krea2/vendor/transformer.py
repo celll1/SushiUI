@@ -522,6 +522,7 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
         encoder_attention_mask: Optional[torch.Tensor] = None,
         attention_kwargs: Optional[dict] = None,
         return_dict: bool = True,
+        alignment_noise: Optional[torch.Tensor] = None,
     ):
         if position_ids.ndim != 2 or position_ids.shape[-1] != 3:
             raise ValueError(f"`position_ids` must have shape (sequence_length, 3), got {tuple(position_ids.shape)}.")
@@ -535,7 +536,7 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
             from ..vae_alignment import image_grid
             from core.models.components.spatial_swap import map_packed_image
             grid = image_grid(position_ids, text_seq_len, image_seq_len)
-            hidden_states = map_packed_image(pair, hidden_states, grid, sigma=timestep)
+            hidden_states = map_packed_image(pair, hidden_states, grid, sigma=timestep, noise=alignment_noise)
         self._stamp_style_context(text_seq_len, image_seq_len)
 
         temb = self.time_embed(timestep, dtype=hidden_states.dtype)
@@ -583,7 +584,7 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
         hidden_states = hidden_states[:, text_seq_len:]
         output = self.final_layer(hidden_states, temb)
         if pair is not None:
-            output = map_packed_image(pair, output, grid, output=True)
+            output = map_packed_image(pair, output, grid, output=True, noise=alignment_noise)
 
         if not return_dict:
             return (output,)

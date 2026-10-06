@@ -113,7 +113,7 @@ def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
 
 
 def map_packed_image(pair, states, grid, *, sigma=None, output=False, patch_size=2,
-                     channel_order="outer", convention="eps_minus_x0"):
+                     channel_order="outer", convention="eps_minus_x0", noise=None):
     """The spatial bridge changes neither grid size nor packing order."""
     height, width = grid
     batch, tokens, packed = states.shape
@@ -126,8 +126,15 @@ def map_packed_image(pair, states, grid, *, sigma=None, output=False, patch_size
         states = states.reshape(batch,tokens,p,p,-1).permute(0,1,4,2,3).reshape(batch,tokens,packed)
     image = states.reshape(batch,height,width,packed//(p*p),p,p).permute(0,3,1,4,2,5)
     image = image.reshape(batch,packed//(p*p),height*p,width*p)
-    image = (pair.output.flow_velocity(image, convention=convention) if output
-             else pair.input.flow_state(image, sigma))
+    if noise is not None:
+        if noise.ndim != 3 or noise.shape[:2] != (batch,tokens) or noise.shape[-1] != pair.declaration["new_channels"]*p*p:
+            raise ValueError("Packed alignment noise must share the external image grid")
+        if channel_order == "inner":
+            noise = noise.reshape(batch,tokens,p,p,-1).permute(0,1,4,2,3).reshape(batch,tokens,-1)
+        noise = noise.reshape(batch,height,width,-1,p,p).permute(0,3,1,4,2,5)
+        noise = noise.reshape(batch,pair.declaration["new_channels"],height*p,width*p)
+    image = (pair.flow_velocity(image, convention=convention, noise=noise) if output
+             else pair.flow_state(image, sigma, noise=noise))
     states = image.reshape(batch,image.shape[1],height,p,width,p).permute(0,2,4,1,3,5)
     if channel_order == "inner":
         states = states.permute(0,1,2,4,5,3)

@@ -13,7 +13,26 @@ Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く�
 固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが
 表せないnoise残差を補う。学習・定期sample・txt2img/img2img/inpaint・CFG/NAG/style参照へ配線した。
 bufferはoptimizer対象外。既存checkpointは宣言されたpolicyを維持し、再校正や自動変更をしない。
-他architectureのnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+Z-Image/Krea以外のnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+
+Kreaも同じ新規交換条件で固定Gaussian補正を選び、packed tokenを元のpixel順へ展開して補正する。
+共通packed-image境界はouter/inner双方のchannel順を検証し、同じnoise gridを要求する。
+学習と共通定期sample/生成loop、CFG、txt2img/img2img/inpaint、各style参照の実noiseを渡す。
+公式13B DiTと既存公式TE conditioning、general40から得た校正係数を再利用した本番生成では、
+1024px・24steps・CFG4・seed63の狐/青い本、赤いリンゴ/黄色い洋梨、青い車/黒い車輪の
+3条件がfinite/decodeまで完走した。試験用monkeypatchは使わず、新しい実画像読込もない。
+3条件で主要対象・色・概形を認識できたが、ぼけ・輪郭の格子状の乱れ・狐の本上部の色異常は残る。
+U-netなし、1seedの限定的な概形回復確認で、U-net併用や追加学習の画質受入ではない。
+tokenは1024、denoise観測28.328〜29.172秒。画像等はignored
+`local/verification/krea_gaussian_production_quality/`のみ。CPU回帰97件とcompile・
+CUDA未初期化の実importが通過。frontend説明の対象と既存型/APIを静的確認し、公開parameter追加はない。
+共通packed変更に対するFlux2/Lens/Ideogramの既存CPU回帰も42件通過。
+IdeogramのCUDA専用5件はこのCPU実行ではskipし、GPU受入の代わりにはしていない。
+新policyの公式Full学習・保存再開は専用合成2枚で検証中。
+初回step1→2の機能試験は完走したが、dense loaderが固定FP32係数もBF16へ丸めていたため
+buffer一致を満たさず不合格とした。dense/quantized双方の読込後に元stateから係数を厳密復元し、
+BF16 loaderのbit一致をCPU回帰へ追加。初回診断をignored localへ残し、専用DB/diskを整理して
+元公式重みから再試験する。全architectureの受入済みとは扱わない。
 
 公式全成分・合成2枚・C16/8x→C64/16x・2段/deep4の公開API Full試験は
 step1保存→step2再開がexit0。525 optimizer状態がcounter1→2、fresh 0で、補正係数は

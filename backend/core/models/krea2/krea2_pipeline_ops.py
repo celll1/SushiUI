@@ -398,6 +398,7 @@ def _run_loop(
     style_eps_ref: Optional[torch.Tensor] = None,
     style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
     style_combine_mode: str = "stack",
+    exposure_noise: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Shared flow-matching Euler loop (txt2img / img2img / inpaint).
 
@@ -438,6 +439,8 @@ def _run_loop(
     ) > 1.0
     t_dtype = transformer.dtype
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    from .vae_alignment import noise_kwargs
+    alignment_kwargs = noise_kwargs(transformer, exposure_noise)
 
     for i, t in enumerate(timesteps):
         raise_if_cancelled()
@@ -467,6 +470,7 @@ def _run_loop(
                 transformer._style_ctx = capture_ctx_i
                 transformer(
                     hidden_states=ref_t_i.to(t_dtype),
+                    **noise_kwargs(transformer, eps_i),
                     encoder_hidden_states=prompt_embeds,
                     timestep=timestep,
                     position_ids=position_ids,
@@ -483,6 +487,7 @@ def _run_loop(
                 )
                 transformer._style_ctx = inject_ctx
                 v_cond = transformer(
+                    **alignment_kwargs,
                     hidden_states=latents.to(t_dtype),
                     encoder_hidden_states=prompt_embeds,
                     timestep=timestep,
@@ -493,6 +498,7 @@ def _run_loop(
                 transformer._style_ctx = None
             else:
                 v_cond = transformer(
+                    **alignment_kwargs,
                     hidden_states=latents.to(t_dtype),
                     encoder_hidden_states=prompt_embeds,
                     timestep=timestep,
@@ -511,6 +517,7 @@ def _run_loop(
             transformer._style_ctx = capture_ctx
             transformer(
                 hidden_states=ref_t.to(t_dtype),
+                **noise_kwargs(transformer, style_eps_ref),
                 encoder_hidden_states=prompt_embeds,
                 timestep=timestep,
                 position_ids=position_ids,
@@ -521,6 +528,7 @@ def _run_loop(
             inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
             transformer._style_ctx = inject_ctx
             v_cond = transformer(
+                **alignment_kwargs,
                 hidden_states=latents.to(t_dtype),
                 encoder_hidden_states=prompt_embeds,
                 timestep=timestep,
@@ -531,6 +539,7 @@ def _run_loop(
             transformer._style_ctx = None
         else:
             v_cond = transformer(
+                **alignment_kwargs,
                 hidden_states=latents.to(t_dtype),
                 encoder_hidden_states=prompt_embeds,
                 timestep=timestep,
@@ -542,6 +551,7 @@ def _run_loop(
         v_uncond = None
         if do_cfg:
             v_uncond = transformer(
+                **alignment_kwargs,
                 hidden_states=latents.to(t_dtype),
                 encoder_hidden_states=neg_prompt_embeds,
                 timestep=timestep,
@@ -615,6 +625,7 @@ def _run_loop(
             # styled forward above; re-clearing here is defensive/explicit.
             transformer._style_ctx = None
             cond_ns = transformer(
+                **alignment_kwargs,
                 hidden_states=latents.to(t_dtype),
                 encoder_hidden_states=prompt_embeds,
                 timestep=timestep,
@@ -682,6 +693,7 @@ def denoise_loop(
         neg_prompt_embeds, neg_prompt_embeds_mask, position_ids, neg_position_ids,
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        exposure_noise=latents.detach().clone(),
         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
         style_refs=style_refs, style_combine_mode=style_combine_mode,
     )
@@ -721,6 +733,7 @@ def denoise_loop_img2img(
         neg_prompt_embeds, neg_prompt_embeds_mask, position_ids, neg_position_ids,
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        exposure_noise=noise,
         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
         style_refs=style_refs, style_combine_mode=style_combine_mode,
     )
@@ -761,6 +774,7 @@ def denoise_loop_inpaint(
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         init_latents=init_latents, init_noise=init_noise, mask_latent=mask_latent,
+        exposure_noise=init_noise,
         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
         style_refs=style_refs, style_combine_mode=style_combine_mode,
     )

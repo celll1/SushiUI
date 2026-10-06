@@ -54,6 +54,7 @@ def load_components(trainer) -> None:
     trainer.text_encoder = components["text_encoder"]
     trainer.tokenizer = components["tokenizer"]
     trainer.scheduler = components["scheduler"]
+    trainer.krea2_companion_references = components["companion_references"]
 
     # Krea 2 metadata used by train_step / sample generation.
     trainer.krea2_is_distilled = bool(components.get("is_distilled", False))

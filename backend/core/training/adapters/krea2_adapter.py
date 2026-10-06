@@ -174,6 +174,11 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
                   f"not bundled; resolved on load via {swapped.locator}")
         extra = {"step": str(step), "epoch": str(epoch)}
         extra.update(swap_md)
+        companions = getattr(trainer, "krea2_companion_references", None)
+        if companions is not None:
+            import json
+            from core.models.krea2.krea2_loader import COMPANION_METADATA_KEY
+            extra[COMPANION_METADATA_KEY] = json.dumps(companions)
         save_single_file(
             str(output_path), trainer.transformer, is_distilled=is_distilled,
             text_encoder=None, vae=vae_to_bundle,

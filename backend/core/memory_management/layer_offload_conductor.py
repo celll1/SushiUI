@@ -116,17 +116,15 @@ class LayerOffloadConductor:
                 continue
 
             tensors = list(self._owned_tensors(layer))
-            if (not self.use_pinned_memory and tensors
-                    and all(t.device.type == "cpu" and t.is_contiguous() for _, _, t in tensors)):
-                planes, layout, cpu_named = {}, [], {}
+            from .cpu_master_layout import borrow_contiguous_cpu_tensors
+            borrowed = None if self.use_pinned_memory else borrow_contiguous_cpu_tensors(tensors)
+            if borrowed is not None:
+                planes, layout = borrowed
+                cpu_named = {}
                 parameter_names = {id(p): name for name, p in layer.named_parameters()}
-                for number, (owner, name, tensor) in enumerate(tensors):
-                    plane = (tensor.dtype, number)
-                    master = tensor.detach().reshape(-1)
-                    planes[plane] = master
-                    layout.append((owner, name, plane, 0, tensor.numel(), tuple(tensor.shape)))
+                for (_, _, tensor), (_, _, plane, _, _, _) in zip(tensors, layout):
                     if id(tensor) in parameter_names:
-                        cpu_named[parameter_names[id(tensor)]] = master.view(tensor.shape)
+                        cpu_named[parameter_names[id(tensor)]] = planes[plane].view(tensor.shape)
                 self._masters[idx] = planes
                 self._layouts[idx] = layout
                 self._trainable[idx] = tuple(p for p in layer.parameters() if p.requires_grad)

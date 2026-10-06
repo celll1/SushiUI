@@ -1397,6 +1397,11 @@ class AceStepDiTModel(AceStepPreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
+        from ..residual_unet import audio_position_scale
+        position_scale = audio_position_scale(self.config)
+        if position_scale != 1:
+            position_ids = position_ids.float() * position_scale
+
 
         if not rewired:
             seq_len = hidden_states.shape[1]
@@ -1463,7 +1468,7 @@ class AceStepDiTModel(AceStepPreTrainedModel):
                         dtype=dtype,
                         device=device,
                         attention_mask=attention_mask, # [B, L]
-                        sliding_window=self.config.sliding_window,
+                        sliding_window=int(self.config.sliding_window / position_scale),
                         is_sliding_window=True,        # <--- 开启滑动窗口
                         is_causal=False                # <--- 关键：双向注意力
                     )

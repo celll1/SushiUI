@@ -7551,9 +7551,8 @@ class BaseTrainer(ABC):
         consistency check between two producers of the same description, not an
         independent measurement -- both read the same attributes with the same
         precedence. It cannot run at all where that list is empty (every DiT
-        architecture: ``self.unet`` is None there and only the SenseNova /
-        ControlNet / VE branches fill it), so it says so rather than looking
-        like a check that passed.
+        architecture: ``self.unet`` is None there), so those architectures
+        compare against the adapter's pre-optimizer group rates instead.
         """
         optimizer = getattr(self, 'optimizer', None)
         if optimizer is None:
@@ -7583,6 +7582,14 @@ class BaseTrainer(ABC):
         try:
             component_lrs, component_names = self._build_component_lr_list()
             aligned = len(component_lrs) == len(groups)
+            if (not aligned and not fused_optimizers and requested_group_lrs is not None
+                    and len(requested_group_lrs) == len(groups)
+                    and all(rate is not None for rate in requested_group_lrs)):
+                component_lrs = list(requested_group_lrs)
+                component_names = [str(group.get("name") or f"group{i}")
+                                   for i, group in enumerate(groups)]
+                aligned = True
+                print(f"{self.log_prefix} Checking LR preservation against the adapter's group rates")
             for i, group in enumerate(groups):
                 if not aligned or effective[i] is None:
                     continue

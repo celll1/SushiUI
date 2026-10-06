@@ -34,6 +34,23 @@ end-to-end確認まで維持するため、factory接続だけでUIのFull選択
 109件が通過した。frontendは既存capability理由に従ってFull選択を無効にする経路を
 静的確認した。owner専用build/type-checkは未実行。
 
+実`FullParameterTrainer`の公式bundle読込、factory選択、49層offload、共通optimizer
+setupによる638個のfused Adafactor hook登録、arch dispatcher経由の2更新も通過した。
+各更新で全638tensorのhook発火、有限gradient、gradient解放、optimizer step値を確認。
+総90.64秒、観測RSS最大47.16GiB、CUDA reserved約8.14GiB。入力は元H3が生成した
+狐動画を交換先VAEでencodeしたもので、公式BF16 TEの保存済み条件を使用した。
+loaderが選んだcompanion TEは配布INT8 ConvRot版で、この試験ではcaption再符号化や
+dataset/runner/APIの全ループを実行していない。公開gateを外したのは検証プロセス内だけ。
+loss 2.9351/3.6895は別時刻・別ノイズの値であり、画質回復の証拠ではない。
+
+実trainerでDiTのLR照合が省略されるログを確認した。再開時のLRは既にadapter groupの
+snapshotで保持されており、実効LRの不具合とは判定しない。共通reportを改善し、旧U-net
+component表と対応しないDiTでも、optimizer構築前にadapterが渡したgroup LRと構築後の
+base LRを照合する。warmup後のcurrent LRは比較せず、fused group再構築は既存の専用
+警告を維持する。アーキテクチャ別のLR表を追加する変更ではない。
+変更backendのcompile・CUDA未初期化の実import、LR照合/再開とH3契約/学習のCPU回帰
+122件が通過した。今回の変更はAPI parameter・frontend操作経路を変えない。
+
 最新到達点: H3公式全重みでtarget-native /32 VAE・paired_spatial・2段U-netを併用した
 Full更新、native bundle保存復元、optimizer精度保持と次更新まで通過。
 公式TEによる条件付け・生成decodeまで通過したが、H3→LTXの未学習生成画質は未受入。

@@ -22,8 +22,8 @@ Excluded from LoRA targets:
   * AdaLN: in the released ("pruned") variant the modulation is a frozen lookup
     TABLE plus a projection, not a target a LoRA can meaningfully wrap.
 
-The aligned Full adapter is internal staging; the public trainer/API keep their
-refusal until calibration, residency and official-weight acceptance are wired.
+The Full factory selects the aligned adapter; public capability remains gated
+pending complete trainer-loop/API acceptance.
 
 LoRA save format: sd-scripts native — ``lora_unet_<flattened>.lora_down.weight`` /
 ``lora_up.weight`` / ``alpha``; metadata ``model_type="minimax_h3"``.

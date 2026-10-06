@@ -14,8 +14,7 @@ Two declarative fields carry everything the shared video machinery needs:
   generation that tiled differently. Measured stakes: rel-RMS 0.355 at 384x384
   (K0.5) and 0.0952 at 640x384 (Phase 0T) from flipping those flags alone.
 
-Public Full training remains refused until the aligned adapter's calibration,
-residency and official-weight acceptance are wired.
+Public Full training remains gated pending complete trainer-loop/API acceptance.
 """
 
 from __future__ import annotations

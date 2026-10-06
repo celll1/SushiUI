@@ -34,8 +34,8 @@ loss on BOTH modalities. H3's convention, derived from ``x0 = x_t + sigma*v``
 Video rows ride the shift-12 sigma and audio rows the shift-3 sigma **of the same
 uniform draw**, mirroring the inference dual-schedule.
 
-Public Full training remains refused; the internal aligned adapter has not yet
-passed official-weight residency and calibration acceptance.
+Public Full training remains gated pending the complete trainer loop/API test;
+official aligned DiT updates and native bundle restoration are verified.
 """
 from __future__ import annotations
 

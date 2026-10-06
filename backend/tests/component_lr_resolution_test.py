@@ -237,6 +237,25 @@ def test_the_check_announces_when_the_component_list_raises():
     assert "per-component LR verification did not run" in text
     assert [e["code"] for e in events] == []
 
+
+def test_dit_group_rates_are_checked_against_adapter_before_optimizer_setup():
+    probe = _LRProbe([2e-5, 4e-5], learning_rate=1e-4, is_sensenova=False,
+                     train_text_encoder=False)
+    events, text = _report(probe, [2e-5, 4e-5])
+    assert events == []
+    assert "adapter's group rates" in text and "did not run" not in text
+    events, _ = _report(probe, [2e-5, 1e-5])
+    assert [event["code"] for event in events] == ["component_lr_mismatch"]
+
+
+def test_dit_group_lr_check_uses_base_rates_during_warmup():
+    probe = _LRProbe([0.0, 0.0], learning_rate=1e-4, is_sensenova=False,
+                     train_text_encoder=False)
+    for group, base in zip(probe.optimizer.param_groups, [2e-5, 4e-5]):
+        group['initial_lr'] = base
+    events, _ = _report(probe, [2e-5, 4e-5])
+    assert events == []
+
 def test_fused_optimizer_groups_flattening_is_reported():
     """``_setup_fused_optimizer_groups`` rebuilds N optimizers from a flat
     parameter list at ``learning_rate``; the adapter's per-component rates are

@@ -190,6 +190,7 @@ def _unet_velocity(
     time_ids: torch.Tensor,
     *,
     cache_metadata: tuple,
+    prediction: dict | None = None,
 ) -> torch.Tensor:
     device = sample.device
     dtype = sample.dtype
@@ -208,16 +209,19 @@ def _unet_velocity(
         "text_embeds": conditioning.pooled_text_embeds.to(device=device, dtype=dtype),
         "time_ids": time_ids.to(device=device, dtype=dtype),
     }
-    return unet(
+    from .vae_alignment import unet_forward
+    return unet_forward(
+        unet,
         sample,
         timestep.to(device=device).expand(sample.shape[0]),
+        prediction=prediction or {"type":FLOW_V1_PREDICTION},
         encoder_hidden_states=conditioning.encoder_hidden_states.to(
             device=device, dtype=dtype
         ),
         encoder_attention_mask=conditioning.attention_mask.to(device=device),
         added_cond_kwargs=added,
         return_dict=False,
-    )[0]
+    )
 
 
 def _unet_polar(
@@ -971,7 +975,8 @@ def _sample_flow_latents(
                         cond = uncond = guided_raw = velocity
                 elif not needs_cfg:
                     prediction_post = _unet_velocity(
-                        unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
+                        unet, sample, timestep, positive, time_ids,
+                        cache_metadata=cache_metadata, prediction=prediction,
                     )
                     if is_residual_v2:
                         analytic, _ = endpoint_observable_preconditioning(
@@ -1019,6 +1024,7 @@ def _sample_flow_latents(
                         combined,
                         time_ids.repeat(2, 1),
                         cache_metadata=cache_metadata,
+                        prediction=prediction,
                     )
                     prediction_uncond, prediction_cond = pair.chunk(2)
                     prediction_raw = prediction_uncond + float(cfg_now) * (
@@ -1029,10 +1035,12 @@ def _sample_flow_latents(
                     )
                 else:
                     prediction_uncond = _unet_velocity(
-                        unet, sample, timestep, negative, time_ids, cache_metadata=cache_metadata
+                        unet, sample, timestep, negative, time_ids,
+                        cache_metadata=cache_metadata, prediction=prediction,
                     )
                     prediction_cond = _unet_velocity(
-                        unet, sample, timestep, positive, time_ids, cache_metadata=cache_metadata
+                        unet, sample, timestep, positive, time_ids,
+                        cache_metadata=cache_metadata, prediction=prediction,
                     )
                     prediction_raw = prediction_uncond + float(cfg_now) * (
                         prediction_cond - prediction_uncond

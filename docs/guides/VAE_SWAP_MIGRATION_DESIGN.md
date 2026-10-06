@@ -13,8 +13,11 @@ Chimeraのlinear-state境界（v1、v2 direct velocity、v2 residual）の内部
 `alpha'(t)`で掛ける。v2 cubic scheduleでは固定±1のflow境界を流用しない。
 residualは元のmean/moment契約でvelocityへ復元し、出側map後に交換先のanalytic driftを
 引いて戻す。3×3境界・チャネル変更・独立frameで、trajectoryの有限差分との一致と勾配を確認した。
+学習のlinear-state forwardと、生成のCFGなし・逐次CFG・一括CFGを共通境界に接続した。
+小型の実UNetでチャネル増減、両bridgeへの勾配、optimizer更新、非交換時の完全一致をCPU検証した。
+v2 residual交換には保存されたsource予測契約が必要で、欠損時は拒否する。
 この段階ではChimeraの公開VAE交換ゲートは維持する。校正・targetのmean/moment統計、
-学習と生成のdispatch、codec/bridge同梱とmanifest更新、再開復元を接続してから解除する。
+codec/bridge同梱とmanifest更新、再開復元、target-native生成格子を接続してから解除する。
 v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
 direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に
 target tangent/radialへ分解する必要がある。v4のdestruction-coordinate微分も変換に含める。

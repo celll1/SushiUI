@@ -43,10 +43,32 @@ def apply_swap(trainer, resolved, *, handler, module=None):
             restore_topology(model,build_spec("lens",[{"name":"main","block_count":len(model.transformer_blocks)}],
                 topology["regions"],native_config(dict(model.config))))
         return report
+    from core.models.components.gaussian_alignment import POLICY
+    source_wiring=handler.resolve_wiring(trainer)
+    noise_policy=(POLICY if resolved.scale_factor > source_wiring.vae_scale_factor
+                  and resolved.latent_channels >= model.img_in.in_features//4 else None)
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
-        old_channels=model.img_in.in_features//4,source_wiring=handler.resolve_wiring(trainer),
+        old_channels=model.img_in.in_features//4,source_wiring=source_wiring,
         patch_size=2,resize=resize,pending_key="_lens_vae_calibration_source",
-        topology_config=lambda:native_config(dict(model.config)))
+        topology_config=lambda:native_config(dict(model.config)),noise_policy=noise_policy)
+
+
+def noise_kwargs(model, noise, *, batch_size=None):
+    if getattr(getattr(model, NAME, None), "noise_alignment", None) is None:
+        return {}
+    if noise is None or noise.ndim != 3:
+        raise ValueError("Aligned Lens requires its actual packed exposure noise")
+    if batch_size is not None and noise.shape[0] != batch_size:
+        if batch_size % noise.shape[0]:
+            raise ValueError("Aligned Lens noise cannot expand to the conditioning batch")
+        noise=noise.repeat(batch_size//noise.shape[0],1,1)
+    return {"alignment_noise": noise}
+
+
+def validate_scheduler(model, scheduler):
+    if getattr(getattr(model, NAME, None), "noise_alignment", None) is not None:
+        if getattr(scheduler.config, "stochastic_sampling", False):
+            raise ValueError("Gaussian Lens alignment requires deterministic flow sampling")
 
 
 def calibrate(trainer,datasets):

@@ -340,8 +340,10 @@ def train_step(
     # Velocity target: v = noise - x0
     v_target = noise - latents
 
-    # Lens timestep convention: transformer receives sigma * 1000
-    timestep_input = (sigma * 1000.0).to(trainer.training_dtype)
+    # Lens embeds sigma with an internal 1000x scale, as in generation.
+    timestep_input = sigma
+    from core.models.lens.vae_alignment import noise_kwargs
+    alignment_kwargs = noise_kwargs(trainer.transformer, noise)
 
     # img_shapes for positional encoding: single 3-tuple (frame=1, H, W) required by
     # LensEmbedRope.  Lens supports arbitrary (H, W) multiples of 16; latent_h/latent_w
@@ -379,6 +381,7 @@ def train_step(
                 encoder_hidden_states_mask=encoder_mask,
                 timestep=timestep_input,
                 img_shapes=img_shapes,
+                **alignment_kwargs,
             )
     else:
         v_pred = trainer.transformer(
@@ -387,6 +390,7 @@ def train_step(
             encoder_hidden_states_mask=encoder_mask,
             timestep=timestep_input,
             img_shapes=img_shapes,
+            **alignment_kwargs,
         )
 
     if profile_vram:

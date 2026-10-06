@@ -44,10 +44,10 @@ def test_dense_and_unet_keep_target_grid_and_actual_sigma(old,new,rewired,dtype)
     x=torch.randn(2,96,new*4,dtype=dtype,requires_grad=True)
     features=[torch.randn(2,5,12,dtype=dtype) for _ in range(2)]
     mask=torch.ones(2,5,dtype=torch.bool)
-    times=torch.tensor([200.,800.],dtype=dtype)
+    times=torch.tensor([.2,.8],dtype=dtype)
     actual=value(x,features,mask,times,[(1,8,12)])
     assert actual.shape==x.shape
-    native=value._forward_native(map_packed_image(pair,x,(8,12),sigma=times/1000.),
+    native=value._forward_native(map_packed_image(pair,x,(8,12),sigma=times),
         features,mask,times,[(1,8,12)])
     torch.testing.assert_close(actual,map_packed_image(pair,native,(8,12),output=True))
     actual.float().square().mean().backward()
@@ -58,7 +58,8 @@ def test_dense_and_unet_keep_target_grid_and_actual_sigma(old,new,rewired,dtype)
 
 
 @pytest.mark.parametrize("sharded",[False,True])
-def test_batchnorm_teacher_calibration_codec_loader_and_resume(tmp_path,sharded):
+@pytest.mark.parametrize("load_dtype",[torch.float32,torch.bfloat16])
+def test_batchnorm_teacher_calibration_codec_loader_and_resume(tmp_path,sharded,load_dtype):
     from diffusers import AutoencoderKL,AutoencoderKLFlux2
     from PIL import Image
     import numpy as np
@@ -121,7 +122,7 @@ def test_batchnorm_teacher_calibration_codec_loader_and_resume(tmp_path,sharded)
         path=LensFullParameterAdapter(trainer).write_checkpoint(7,0,path)
     with patch.object(loader,"_resolve_lens_base_dir",return_value=str(tmp_path/"base")), \
          patch.object(loader,"load_lens_components",side_effect=lambda **kw:{"transformer":kw["transformer_override"]}):
-        components=loader.load_lens_single_file(str(path),torch_dtype=torch.float32)
+        components=loader.load_lens_single_file(str(path),torch_dtype=load_dtype)
     restored=components["transformer"]
     assert restored.vae_latent_bridge.ready and components["vae"].spatial_scale_factor==16
     assert components["vae"].inner.config.scaling_factor==.7
@@ -129,7 +130,10 @@ def test_batchnorm_teacher_calibration_codec_loader_and_resume(tmp_path,sharded)
     trainer.vae=components["vae"]
     with patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
         apply_latent_space(trainer,components["declared_vae"])
-    torch.testing.assert_close(restored.vae_latent_bridge.input.projection.weight,value.vae_latent_bridge.input.projection.weight)
+    torch.testing.assert_close(restored.vae_latent_bridge.input.projection.weight,
+        value.vae_latent_bridge.input.projection.weight.to(load_dtype))
+    for key,tensor in value.vae_latent_bridge.noise_alignment.state_dict().items():
+        assert torch.equal(tensor,restored.vae_latent_bridge.noise_alignment.state_dict()[key])
     from core.models.common.single_file_format import read_state_dict
     from safetensors.torch import save_file
     state,metadata=read_state_dict(str(path))

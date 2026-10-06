@@ -607,6 +607,7 @@ def _lens_style_step(
     img_shapes,
     advanced_cfg: Optional[Dict[str, Any]],
     collect_metrics: bool = True,
+    exposure_noise: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Any]:
     """One style-active denoise step for Lens: a REF capture forward (the style
     reference re-noised to this step's CURRENT sigma, using the TARGET's own
@@ -634,6 +635,7 @@ def _lens_style_step(
     module's own img2img/inpaint SDEdit re-noising.
     """
     from core.inference.reference_style import StyleContext
+    from .vae_alignment import noise_kwargs
 
     ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
     progress = style_cfg.step_progress(step_idx, total_steps)
@@ -653,6 +655,7 @@ def _lens_style_step(
             encoder_hidden_states_mask=cond_mask,
             timestep=timestep1 / 1000,
             img_shapes=img_shapes,
+            **noise_kwargs(real_transformer, style_eps_ref),
         )
 
         inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
@@ -663,6 +666,7 @@ def _lens_style_step(
             encoder_hidden_states_mask=cond_mask,
             timestep=timestep1 / 1000,
             img_shapes=img_shapes,
+            **noise_kwargs(real_transformer, exposure_noise),
         )
     finally:
         real_transformer._style_ctx = None
@@ -673,6 +677,7 @@ def _lens_style_step(
         encoder_hidden_states_mask=uncond_mask,
         timestep=timestep1 / 1000,
         img_shapes=img_shapes,
+        **noise_kwargs(real_transformer, exposure_noise),
     )
 
     noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
@@ -735,6 +740,7 @@ def _lens_style_step(
             encoder_hidden_states_mask=cond_mask,
             timestep=timestep1 / 1000,
             img_shapes=img_shapes,
+            **noise_kwargs(real_transformer, exposure_noise),
         )
         lam = style_cfg.style_guidance_scale
         if _cfg_now > 1e-6:
@@ -764,6 +770,7 @@ def _lens_style_step_multi(
     img_shapes,
     advanced_cfg: Optional[Dict[str, Any]],
     collect_metrics: bool = True,
+    exposure_noise: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, Any]:
     """Multi-reference (N>1) generalization of ``_lens_style_step``: ONE REF
     capture forward PER reference (each with its OWN ``StyleTransferConfig`` --
@@ -789,6 +796,7 @@ def _lens_style_step_multi(
     reference through ``_lens_style_step`` instead so that exact pre-multi-ref
     code path executes byte-identically)."""
     from core.inference.reference_style import StyleContext
+    from .vae_alignment import noise_kwargs
 
     cond_features = [f[0:1] for f in encoder_features]
     cond_mask = encoder_mask[0:1]
@@ -811,6 +819,7 @@ def _lens_style_step_multi(
                 encoder_hidden_states_mask=cond_mask,
                 timestep=timestep1 / 1000,
                 img_shapes=img_shapes,
+                **noise_kwargs(real_transformer, eps_i),
             )
             active_refs.append((capture_ctx_i.store, cfg_i))
 
@@ -829,6 +838,7 @@ def _lens_style_step_multi(
             encoder_hidden_states_mask=cond_mask,
             timestep=timestep1 / 1000,
             img_shapes=img_shapes,
+            **noise_kwargs(real_transformer, exposure_noise),
         )
     finally:
         real_transformer._style_ctx = None
@@ -839,6 +849,7 @@ def _lens_style_step_multi(
         encoder_hidden_states_mask=uncond_mask,
         timestep=timestep1 / 1000,
         img_shapes=img_shapes,
+        **noise_kwargs(real_transformer, exposure_noise),
     )
 
     noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
@@ -897,6 +908,9 @@ def denoise_loop(
     # with NAG/NegPip/FBCache for the WHOLE generation (not just the style-active
     # steps) -- all three rewrite the attention-time token layout or cache
     # attention outputs, which a per-block reference K/V store cannot coexist with.
+    from .vae_alignment import noise_kwargs, validate_scheduler
+    validate_scheduler(_unwrap_transformer(transformer), scheduler)
+    exposure_noise = latents.clone() if noise_kwargs(_unwrap_transformer(transformer), latents) else None
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     # Multi-reference (N>1): populated (with style_cfg/style_ref_x0/style_eps_ref
     # left None) ONLY when the caller resolved 2+ references -- a single
@@ -917,7 +931,7 @@ def denoise_loop(
         negpip_params, nag_active=_nag_wrapper is not None,
     )
 
-    spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
+    spectrum = build_output_forecaster(spectrum_params or {}, len(scheduler.timesteps), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
     fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=(style_active or style_multi_active))
     real_transformer = _unwrap_transformer(transformer)
@@ -947,6 +961,7 @@ def denoise_loop(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
+                    exposure_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -955,6 +970,7 @@ def denoise_loop(
                     real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
+                    exposure_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -969,6 +985,7 @@ def denoise_loop(
                     encoder_hidden_states_mask=encoder_mask,
                     timestep=timestep / 1000,
                     img_shapes=img_shapes,
+                    **noise_kwargs(real_transformer, exposure_noise, batch_size=hidden_states.shape[0]),
                 )
 
                 cond, uncond = noise_out.chunk(2)
@@ -993,19 +1010,16 @@ def denoise_loop(
                     pred_x0.detach() if pred_x0 is not None else None,
                 )
     finally:
-        # Defensive clear: never let a stale StyleContext leak into a later forward
-        # (e.g. a subsequent non-style generation reusing this transformer instance,
-        # or an exception/cancellation mid-loop) -- mirrors the Z-Image style commit's
-        # defensive clear.
+        # Clear wrapper state on cancellation as well as successful completion.
         if hasattr(real_transformer, "_style_ctx"):
             real_transformer._style_ctx = None
 
-    _cleanup_lens_fbcache(real_transformer, fbcache)
-    if _negpip_modules is not None:
-        from core.inference.negpip_lens import restore_negpip
-        restore_negpip(_negpip_modules)
-    if _nag_wrapper is not None:
-        _nag_wrapper.restore()
+        _cleanup_lens_fbcache(real_transformer, fbcache)
+        if _negpip_modules is not None:
+            from core.inference.negpip_lens import restore_negpip
+            restore_negpip(_negpip_modules)
+        if _nag_wrapper is not None:
+            _nag_wrapper.restore()
     return latents
 
 
@@ -1041,6 +1055,8 @@ def denoise_loop_img2img(
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
 
+    from .vae_alignment import noise_kwargs, validate_scheduler
+    validate_scheduler(_unwrap_transformer(transformer), scheduler)
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     style_multi_active = style_refs is not None and len(style_refs) > 1
     if (style_active or style_multi_active) and (nag_params is not None or negpip_params is not None):
@@ -1071,10 +1087,11 @@ def denoise_loop_img2img(
                          device=init_latents.device, dtype=init_latents.dtype)
     latents = (1.0 - t_start_value) * init_latents + t_start_value * noise
 
+    exposure_noise = noise
     img_shapes = [(1, latent_h, latent_w)]
     total_steps = len(timesteps_to_use)
 
-    spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
+    spectrum = build_output_forecaster(spectrum_params or {}, len(timesteps_to_use), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
     fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=(style_active or style_multi_active))
     real_transformer = _unwrap_transformer(transformer)
@@ -1104,6 +1121,7 @@ def denoise_loop_img2img(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
+                    exposure_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1112,6 +1130,7 @@ def denoise_loop_img2img(
                     real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
+                    exposure_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1126,6 +1145,7 @@ def denoise_loop_img2img(
                     encoder_hidden_states_mask=encoder_mask,
                     timestep=timestep / 1000,
                     img_shapes=img_shapes,
+                    **noise_kwargs(real_transformer, exposure_noise, batch_size=hidden_states.shape[0]),
                 )
 
                 cond, uncond = noise_out.chunk(2)
@@ -1153,12 +1173,12 @@ def denoise_loop_img2img(
         if hasattr(real_transformer, "_style_ctx"):
             real_transformer._style_ctx = None
 
-    _cleanup_lens_fbcache(real_transformer, fbcache)
-    if _negpip_modules is not None:
-        from core.inference.negpip_lens import restore_negpip
-        restore_negpip(_negpip_modules)
-    if _nag_wrapper is not None:
-        _nag_wrapper.restore()
+        _cleanup_lens_fbcache(real_transformer, fbcache)
+        if _negpip_modules is not None:
+            from core.inference.negpip_lens import restore_negpip
+            restore_negpip(_negpip_modules)
+        if _nag_wrapper is not None:
+            _nag_wrapper.restore()
     return latents
 
 
@@ -1198,6 +1218,8 @@ def denoise_loop_inpaint(
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
 
+    from .vae_alignment import noise_kwargs, validate_scheduler
+    validate_scheduler(_unwrap_transformer(transformer), scheduler)
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     style_multi_active = style_refs is not None and len(style_refs) > 1
     if (style_active or style_multi_active) and (nag_params is not None or negpip_params is not None):
@@ -1231,11 +1253,12 @@ def denoise_loop_inpaint(
     t_start_value = timestep_scalars[0] / 1000.0
     latents = (1.0 - t_start_value) * init_latents + t_start_value * init_noise
 
+    exposure_noise = init_noise
     img_shapes = [(1, latent_h, latent_w)]
     total_steps = len(timesteps_to_use)
     mask_latent = mask_latent.to(device=init_latents.device, dtype=init_latents.dtype)
 
-    spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
+    spectrum = build_output_forecaster(spectrum_params or {}, len(timesteps_to_use), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
     fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=(style_active or style_multi_active))
     real_transformer = _unwrap_transformer(transformer)
@@ -1265,6 +1288,7 @@ def denoise_loop_inpaint(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
+                    exposure_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1273,6 +1297,7 @@ def denoise_loop_inpaint(
                     real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, sigma_t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg, collect_cfg_metrics,
+                    exposure_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -1287,6 +1312,7 @@ def denoise_loop_inpaint(
                     encoder_hidden_states_mask=encoder_mask,
                     timestep=timestep / 1000,
                     img_shapes=img_shapes,
+                    **noise_kwargs(real_transformer, exposure_noise, batch_size=hidden_states.shape[0]),
                 )
 
                 cond, uncond = noise_out.chunk(2)
@@ -1305,8 +1331,9 @@ def denoise_loop_inpaint(
 
             latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-            # Repaint: replace non-masked region with noised init at current t level
-            noised_init = (1.0 - sigma_t) * init_latents + sigma_t * init_noise
+            # The stepped state and kept reference must share the next sigma.
+            sigma_next = timestep_scalars[i+1] / 1000.0 if i+1 < total_steps else 0.0
+            noised_init = (1.0 - sigma_next) * init_latents + sigma_next * init_noise
             latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
 
             if progress_callback is not None:
@@ -1321,12 +1348,12 @@ def denoise_loop_inpaint(
         if hasattr(real_transformer, "_style_ctx"):
             real_transformer._style_ctx = None
 
-    _cleanup_lens_fbcache(real_transformer, fbcache)
-    if _negpip_modules is not None:
-        from core.inference.negpip_lens import restore_negpip
-        restore_negpip(_negpip_modules)
-    if _nag_wrapper is not None:
-        _nag_wrapper.restore()
+        _cleanup_lens_fbcache(real_transformer, fbcache)
+        if _negpip_modules is not None:
+            from core.inference.negpip_lens import restore_negpip
+            restore_negpip(_negpip_modules)
+        if _nag_wrapper is not None:
+            _nag_wrapper.restore()
     return latents
 
 

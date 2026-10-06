@@ -85,7 +85,7 @@ class LensNAGWrapper(nn.Module):
             module._nag_enabled = False
 
     def forward(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,
-                timestep, img_shapes, attention_kwargs=None):
+                timestep, img_shapes, attention_kwargs=None, alignment_noise=None):
         img_b = hidden_states.shape[0]
         txt_b = encoder_hidden_states[0].shape[0] if isinstance(
             encoder_hidden_states, (list, tuple)
@@ -100,6 +100,8 @@ class LensNAGWrapper(nn.Module):
             # timestep is per-image-batch; expand the same way.
             if timestep.ndim >= 1 and timestep.shape[0] == img_b:
                 timestep = torch.cat([timestep, timestep[0:k]], dim=0)
+            if alignment_noise is not None:
+                alignment_noise = torch.cat([alignment_noise, alignment_noise[0:k]], dim=0)
 
         output = self.transformer(
             hidden_states=hidden_states,
@@ -108,6 +110,7 @@ class LensNAGWrapper(nn.Module):
             timestep=timestep,
             img_shapes=img_shapes,
             attention_kwargs=attention_kwargs,
+            **({"alignment_noise": alignment_noise} if alignment_noise is not None else {}),
         )
 
         if do_nag:

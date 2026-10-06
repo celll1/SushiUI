@@ -3,8 +3,9 @@
 Status: implemented experimental option; functional verification accepted by
 the owner on 2026-10-01. Qwen-Image 2.1 has actual GPU/API
 inference, LoRA/full training, checkpoint restore/resume and block-swap workflow
-verification. Other architectures have provisional native implementations and
-CPU contracts only, as requested by the owner. Frontend verification is static;
+verification. Initial support for other architectures used provisional native implementations;
+current official-weight VAE-swap/composition evidence is recorded in
+[VAE migration](VAE_SWAP_MIGRATION_DESIGN.md). Frontend verification is static;
 consolidated build/type/render checks belong to the owner.
 
 This feature changes transformer token resolution between existing blocks. It
@@ -85,7 +86,7 @@ low_out = execute_region(low_in)
 hidden = saved_hidden + upsample(low_out - low_in)
 ```
 
-Use fixed average pooling, bilinear upsampling with `align_corners=False`, and
+Use the region's declared average or RMS preserving pooling, bilinear upsampling with `align_corners=False`, and
 identity delta addition initially. Each nested region performs its own subtraction
 and restoration. Preserve text updates, native block order, masks, positions,
 conditioning, gradient checkpointing, and offload ownership. Region context is
@@ -95,6 +96,38 @@ Allow nested or disjoint regions; refuse crossing regions, cycles, reordered
 blocks, unsupported stream transitions, and indivisible grids. Rebuild coarse
 positions using the architecture's coordinate contract. Restore the original
 grid and context before final output projection.
+
+### Experimental RMS pooling
+
+`down: rms_pool` rescales each pooled feature vector so its squared mean across
+channels matches the original cell's squared mean across channels and pixels.
+Energy/gain calculations use FP32; zero or exactly cancelling pooled cells keep
+unit gain. Frames, prefixes, coordinates and modulation retain native ownership.
+The entry saved for residual subtraction is the rescaled pooled vector, so an
+identity region still restores the original hidden states exactly.
+
+This operator shares the existing runtime, adds no parameters, and is selectable
+per region in the editor. The checkpoint topology and hash preserve the choice;
+old `avg_pool` artifacts and default presets retain their behavior. Training,
+restored structure summaries and graph tooltips display the selected operator.
+
+Anima official dense weights, native VAE, default two-stage topology, seed 63,
+512px/24 steps: average pooling produced a woven pattern; RMS pooling recovered
+an orange animal silhouette and blue book shape, with substantial blur. The
+first downsample gain was about 1.9. The native runtime reproduces the local
+prototype; this single prompt does not establish general quality acceptance.
+Source-coordinate RoPE pooling did not recover the image. With the Qwen 2.1 VAE,
+known-noise residual plus RMS pooling, spatial SVD whitening, and independent
+1x1 noise whitening all failed the coarse-shape criterion. Those noise policies
+remain local probes. A one-stage four-block native-VAE probe did retain a clear
+fox/book silhouette, but does not validate the default two-stage allocation.
+
+CPU checks cover cell energy, FP32/BF16, identity skips, per-frame isolation,
+zero/cancellation backward, metadata/API round trips and Anima Full/LoRA export.
+The broad existing rewiring suite passed 254 tests; its remaining outdated
+Ideogram fixture lacked a VAE. After supplying codec geometry, all 77 tests in
+the changed/affected scope passed. Real REST validation accepts both RMS regions.
+Frontend review is static; owner build/type/render checks remain pending.
 
 ## Configuration and artifacts
 

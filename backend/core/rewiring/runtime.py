@@ -45,6 +45,12 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
             grid = grid.permute(0, 2, 1, 3, 4).reshape(batch * grid_groups, channels, height // grid_groups, width)
             factor = tuple(region["down_factor"])
             pooled = F.avg_pool2d(grid, factor)
+            if region["down"] == "rms_pool":
+                source_energy = F.avg_pool2d(grid.float().square(), factor).mean(1, keepdim=True)
+                pooled_energy = pooled.float().square().mean(1, keepdim=True)
+                gain = (source_energy.clamp_min(1e-12) / pooled_energy.clamp_min(1e-12)).sqrt()
+                gain = torch.where(pooled_energy > 1e-12, gain, torch.ones_like(gain))
+                pooled = (pooled.float() * gain).to(pooled.dtype)
             low_in = pooled.reshape(batch, grid_groups, channels, height // grid_groups // factor[0], width // factor[1])
             low_in = low_in.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
             stack.append(dict(end=region["end_block"], saved=saved, low_in=low_in,

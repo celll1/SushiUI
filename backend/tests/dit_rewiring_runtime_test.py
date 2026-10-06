@@ -35,6 +35,42 @@ def up(value, h, w):
 
 
 class RuntimeContracts(unittest.TestCase):
+    def test_rms_pool_preserves_cell_energy_and_identity_skip_per_frame(self):
+        for dtype in (torch.float32, torch.bfloat16):
+            torch.manual_seed(79)
+            batch, frames, height, width, channels, prefix = 2, 3, 8, 12, 5, 3
+            x = torch.randn(batch,prefix+frames*height*width,channels,dtype=dtype,requires_grad=True)
+            graph = topology()
+            graph["regions"] = [dict(graph["regions"][0],down="rms_pool")]
+            observed = []
+            actual = run_rewired_stream(x,graph,"main",frames*height,width,prefix,None,
+                lambda i,value,context:value,
+                lambda context,value,h,w,p:observed.append(value.detach()) or None,
+                grid_groups=frames)
+            torch.testing.assert_close(actual,x,rtol=0,atol=0)
+            cells=x[:,prefix:].float().reshape(batch,frames,height//2,2,width//2,2,channels)
+            expected_energy=cells.square().mean((3,5,6)).flatten(1)
+            actual_energy=observed[0][:,prefix:].float().square().mean(-1)
+            torch.testing.assert_close(actual_energy,expected_energy,rtol=.02 if dtype==torch.bfloat16 else 2e-6,atol=1e-6)
+            actual.float().sum().backward()
+            torch.testing.assert_close(x.grad,torch.ones_like(x),rtol=0,atol=0)
+
+    def test_rms_pool_zero_and_cancelled_cells_have_finite_backward(self):
+        for cancelled in (False,True):
+            x=torch.zeros(1,8*12,4)
+            if cancelled:
+                x=x.reshape(1,8,12,4)
+                x[:,:,::2]=1; x[:,:,1::2]=-1
+                x=x.reshape(1,8*12,4)
+            x.requires_grad_()
+            graph=topology()
+            for region in graph["regions"]:region["down"]="rms_pool"
+            actual=run_rewired_stream(x,graph,"main",8,12,0,None,
+                lambda i,value,context:value+.03*value.tanh(),lambda *args:None)
+            self.assertTrue(torch.isfinite(actual).all())
+            actual.sum().backward()
+            self.assertTrue(torch.isfinite(x.grad).all())
+
     def test_nested_values_and_gradients(self):
         torch.manual_seed(42)
         x = torch.randn(2,5+8*12,4,requires_grad=True)

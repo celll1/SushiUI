@@ -221,6 +221,13 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
               editRegion(region.id, { down_factor: factor });
             }}>{[1,2,4,8].filter(f => !info?.temporal_geometry || f > 1).map(f => <option key={f} value={f}>{f === 1 ? "Keep parent size" : `1/${f} of parent`}</option>)}</select>
         </label>)}
+        <label>Pooling
+          <select aria-label="Downsample pooling" className="ml-2 rounded bg-gray-800 p-1" value={region.down}
+            onChange={e => editRegion(region.id, { down: e.target.value as typeof region.down })}>
+            <option value="avg_pool">Average</option>
+            <option value="rms_pool">Preserve local RMS (experimental)</option>
+          </select>
+        </label>
         <label>Parent
           <select aria-label="Parent region" value={region.parent ?? ""} className="ml-2 rounded bg-gray-800 p-1"
             onChange={e => editRegion(region.id, { parent: e.target.value || null })}>
@@ -232,7 +239,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         <button type="button" className="rounded bg-gray-700 px-2 py-1" disabled={!freeInterval(region.id)} onClick={() => addRegion(region.id)}>Add nested region</button>
         <button type="button" className="rounded bg-gray-700 px-2 py-1" disabled={!canRemove} onClick={removeRegion}>Remove region and children</button>
       </div>}
-      <p className="text-gray-400">Block indices start at 0; end boundaries are exclusive. Drag skip endpoints or edit the interval and per-axis shrink factors. Fixed average pooling and residual update addition preserve parameter count. Uncalibrated quality may degrade.</p>
+      <p className="text-gray-400">Block indices start at 0; end boundaries are exclusive. Drag skip endpoints or edit the interval and per-axis shrink factors. Pooling and residual update addition preserve parameter count. RMS pooling preserves local feature magnitude; quality may still degrade without calibration.</p>
     </>}
     {info && !current && <p className="text-gray-400">{configuring ? "No model preset is available. Create a region and edit its interval and shrink factors." : "The checkpoint uses the native DiT sequence."}</p>}
     {pending && <p className="text-gray-400">Validating topology…{plan && " The graph shows the last validated configuration."}</p>}

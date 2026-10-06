@@ -9909,7 +9909,7 @@ export const getTaggerVocabularyPreview = async (
 export interface DiTRewiringRegion {
   id: string; stream: string; parent: string | null;
   start_block: number; end_block: number; down_factor: [number, number];
-  down: "avg_pool"; up: "bilinear"; align_corners: false;
+  down: "avg_pool" | "rms_pool"; up: "bilinear"; align_corners: false;
   merge: "identity_delta_add"; position_policy: "coarse_integer";
   grid_policy: "require_divisible"; delta_dtype: "float32";
 }

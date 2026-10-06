@@ -12082,7 +12082,10 @@ components:
                 items: {type: integer, enum: [1, 2, 4, 8]}
                 not: {enum: [[1, 1]]}
                 description: Per-axis parent reduction. One axis may remain unchanged; at least one axis must shrink.
-              down: {type: string, enum: [avg_pool]}
+              down:
+                type: string
+                enum: [avg_pool, rms_pool]
+                description: Average pooling or experimental local RMS preserving pooling. Existing checkpoints retain their declared operator.
               up: {type: string, enum: [bilinear]}
               align_corners: {type: boolean, enum: [false]}
               merge: {type: string, enum: [identity_delta_add]}

@@ -146,7 +146,7 @@ class TopologyContracts(unittest.TestCase):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
                 schema = await client.get("/api/v1/schema/dit-rewiring")
                 self.assertEqual(schema.status_code, 200)
-                self.assertEqual(schema.json()["runtime_architectures"], ["qwen_image_21", "krea2", "anima", "zimage", "flux2", "lens", "minit2i", "ideogram4", "sensenova", "acestep", "ltx2", "minimax_h3"])
+                self.assertEqual(schema.json()["runtime_architectures"], ["ming_image_01", "qwen_image_21", "krea2", "anima", "zimage", "flux2", "lens", "minit2i", "ideogram4", "sensenova", "acestep", "ltx2", "minimax_h3"])
                 self.assertEqual(schema.json()["presets"]["qwen_image_21"]["regions"][1]["end_block"], 18)
                 self.assertEqual(schema.json()["presets"]["yue2"]["regions"][1]["stream"], "nar")
                 self.assertNotIn("yue2", schema.json()["runtime_architectures"])
@@ -154,12 +154,29 @@ class TopologyContracts(unittest.TestCase):
                 valid = await client.post("/api/v1/models/rewiring/validate", json=body)
                 self.assertEqual(valid.status_code, 200, valid.text)
                 self.assertEqual(valid.json()["spec"], body["spec"])
+                body["spec"]["regions"][0]["down"] = "rms_pool"
+                valid = await client.post("/api/v1/models/rewiring/validate", json=body)
+                self.assertEqual(valid.status_code, 200, valid.text)
+                self.assertEqual(valid.json()["spec"]["regions"][0]["down"], "rms_pool")
                 body["token_height"] = 66
                 self.assertEqual((await client.post("/api/v1/models/rewiring/validate", json=body)).status_code, 422)
                 body["unknown"] = True
                 self.assertEqual((await client.post("/api/v1/models/rewiring/validate", json=body)).status_code, 422)
         asyncio.run(check())
         self.assertFalse(torch.cuda.is_initialized())
+
+
+class RMSMetadataContracts(unittest.TestCase):
+    def test_rms_operator_round_trip_and_legacy_identity(self):
+        from core.rewiring.spec import read_checkpoint_metadata
+        original=spec()
+        rms=spec()
+        rms["regions"][0]["down"]="rms_pool"
+        self.assertEqual(preview_plan(original,64,64),preview_plan(rms,64,64))
+        self.assertEqual(read_checkpoint_metadata(checkpoint_metadata(rms)),validate_spec(rms))
+        self.assertEqual(read_checkpoint_metadata(checkpoint_metadata(original)),original)
+        rms["regions"][0]["down"]="invalid_pool"
+        with self.assertRaises(ValueError):validate_spec(rms)
 
 
 if __name__ == "__main__":

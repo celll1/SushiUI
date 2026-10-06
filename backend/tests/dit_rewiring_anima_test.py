@@ -153,6 +153,12 @@ class AnimaRuntimeContracts(unittest.TestCase):
                 constructor.assert_not_called()
         self.assertFalse(torch.cuda.is_initialized())
 
+    def test_rms_full_writer_loader_and_lora_metadata(self):
+        from core.models.anima.residual_unet import restore_topology
+        for region in self.spec["regions"]:region["down"]="rms_pool"
+        restore_topology(self.model,self.spec)
+        self.test_full_writer_loader_and_lora_metadata()
+
     def test_lora_resume_atomicity_and_topology_agreement(self):
         import tempfile
         from types import SimpleNamespace

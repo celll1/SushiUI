@@ -3576,4 +3576,12 @@ def load_minimax_h3_from_path(
     from core.models.minimax_h3.te_agreement import maybe_measure_substitution
 
     maybe_measure_substitution(components)
+    # Geometry-only probes have not resolved the selected encoder/projection pair.
+    inner = getattr(transformer, "transformer", transformer)
+    if load_text_encoder and isinstance(inner, torch.nn.Module):
+        from .component_sources import capture_sources
+
+        inner._h3_component_sources = capture_sources(layout, te_projection)
+        if hybrid is not None:
+            inner._h3_component_sources["variant"] = "hybrid"
     return components

@@ -8,6 +8,24 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3の選択済みcompanion参照を`minimax_h3/component_sources.py`へ追加した。
+通常loaderが実際に選択したsource video VAE、audio VAE、text encoder、外部projection、
+任意のimage VAE、official config treeとvariantをinner modelへ保持する。
+geometry-only probeはencoder/projectionを解決していないため記録しない。
+native Full bundleはこの参照を単一/sharded metadataに保存し、復元・再保存でも保持する。
+declared pathはabsoluteかつ存在必須とし、config treeのpipeline class/config/directories、
+componentの重複を検査する。明示的な外部TE/projectionをdirectory探索で置き換えない。
+参照欠落はDiTのmeta構築やcodec tensor読込より前に拒否する。
+これは選択先の参照保存であり、外部weightの同梱やcontent hash固定ではない。
+公開native loader接続時にはsource codecのlatent identityとTE/projection pairingを別途照合する。
+hybridのroute契約保存は未実装なので、その参照付きbundleのexportは拒否する。
+参照のない低水準bundleは従来通りtensor単体の復元検証に使えるが、公開companion layoutは
+参照を必須とする。公開loader dispatch、生成codec staging、Full owner/cache/offloadの接続と
+公式全重みでの学習・画質・速度検証は未完であり、H3公開swap gateは解除していない。
+合成データの実小型DiT/codecで単一・分割の保存・復元・再保存を検証した。
+関連native artifact/loader/converted TEを含むCPU回帰35件が通過した。
+変更PythonのcompileとCUDAを抑止した実importも確認した。frontend/APIの変更はない。
+
 H3 native Full bundleの保存・復元を`minimax_h3/video_artifact.py`へ実装した。
 単一/sharded safetensorsはnative DiT（net.）、target codec（vae.）、bridge、元/交換後geometry、
 pixel_frame_v1の時計、U-net identityを同梱する。保存時に実codecのweight hash/config/classを照合し、

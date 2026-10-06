@@ -318,7 +318,8 @@ class AnimaMixin:
             raise ValidationError("Residual U-Net generation does not support style injection")
         if fbcache_active(params):
             raise ValidationError("Anima residual U-Net generation does not support FBCache")
-        stride = transformer.patch_spatial * 8
+        from core.models.anima.vae_alignment import generation_token_stride
+        stride = generation_token_stride(transformer)
         try:
             if height % stride or width % stride:
                 raise ValueError("Anima rewiring requires the native token grid")
@@ -888,9 +889,10 @@ class AnimaMixin:
         text_encoder_quantization = params.get("text_encoder_quantization")
 
         # Snap to patch_spatial * vae_scale_factor
-        snap = transformer.patch_spatial * 8
-        height = (height // snap) * snap
-        width = (width // snap) * snap
+        from core.models.anima.vae_alignment import generation_token_stride
+        snap = generation_token_stride(transformer)
+        height = max(snap,(height // snap) * snap)
+        width = max(snap,(width // snap) * snap)
 
         generator = torch.Generator(device=device)
         generator.manual_seed(seed)
@@ -1148,9 +1150,10 @@ class AnimaMixin:
         # Resize init image to match desired width/height (snapped)
         width = int(params.get("width", init_image.width))
         height = int(params.get("height", init_image.height))
-        snap = transformer.patch_spatial * 8
-        width = (width // snap) * snap
-        height = (height // snap) * snap
+        from core.models.anima.vae_alignment import generation_token_stride
+        snap = generation_token_stride(transformer)
+        width = max(snap,(width // snap) * snap)
+        height = max(snap,(height // snap) * snap)
         if (init_image.width, init_image.height) != (width, height):
             init_image = init_image.resize((width, height), Image.LANCZOS)
 
@@ -1412,9 +1415,10 @@ class AnimaMixin:
 
         width = int(params.get("width", init_image.width))
         height = int(params.get("height", init_image.height))
-        snap = transformer.patch_spatial * 8
-        width = (width // snap) * snap
-        height = (height // snap) * snap
+        from core.models.anima.vae_alignment import generation_token_stride
+        snap = generation_token_stride(transformer)
+        width = max(snap,(width // snap) * snap)
+        height = max(snap,(height // snap) * snap)
         if (init_image.width, init_image.height) != (width, height):
             init_image = init_image.resize((width, height), Image.LANCZOS)
         if (mask_image.width, mask_image.height) != (width, height):

@@ -1,4 +1,15 @@
 """Anima image boundaries; padding-mask channels stay outside the codec bridge."""
+def latent_geometry(model):
+    pair=getattr(model,"vae_latent_bridge",None)
+    if pair is not None:
+        return pair.declaration["new_scale"],pair.declaration["new_channels"]
+    return 8,int(model.in_channels)
+
+
+def generation_token_stride(model):
+    return latent_geometry(model)[0]*model.patch_spatial
+
+
 def initialize_swap(trainer,resolved,*,handler):
     from core.models.components.latent_io import resize_latent_io
     from core.models.components.wiring import ANIMA_LATENT_IO

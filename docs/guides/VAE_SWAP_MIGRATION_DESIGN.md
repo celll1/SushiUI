@@ -89,7 +89,7 @@ Animaのnative forwardにも画像bridge境界を追加した。padding maskを�
 合成CPUテストはチャネル増減、非正方形格子、バッチ別時刻、mask付きnative対照、
 bridgeへの勾配、複数frame拒否を確認した。境界/既存resize39件とAnimaの
 U-net・注意機構・REPA回帰51件、変更Pythonのpy_compile・実importが通過した。
-Animaの公開swap設定、生成の動的stride、UIはまだ未配線であり、
+Animaの公開swap設定、UIはまだ未配線であり、
 `auto`の対応範囲には追加していない。公式全重みでの学習・画質検証も未了。
 内部初期化driverは共有の画像codec・校正処理に接続した。native Qwen系5D teacherを
 校正時のみ使い、交換先は正規化済みBCHW facadeとして学習encodeへ渡す。
@@ -104,6 +104,11 @@ loaderは外部VAEチャネルと内部`max(oldC,newC)`を分けて構築し、c
 公開component loader（TEの取得のみstub）と単一/sharded DiT loaderで全重み一致を合成CPU検証した。
 欠損bridgeとcodec宣言のない保存は拒否する。復元回帰48件、追加の保存拒否を含む境界6件が通過した。
 公式全重み・optimizer付きrunの再開と画質評価は未検証。
+Anima生成のnoise幅とlatent寸法はbridgeの交換先宣言から求める。
+txt2img/img2img/inpaint backend、U-net preflight、定期sampleの寸法計算も動的strideを使用する。
+画像codec facadeのencode/decodeはnative側の単一frame形式へ接続し、style referenceも同じ格子になる。
+チャネル増減・16x交換でCFG付き3種類のsamplerと画像encode/decodeを合成CPU検証した。
+境界・U-net・debug latent回帰18件、変更Pythonのpy_compile・実importが通過した。
 
 MingのVAE swapとresidual U-net化は併用可能。IO変更時に同じregion宣言から
 新native configのtopology identityを再構成する。

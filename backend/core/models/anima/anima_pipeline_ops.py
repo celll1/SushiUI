@@ -326,13 +326,12 @@ def encode_prompts_batched(text_encoder, qwen3_tokenizer, t5_tokenizer,
 
 @torch.no_grad()
 def vae_encode_image(vae, image: Image.Image, device: str, dtype: torch.dtype) -> torch.Tensor:
-    """Encode a PIL image to normalized Anima latents (B=1, C=16, T=1, H/8, W/8).
-
-    Applies the Qwen-Image latents_mean / latents_std normalization
-    (matches diffusers QwenImagePipeline conventions).
-    """
+    """Encode normalized image latents with one frame in the declared codec space."""
     arr = np.array(image.convert("RGB"), dtype=np.float32) / 127.5 - 1.0
     t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device, dtype=dtype)
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if isinstance(vae,NormalizedImageVAE):
+        return vae.encode(t).latent_dist.sample().unsqueeze(2)
     t = t.unsqueeze(2)  # [1, 3, 1, H, W]
     posterior = vae.encode(t).latent_dist
     latents = posterior.sample()
@@ -365,13 +364,15 @@ def prepare_style_reference(
 @torch.no_grad()
 @time_phase("vae_decode")
 def vae_decode_latents(vae, latents: torch.Tensor, color_flatten_strength: int = 0) -> List[Image.Image]:
-    """Decode normalized (B, 16, 1, H/8, W/8) latents to PIL images.
-
-    Reverses the latents_mean / latents_std normalization before calling the
-    VAE decoder.
-    """
+    """Decode normalized image latents through the native or swapped codec."""
     if latents.dim() == 4:
         latents = latents.unsqueeze(2)
+
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if isinstance(vae,NormalizedImageVAE):
+        if latents.shape[2]!=1:
+            raise ValueError("Anima image codec decode requires one frame")
+        latents=latents.squeeze(2)
 
     from core.models.components.vae_registry import denormalize
     raw_latents = denormalize(latents, vae)
@@ -607,8 +608,14 @@ def sample_txt2img(
         (advanced_cfg or {}).get("cfg_schedule_max"),
     )
     do_cfg = guidance_scale is not None and cfg_peak > 1.0 and uncond_embeds is not None
-    latent_h = height // 8
-    latent_w = width // 8
+    from .vae_alignment import latent_geometry,generation_token_stride
+    native_model=_unwrap_transformer(transformer)
+    scale,latent_channels=latent_geometry(native_model)
+    stride=generation_token_stride(native_model)
+    if height<stride or width<stride or height%stride or width%stride:
+        raise ValueError("Anima sampling dimensions must match the target codec token grid")
+    latent_h = height // scale
+    latent_w = width // scale
 
     # Resolution-dependent shift (FLUX/Z-Image-style)
     seq_len = latent_h * latent_w
@@ -617,9 +624,7 @@ def sample_txt2img(
     sigma_scalars = snapshot_schedule_scalars(scheduler.sigmas)
     sigma_max_f = sigma_scalars[0]
 
-    # Initial noise [B, C, 1, latent_h, latent_w]. C is the DiT's own count, not
-    # the 16 of Anima's shipped VAE: a VAE-swapped checkpoint carries another.
-    latent_channels = int(getattr(_unwrap_transformer(transformer), "in_channels", 16))
+    # Noise uses external codec channels; the bridge expands only inside the DiT.
     latents = torch.randn(
         (1, latent_channels, 1, latent_h, latent_w), generator=generator,
         device=device, dtype=dtype,

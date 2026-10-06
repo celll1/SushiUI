@@ -122,6 +122,31 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     output.square().mean().backward()
     assert value.vae_latent_bridge.input.projection.weight.grad.abs().sum()>0
     assert not hasattr(trainer,"_anima_vae_calibration_source")
+    from core.models.anima.anima_pipeline_ops import (
+        vae_encode_image,vae_decode_latents,prepare_style_reference,
+        sample_txt2img,sample_img2img,sample_inpaint,make_mask_latents)
+    from core.models.anima.anima_scheduler import AnimaFlowMatchScheduler
+    from core.models.anima.vae_alignment import generation_token_stride
+    assert generation_token_stride(value)==32
+    image=Image.new("RGB",(192,128),(80,140,40))
+    encoded=vae_encode_image(trainer.vae,image,"cpu",torch.float32)
+    assert encoded.shape==(1,new_c,1,8,12)
+    assert vae_decode_latents(trainer.vae,encoded)[0].size==image.size
+    ref,noise=prepare_style_reference(trainer.vae,image,128,192,"cpu",torch.float32,seed=42)
+    assert ref.shape==noise.shape==encoded.shape
+    value.eval()
+    cond=dict(prompt_embeds=torch.randn(1,5,32),t5_input_ids=None,t5_attn_mask=None,source_mask=None)
+    common=dict(transformer=value,scheduler=AnimaFlowMatchScheduler(),cond_embeds=cond,
+        uncond_embeds=cond,num_inference_steps=2,guidance_scale=2.,
+        generator=torch.Generator().manual_seed(3),device="cpu",dtype=torch.float32,spectrum_params={})
+    sampled=sample_txt2img(height=128,width=192,**common)
+    assert sampled.shape==encoded.shape and torch.isfinite(sampled).all()
+    edited=sample_img2img(init_latents=encoded,denoising_strength=.8,**common)
+    assert edited.shape==encoded.shape and torch.isfinite(edited).all()
+    mask=make_mask_latents(Image.new("L",image.size,255),8,12,"cpu",torch.float32)
+    painted=sample_inpaint(init_latents=encoded,mask_latents=mask,denoising_strength=.8,**common)
+    assert painted.shape==encoded.shape and torch.isfinite(painted).all()
+    assert vae_decode_latents(trainer.vae,sampled)[0].size==image.size
     from core.training.adapters.anima_adapter import AnimaFullParameterAdapter
     from core.models.anima import anima_loader
     trainer.bundle_vae=True

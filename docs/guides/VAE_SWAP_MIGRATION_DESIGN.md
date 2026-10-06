@@ -32,6 +32,27 @@ CPU回帰19件、compile・CUDA未初期化の実importが通過。frontendのso
 APIパラメータ追加はない。使用済み専用run/datasetはDB・diskから整理し、選択モデルはMing Layerへ戻した。
 診断・optimizer・生成PNGはignored `local/verification/zimage_api_full_results/`のみ。画質比較は未了。
 
+Z-Imageの未学習画質比較は、本番caption/denoise/decode経路・公式全成分で実行した。
+現在のgeneral ratingを再確認した40枚を本番Full trainerの校正hookへ渡し、
+source encode40回は256px、target encode40回は512pxであることを入力shapeで確認。
+生成は28steps・CFG4・scheduler固定shift6、狐/青い本・赤いリンゴ/黄色い洋梨・青い車の3prompt。
+seed63で元codec1024px、通常paired、SVD行直交Gaussian＋velocity残差補正、
+さらに3×3出力kernelの64反復逆写像（ridge=1e-5）を使う候補、
+射影Gaussianと内部latent64×64を揃えた元codec512pxを比較した。
+交換候補はいずれも1024pxで、元の画像token4096に対して1024を使う。
+通常pairedは3promptとも紫のノイズ状に崩れた。行直交化＋残差補正と反復逆写像候補では、
+3promptすべてで対象・色・概形を認識できた。ぼけ、輪郭の格子状の乱れ、局所的な色異常は残る。
+同じ内部グリッドの元codecは補正後と近い頭身・構図で、車の画面外への切れも一致した。
+等出力サイズの元codecとの構図差は、codec変換だけに帰属できない。
+反復逆写像の明確な画質優位は確認できず、狐の目に緑の色異常も残った。
+同じ狐に既定2段/deep4 U-netを併用するとavg/RMS双方で顔・耳・手・本の輪郭が強く乱れた。
+17生成がfinite/decodeまで完走。denoise観測は元codec約43.5〜45.9秒、
+交換U-netなし約9.5〜10.1秒、U-net併用約5.0秒。読込・校正・decode込みの速度ではない。
+U-netなしの3prompt/1seedに限る回復候補で、本番noise policyは変更しない。
+校正kernelを固定し、general ratingを再確認したseed64比較を実行中。併用画質・複数seed受入は未了。
+専用DB run/datasetは作成せず、画像・kernel・conditioning・比較scriptは
+ignored `local/verification/zimage_official_quality/`等にのみ保持する。
+
 公式Krea全DiT・公式Qwen3-VL TEで、Qwen 2.1 VAEへの交換生成を比較した。
 現在のgeneral ratingを再確認した40枚で本番Full trainerの校正hookを実行し、
 teacherのencode入力40回がB×3×1×256×256であること、target crop512、ready bridgeを確認。

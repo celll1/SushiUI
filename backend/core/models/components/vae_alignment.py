@@ -101,7 +101,24 @@ class SpatialLatentBridge(nn.Module):
 
     def flow_state(self, latent, sigma):
         """Map the clean part's bias only: y_s=A*x_s+(1-s)*b."""
-        return self(latent) - self._sigma(sigma, latent) * self._bias_like(latent)
+        sigma = torch.as_tensor(sigma, device=latent.device, dtype=latent.dtype)
+        return self.diffusion_state(latent, alpha=1-sigma)
+
+    def diffusion_state(self, latent, *, alpha):
+        """Map x_t=alpha*x0+sigma*noise without treating VP alpha as 1-sigma."""
+        coefficient = self._sigma(alpha, latent)
+        return self._project(latent, bias=False) + coefficient * self._bias_like(latent)
+
+    def prediction(self, value, *, kind, sigma=None):
+        if kind == "epsilon":
+            return self.epsilon(value)
+        if kind == "x0":
+            return self(value)
+        if kind in ("eps_minus_x0", "x0_minus_eps"):
+            return self.flow_velocity(value, convention=kind)
+        if kind == "v" and sigma is not None:
+            return self._project(value, bias=False) - self._sigma(sigma, value) * self._bias_like(value)
+        raise ValueError("Prediction kind requires a declared diffusion convention (and sigma for VP v)")
 
     def flow_velocity(self, velocity, *, convention):
         if convention not in ("eps_minus_x0", "x0_minus_eps"):

@@ -90,6 +90,9 @@ ZIMAGE_LATENT_IO = LatentIOSpec(
     extra_in_channels=0, in_repeat=1, out_bias=True,
 )
 
+# Ming uses the same patch order, but owns its declaration independently.
+MING_IMAGE_01_LATENT_IO = ZIMAGE_LATENT_IO.replace()
+
 KREA2_LATENT_IO = LatentIOSpec(
     in_module="img_in", out_module="final_layer.linear",
     in_kind="packed_linear", out_kind="packed_linear",
@@ -264,7 +267,7 @@ KREA2_WIRING = ComponentWiringSpec(
 MING_IMAGE_01_WIRING = ComponentWiringSpec(
     te_out_dim=2560, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
     latent_channels=16, latent_ndim=5, latent_packing="none",
-    vae_scale_factor=8, vae_norm="shift_scale",
+    vae_scale_factor=8, vae_norm="shift_scale", latent_io=MING_IMAGE_01_LATENT_IO,
 )
 
 QWEN_IMAGE_21_WIRING = ComponentWiringSpec(

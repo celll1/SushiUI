@@ -15,6 +15,13 @@ Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方�
 `auto`は現在Mingのみpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
+共有実装は`core/models/components/latent_adapter.py`に置く。
+`ImageCodecContract`は親モデル名ではなくcodecのチャネル・縮小率・rank・正規化から
+宣言を作り、`SpatialSwapPlan`は外部チャネルとバックボーン内部幅を分離する。
+Mingは共有の双方向3×3 bridge・校正・独立frame codecを使用する。
+posteriorの`mode`とgenerator付き`sample`を別々に保持し、RGB decoderには不透明alphaを補う。
+拡散状態のbiasはalpha係数、予測biasはepsilon/x0/VP-v/flowの宣言から補正する。
+共有化だけでは、他バックボーンの保存復元や生成接続が完了したことにはならない。
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 
@@ -25,6 +32,8 @@ fp32/bf16 forward/backward、縮小token格子、追加チャネルの勾配を�
 `examples/vae_swap_coarse_probe.py`は保存済みU-net DiTを使うGPU probeである。
 この証拠は全バックボーンの併用完了や、optimizerを含む全run roundtripの
 実機検証を意味しない。
+`backend/tests/latent_adapter_contract_test.py`は親モデル非依存のチャネル増減、
+格子縮小、双方向校正、保存復元、posterior抽選、各拡散予測のbiasを合成tensorで検証する。
 
 本書は §11 のフェーズ単位で実装・検証・コミットする
 前提で書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て

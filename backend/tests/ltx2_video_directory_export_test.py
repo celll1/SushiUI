@@ -68,6 +68,17 @@ def test_quantized_directory_preserves_codec_and_graph(tmp_path,rewired,sharded)
     model = loaded['transformer']
     assert loaded['vae'].inner is captured['vae']
     assert loaded['latent_channels'] == 4 and loaded['vae_scale_factor_spatial'] == 2
+    assert loaded['vae_identity']['latent_hash'] == trainer.vae_identity.latent_hash
+    from core.pipeline import DiffusionPipelineManager
+    manager = DiffusionPipelineManager.__new__(DiffusionPipelineManager)
+    notices = []
+    manager.record_load_warning = lambda message,**kwargs:notices.append(kwargs['code'])
+    fields = manager._fold_component_latent_identity(loaded,'ltx2')
+    assert fields['vae_identity_native'] is False
+    assert manager._sushi_wiring.vae_scale_factor == 2
+    assert manager._sushi_wiring.vae_scale_temporal == 1
+    assert manager._sushi_wiring.vae_norm == 'identity'
+    assert notices == ['model_vae_swapped']
     assert getattr(model.transformer,'_residual_unet_spec',None) == getattr(inner,'_residual_unet_spec',None)
     for key,value in inner.state_dict().items():
         torch.testing.assert_close(model.state_dict()[key],value,atol=0,rtol=0)

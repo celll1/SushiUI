@@ -52,6 +52,9 @@ copied config.jsonは保存された交換前または交換後configと照合�
 sourceが単体Full checkpointでもcompanion参照からpackageの兄弟componentを解決する。
 小型nativeモデルで量子化コード・bridge/codec tensorの完全一致、U-netあり/なし、単一/分割保存、
 forwardとcodec encodeをCPU検証した。公式全pipeline生成と通常Full checkpointのdirectory package化は別途受入が必要。
+復元したLTX codec identityは共通モデル情報へ渡し、既存の交換VAE表示・LoRA互換性判定に接続する。
+component型モデルの共通identity foldには実codecも渡し、normalized frame/video codecの空間・時間strideと
+identity normalizationを生成wiringへ反映する。native checkpointのcache識別子や宣言は追加しない。
 全アーキテクチャ対応完了を意味しない。
 既存LTX単体Full checkpoint readerは現在実装済みであり、§11 P6の「readerがない」という記述は当時の状態。
 

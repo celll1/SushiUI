@@ -540,6 +540,7 @@ def load_ltx2_from_diffusers(
         "vae_scale_factor_spatial": vae_scale_spatial,
         "vae_scale_factor_temporal": vae_scale_temporal,
         "latent_channels": latent_channels,
+        "vae_identity": video_identity.facts() if video_identity is not None else None,
         "is_video": True,
     }
 

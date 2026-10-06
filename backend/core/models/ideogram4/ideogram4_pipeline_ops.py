@@ -411,10 +411,14 @@ def prepare_latents(
     dtype: torch.dtype,
     device,
     seed: Optional[int] = None,
+    packed_channels: Optional[int] = None,
 ) -> torch.Tensor:
-    """Random noise latents for txt2img. Shape: (1, grid_h * grid_w, 128)."""
+    """Random noise on the external codec grid, packed in 2x2 patches."""
     num_image_tokens = grid_h * grid_w
-    shape = (1, num_image_tokens, LATENT_DIM)
+    channels = LATENT_DIM if packed_channels is None else packed_channels
+    if type(channels) is not int or channels < 4 or channels%4:
+        raise ValueError("Ideogram noise requires complete 2x2 packed channels")
+    shape = (1, num_image_tokens, channels)
     generator = None
     if seed is not None and seed >= 0:
         generator = torch.Generator(device=device).manual_seed(seed)
@@ -625,7 +629,7 @@ def _dual_branch_velocity(
     # Unconditional pass on the image-only positions with zeroed text features.
     neg_out = unconditional_transformer(
         hidden_states=latents.to(unconditional_transformer.dtype),
-        timestep=t_model,
+        timestep=t_model.to(unconditional_transformer.dtype),
         encoder_hidden_states=cond["neg_llm_features"],
         position_ids=cond["neg_position_ids"],
         segment_ids=cond["neg_segment_ids"],
@@ -989,7 +993,7 @@ def _run_loop(
     """
     from core.inference.cancellation import raise_if_cancelled
     total_steps = len(timesteps)
-    spectrum = build_output_forecaster(spectrum_params, total_steps, "Ideogram4")
+    spectrum = build_output_forecaster(spectrum_params or {}, total_steps, "Ideogram4")
     batch = latents.shape[0]
 
     # Training-free reference-style transfer (see core.inference.reference_style):

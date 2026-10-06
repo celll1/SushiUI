@@ -7,6 +7,7 @@ import sys
 import gc
 import random
 from pathlib import Path
+from api.param_defaults import IDEOGRAM4_INFERENCE_DEFAULTS
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
@@ -528,23 +529,26 @@ class Ideogram4Mixin:
 
         req_width = int(params.get("width", default_w))
         req_height = int(params.get("height", default_h))
-        width, height = normalize_resolution(req_width, req_height)
+        from core.models.ideogram4.vae_alignment import codec_geometry
+        stride,packed_channels = codec_geometry(self.ideogram4_components["vae"])
+        width, height = normalize_resolution(req_width, req_height,align=stride)
         if (width, height) != (req_width, req_height):
             print(f"[Ideogram4] Resolution aligned: {req_width}x{req_height} -> {width}x{height}")
-        grid_h, grid_w = latent_grid(width, height)
+        grid_h, grid_w = latent_grid(width, height,align=stride)
 
         return {
             "seed": seed,
             "prompt": params.get("prompt", ""),
             "num_inference_steps": int(params.get("steps", 28)),
             "guidance_scale": float(params.get("cfg_scale", 7.0)),
-            "mu": float(params.get("ideogram4_mu", 0.0)),
-            "std": float(params.get("ideogram4_std", 1.5)),
-            "max_sequence_length": int(params.get("ideogram4_max_seq_len", 512)),
+            "mu": float(params.get("ideogram4_mu", IDEOGRAM4_INFERENCE_DEFAULTS["mu"])),
+            "std": float(params.get("ideogram4_std", IDEOGRAM4_INFERENCE_DEFAULTS["std"])),
+            "max_sequence_length": int(params.get("ideogram4_max_seq_len", IDEOGRAM4_INFERENCE_DEFAULTS["max_sequence_length"])),
             "width": width,
             "height": height,
             "grid_h": grid_h,
             "grid_w": grid_w,
+            "packed_channels": packed_channels,
         }
 
     @staticmethod
@@ -1088,6 +1092,7 @@ class Ideogram4Mixin:
             print("[Ideogram4] Stage 2: Prepare latents...")
             latents = prepare_latents(
                 cfg["grid_h"], cfg["grid_w"], dtype=torch.float32, device=device, seed=cfg["seed"],
+                packed_channels=cfg["packed_channels"],
             )
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")

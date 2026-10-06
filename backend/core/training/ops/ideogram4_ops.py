@@ -19,10 +19,96 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 from pathlib import Path
+from contextlib import contextmanager
 
 import torch
 
 from core.attention import to_diffusers_backend
+
+
+@contextmanager
+def _sample_components(trainer):
+    from core.training.optimizer_residency import park_optimizer_state
+    from core.training.base_trainer import all_optimizers
+    modules = tuple(dict.fromkeys((trainer.transformer,trainer.transformer_uncond,trainer.text_encoder,trainer.vae)))
+    if any(module is None for module in modules):
+        raise ValueError("Ideogram samples require both DiTs, text encoder and VAE")
+    if any(getattr(module,"_layer_offload_conductor",None) is not None for module in modules):
+        raise ValueError("Ideogram sample residency cannot bypass a live block-swap conductor")
+    placements = [{name:value.device for name,value in (*module.named_parameters(),*module.named_buffers())}
+        for module in modules]
+    modes = [module.training for module in modules]
+    parameters = tuple(dict.fromkeys(p for module in modules for p in module.parameters()))
+    gradients = []
+    try:
+        for parameter in parameters:
+            if parameter.grad is not None:
+                gradients.append((parameter,parameter.grad.to("cpu"),parameter.grad.device))
+                parameter.grad = None
+        with park_optimizer_state(all_optimizers(trainer),parameters):
+            try:
+                def stage(*active):
+                    trainer._check_stop_requested()
+                    for module in modules:
+                        module.to("cpu")
+                        module.eval()
+                    torch.cuda.empty_cache()
+                    for module in active:
+                        module.to(trainer.device)
+                yield stage
+            finally:
+                for module in modules:
+                    module.to("cpu")
+                torch.cuda.empty_cache()
+                for module,devices,mode in zip(modules,placements,modes):
+                    current = dict((*module.named_parameters(),*module.named_buffers()))
+                    for name,device in devices.items():
+                        if current[name].device != device:
+                            current[name].data = current[name].data.to(device)
+                    module.train(mode)
+    finally:
+        for parameter,gradient,device in gradients:
+            parameter.grad = gradient.to(device)
+
+
+@torch.no_grad()
+def generate_sample(trainer,sample_ctx):
+    from copy import deepcopy
+    from api.param_defaults import IDEOGRAM4_INFERENCE_DEFAULTS
+    from core.models.ideogram4 import ideogram4_pipeline_ops as ops
+    from core.models.ideogram4.vae_alignment import codec_geometry
+    from core.models.ideogram4.ideogram4_resolution import normalize_resolution,latent_grid
+    from core.training.ops.sd_sdxl_ops import make_denoise_progress_callback
+    if sample_ctx.nag_enable:
+        raise ValueError("Ideogram training samples do not yet install NAG processors")
+    if sample_ctx.negative_prompt or sample_ctx.reference_image_path or sample_ctx.condition_image_path:
+        raise ValueError("Ideogram native training samples support text conditioning only")
+    stride,packed = codec_geometry(trainer.vae)
+    width,height = normalize_resolution(sample_ctx.width,sample_ctx.height,align=stride)
+    gh,gw = latent_grid(width,height,align=stride)
+    with _sample_components(trainer) as stage:
+        stage(trainer.text_encoder)
+        cond = ops.encode_prompt(trainer.text_encoder,trainer.tokenizer,sample_ctx.prompt,gh,gw,
+            IDEOGRAM4_INFERENCE_DEFAULTS["max_sequence_length"],trainer.device)
+        cond["llm_features"] = cond["llm_features"].to(trainer.transformer.dtype)
+        cond["neg_llm_features"] = cond["neg_llm_features"].to(trainer.transformer_uncond.dtype)
+        stage(trainer.transformer,trainer.transformer_uncond)
+        latents = ops.prepare_latents(gh,gw,torch.float32,trainer.device,seed=sample_ctx.seed,packed_channels=packed)
+        progress = make_denoise_progress_callback(sample_ctx.step_progress_callback)
+        def callback(index,total,*args,**kwargs):
+            trainer._check_stop_requested()
+            if progress is not None:
+                return progress(index,total,*args,**kwargs)
+        callback.wants_predicted_x0 = lambda *args:False
+        callback.wants_cfg_metrics = lambda *args:False
+        latents = ops.denoise_loop(trainer.transformer,trainer.transformer_uncond,deepcopy(trainer.scheduler),
+            latents,cond,sample_ctx.guidance_scale,sample_ctx.num_inference_steps,gh,gw,height,width,
+            mu=IDEOGRAM4_INFERENCE_DEFAULTS["mu"],std=IDEOGRAM4_INFERENCE_DEFAULTS["std"],progress_callback=callback,
+            advanced_cfg={key:getattr(sample_ctx,key) for key in (
+                "cfg_schedule_type","cfg_schedule_min","cfg_schedule_max","cfg_schedule_power",
+                "cfg_rescale_snr_alpha","dynamic_threshold_percentile","dynamic_threshold_mimic_scale")})
+        stage(trainer.vae)
+        return ops.vae_decode(trainer.vae,latents,gh,gw)
 
 
 def load_components(trainer) -> None:

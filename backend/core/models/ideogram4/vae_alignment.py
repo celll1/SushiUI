@@ -2,6 +2,13 @@
 import torch
 
 
+def codec_geometry(vae):
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if isinstance(vae,NormalizedImageVAE):
+        return vae.spatial_scale_factor*2,vae.config.latent_channels*4
+    return 16,int(vae.config.latent_channels)*4
+
+
 def pair_metadata(transformer, unconditional_transformer):
     from core.models.components.spatial_swap import artifact_metadata
     first = artifact_metadata(transformer)

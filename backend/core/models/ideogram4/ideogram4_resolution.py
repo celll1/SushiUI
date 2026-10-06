@@ -25,18 +25,22 @@ def align_to_grid(value: int, align: int = GRID_ALIGN) -> int:
     return max(align, rounded)
 
 
-def normalize_resolution(width: int, height: int) -> tuple[int, int]:
-    """Clamp to the native range and snap both sides to the 16-pixel grid.
+def normalize_resolution(width: int, height: int, *, align: int = GRID_ALIGN) -> tuple[int, int]:
+    """Clamp to the native range and snap both sides to the codec token grid.
 
     Returns ``(width, height)`` ready for latent-grid computation.
     """
     width = min(max(int(width), MIN_SIDE), MAX_SIDE)
     height = min(max(int(height), MIN_SIDE), MAX_SIDE)
-    return align_to_grid(width), align_to_grid(height)
+    if type(align) is not int or align < 1 or align > MAX_SIDE:
+        raise ValueError("Ideogram resolution requires a positive supported codec grid stride")
+    return align_to_grid(width,align), align_to_grid(height,align)
 
 
-def latent_grid(width: int, height: int) -> tuple[int, int]:
+def latent_grid(width: int, height: int, *, align: int = GRID_ALIGN) -> tuple[int, int]:
     """Return the ``(grid_h, grid_w)`` token grid for a (already aligned) resolution."""
-    grid_w = width // GRID_ALIGN
-    grid_h = height // GRID_ALIGN
+    if type(align) is not int or align < 1 or width%align or height%align:
+        raise ValueError("Ideogram resolution must contain complete codec-grid tokens")
+    grid_w = width // align
+    grid_h = height // align
     return grid_h, grid_w

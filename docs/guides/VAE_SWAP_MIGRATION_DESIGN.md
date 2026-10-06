@@ -27,7 +27,12 @@ native codecの正規化を二重適用せず、元のVAE格子へ戻さない�
 単一・分割保存、公開loader、encode/decode、DiT forward、再開非初期化を確認した。
 TE/tokenizer companionのみmockし、codec/body/bridgeの読込は実経路を使用した。
 宣言・bridge重み欠落と両branch宣言不一致の拒否、既存U-net保存復元を含む12件が通過した。
-公開API設定・周期サンプル・generation backendの格子更新・公式全重みの受け入れはまだ未了。
+generation backendの解像度・noise幅は交換先codecの格子に従う。内部の周期サンプルも
+text encoding→dual-DiT→VAE decodeの順に配置し、optimizerと勾配をCPUへ退避してから実行する。
+成功・停止時には元のdevice配置とtraining modeを復元し、samplerは学習schedulerのコピーを使う。
+小型nativeモデルでFP32/BF16の生成、seed再現、進捗通知、状態復元を検証した。
+公開API設定・block-swap/量子化モデルのsampling residency・公式全重みの受け入れはまだ未了。
+内部sample経路はlive conductor、NAG、negative/reference/condition promptを明示拒否する。
 
 本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の
 契約であり、全モデルに共通する最終的な制約ではない。

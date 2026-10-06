@@ -1283,11 +1283,15 @@ class MiniMaxH3Mixin:
         # Defensive re-check of the route's own gate (a caller that bypasses the
         # route reaches the same answer), and the source of the shared-overlap
         # length the placement is solved with.
+        from core.models.minimax_h3.generation_codec import generation_contract
+        video_codec_contract = generation_contract(self.minimax_h3_components)
+        codec_kwargs = {} if video_codec_contract is None else {"video_codec_contract":video_codec_contract}
         continuation = plan_video_continuation_context(
             params.get("continuation_mode"), params.get("continuation_overlap_frames"),
             arch or "minimax_h3",
             (self.minimax_h3_components.get("variant") or "") or None,
             params.get("continuation_anchor_count"),
+            **codec_kwargs,
         )
         overlap_frames = int(continuation["overlap_frames"])
         motion_anchor_frames = tuple(continuation.get("anchor_local_frames") or ())
@@ -1296,6 +1300,7 @@ class MiniMaxH3Mixin:
             head_frames=int(head.shape[0]),
             tail_frames=int(tail.shape[0]) if tail is not None else None,
             overlap_frames=overlap_frames,
+            **codec_kwargs,
         )
         placement = plan["placement"]
         generated_frames = int(plan["generated_frames"])
@@ -1602,7 +1607,10 @@ class MiniMaxH3Mixin:
         from core.models.minimax_h3.loader import minimax_h3_latent_frames
 
         spec = temporal_spec_for_arch(arch)
-        spans = latent_frame_spans(spec, minimax_h3_latent_frames(generated_frames)) if spec else []
+        from core.models.minimax_h3.generation_codec import generation_contract
+        codec = generation_contract(getattr(self, "minimax_h3_components", None) or {})
+        count = minimax_h3_latent_frames(generated_frames) if codec is None else codec.latent_frames(generated_frames)
+        spans = latent_frame_spans(spec, count, video_codec_contract=codec) if spec else []
         pinned = tuple(index for index, (_lo, hi) in enumerate(spans) if hi <= overlap_frames)
         # Both of these are refused at the route (`plan_video_continuation_context`
         # for the alignment, the 17-frame ceiling against the 124-frame floor for
@@ -1962,11 +1970,14 @@ class MiniMaxH3Mixin:
         pinned_video_row_indices: Tuple[int, ...] = ()
 
         arch = (getattr(self, "current_model_info", None) or {}).get("type")
+        from core.models.minimax_h3.generation_codec import generation_contract
+        video_codec_contract = generation_contract(self.minimax_h3_components)
         plan = plan_video_inpaint_span(
             params,
             arch or "minimax_h3",
             clip_frames=int(clip.shape[0]),
             allow_full_range=spatial_mask_mode,
+            **({} if video_codec_contract is None else {"video_codec_contract":video_codec_contract}),
         )
         start_frame = int(plan["start_frame"])
         end_frame = int(plan["end_frame"])
@@ -2065,7 +2076,7 @@ class MiniMaxH3Mixin:
             patch_h = int(patch_size[1])
             patch_w = int(patch_size[2])
             spec = temporal_spec_for_arch(arch or "minimax_h3")
-            spans = latent_frame_spans(spec, int(plan["latent_frames"])) if spec else []
+            spans = latent_frame_spans(spec, int(plan["latent_frames"]), video_codec_contract=video_codec_contract) if spec else []
             _mask_plan_warnings: list = []
             try:
                 full_soft_masks, pinned_video_row_indices = build_spatial_mask_plan(
@@ -2757,6 +2768,9 @@ class MiniMaxH3Mixin:
             latent_frames, latent_height, latent_width = target_grid(video_codec_contract, num_frames, height, width,
                 topology=getattr(inner, "_residual_unet_spec", None))
         num_audio_latents = ops.audio_latent_frames(num_frames, fps=float(components.get("fps", 24.0)))
+        from core.models.minimax_h3.generation_codec import validate_spatial_pin_groups
+        validate_spatial_pin_groups(components["transformer"],pinned_video_row_indices,
+            (latent_frames,latent_height,latent_width))
 
         seed = params.get("seed", -1)
         try:

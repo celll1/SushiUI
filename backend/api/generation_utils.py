@@ -1882,6 +1882,7 @@ def plan_video_outpaint_placement(
     head_frames: int,
     tail_frames: Optional[int] = None,
     overlap_frames: int = 1,
+    video_codec_contract=None,
 ) -> Dict[str, Any]:
     """Resolve a temporal-outpaint request against the arch's placement rule.
 
@@ -1928,6 +1929,8 @@ def plan_video_outpaint_placement(
     from core.models.components.wiring import temporal_spec_for_arch
 
     spec = temporal_spec_for_arch(arch)
+    from core.models.components.video_latent_adapter import temporal_spec_for_codec
+    spec = temporal_spec_for_codec(spec, video_codec_contract)
     placements = tuple(spec.outpaint_placements) if spec is not None else ("free",)
 
     if "free" in placements:
@@ -2050,7 +2053,7 @@ def plan_video_outpaint_placement(
 
 
 def video_continuation_overlap_lengths(
-    spec, max_frames: int, min_frames: int = 1
+    spec, max_frames: int, min_frames: int = 1, *, video_codec_contract=None
 ) -> Tuple[int, ...]:
     """The overlap lengths a continuation can pin, ascending, within the bounds.
 
@@ -2065,8 +2068,13 @@ def video_continuation_overlap_lengths(
     (see `arch_capabilities.MINIMAX_H3_PINNED_TAIL_MIN_FRAMES`), not an
     alignment fact, which is why it filters rather than snaps.
     """
-    if spec is None or not getattr(spec, "latent_chunk_pattern", ()) or max_frames < 1:
+    if spec is None or (video_codec_contract is None and not getattr(spec, "latent_chunk_pattern", ())) or max_frames < 1:
         return ()
+    if video_codec_contract is not None:
+        from core.models.components.video_latent_adapter import temporal_spec_for_codec
+        spec = temporal_spec_for_codec(spec,video_codec_contract)
+        count = video_codec_contract.latent_frames(spec.snap_length(int(max_frames),True))
+        return tuple(end for _,end in video_codec_contract.frame_spans(count) if int(min_frames) <= end <= max_frames)
     # `max_frames` latent frames cover at least `max_frames` pixel frames (every
     # chunk is >= 1 wide), so this enumerates past the cap and then cuts.
     return tuple(end for _start, end in latent_frame_spans(spec, int(max_frames))
@@ -2151,6 +2159,7 @@ def plan_video_continuation_context(
     arch: Optional[str],
     variant: Optional[str] = None,
     anchor_count: Optional[int] = None,
+    *, video_codec_contract=None,
 ) -> Dict[str, Any]:
     """Resolve a chain continuation's conditioning mode against the arch's capability.
 
@@ -2236,7 +2245,7 @@ def plan_video_continuation_context(
     floor = int(capability.get("chain_context_min_frames") or 1)
     spec = temporal_spec_for_arch(arch)
     valid = video_continuation_overlap_lengths(
-        spec, int(ceiling) if ceiling is not None else 0, floor)
+        spec, int(ceiling) if ceiling is not None else 0, floor, video_codec_contract=video_codec_contract)
     if not valid:
         raise ValidationError(
             f"'{arch or 'the loaded model'}' cannot pin a continuation overlap",
@@ -2596,12 +2605,14 @@ def resolve_minimax_h3_text_only_te_gate(
     )
 
 
-def latent_frame_spans(spec, num_latent_frames: int) -> List[Tuple[int, int]]:
+def latent_frame_spans(spec, num_latent_frames: int, *, video_codec_contract=None) -> List[Tuple[int, int]]:
     """``[(pixel_start, pixel_end_exclusive), ...]`` per latent frame.
 
     Cycles ``spec.latent_chunk_pattern``; empty pattern means the arch has not
     declared its chunking and there is nothing to compute.
     """
+    if video_codec_contract is not None:
+        return video_codec_contract.frame_spans(num_latent_frames)
     pattern = tuple(spec.latent_chunk_pattern)
     spans: List[Tuple[int, int]] = []
     cursor = 0
@@ -2618,6 +2629,7 @@ def plan_video_inpaint_span(
     *,
     clip_frames: int,
     allow_full_range: bool = False,
+    video_codec_contract=None,
 ) -> Dict[str, Any]:
     """Resolve a temporal-inpaint request against the arch's latent chunking.
 
@@ -2657,7 +2669,9 @@ def plan_video_inpaint_span(
     from core.models.components.wiring import temporal_spec_for_arch
 
     spec = temporal_spec_for_arch(arch)
-    if spec is None or not spec.latent_chunk_pattern:
+    from core.models.components.video_latent_adapter import temporal_spec_for_codec
+    spec = temporal_spec_for_codec(spec,video_codec_contract)
+    if spec is None or (video_codec_contract is None and not spec.latent_chunk_pattern):
         raise ValidationError(
             "this model has no temporal inpaint",
             detail="Regenerating a time range in place needs the architecture's video-VAE "
@@ -2696,6 +2710,11 @@ def plan_video_inpaint_span(
         if below > clip_frames or (ceiling is not None and below > ceiling):
             below -= spec.frame_multiple
         below = min(below, ceiling) if ceiling is not None else below
+        if below < floor:
+            raise ValidationError(
+                "the trimmed clip cannot reach a valid length within the model's range",
+                detail=why + f"Trimming would fall below {floor}; at least {spec.snap_length(floor, smoke)} frames are needed.",
+            )
         raise ValidationError(
             "the trimmed clip is not a length this model can generate",
             detail=why + f"Trim {clip_frames - below} more frame(s) (input_trim_start_frames + "
@@ -2714,7 +2733,7 @@ def plan_video_inpaint_span(
         )
 
     num_latent_frames = int(spec.latent_frames(clip_frames))
-    spans = latent_frame_spans(spec, num_latent_frames)
+    spans = latent_frame_spans(spec, num_latent_frames, video_codec_contract=video_codec_contract)
     regenerate = tuple(index for index, (lo, hi) in enumerate(spans)
                        if lo < requested_end and hi > requested_start)
     start_frame = spans[regenerate[0]][0]

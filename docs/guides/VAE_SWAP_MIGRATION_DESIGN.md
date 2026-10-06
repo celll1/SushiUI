@@ -116,7 +116,15 @@ aligned保存は共通shard writerを使い、native/legacy保存は従来の単
 公開loaderのCPU検証では外部pipeline/TE構築のみstubし、実U-Net・実VAEの復元を通した。
 実学習loaderの呼出し、共通swap/resume、REPAを含む回帰110件と、変更Pythonの
 py_compile・CUDAを抑止した実importが通過した。
-生成scheduler・定期sample・公開初期化設定への接続、公式全重みの学習・画質検証は未了。
+生成のtxt2img/img2img/inpaintは呼出し中だけ共通codec境界hookを設置し、例外時も除去する。
+Euler/LMS/Heun/KDPM系はscale_model_input後の正規化sigma、DPM++/UniPCは実sigma列、
+DDIM/DDPM/PNDMはalpha累積表から係数を求める。KarrasとKDPM中間stepも使用中の状態を参照する。
+予測を外部codec幅へ戻してからCFGとscheduler.stepを行い、交換先格子を維持する。
+定期sampleのVAE strideとSDXLのサイズ条件も交換先縮小率へ合わせた。
+実tiny U-Net、実AutoencoderKL、合成画像による両モデルの3生成経路・既存12samplerを確認し、
+scheduler/REPAを含むCPU回帰210件と変更Pythonのpy_compile・実importが通過した。
+flow sigmaの共通境界もCPU検証したが、SDの公開flow sampler選択は追加していない。
+公開初期化設定、分割checkpointのpipeline入口、公式全重みの学習・画質検証は未了。
 
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。

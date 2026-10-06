@@ -4016,7 +4016,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             latent_channels = int(identity.get("latent_channels")
                                   or declared.get("in_channels")
                                   or spec.latent_channels)
-            self._sushi_wiring = spec.replace(latent_channels=latent_channels)
+            codec=getattr(pipeline,"vae",None)
+            scale=getattr(codec,"spatial_scale_factor",None)
+            options={"latent_channels":latent_channels}
+            if scale is not None:
+                options["vae_scale_factor"]=int(scale)
+                from core.models.components.latent_adapter import NormalizedFrameVAE
+                if isinstance(codec,NormalizedFrameVAE):
+                    options.update(vae_norm="identity",vae_norm_pack=1)
+            self._sushi_wiring = spec.replace(**options)
             fields: Dict[str, Any] = {"latent_channels": latent_channels}
             if identity:
                 fields.update({

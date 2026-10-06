@@ -12,13 +12,9 @@ import os
 import torch
 from core.inference.callback_utils import callback_requests
 from core.inference.schedule_utils import snapshot_schedule_scalars
+from core.inference.sd_codec_boundary import aligned_sampling
 
-# Every latent normalisation below goes through the shared layer, deliberately
-# WITHOUT a wiring spec: `_loaded_wiring()` still reports sd15/sdxl's own
-# vae_norm="shift_scale" after a VAE swap (`_fold_sd_latent_identity` replaces
-# only latent_channels), so a BatchNorm VAE would be normalised by the wrong
-# formula. With no spec the method is observed off the VAE itself
-# (VAE_SWAP_MIGRATION_DESIGN.md §7.3/§8.4).
+# Infer normalization from the codec, including native BatchNorm and identity facades.
 from core.models.components.vae_registry import (
     denormalize as vae_denormalize,
     normalize as vae_normalize,
@@ -73,14 +69,16 @@ def _loaded_wiring():
 
 def latent_scale_factor(pipeline) -> int:
     """Spatial compression of the VAE this generation runs on."""
-    factor = getattr(_loaded_wiring(), "vae_scale_factor", None)
+    factor = getattr(getattr(pipeline,"vae",None),"spatial_scale_factor",None)
+    factor = factor or getattr(_loaded_wiring(), "vae_scale_factor", None)
     return int(factor or getattr(pipeline, "vae_scale_factor", 8))
 
 
 def latent_channels_for(pipeline) -> int:
     """Latent channel count this generation runs on -- the checkpoint's own
     number when it declared a replaced VAE, else the architecture's."""
-    channels = getattr(_loaded_wiring(), "latent_channels", None)
+    pair=getattr(getattr(pipeline,"unet",None),"vae_latent_bridge",None)
+    channels = pair.declaration["new_channels"] if pair is not None else getattr(_loaded_wiring(), "latent_channels", None)
     if not channels:
         vae = getattr(pipeline, "vae", None)
         channels = getattr(getattr(vae, "config", None), "latent_channels", None)
@@ -1855,6 +1853,7 @@ def _outpaint_reference_filter_store(
     return out
 
 
+@aligned_sampling
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -2214,7 +2213,7 @@ def custom_sampling_loop(
             )
 
     if latents is None:
-        latent_channels = unet.config.in_channels
+        latent_channels = latent_channels_for(pipeline) if getattr(unet,"vae_latent_bridge",None) is not None else unet.config.in_channels
         _scale = latent_scale_factor(pipeline)
         latent_height = height // _scale
         latent_width = width // _scale
@@ -2965,6 +2964,7 @@ def custom_sampling_loop(
     return image
 
 
+@aligned_sampling
 def custom_img2img_sampling_loop(
     pipeline: Union[StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline],
     init_image: Optional[Image.Image],
@@ -4137,6 +4137,7 @@ def _run_region_unet_call(
     return unet(sample, timestep, **kwargs).sample
 
 
+@aligned_sampling
 def custom_inpaint_sampling_loop(
     pipeline: Union[StableDiffusionInpaintPipeline, StableDiffusionXLInpaintPipeline],
     init_image: Image.Image,

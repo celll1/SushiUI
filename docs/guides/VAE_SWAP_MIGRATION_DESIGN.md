@@ -16,8 +16,12 @@ residualは元のmean/moment契約でvelocityへ復元し、出側map後に交�
 学習のlinear-state forwardと、生成のCFGなし・逐次CFG・一括CFGを共通境界に接続した。
 小型の実UNetでチャネル増減、両bridgeへの勾配、optimizer更新、非交換時の完全一致をCPU検証した。
 v2 residual交換には保存されたsource予測契約が必要で、欠損時は拒否する。
-この段階ではChimeraの公開VAE交換ゲートは維持する。校正・targetのmean/moment統計、
-codec/bridge同梱とmanifest更新、再開復元、target-native生成格子を接続してから解除する。
+校正hookは小型native VAEの8x→16x、4→2/6チャネルで接続した。交換元のmean/momentを保持し、
+交換先のposterior sampleを同じencodeから専用乱数で抽選して、位置数で重み付けしたFP64統計を集計する。
+fit用の一時kernel初期化も学習乱数を進めない。校正中断後の再試行と、完了後の再校正なしをCPU検証した。
+これは内部handlerの到達点であり、公開APIからのswap開始・保存復元・公式全重みの検証は未了。
+この段階ではChimeraの公開VAE交換ゲートは維持する。codec/bridge同梱とmanifest更新、
+再開復元、target-native生成格子、polarの校正を接続してから解除する。
 v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
 direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に
 target tangent/radialへ分解する必要がある。v4のdestruction-coordinate微分も変換に含める。

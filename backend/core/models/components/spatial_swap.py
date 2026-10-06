@@ -113,7 +113,8 @@ def map_packed_image(pair, states, grid, *, sigma=None, output=False, patch_size
     return states.reshape(batch,tokens,-1)
 
 
-def calibrate_images(trainer, datasets, *, model, pending_key):
+def calibrate_images(trainer, datasets, *, model, pending_key,
+                     target_observer=None, on_complete=None):
     pending = getattr(trainer, pending_key, None)
     if pending is None:
         return
@@ -142,6 +143,9 @@ def calibrate_images(trainer, datasets, *, model, pending_key):
     text_devices = [next(module.parameters()).device for module in text_modules]
     text_parameters = [parameter for module in text_modules for parameter in module.parameters()]
     callback = getattr(trainer, "_vae_alignment_progress_callback", None)
+    # A private stream samples target statistics without altering training RNG.
+    statistic_generator = (torch.Generator(device=trainer.device).manual_seed(0)
+                           if target_observer is not None else None)
 
     def encode(module, path, source=False):
         with Image.open(path) as image:
@@ -150,7 +154,10 @@ def calibrate_images(trainer, datasets, *, model, pending_key):
         pixels = pixels[None].to(device=trainer.device, dtype=trainer.vae_dtype)
         if source and source_spec.latent_ndim == 5:
             pixels = pixels.unsqueeze(2)
-        z = module.encode(pixels).latent_dist.mode()
+        posterior = module.encode(pixels).latent_dist
+        z = posterior.mode()
+        if not source and target_observer is not None:
+            target_observer(posterior.sample(generator=statistic_generator).cpu())
         if source:
             z = normalize(z, module, source_spec)
             if z.ndim == 5:
@@ -179,10 +186,13 @@ def calibrate_images(trainer, datasets, *, model, pending_key):
             with torch.no_grad():
                 for i, (path, legacy) in enumerate(zip(paths, paired)):
                     trainer._check_stop_requested()
-                    fit.add(legacy, encode(trainer.vae, path))
+                    target = encode(trainer.vae, path)
+                    fit.add(legacy, target)
                     if callback:
                         callback(phase="latent_cache", step=len(paths)+i+1, total=2*len(paths))
             fit.finish()
+            if on_complete is not None:
+                on_complete()
             delattr(trainer, pending_key)
         finally:
             old.to("cpu")

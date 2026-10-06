@@ -12,7 +12,7 @@ from .offload_transfer_engine import FrozenSequentialTransferEngine
 
 
 Key = Hashable
-Layout = tuple[nn.Module, str, torch.dtype, int, int, tuple[int, ...]]
+Layout = tuple[nn.Module, str, Hashable, int, int, tuple[int, ...]]
 
 
 def _owned_tensors(module: nn.Module):
@@ -29,7 +29,7 @@ class _FrozenBundleStore:
     def __init__(self, *, device: torch.device, use_pinned_memory: bool) -> None:
         self.device = torch.device(device)
         self.use_pinned_memory = bool(use_pinned_memory)
-        self.masters: Dict[Key, Dict[torch.dtype, torch.Tensor]] = {}
+        self.masters: Dict[Key, Dict[Hashable, torch.Tensor]] = {}
         self.layouts: Dict[Key, list[Layout]] = {}
         self.managed_tensor_ids: set[int] = set()
 
@@ -58,6 +58,14 @@ class _FrozenBundleStore:
         if not plane_sizes:
             return
 
+        from .cpu_master_layout import borrow_contiguous_cpu_tensors
+        borrowed = None if self.use_pinned_memory else borrow_contiguous_cpu_tensors(
+            [(owner, name, tensor) for owner, name, tensor, _, _ in positioned])
+        if borrowed is not None:
+            self.masters[key], self.layouts[key] = borrowed
+            self.managed_tensor_ids.update(local_ids)
+            return
+
         planes = {
             dtype: self._empty_cpu(numel, dtype)
             for dtype, numel in plane_sizes.items()
@@ -74,7 +82,7 @@ class _FrozenBundleStore:
         self.masters[key] = planes
         self.layouts[key] = layout
 
-    def point(self, key: Key, bundle: Mapping[torch.dtype, torch.Tensor]) -> None:
+    def point(self, key: Key, bundle: Mapping[Hashable, torch.Tensor]) -> None:
         for owner, name, dtype, offset, numel, shape in self.layouts[key]:
             getattr(owner, name).data = bundle[dtype][offset:offset + numel].view(shape)
 

@@ -140,6 +140,7 @@ def test_transformer_h2d_path_packs_weight_and_sidecar_planes():
         device=torch.device("cpu"),
         h2d_only=True,
         ring_size=2,
+        use_pinned_memory=True,
     )
     offloader.prepare_block_devices_before_forward()
     offloader.wait_for_block(0)

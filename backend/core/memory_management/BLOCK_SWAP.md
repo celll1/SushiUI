@@ -58,6 +58,11 @@ dense checkpoint in RAM, but submits a transfer per tensor rather than per dtype
 Pinned or noncontiguous sources retain the packed path. Memory-mapped source
 files remain unchanged after dirty writeback (verified with safetensors).
 
+The same layout helper backs frozen hook conductors and forward-only block
+offload. Initial placement keeps streamed Linear weights/sidecars on CPU and
+moves only the other block tensors to the device. The H2D-only path respects
+`use_pinned_memory`; disabling it no longer creates pinned copies implicitly.
+
 ## Ordering invariants
 
 - CPU masters are persistent and never alias another block.

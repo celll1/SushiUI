@@ -382,10 +382,10 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         print(f"[BlockOffloader] Moving last {self.blocks_to_swap} blocks: buffers to GPU, weights to CPU...")
         cpu_device = torch.device("cpu")
         for i in range(num_blocks_on_gpu, self.num_blocks):
-            # First move entire block to GPU (ensures buffers are on GPU)
-            self.blocks[i] = self.blocks[i].to(self.device)
-            # Then move weights back to CPU
-            weighs_to_device(self.blocks[i], cpu_device)
+            managed = {id(getattr(module, name)) for module in self._linear_weight_modules(self.blocks[i])
+                       for name in ("weight", *weight_sidecar_names(module))}
+            self.blocks[i]._apply(lambda tensor: tensor.to(
+                cpu_device if id(tensor) in managed else self.device))
 
         _synchronize_device(self.device)
 
@@ -583,7 +583,7 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
     # Standard block swap copies the just-used block's weights back to CPU (D2H) and the
     # next block's weights to GPU (H2D). During inference the transformer weights never
     # change, so the D2H eviction of read-only weights is redundant PCIe traffic. H2D-only
-    # keeps a permanent pinned CPU master per swappable block (never written) and streams
+    # keeps a permanent CPU master per swappable block (never written) and streams
     # only host->device into a fixed ring of GPU buffers, halving PCIe bytes and removing
     # the per-tensor D2H sync. A ring of ring_size>=2 lets the next block's H2D overlap the
     # current block's compute.
@@ -599,13 +599,8 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         return out
 
     def _h2d_setup(self):
-        """Build permanent pinned flat CPU masters and the GPU ring. Called from prepare
-        after the swappable blocks' weights are on CPU.
-
-        Coalescing (Tier 2C): each swappable block's Linear weights are concatenated into a
-        single flat pinned CPU tensor, and each ring slot is a single flat GPU tensor, so a
-        block's whole weight set moves in ONE host->device copy instead of one per Linear.
-        Each Linear's weight.data becomes a (reshaped) view into the flat buffer."""
+        """Build borrowed pageable or packed pinned CPU masters and a fixed GPU ring."""
+        from .cpu_master_layout import borrow_contiguous_cpu_tensors
         self.h2d_num_on_gpu = self.num_blocks - self.blocks_to_swap
         self.h2d_swappable = list(range(self.h2d_num_on_gpu, self.num_blocks))
         num_swappable = len(self.h2d_swappable)
@@ -614,8 +609,7 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
             return
         self.ring_size = max(1, min(self.ring_size, num_swappable))
 
-        # Pack one flat plane per dtype. Quantization sidecars therefore travel with their
-        # weights without casts or a separate DMA for every module.
+        # Pageable CPU sources can be borrowed; pinned planes coalesce by dtype.
         self.h2d_masters = {}
         pin_warned = False
         for bidx in self.h2d_swappable:
@@ -630,10 +624,16 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
                     tensors.append((module, attr_name, plane, offset, tensor.numel(), tuple(tensor.shape)))
                     plane_sizes[plane] = offset + tensor.numel()
 
+            borrowed = None if self.use_pinned_memory else borrow_contiguous_cpu_tensors(
+                [(module, name, getattr(module, name).data) for module, name, _, _, _, _ in tensors])
+            if borrowed is not None:
+                self.h2d_masters[bidx] = borrowed
+                continue
+
             planes = {}
             for plane, total in plane_sizes.items():
                 flat_cpu = torch.empty(total, dtype=plane, device="cpu")
-                if self.cuda_available:
+                if self.cuda_available and self.use_pinned_memory:
                     try:
                         flat_cpu = flat_cpu.pin_memory(device=self.device)
                     except (RuntimeError, NotImplementedError) as e:
@@ -663,8 +663,8 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         self.h2d_loaded_block = self.h2d_engine.loaded_key
 
         print(f"[BlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
-              f"ring_size={self.ring_size}, dtype planes={len(next(iter(self.h2d_masters.values()))[0])}, "
-              f"coalesced CPU masters (no D2H eviction)")
+              f"ring_size={self.ring_size}, planes={len(next(iter(self.h2d_masters.values()))[0])}, "
+              f"CPU master planes (no D2H eviction)")
 
     def _h2d_submit_load(self, block_idx: int, slot: int):
         self.h2d_engine.submit_load(block_idx, slot)

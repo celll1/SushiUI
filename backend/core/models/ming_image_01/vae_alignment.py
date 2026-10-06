@@ -4,7 +4,7 @@ import torch
 
 from core.models.components.latent_adapter import (
     SpatialAlignmentPair, NormalizedFrameVAE, PairedSpatialCalibration,
-    validate_declaration, calibration_grid, SpatialSwapPlan, ImageCodecContract)
+    validate_declaration, calibration_grid, calibration_source_side, SpatialSwapPlan, ImageCodecContract)
 
 MingVAEAlignment = SpatialAlignmentPair
 
@@ -157,6 +157,7 @@ def calibrate(trainer, datasets):
     components, device = trainer.ming_image_01_components, trainer.device
     model = components.transformer
     alignment = getattr(model, NAME)
+    source_side = calibration_source_side(side, alignment.declaration)
     fit = PairedSpatialCalibration(alignment, ridge=1e-2)
     previous = execution_device(model)
     conditioner_device = execution_device(components.conditioner)
@@ -174,7 +175,7 @@ def calibrate(trainer, datasets):
                 for i, path in enumerate(paths):
                     trainer._check_stop_requested()
                     with Image.open(path) as image:
-                        image = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGBA"), (side, side))
+                        image = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGBA"), (source_side, source_side))
                         pixels = torch.from_numpy(np.array(image).copy()).permute(2, 0, 1).float()/127.5-1
                     paired.append(encode_frames(old, pixels[None, :, None]).cpu())
                     print(f"[VAE alignment] Source calibration {i+1}/{len(paths)}", flush=True)

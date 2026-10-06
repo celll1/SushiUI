@@ -8,6 +8,35 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Qwen→LTXの画質切り分けを追加した。現在のdataset itemのpath・generalタグと
+sensitive/questionable/explicitがないことをAPIで確認した40枚だけで512px校正を行った。
+公式全DiT・TE、狐と青い本のprompt、seed63、CFG1、24steps、512pxで比較した。
+元codecでは狐と本を明確に識別できる。元codec＋既定2段U-netでは表面が粒状に崩れるが、
+狐・本・尾の大まかな配置は残る。交換codecの通常velocity写像は色の模様となった。
+noise残差だけでは配置に対応する色は出るが、十分な識別には届かなかった。
+
+校正teacherを512px encode後のlatent縮小から、256px画像のencodeへ変更して比較した。
+targetは512pxのままなのでruntime token数は増えない。生成した基準狐画像だけを使った
+codec単体比較では、出力bridgeのtarget codec直接再構成に対するPSNRが20.60→24.99dB、
+target→元channel→target往復は20.92→23.13dBへ改善し、顔と本の概形も保たれた。
+単一の合成画像の測定であり、全画像・全codecの画質保証ではない。
+
+新規画像VAE校正では、より強い空間圧縮へ交換しcropがtarget scaleで割り切れる場合に
+teacher画像sideを`target_side * old_scale / new_scale`へ縮小する。共通画像経路と
+Qwen/Mingへ配線した。RGB pixel base、同倍率、弱い圧縮への交換および動画経路は
+既存のlatent resamplingを維持する。保存済みbridgeは再校正せずそのまま復元する。
+校正resolutionのAPI/UI表記はtarget cropであることを明示する。
+
+noiseの1×1中心kernelをSVDで行直交化し、noisy inputとvelocity residualの両方を
+整える実験候補では、U-netなしで狐と青い本を識別できた。3×3直交化も概形は出たが、
+一部の像の分裂が残った。既定2段U-netとの併用はavg/RMSの両方で未受入。
+この1prompt/seedの候補を通常生成の画質受入や全arch完了へ代用しない。
+noise policyはまだ本番へ配線せず、画像・校正行列はignored localだけに保存する。
+共通画像校正の実encode寸法、RGB pixel/逆方向の保持、progress完了とbridge有限値を含む
+CPU回帰238件、変更Pythonのcompile・CUDA未初期化の実importが通過した。
+OpenAPIはparse済みでenum/defaultは不変。UIはlabelだけを変更し、型・空欄/default・
+保存時の値変換を静的確認した。owner専用build/type-checkは未実行。
+
 公式Qwen 2.1全DiT・Qwen3-VL TEからLTX-2.3の交換codecへ、合成図形2枚で
 paired_spatial校正・既定2段U-net・Full学習1step・保存・step2再開を公開APIで完走した。
 301 optimizer tensorを復元（fresh 0）、有限GradNorm、4shard保存を確認した。

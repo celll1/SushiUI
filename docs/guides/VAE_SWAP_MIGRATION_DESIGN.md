@@ -8,6 +8,15 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+ACE generation backendの無音/reference encodeは元codec、生成latent decodeは交換先codecへ分離した。
+source codecの失敗時も配置を復元する。text・cover・repaint・outpaintの元時間系列/保持区間を維持し、
+samplerのU-net preflightはtarget frame数を使う。target-hop paddingの余剰はpeak正規化前にcropする。
+outpaintは保持区間に元waveformをsample-exactで戻し、repaintは既存の10ms crossfade仕様を保つ。
+pipelineの構造表示は元conditioning configでなく拡張decoder identityを使う。小型実ACE/Oobleckの
+非整数hop比・U-netでbackend検証6件、既存native/U-net回帰13件・20subtestが通過した。
+外部TE/tokenizer・sourceファイル配置はfixtureであり、公式weight load/GPUの証明ではない。
+正式loaderのgeneration gateは時間位置表現と公開contractを完成するまで残している。
+
 ACE native samplerのnoisy state、cover初期混合、retake、repaint clean/mask、decoder attention maskを
 target codecの時間系列へ接続した。RVQ/tokenize/LM hintsの入力は元codecの系列を保持する。
 U-netのgeneration preflightにはtarget frame数を渡し、repaint crossfade幅はhop比で実時間を保持する。

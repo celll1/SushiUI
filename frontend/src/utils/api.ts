@@ -462,6 +462,7 @@ export interface MingGlobalSummaryInfo {
 }
 
 export interface ModelInfo {
+  loaded_video_constraints?: VideoConstraints;
   source_type: string;
   source: string;
   type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2" | "qwen_image_21" | "ming_image_01" | "sensenova" | "sensenova_sdxl_chimera" | "ltx2" | "acestep" | "minimax_h3" | "minimax_music3" | "yue2";
@@ -2353,6 +2354,8 @@ export interface VideoConstraints {
   // POST /generate/inpaint/video. [] / absent = the arch declares none and
   // temporal inpaint is refused on it.
   latent_chunk_pattern?: number[];
+  latent_frame_policy?: "independent_frames_v1" | "causal_first_frame_v1" | "minimax_h3_chunks_v1";
+  temporal_scale?: number;
 }
 
 export interface VideoChainPlan {

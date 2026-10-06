@@ -8,6 +8,29 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+現在モデル情報へloaded_video_constraintsを追加し、校正済みbundled video codecの実frame格子、
+空間倍数、frame-group policy/temporal scale、モデル由来のFPS/範囲を返す。
+標準/schema capability tableを変更せず、現在モデルのコピーだけをenrichする。外部channelも
+codecの値に合わせ、元architecture channelのstale値を表示しない。
+codec_contractsを明示してvideo_constraints_payloadを再利用し、H3 chunkはcyclic pattern、
+独立frameは[1]、causalは空pattern+先頭1/以後scaleのpolicyで表す。
+LTXの未配線H3 chunk時計もモデル情報は取得でき、generation_available=falseとして表示する。
+chain planの格子とcontinuation-overlap resolverは、要求architectureが現在モデルと一致する場合
+同じloaded契約を使う。他architectureのoffline planとunload後は元の標準契約を保つ。
+frontend StartupContextはモデル情報の契約を標準capabilitiesへimmutableにoverlayする。
+geometry内容でmemoを保持し、同じ内容のpollでpanel再正規化を繰り返さない。
+unload/通常モデルへの切替でoverlayが消え、通信失敗時は既存の最後のmodel-info保持経路を維持する。
+InpaintPanel/VideoInpaintTimelineとchain overlap候補を同じpolicy-aware latentGroupSpansへ接続した。
+causal2の境界は1,3,5,...で、先頭1frameを途中に繰り返さない。timelineの説明もpolicyを表示する。
+既存videoChainMathのChainContextVariantCapability型import漏れと、不正group幅での無限loopも修正した。
+OpenAPIのLoadedModelInfoと新規LoadedVideoConstraints、frontendの両ModelInfo型を揃えた。
+実小型H3/LTX codecでのモデル情報・chain生成span照合と既存chain回帰166件・24subtestが通過。
+追加の未配線clock表示とOpenAPI field型/enum確認を含む5件も通過した。
+frontend pure-function/Syntax検証5件が通過。build/type-checkは所有者の実施待ちで、実UI/GPUの受け入れを
+意味しない。変更Pythonのcompile・CUDA無し実importも通過。合成データのみ使用しrun/サーバーは変更なし。
+編集済みchain manifestのcodec変更時検証、prompt/cache、LTX chunk時計、校正/Full owner、
+公式全重みでの学習・画質・速度、実UI確認は引き続き未完。
+
 公開txt2vid/img2vid/ref2vid/inpaint-video/outpaint-videoの事前検証へloaded codec契約を接続した。
 loaded_video_codec_contractはweightを読まず、codec facade/校正済みbridge/backbone/外部channel/
 component geometryの一致を確認する。不一致をモデル標準codecへのfallbackで隠さず400とする。

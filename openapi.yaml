@@ -20309,6 +20309,8 @@ components:
       type: object
       additionalProperties: true
       properties:
+        loaded_video_constraints:
+          $ref: '#/components/schemas/LoadedVideoConstraints'
         generation_available:
           type: boolean
           description: False for a loadable native model whose platform generation execution is not yet enabled.
@@ -20500,6 +20502,49 @@ components:
             the base file's alone, so every hybrid built on one base reports the
             same one here and in the gallery. `compatibility_digest` is the
             identity of the validated pair.
+
+    LoadedVideoConstraints:
+      type: object
+      additionalProperties: true
+      description: |
+        Effective geometry of a calibrated bundled video-codec swap, served
+        with the loaded model rather than changing the architecture defaults.
+        Merge this entry over schema video_constraints for the loaded type;
+        remove that overlay on unload/model change. Model FPS and bounds remain.
+      required: [frame_multiple, frame_offset, min_frames, min_decodable_frames, pixel_align, latent_frame_policy, temporal_scale]
+      properties:
+        frame_multiple: {type: integer, minimum: 1}
+        frame_offset: {type: integer, minimum: 0}
+        min_frames: {type: integer, minimum: 1}
+        min_decodable_frames: {type: integer, minimum: 1}
+        max_frames: {type: integer, nullable: true}
+        trained_max_frames: {type: integer, nullable: true}
+        pixel_align: {type: integer, minimum: 1}
+        fps_fixed: {type: number, nullable: true}
+        max_pixel_hw:
+          type: array
+          nullable: true
+          items: {type: integer, minimum: 1}
+          minItems: 2
+          maxItems: 2
+        suggested_frames:
+          type: array
+          items: {type: integer, minimum: 1}
+        snap_invalid_length: {type: boolean}
+        allows_single_frame: {type: boolean}
+        min_inference_steps: {type: integer, minimum: 1}
+        steps_are_sigma_grid_points: {type: boolean}
+        outpaint_placements:
+          type: array
+          items: {type: string}
+        latent_chunk_pattern:
+          type: array
+          items: {type: integer, minimum: 1}
+          description: Cyclic pattern only. Empty for causal_first_frame_v1; use its first-1 then temporal_scale spans.
+        latent_frame_policy:
+          type: string
+          enum: [independent_frames_v1, causal_first_frame_v1, minimax_h3_chunks_v1]
+        temporal_scale: {type: integer, minimum: 1}
 
     CurrentModelResponse:
       type: object

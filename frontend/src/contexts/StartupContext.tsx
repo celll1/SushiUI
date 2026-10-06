@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef, useMemo, ReactNode } from "react";
 import {
   fetchGenerationDefaults,
   fetchTrainingDefaults,
@@ -16,14 +16,17 @@ import {
   getCurrentModel,
   GenerationDefaultsResponse,
   ArchCapabilities,
+  VideoConstraints,
   LrRetargetDefaults,
   LrTriggerDefaults,
   StyleTrainingConfig,
 } from "@/utils/api";
+import { overlayLoadedVideoConstraints } from "@/utils/videoCodecGeometry";
 
 // Loaded-model info object returned by GET /models/current -> model_info.
 // Single source of truth for the currently loaded model across generation panels.
 export interface ModelInfo {
+  loaded_video_constraints?: VideoConstraints;
   type?: string;
   is_video?: boolean;
   is_audio?: boolean;
@@ -391,6 +394,15 @@ export function StartupProvider({ children }: StartupProviderProps) {
     };
   }, [syncModelInfo]);
 
+  // Polls return fresh objects; only geometry changes should renormalize panels.
+  const loadedGeometryKey = JSON.stringify(modelInfo?.loaded_video_constraints ?? null);
+  const loadedArch = modelInfo?.type;
+  const effectiveArchCapabilities = useMemo(() => {
+    const geometry: VideoConstraints | undefined = loadedGeometryKey === "null"
+      ? undefined : JSON.parse(loadedGeometryKey);
+    return overlayLoadedVideoConstraints(archCapabilities, { type: loadedArch, loaded_video_constraints: geometry });
+  }, [archCapabilities, loadedArch, loadedGeometryKey]);
+
   return (
     <StartupContext.Provider value={{
       isBackendReady,
@@ -412,7 +424,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       lrTriggerDefaults,
       timestepDefaultsByArch,
       bundleVaeDefaultsByArch,
-      archCapabilities,
+      archCapabilities: effectiveArchCapabilities,
       videoFrameSliderMax,
       setVideoFrameSliderMax,
       sliderBounds,

@@ -1020,7 +1020,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
   // the backend applies the held first/last keyframe mask across the whole
   // snapped span, including the frames the snap added.
   const videoMaskOverlaySpan = snapRangeToLatentGroups(
-    latentGroupSpans(latentChunkPattern, videoTrimmedFrames),
+    latentGroupSpans(latentChunkPattern, videoTrimmedFrames, videoConstraints),
     params.regenerate_start_frame ?? 0,
     params.regenerate_end_frame ?? 0,
   );
@@ -1068,7 +1068,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
       lastValidRegenerateRangeRef.current = { start, end };
       return;
     }
-    const spans = latentGroupSpans(latentChunkPattern, videoTrimmedFrames);
+    const spans = latentGroupSpans(latentChunkPattern, videoTrimmedFrames, videoConstraints);
     const snapped = snapRangeToLatentGroups(
       spans, Math.floor(videoTrimmedFrames / 3), Math.ceil((2 * videoTrimmedFrames) / 3));
     const previous = lastValidRegenerateRangeRef.current;
@@ -2565,7 +2565,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
     const trimEnd = target != null ? Math.max(0, raw - target) : 0;
     const trimmed = target ?? raw;
     // A default range: the middle third, snapped to latent-group boundaries.
-    const spans = latentGroupSpans(latentChunkPattern, trimmed);
+    const spans = latentGroupSpans(latentChunkPattern, trimmed, videoConstraints);
     const snapped = snapRangeToLatentGroups(
       spans, Math.floor(trimmed / 3), Math.ceil((2 * trimmed) / 3));
     setParams(prev => ({
@@ -5381,6 +5381,7 @@ export default function InpaintPanel({ onTabChange }: InpaintPanelProps = {}) {
             trimStart={params.input_trim_start_frames ?? 0}
             trimEnd={params.input_trim_end_frames ?? 0}
             latentChunkPattern={latentChunkPattern}
+            videoConstraints={videoConstraints}
             start={params.regenerate_start_frame ?? 0}
             end={params.regenerate_end_frame ?? 0}
             onRangeChange={(start, end) => {

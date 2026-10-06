@@ -548,6 +548,10 @@ def save_single_file(
     from core.rewiring.spec import read_checkpoint_metadata
     topology_metadata = model_topology_metadata(transformer)
     alignment_metadata = artifact_metadata(transformer)
+    if alignment_metadata:
+        from core.models.common.vae_source import read_vae_declaration
+        if not read_vae_declaration(extra_metadata):
+            raise ValueError("Aligned Krea export requires its codec declaration")
     if extra_metadata and read_declaration(extra_metadata) is not None and read_declaration(extra_metadata) != read_declaration(alignment_metadata):
         raise ValueError("Export metadata cannot override the model VAE alignment")
     if extra_metadata and any(key.startswith("sushi.rewire.") for key in extra_metadata):

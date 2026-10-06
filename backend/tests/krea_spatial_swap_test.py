@@ -151,6 +151,10 @@ def test_real_causal_source_codec_calibration_public_loader_and_resume(tmp_path)
         apply_latent_space(trainer,components["declared_vae"])
     torch.testing.assert_close(restored.vae_latent_bridge.input.projection.bias,value.vae_latent_bridge.input.projection.bias)
     _,_,metadata=swap_metadata(trainer)
+    invalid=tmp_path/"missing_codec.safetensors"
+    with pytest.raises(ValueError,match="codec declaration"):
+        save_single_file(str(invalid),restored,False)
+    assert not invalid.exists()
     sharded=tmp_path/"shards.safetensors"
     save_single_file(str(sharded),restored,False,vae=trainer.vae.inner,
         extra_metadata=metadata,max_shard_bytes=32768)

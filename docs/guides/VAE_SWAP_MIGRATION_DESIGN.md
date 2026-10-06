@@ -8,6 +8,15 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+U-net併用の画質切り分けを継続した。Animaの元VAEでは局所RMSを保つpoolにより
+模様から橙色の動物・青い本の概形へ改善したが、Qwen交換VAEとの併用は未受入。
+noise残差＋RMS、3×3 noise写像のSVD白色化、noiseのみ1×1直交化して空間相関を
+除く候補を比較したが、交換先の2段U-netでは概形を回復できなかった。元codecで
+低解像度区間を1段4層に限定した場合は狐と本の輪郭が残った。既定の2段配分の
+画質受入には代えない。共通runtimeの実験的RMS operatorは保存・復元・API/UIへ
+接続した。詳細・検証範囲は [rewiring contract](DIT_REWIRING_DESIGN.md) に記録した。
+画像や校正行列はignored localのみで、tracked artifactには含めない。
+
 画質受入は完全一致ではなく、主要被写体・概形・配置を認識できることを基準とする。
 codec間の差だけを理由に校正やnoise整合の検討を省略しない。Animaのnoise残差候補は
 1promptでこの水準に到達したが、H3およびAnimaのU-net併用は未受入。

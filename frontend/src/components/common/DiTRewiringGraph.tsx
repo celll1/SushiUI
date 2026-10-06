@@ -61,7 +61,7 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
       return <g key={region.id} onClick={() => onSelect?.(region.id)}>
         <path d={`M ${x(region.start_block)} ${base} Q ${(x(region.start_block) + x(region.end_block)) / 2} ${base - 35} ${x(region.end_block)} ${base}`}
           fill="none" stroke={color} strokeWidth={2}>
-          <title>{`${region.id}: residual skip ${region.start_block} → ${region.end_block}`}</title>
+          <title>{`${region.id}: residual skip ${region.start_block} → ${region.end_block}; ${region.down === "rms_pool" ? "RMS pooling" : "average pooling"}`}</title>
         </path>
         {(["start_block", "end_block"] as const).map(side => <circle key={side}
           cx={x(region[side])} cy={base} r={6} fill={color}

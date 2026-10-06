@@ -48,7 +48,7 @@ export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry
     <DiTParameterSummary counts={parameterCounts} plan={plan} />
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}
     {spec.regions.map(region => <p key={region.id} className="mt-1 text-gray-300">
-      {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / residual skip {region.start_block} → {region.end_block}
+      {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / {region.down === "rms_pool" ? "RMS pooling" : "average pooling"} / residual skip {region.start_block} → {region.end_block}
     </p>)}
     {error && <p role="alert" className="mt-2 text-red-400">{error}</p>}
   </details>;

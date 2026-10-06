@@ -350,7 +350,8 @@ class Ideogram4RuntimeContracts(unittest.TestCase):
         class Manager(Ideogram4Mixin):
             def __init__(manager):
                 manager.device=torch.device("cpu")
-                manager.ideogram4_components={"transformer":self.model,"unconditional_transformer":deepcopy(self.model),"scheduler":object()}
+                manager.ideogram4_components={"transformer":self.model,"unconditional_transformer":deepcopy(self.model),
+                    "scheduler":object(),"vae":SimpleNamespace(config=SimpleNamespace(latent_channels=self.model.in_channels//4))}
         manager=Manager()
         for model in (self.model,manager.ideogram4_components["unconditional_transformer"]):restore_topology(model,self.spec)
         image=Image.new("RGB",(192,128));mask=Image.new("L",image.size)

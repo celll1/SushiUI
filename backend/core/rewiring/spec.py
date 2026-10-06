@@ -102,6 +102,8 @@ def validate_spec(value):
                 or any(type(v) is not int or v not in (1, 2, 4, 8) for v in factor) or factor == [1, 1]):
             raise ValueError("down_factor must contain two supported factors and reduce at least one axis")
         for key, expected in OPERATORS.items():
+            if key == "down" and region[key] in ("avg_pool", "rms_pool"):
+                continue
             if type(region[key]) is not type(expected) or region[key] != expected:
                 raise ValueError(f"Unsupported region {key}")
         if region["parent"] is not None:

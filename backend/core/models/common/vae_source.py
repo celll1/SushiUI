@@ -144,12 +144,13 @@ class ResolvedVAE:
             facts.update(domain="video", frame_policy="minimax_h3_chunks_v1")
         return facts
 
-    def load_module(self, torch_dtype: Optional[torch.dtype] = None):
+    def load_module(self, torch_dtype: Optional[torch.dtype] = None, *, assign: bool = False):
         """Materialise the diffusers VAE module for these weights.
 
         The resolved ``scaling_factor``/``shift_factor`` are written into the
         module's config afterwards, so a single-file load never keeps
         ``from_single_file``'s 0.18215 guess.
+        ``assign`` builds resolved native weights on meta, then retains their dtype/storage.
         """
         import diffusers
 
@@ -174,8 +175,13 @@ class ResolvedVAE:
                 f"{self.source} was resolved without weights; re-resolve with "
                 "load_weights=True before loading a module")
         elif self.config:
-            module = cls.from_config(self.config)
-            module.load_state_dict(self.state_dict, strict=True)
+            if assign:
+                from accelerate import init_empty_weights
+                with init_empty_weights():
+                    module = cls.from_config(self.config)
+            else:
+                module = cls.from_config(self.config)
+            module.load_state_dict(self.state_dict, strict=True, assign=assign)
             if torch_dtype is not None:
                 module = module.to(dtype=torch_dtype)
         else:

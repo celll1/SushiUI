@@ -785,7 +785,8 @@ def train_step(
             add_time_ids = time_ids.to(device=trainer.device, dtype=pooled_embeddings.dtype)
         else:
             latent_height, latent_width = latents.shape[2], latents.shape[3]
-            image_height, image_width = latent_height * 8, latent_width * 8
+            scale=get_arch_handler(trainer).resolve_wiring(trainer).vae_scale_factor
+            image_height, image_width = latent_height * scale, latent_width * scale
             add_time_ids = torch.tensor(
                 [[image_height, image_width, 0, 0, image_height, image_width]],
                 dtype=pooled_embeddings.dtype, device=trainer.device,
@@ -1282,7 +1283,7 @@ def generate_sample(
                     self.tokenizer = tokenizer
                     self.tokenizer_2 = tokenizer_2
                     # Set default config
-                    self.vae_scale_factor = 8
+                    self.vae_scale_factor = get_arch_handler(trainer).resolve_wiring(trainer).vae_scale_factor
                     self.image_processor = None  # Not needed for custom_sampling_loop
 
             # Map schedule_type (sgm_uniform -> uniform)
@@ -1315,7 +1316,7 @@ def generate_sample(
                     self.scheduler = scheduler
                     self.tokenizer = tokenizer
                     # Set default config
-                    self.vae_scale_factor = 8
+                    self.vae_scale_factor = get_arch_handler(trainer).resolve_wiring(trainer).vae_scale_factor
                     self.image_processor = None  # Not needed for custom_sampling_loop
 
             # Map schedule_type (sgm_uniform -> uniform)

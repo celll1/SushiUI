@@ -19,11 +19,18 @@ shardを厳密に読み、VAE channel/caption幅の不一致と未対応SigLIP�
 新しいpackage由来Full saveは`zimage_base_directory`を保存し、同じ成分を復元する。
 参照した公式packageの保持が必要で、消失時は拒否する。旧checkpointのhub補完は維持する。
 GPU初回Full試験でQ/KだけFP32へ昇格しVとdtypeが違う不具合を修正し、Q/KをVのdtypeへ揃えた。
-合成2枚、Qwen VAE C16/8x→C64/16x・paired_spatial・既定2段/deep4でstep1保存→step2学習が完走。
-525 optimizer状態が復元されたが、再保存で元成分ディレクトリを落としたため、この試験は未受入。
-初回/再開の成分代入を共通化し、元公式重みから再試験中。未修正checkpointは補修していない。
+初回/再開の成分代入を共通化し、元公式重みから再試験した。合成2枚、Qwen VAE
+C16/8x→C64/16x・paired_spatial・既定2段/deep4でstep1保存→step2再開がexit0で完走。
+525 optimizer状態がすべてcounter1→2へ進み、freshは0。校正済みbridge、VAE宣言、
+2段/deep4構造、元成分ディレクトリが再保存でも維持された。lossは2.995311→6.226767、
+step2 GradNormは209.415627。少数stepの機能確認で、収束・画質の受入ではない。
+step2のsharded indexを生成APIに読み込み、type=zimage・latent_channels=64・2段構造を確認。
+256px・2steps・CFG1・seed63の生成はHTTP200で完了した。交換VAEのpreview非対応警告は残る。
+旧step2による保持数整理との衝突を避ける試験出力のリセットで詳細DBも削除したため、
+この再試験の詳細メトリクスDB記録は未検証。checkpoint/optimizer・run status・logで確認した。
 CPU回帰19件、compile・CUDA未初期化の実importが通過。frontendのsource type/path送信を静的確認し、
-APIパラメータ追加はない。生成・画質受入と再試験後のsmoke整理はまだ未了。
+APIパラメータ追加はない。使用済み専用run/datasetはDB・diskから整理し、選択モデルはMing Layerへ戻した。
+診断・optimizer・生成PNGはignored `local/verification/zimage_api_full_results/`のみ。画質比較は未了。
 
 公式Krea全DiT・公式Qwen3-VL TEで、Qwen 2.1 VAEへの交換生成を比較した。
 現在のgeneral ratingを再確認した40枚で本番Full trainerの校正hookを実行し、

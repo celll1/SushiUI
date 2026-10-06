@@ -211,6 +211,10 @@ def preflight_vae_swap(
     )
 
     source = resolve_vae_swap_source(config)
+    if arch == "minimax_h3" and method in ("full", "full_finetune"):
+        from core.models.minimax_h3.full_training_contract import preflight_full_training
+        preflight_full_training(config, base_model_path,
+                                bundle_vae_explicit_false=bundle_vae_explicit_false)
     if not source:
         check_inherited_bundling(base_model_path, arch, bundle_vae_explicit_false)
         return ""

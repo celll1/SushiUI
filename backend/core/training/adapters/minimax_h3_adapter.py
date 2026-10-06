@@ -53,6 +53,12 @@ class MiniMaxH3AlignedFullParameterAdapter(BaseFullParameterAdapter):
     """Train an unquantized aligned DiT and save its native video bundle."""
 
     def _validate(self, *, allow_pending=False):
+        from api.param_defaults import TRAINING_DEFAULTS
+        if not getattr(self.trainer, "train_unet", TRAINING_DEFAULTS["train_unet"]):
+            raise ValueError("H3 aligned Full training requires train_unet=true")
+        for name in ("train_text_encoder", "train_image_encoder"):
+            if getattr(self.trainer, name, TRAINING_DEFAULTS[name]):
+                raise ValueError(f"H3 aligned Full training requires {name}=false")
         from core.models.components.video_latent_adapter import NormalizedVideoVAE
         from core.models.minimax_h3.video_alignment import AlignedMiniMaxH3BlockLoopWrapper
         model = self.trainer.transformer

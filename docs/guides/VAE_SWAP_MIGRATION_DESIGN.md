@@ -46,7 +46,13 @@ U-net併用の実train_stepとbridge勾配、チャネル減少時の共通検�
 UIは時間圧縮率・入力チャネルと、LTXの校正画像/clip・bundling必須条件を表示する。
 新規VAE選択時のbundling defaultはSSOT mapの_swappedから取得し、保存済みconfig復元時には適用しない。
 残作業はbatch境界resumeの公式全重み受入、公式全重みの学習・生成・画質・速度検証。
-aligned diffusers directoryとしての再保存/再ロードも未対応。全アーキテクチャ対応完了を意味しない。
+量子化exportのdiffusers-layout directoryにもcodec・bridge・U-net宣言を同梱して復元する。
+component内にcodec tensorを保持するSushiUI契約であり、素のdiffusersによる直接読込を意味しない。
+copied config.jsonは保存された交換前または交換後configと照合し、第三のgeometryはtensor読込前に拒否する。
+sourceが単体Full checkpointでもcompanion参照からpackageの兄弟componentを解決する。
+小型nativeモデルで量子化コード・bridge/codec tensorの完全一致、U-netあり/なし、単一/分割保存、
+forwardとcodec encodeをCPU検証した。公式全pipeline生成と通常Full checkpointのdirectory package化は別途受入が必要。
+全アーキテクチャ対応完了を意味しない。
 既存LTX単体Full checkpoint readerは現在実装済みであり、§11 P6の「readerがない」という記述は当時の状態。
 
 Chimeraのlinear-state境界（v1、v2 direct velocity、v2 residual）の内部基盤を追加した。

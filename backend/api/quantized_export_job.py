@@ -120,8 +120,15 @@ def _source_root(arch: str, source: Optional[str]) -> Optional[str]:
     Each is asked THEIR OWN detector rather than having the walk re-implemented
     here, so a layout change moves one file.
     """
+    if arch == "ltx2" and source and not os.path.exists(source) and os.path.isfile(source+".index.json"):
+        source += ".index.json"
     if not source or not os.path.exists(source):
         return None
+    if arch == "ltx2" and source and os.path.isfile(source):
+        from core.models.ltx2.component_sources import read_sources
+        references = read_sources(source)
+        if references is not None:
+            return references["root"]
     detectors = {
         "anima": ("core.models.anima.anima_loader", "detect_anima_split_layout"),
         "acestep": ("core.models.acestep.loader", "detect_acestep_layout"),
@@ -424,6 +431,8 @@ def _run_export(pipeline_manager, job_id, arch, modules, output_path, *,
                         link_siblings_from=source_root if link_siblings else None,
                         progress_cb=progress,
                         overwrite=overwrite,
+                        latent_codec=(getattr(pipeline_manager, "ltx2_components", None) or {}).get("vae")
+                            if arch == "ltx2" else None,
                     )
             finally:
                 if load_lock is not None:

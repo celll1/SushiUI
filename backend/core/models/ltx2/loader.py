@@ -440,7 +440,26 @@ def load_ltx2_from_diffusers(
         quantized_transformer = getattr(restored, "transformer", restored)
     else:
         graph = read_directory_topology(directory) if directory is not None else None
-    if transformer_checkpoint is None and graph is not None:
+    directory_record = None
+    if transformer_checkpoint is None and directory is not None:
+        from core.models.common.single_file_format import read_metadata
+        from .video_artifact import KEY as VIDEO_ALIGNMENT_KEY, read_record, canonical_config, restored_codec
+        _, directory_keys, source = _transformer_shards(directory)
+        saved_metadata = read_metadata(source) if source is not None else {}
+        if VIDEO_ALIGNMENT_KEY in saved_metadata:
+            from .residual_unet import preflight_checkpoint
+            graph, saved_config = preflight_checkpoint(source)
+            directory_record = read_record(saved_metadata, saved_config)
+            config = _source_transformer_config(directory)
+            if canonical_config(config) not in (canonical_config(saved_config),
+                                               canonical_config(directory_record["source_config"])):
+                raise ValueError("LTX directory config disagrees with the saved video alignment")
+            video_codec, video_identity = restored_codec(source, saved_metadata, directory_record, torch_dtype=torch_dtype)
+            restored = load_ltx2_transformer_checkpoint(source, torch_dtype)
+            quantized_transformer = getattr(restored, "transformer", restored)
+        elif any("_video_latent_alignment." in key for key in directory_keys):
+            raise ValueError("LTX directory has an orphaned video alignment")
+    if transformer_checkpoint is None and directory_record is None and graph is not None:
         _, _, source = _transformer_shards(directory)
         config = _source_transformer_config(directory)
         validate_topology_identity(graph, config)
@@ -448,7 +467,7 @@ def load_ltx2_from_diffusers(
         if native_config(restored.config) != native_config(config):
             raise ValueError("LTX-2 directory and checkpoint native configs disagree")
         quantized_transformer = restored.transformer
-    elif transformer_checkpoint is None:
+    elif transformer_checkpoint is None and directory_record is None:
         quantized_transformer = _load_quantized_ltx2_transformer(model_path, torch_dtype)
     overrides = {"transformer": quantized_transformer} if quantized_transformer is not None else {}
     if video_codec is not None:

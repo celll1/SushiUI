@@ -39,7 +39,7 @@ class Backend(AceStepMixin):
 
 
 def backend(tmp_path):
-    components, source, _ = loaded_training(tmp_path, 4, True, noninteger=True)
+    components, source, _ = loaded_training(tmp_path, 4, True, noninteger=True, for_training=False)
     components["dit"].config.timbre_fix_frame = 16
     from core.models.acestep.residual_unet import decoder_identity_config, restore_topology
     from core.rewiring.spec import build_spec, OPERATORS
@@ -51,6 +51,22 @@ def backend(tmp_path):
     components["tokenizer"] = lambda *a, **kw: SimpleNamespace(input_ids=torch.ones(1, 3, dtype=torch.long),
                                                               attention_mask=torch.ones(1, 3, dtype=torch.long))
     return Backend(components), source
+
+
+def test_formal_generation_loader_exposes_target_identity_and_shared_wiring(tmp_path):
+    owner, _ = backend(tmp_path)
+    identity = owner.acestep_components["vae_identity"]
+    assert identity["domain"] == "audio" and identity["latent_channels"] == 4
+    assert identity["hop_length"] == 12 and identity["identity_native"] is False
+    from core.pipeline import DiffusionPipelineManager
+    manager = object.__new__(DiffusionPipelineManager)
+    warnings = []
+    manager.record_load_warning = lambda *a, **kw: warnings.append(kw)
+    fields = manager._fold_component_latent_identity(owner.acestep_components, "acestep")
+    assert fields["latent_channels"] == 4 and fields["vae_identity_native"] is False
+    assert manager._sushi_wiring.vae_scale_factor == 1
+    assert manager._sushi_wiring.vae_scale_temporal == 12
+    assert warnings[0]["code"] == "model_vae_swapped"
 
 
 def test_silence_uses_original_codec_and_preserves_cached_asset(tmp_path):

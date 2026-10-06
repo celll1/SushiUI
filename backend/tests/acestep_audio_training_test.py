@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from acestep_audio_artifact_test import artifact
 
 
-def loaded_training(tmp_path, new, rewired, *, noninteger=False):
+def loaded_training(tmp_path, new, rewired, *, noninteger=False, for_training=True):
     from core.models.acestep.loader import load_acestep_from_path
     _,source,_,path = artifact(tmp_path,new,rewired)
     if noninteger:
@@ -37,7 +37,7 @@ def loaded_training(tmp_path, new, rewired, *, noninteger=False):
             patch("core.models.acestep.loader._build_vae",return_value=source) as build_source, \
             patch("core.models.acestep.loader._build_text_encoder",return_value=(encoder,None)), \
             patch("transformers.AutoTokenizer.from_pretrained",return_value=object()):
-        components = load_acestep_from_path(str(path),torch.float32,for_training=True)
+        components = load_acestep_from_path(str(path),torch.float32,for_training=for_training)
         build_source.assert_called_once_with(layout["vae"],torch.float32)
     return components,source,path
 

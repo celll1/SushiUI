@@ -63,3 +63,44 @@ def test_audio_sample_rate_is_part_of_latent_identity():
     config = dict(small_codec().config, _class_name="AutoencoderOobleck")
     assert vs.latent_space_hash("sameweights", config) != vs.latent_space_hash(
         "sameweights", dict(config, sampling_rate=44100))
+
+
+def test_bundled_audio_source_and_declared_identity_roundtrip(tmp_path, monkeypatch):
+    from acestep_audio_artifact_test import artifact
+    _, _, codec, path = artifact(tmp_path, 4, True)
+    import diffusers
+    monkeypatch.setattr(diffusers.AutoencoderOobleck, "from_config",
+                        lambda *a, **k: pytest.fail("inspection allocated codec"))
+    inspected = vs.resolve_vae_source(f"model:{path}", arch="acestep", load_weights=False)
+    assert inspected.state_dict is None
+    assert inspected.facts()["domain"] == "audio"
+    assert (inspected.latent_channels, inspected.scale_temporal) == (4, 8)
+    loaded = vs.load_declared_latent_io(str(path), arch="acestep", load_weights=True)
+    assert not loaded.identity_native and not loaded.struct_native
+    assert loaded.content_hash == vs.content_hash_for_state_dict(codec.state_dict())
+    assert loaded.prefix == "vae."
+    for key, value in codec.state_dict().items():
+        torch.testing.assert_close(loaded.state_dict[key], value, rtol=0, atol=0)
+
+
+def test_bundled_audio_source_refuses_bad_declaration_and_weight_identity(tmp_path):
+    import json
+    from safetensors import safe_open
+    from safetensors.torch import load_file, save_file
+    from acestep_audio_artifact_test import artifact
+    _, _, _, path = artifact(tmp_path, 4, False)
+    with safe_open(str(path), framework="pt") as handle:
+        metadata = handle.metadata()
+    state = load_file(str(path))
+    key = next(key for key in state if key.startswith("vae.") and state[key].is_floating_point())
+    state[key] = state[key] + 0.1
+    bad = tmp_path / "bad.safetensors"
+    save_file(state, str(bad), metadata=metadata)
+    with pytest.raises(vs.VaeSourceError, match="weight identity"):
+        vs.load_declared_latent_io(str(bad), arch="acestep")
+    record = json.loads(metadata["acestep.audio_alignment"])
+    record["target"]["hop_length"] *= 2
+    metadata["acestep.audio_alignment"] = json.dumps(record)
+    save_file(state, str(bad), metadata=metadata)
+    with pytest.raises(vs.VaeSourceError, match="config and geometry"):
+        vs.resolve_vae_source(f"model:{bad}", arch="acestep", load_weights=False)

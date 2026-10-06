@@ -29,20 +29,15 @@ def calibration_waveform(path, seconds, contract):
 def configure_training_swap(trainer):
     from core.training.vae_swap import resolve_vae_swap_source, check_swap_method
     from core.training.ops.training_method import resolve_training_method
-    from core.models.common.vae_source import resolve_vae_source, ResolvedVAE
+    from core.models.common.vae_source import resolve_vae_source
     from core.training.arch.acestep import AceStepArchHandler
     handler = AceStepArchHandler(trainer)
     source = resolve_vae_swap_source(trainer.config)
     check_swap_method(source, resolve_training_method(trainer))
     pair = getattr(trainer.transformer.decoder, "_audio_latent_alignment", None)
     if pair is not None:
-        trainer.vae_identity = ResolvedVAE(source="model:"+str(trainer.model_path), form="model", family="custom",
-            latent_channels=pair.target.latent_channels, scale_factor=1, scale_temporal=pair.target.hop_length,
-            ndim=3, norm="identity", norm_pack=1, vae_class="AutoencoderOobleck",
-            config=dict(trainer.vae.config, _class_name="AutoencoderOobleck"),
-            content_hash=content_hash_for_state_dict(trainer.vae.state_dict()), provenance="bundled ACE audio codec",
-            locator=None, struct_native=False, identity_native=False, scaling_factor=None, shift_factor=None,
-            path=str(trainer.model_path), prefix="vae.")
+        from .audio_artifact import resolved_codec_identity
+        trainer.vae_identity = resolved_codec_identity(trainer.transformer, trainer.vae, trainer.model_path)
         trainer.base_vae_identity = trainer.vae_identity
         trainer.wiring = handler.resolve_wiring(trainer)
     if not source:

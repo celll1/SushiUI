@@ -1075,7 +1075,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 self.current_attention_type = "normal"
 
                 # Keep components on CPU (VRAM discipline; GPU staging is Phase 2).
-                for comp_name in ("dit", "vae", "text_encoder"):
+                for comp_name in ("dit", "vae", "source_vae", "text_encoder"):
                     comp = self.acestep_components.get(comp_name)
                     if comp is not None and hasattr(comp, "to"):
                         try:
@@ -1109,6 +1109,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "sample_rate": self.acestep_components.get("sample_rate", 48000),
                     "latent_frame_rate": self.acestep_components.get("latent_frame_rate", 25),
                     "latent_channels": self.acestep_components.get("latent_channels", 64),
+                    **self._fold_component_latent_identity(model_result, "acestep"),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] ACE-Step 1.5 model loaded successfully")
@@ -4023,6 +4024,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if isinstance(codec, NormalizedVideoVAE):
                 scale = codec.spatial_compression_ratio
             options={"latent_channels":latent_channels}
+            if identity.get("domain") == "audio":
+                options.update(vae_scale_factor=1, vae_scale_temporal=identity["hop_length"],
+                               vae_norm="identity", vae_norm_pack=1)
             if scale is not None:
                 options["vae_scale_factor"]=int(scale)
                 from core.models.components.latent_adapter import NormalizedFrameVAE

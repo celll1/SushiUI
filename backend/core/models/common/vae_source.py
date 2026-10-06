@@ -477,6 +477,17 @@ def _native_flags(facts: Dict[str, Any], native: Optional[Dict[str, Any]],
 
 def _declared_from_metadata(metadata: Dict[str, str]) -> Dict[str, Any]:
     """The ``component.vae.*`` declaration a checkpoint/file carries, if any."""
+    if "acestep.audio_alignment" in metadata:
+        from core.models.acestep.audio_artifact import read_record
+        try:
+            record = read_record(metadata, json.loads(metadata.get("acestep_config", "null")))
+        except (ValueError, TypeError, KeyError) as error:
+            raise VaeSourceError(f"Invalid bundled ACE audio codec: {error}") from error
+        return dict(type="custom", config=dict(record["target_config"], _class_name="AutoencoderOobleck"),
+                    channels=record["target"]["latent_channels"], embedded=True, prefix="vae.",
+                    hash=record["target_hash"], norm="identity", norm_pack=1,
+                    scale_factor=1, scale_temporal=record["target"]["hop_length"],
+                    struct_native=False, identity_native=False, provenance="bundled ACE audio codec")
     try:
         return dict(parse_component_metadata(metadata).get("vae") or {})
     except Exception:
@@ -800,6 +811,8 @@ def resolve_vae_source(
         else:
             state_dict = raw
         content_hash = content_hash_for_state_dict(state_dict)
+        if "acestep.audio_alignment" in weights.metadata and content_hash != declared.get("hash"):
+            raise VaeSourceError(f"{source}: bundled ACE audio codec weight identity differs")
 
     facts["content_hash"] = content_hash
     struct_native, identity_native = _native_flags(

@@ -104,6 +104,14 @@ KREA2_LATENT_IO = LatentIOSpec(
     config_in_channels_packed=True, config_out_channels_packed=True,
 )
 
+IDEOGRAM4_LATENT_IO = LatentIOSpec(
+    in_module="input_proj", out_module="final_layer.linear",
+    in_kind="packed_linear", out_kind="packed_linear",
+    in_channel_order="inner", out_channel_order="inner",
+    pack_elems=4, extra_in_channels=0, in_repeat=1, out_bias=True,
+    config_in_channels_packed=True, config_out_channels_packed=True,
+)
+
 QWEN_IMAGE_21_LATENT_IO = LatentIOSpec(
     in_module="img_in", out_module="proj_out",
     in_kind="packed_linear", out_kind="packed_linear",
@@ -196,6 +204,7 @@ class ComponentWiringSpec:
     # against it" and refuses -- a 4-D arch needs no declaration (there is no
     # temporal axis, so the ratio is 1 by construction).
     vae_scale_temporal: Optional[int] = None
+    vae_norm_channel_order: str = "outer"
 
     def replace(self, **changes) -> "ComponentWiringSpec":
         """Return a copy with fields overridden (the graft-expression helper,
@@ -248,6 +257,7 @@ IDEOGRAM4_WIRING = ComponentWiringSpec(
     te_out_dim=4096, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
     latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
     vae_scale_factor=8, vae_norm="batchnorm", vae_norm_pack=2,
+    vae_norm_channel_order="inner", latent_io=IDEOGRAM4_LATENT_IO,
 )
 
 MINIT2I_WIRING = ComponentWiringSpec(

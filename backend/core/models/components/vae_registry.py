@@ -340,7 +340,17 @@ def _normalized(latent: torch.Tensor, vae, spec, *, forward: bool) -> torch.Tens
         raise ValueError(
             f"a 2x2-packed normalisation domain needs even latent H/W, got "
             f"{tuple(latent.shape[-2:])}")
-    return _unpack_2x2(_apply_norm(_pack_2x2(latent), vae, method, forward=forward))
+    order = getattr(spec, "vae_norm_channel_order", "outer")
+    if order not in ("outer", "inner"):
+        raise ValueError("Packed BatchNorm requires a declared channel order")
+    packed = _pack_2x2(latent)
+    b,c,h,w = latent.shape
+    if order == "inner":
+        packed = packed.reshape(b,c,4,h//2,w//2).permute(0,2,1,3,4).reshape(b,4*c,h//2,w//2)
+    packed = _apply_norm(packed, vae, method, forward=forward)
+    if order == "inner":
+        packed = packed.reshape(b,4,c,h//2,w//2).permute(0,2,1,3,4).reshape(b,4*c,h//2,w//2)
+    return _unpack_2x2(packed)
 
 
 def normalize(latent: torch.Tensor, vae, spec=None) -> torch.Tensor:

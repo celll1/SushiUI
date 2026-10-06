@@ -12,6 +12,12 @@ Ideogram4にはplain dual-DiT Full FTの内部基盤を追加した。条件付�
 学習対象にし、TE/VAEは固定する。非学習の無条件DiTはCPUに保持し、推論に必要な双方を保存する。
 実native小型DiTのoptimizer更新・両branch復元、量子化branchの事前拒否、adapter dispatchをCPUで検証した。
 公開Full FTのゲートはまだ解除していない。paired_spatial・縮小率変更、周期サンプルと公式重みの受け入れが残る。
+Ideogramのtarget-native境界も追加した。元のpackingは`(patch_h,patch_w,C)`なので、
+共有packed bridgeとsource BatchNorm校正にinner順序を明示する。モデル時刻`t=1-sigma`の
+入力biasと`x0_minus_eps`の出力biasを別々に適用し、text prefixを画像bridgeへ入れない。
+双DiTの学習済みIOはinner順序で拡張し、U-net接続とnative identityを保持する。
+FP32/BF16、チャネル増減、2段U-net併用、追加チャネル勾配を合成CPUモデルで確認した。
+共有正規化とKrea packed bridgeの回帰も通過した。まだ公開swap・codec復元には接続していない。
 
 本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の
 契約であり、全モデルに共通する最終的な制約ではない。

@@ -10319,6 +10319,10 @@ class BaseTrainer(ABC):
             )
         ):
             return
+        from .mutable_model_residency import move_with_mutable_conductors
+        if move_with_mutable_conductors(
+                self._main_model_module(), self.device, self._layer_offload_conductors()):
+            return
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
@@ -10339,6 +10343,11 @@ class BaseTrainer(ABC):
                 or getattr(self, "layer_offload_conductor", None) is not None
             )
         ):
+            return
+        from .mutable_model_residency import move_with_mutable_conductors
+        if move_with_mutable_conductors(
+                self._main_model_module(), "cpu", self._layer_offload_conductors()):
+            torch.cuda.empty_cache()
             return
         if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_qwen_image_21 or self.is_ltx2 or self.is_acestep or self.is_minimax_h3 or self.is_sensenova:
             if self.transformer_original is not None:

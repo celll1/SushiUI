@@ -47,6 +47,11 @@ at initial load through `training/model_staging.py`; only resident blocks and
 non-block weights move to the training device before adapter construction.
 The conductor still captures ownership after adapters set trainability.
 
+Shared encoder-refill main-model moves preserve mutable CPU masters through
+`training/mutable_model_residency.py`. Parking releases idle GPU slots; restoring
+moves only unmanaged weights and recreates the slots. Moving the whole module
+with `.to(cuda)` would detach managed parameters from their CPU master views.
+
 ## Ordering invariants
 
 - CPU masters are persistent and never alias another block.

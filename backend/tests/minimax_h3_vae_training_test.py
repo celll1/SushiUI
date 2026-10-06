@@ -106,8 +106,11 @@ def test_calibration_optimizer_ownership_and_saved_continuation(tmp_path, channe
     path = adapter.save_checkpoint(1, 1, tmp_path/"full")
     restored, vae, identity = load_checkpoint(path, torch.float32)
     assert vae.dtype == dtype and identity.latent_hash == resolved.latent_hash
-    for left, right in zip(forward(trainer.transformer), forward(restored)):
-        torch.testing.assert_close(left, right, rtol=1e-5, atol=1e-6)
+    for key, value in trainer.transformer.transformer.state_dict().items():
+        torch.testing.assert_close(value, restored.transformer.state_dict()[key], rtol=0, atol=0)
+    with torch.no_grad():
+        for left, right in zip(forward(trainer.transformer), forward(restored)):
+            torch.testing.assert_close(left, right, rtol=1e-5, atol=1e-6)
     resumed = Trainer(transformer=restored, transformer_original=restored.transformer, vae=vae,
         config=trainer.config.copy(), vae_dtype=dtype, bundle_vae=True, is_minimax_h3=True,
         train_unet=True, unet_lr=1e-3)

@@ -1113,6 +1113,9 @@ def save_sensenova_full_finetune_checkpoint(
     for key, value in (extra_metadata or {}).items():
         metadata[str(key)] = str(value)
 
+    from core.models.components.spatial_swap import artifact_metadata
+    metadata.update(artifact_metadata(transformer))
+
     from .residual_unet import export_topology_metadata
     from core.rewiring.spec import META_VERSION, META_SPEC, META_HASH
     for key in (META_VERSION, META_SPEC, META_HASH):
@@ -1231,7 +1234,9 @@ def save_sensenova_full_finetune_checkpoint(
             # Diffusers key layout under the shared `vae.` prefix, never the LDM
             # conversion (§8.7): the reader resolves it through
             # component.vae.class + component.vae.config.
-            for key, tensor in vae.state_dict().items():
+            from core.models.components.latent_adapter import NormalizedFrameVAE
+            codec = vae.inner if isinstance(vae, NormalizedFrameVAE) else vae
+            for key, tensor in codec.state_dict().items():
                 writer.add(f"{VAE_PREFIX}{key}", tensor.detach().cpu().contiguous())
         _assert_scale_weight_conjunction(weight_dtypes, scale_stems)
     except BaseException:
@@ -1310,7 +1315,7 @@ def install_sensenova_state_dict(
     return swapped
 
 
-def _assert_declared_latent_geometry(config, declared_vae, *, path: str) -> None:
+def _assert_declared_latent_geometry(config, declared_vae, *, path: str, alignment=None) -> None:
     """The config's generation geometry and ``component.vae.*`` must agree.
 
     Two independent records of one fact (§10.5): the config block carries
@@ -1324,6 +1329,8 @@ def _assert_declared_latent_geometry(config, declared_vae, *, path: str) -> None
     gen_channels = getattr(config, "gen_in_channels", None)
     gen_patch = getattr(config, "gen_patch_size", None)
     if declared_vae is None:
+        if alignment is not None:
+            raise ValueError("SenseNova spatial alignment requires a declared VAE")
         if gen_channels is not None or gen_patch is not None:
             raise ValueError(
                 f"{path} declares a generation grid of {gen_channels} channel(s) "
@@ -1335,10 +1342,17 @@ def _assert_declared_latent_geometry(config, declared_vae, *, path: str) -> None
             f"{path} carries a component.vae.* block ({declared_vae.latent_channels}ch) "
             f"but its config block has no gen_in_channels/gen_patch_size, so the "
             f"tree would be rebuilt as a pixel model and the weights would not fit")
-    if int(gen_channels) != int(declared_vae.latent_channels):
+    expected = int(declared_vae.latent_channels)
+    if alignment is not None:
+        from core.models.components.latent_adapter import validate_declaration
+        validate_declaration(alignment)
+        if (alignment["new_channels"], alignment["new_scale"]) != (expected, declared_vae.scale_factor):
+            raise ValueError("SenseNova spatial alignment disagrees with its declared VAE")
+        expected = max(alignment["old_channels"], alignment["new_channels"])
+    if int(gen_channels) != expected:
         raise ValueError(
             f"{path} builds a {gen_channels}-channel generation grid but declares "
-            f"a {declared_vae.latent_channels}-channel VAE")
+            f"a {declared_vae.latent_channels}-channel VAE (expected internal width {expected})")
     # Whatever the file declares, as long as the head can be built from it: the
     # patch is a per-run choice (sensenova_gen_patch), not a repo constant.
     validate_gen_patch(gen_patch, label=f"{path}: declared generation patch")
@@ -1415,7 +1429,11 @@ def load_sensenova_from_path(
     from core.models.common.vae_source import load_declared_latent_io
 
     declared_vae = load_declared_latent_io(model_path, arch="sensenova")
-    _assert_declared_latent_geometry(config, declared_vae, path=model_path)
+    from core.models.components.spatial_swap import read_declaration, install, validate_loaded, restored_image_codec
+    alignment = read_declaration(metadata)
+    if alignment is None and any(key.startswith("vae_latent_bridge.") for key in sd):
+        raise ValueError("SenseNova bridge weights have no spatial alignment declaration")
+    _assert_declared_latent_geometry(config, declared_vae, path=model_path, alignment=alignment)
 
     # ConvRot markers, read from the still-plain state dict before anything is
     # installed (mirrors MiniMax-H3 DiT loader.py's ordering: the runtime
@@ -1430,14 +1448,16 @@ def load_sensenova_from_path(
 
     with init_empty_weights():
         model = NEOChatModel(config)
+        install(model, alignment)
         model.to(torch_dtype)
 
     _assert_built_latent_geometry(model, config, path=model_path)
 
     swapped = install_sensenova_state_dict(
         model, sd, int8_convrot_source_layers, torch_dtype, path=model_path,
-        require_complete=topology is not None,
+        require_complete=topology is not None or alignment is not None,
     )
+    validate_loaded(model)
     if topology is not None:
         restore_topology(model, topology)
     if "fm_refiner" in model.fm_modules:
@@ -1466,12 +1486,14 @@ def load_sensenova_from_path(
         # The module holds these weights now; the resolver's copy would keep a
         # second VAE in host memory for the life of the load.
         declared_vae = _dc_replace(declared_vae, state_dict=None)
+        if alignment is not None:
+            vae, declared_vae = restored_image_codec(vae, declared_vae, alignment)
         stamp_vae_scale_factor(model, declared_vae.scale_factor)
         wiring = SENSENOVA_WIRING.replace(
             latent_channels=declared_vae.latent_channels,
             vae_scale_factor=declared_vae.scale_factor,
-            vae_norm=declared_vae.norm,
-            vae_norm_pack=declared_vae.norm_pack,
+            vae_norm="identity" if alignment is not None else declared_vae.norm,
+            vae_norm_pack=1 if alignment is not None else declared_vae.norm_pack,
         )
         print(f"[SenseNovaLoader] Latent checkpoint: {declared_vae.provenance}, "
               f"{declared_vae.latent_channels}ch, {declared_vae.scale_factor}x spatial, "

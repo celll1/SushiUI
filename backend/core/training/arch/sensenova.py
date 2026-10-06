@@ -238,11 +238,18 @@ class SenseNovaArchHandler(ArchHandler):
         from core.models.sensenova.latent_space import gen_geometry
 
         geometry = gen_geometry(transformer)
+        if getattr(transformer, "vae_latent_bridge", None) is not None:
+            return self.wiring.replace(latent_channels=geometry.channels,
+                vae_scale_factor=geometry.vae_scale_factor, latent_ndim=4,
+                vae_norm="identity", vae_norm_pack=1)
         if not geometry.is_latent:
             return self.wiring
+        identity = getattr(trainer, "vae_identity", None)
         return self.wiring.replace(
             latent_channels=geometry.channels,
             vae_scale_factor=geometry.vae_scale_factor,
+            vae_norm=identity.norm if identity is not None else self.wiring.vae_norm,
+            vae_norm_pack=identity.norm_pack if identity is not None else self.wiring.vae_norm_pack,
         )
 
     def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
@@ -343,6 +350,17 @@ class SenseNovaArchHandler(ArchHandler):
         initialisation for the whole run and save a model that predicts a
         constant.
         """
+        pair = getattr(trainer.transformer, "vae_latent_bridge", None)
+        if pair is not None:
+            from core.models.components.latent_io import ResizeReport
+            from dataclasses import replace
+            if module is None and resolved.source != pair.declaration["source"]:
+                raise ValueError("Changing an aligned SenseNova VAE requires a fresh base checkpoint")
+            trainer.vae_identity = replace(resolved, state_dict=None)
+            trainer.vae_latent_channels = pair.declaration["new_channels"]
+            trainer.wiring = self.resolve_wiring(trainer)
+            width = int(trainer.transformer.gen_in_channels)
+            return ResizeReport((), width, width, width, 0, 0)
         from core.models.sensenova.latent_space import (
             apply_latent_geometry, gen_geometry, latent_config_dict,
             stamp_vae_scale_factor,
@@ -543,6 +561,8 @@ class SenseNovaArchHandler(ArchHandler):
         already carries a recalibrated scale INHERITS it: re-measuring on every
         resume would move the objective each time the run restarts.
         """
+        from core.models.sensenova.vae_alignment import calibrate
+        calibrate(trainer, datasets)
         from core.models.sensenova.latent_space import (
             PIXEL_RMS, apply_noise_scale_gain, noise_scale_gain_for_rms,
             recalibrated_noise_scale_gain,

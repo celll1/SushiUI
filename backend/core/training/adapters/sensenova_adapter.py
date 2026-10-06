@@ -386,6 +386,9 @@ class SenseNovaFullParameterAdapter(BaseFullParameterAdapter):
             if name != "fm_refiner"
             for parameter in module.parameters()
         )
+        pair = getattr(trainer.transformer, "vae_latent_bridge", None)
+        if pair is not None:
+            parameters = _unique_parameters([*parameters, *pair.parameters()])
         if not parameters:
             raise RuntimeError(
                 "SenseNova sensenova_train_fm_modules collected no parameter from "

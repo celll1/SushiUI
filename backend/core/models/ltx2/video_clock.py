@@ -48,3 +48,14 @@ def calibration_clip_frames(source_temporal, target):
             continue
         return frames
     raise ValueError("Source and target video frame lattices have no common moving clip")
+
+
+def condition_clip_frames(contract, source_frames, available_frames):
+    limit = min(source_frames, available_frames)
+    if limit < 1:
+        return 0
+    if contract.temporal_policy == "minimax_h3_chunks_v1":
+        if source_frames > 1 and limit < 22:
+            raise ValueError("The remaining target timeline cannot hold an H3 moving condition clip")
+        return 1 if limit < 22 else ((limit-5)//17)*17+5
+    return ((limit-1)//contract.temporal_scale)*contract.temporal_scale+1

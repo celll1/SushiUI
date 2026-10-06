@@ -1,6 +1,6 @@
 """Codec geometry shared by the three LTX target-clock pipeline variants."""
 
-from core.models.ltx2.video_clock import prepare_video_coords
+from core.models.ltx2.video_clock import prepare_video_coords, condition_clip_frames
 
 
 class CodecGeometry:
@@ -37,10 +37,7 @@ class CodecGeometry:
                 raise ValueError("Video condition index is outside the target codec timeline")
             if value.shape[2] > 1 and index % 5:
                 raise ValueError("H3 video conditions must start at the same codec chunk phase")
-            limit = min(value.shape[2],num_frames-spans[index][0])
-            if value.shape[2] > 1 and limit < 22:
-                raise ValueError("The remaining target timeline cannot hold an H3 moving condition clip")
-            length = 1 if limit < 22 else ((limit-5)//17)*17+5
+            length = condition_clip_frames(contract,value.shape[2],num_frames-spans[index][0])
             pixels.append(value[:,:,:length].to(device=device,dtype=self.vae.dtype))
             strengths.append(condition.strength)
             indices.append(index)

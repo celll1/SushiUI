@@ -336,10 +336,10 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     inside the caller's ``with torch.no_grad()``; caller does the shared final
     dtype/CPU move.
     """
-    # Anima uses the Qwen-Image VAE (Wan VAE 2.1 latent space, 16ch).
-    # Encode -> sample posterior -> apply latents_mean / latents_std
-    # normalisation (same as anima_pipeline_ops.vae_encode_image).
-    # AutoencoderKLQwenImage expects [B, C, T, H, W] (T=1 for images).
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if isinstance(trainer.vae,NormalizedImageVAE):
+        return trainer.vae.encode(image_tensor).latent_dist.sample()
+    # Native Qwen-Image VAE requires the single-frame axis.
     image_tensor_5d = image_tensor.unsqueeze(2)
     latent_dist = trainer.vae.encode(image_tensor_5d).latent_dist
     latents_5d = latent_dist.sample()  # [B, 16, 1, H/8, W/8]

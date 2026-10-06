@@ -89,8 +89,15 @@ Animaのnative forwardにも画像bridge境界を追加した。padding maskを�
 合成CPUテストはチャネル増減、非正方形格子、バッチ別時刻、mask付きnative対照、
 bridgeへの勾配、複数frame拒否を確認した。境界/既存resize39件とAnimaの
 U-net・注意機構・REPA回帰51件、変更Pythonのpy_compile・実importが通過した。
-Animaの公開初期化、VAE facade、生成の動的stride、artifact復元、UIはまだ未配線であり、
+Animaの公開swap設定、生成の動的stride、artifact復元、UIはまだ未配線であり、
 `auto`の対応範囲には追加していない。公式全重みでの学習・画質検証も未了。
+内部初期化driverは共有の画像codec・校正処理に接続した。native Qwen系5D teacherを
+校正時のみ使い、交換先は正規化済みBCHW facadeとして学習encodeへ渡す。
+拡張IOはmaskの位置を保持し、U-netのregionsを維持したままnative identityを更新する。
+bucketの寸法整合性は交換先縮小率とU-net深度の両方から計算する。
+実VAEの合成画像校正では8x→16x、チャネル増減、非正方形encode/decode、
+U-netのforward/backwardを確認した。公開swap設定の有効化とcheckpoint復元はまだ未了。
+内部校正を含む境界・U-net・既存resize回帰48件と、変更Pythonのpy_compile・実importが通過した。
 
 MingのVAE swapとresidual U-net化は併用可能。IO変更時に同じregion宣言から
 新native configのtopology identityを再構成する。

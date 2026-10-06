@@ -59,6 +59,14 @@ U-net IO変更時のidentity更新、単一/sharded checkpointと学習済みbri
 公式全重みのLens swap学習・画質・optimizer付きrun再開は未検証。
 関連CPU回帰は285件通過後、sharded破損fixtureの数値metadataを修正しLens全10件が通過した。
 変更Pythonのpy_compile・実import、frontend型と設定保存経路の静的確認は通過した。owner build・画面確認は未了。
+Flux2は画像射影境界のbridgeを実装した。位置IDのT軸でtargetとreferenceを分離し、
+targetは実sigma、referenceはclean（KV extractではref_fixed_timestep）で変換する。
+native・KV extract/cached・U-net・dense block swapで同じ射影hookを使用する。
+hookはEMAコピーと射影moduleの置換に追従し、例外後にforward contextを残さない。
+dense wrapperの旧diffusers引数名・single modulationの不正slice・先頭batchだけの時刻適用も修正した。
+`backend/tests/flux2_spatial_boundaries_test.py`と関連CPU回帰38件が通過した。
+**Flux2の公開swap配線は未完**。初期化/校正、loader/export、動的stride、UIの接続が残るため、
+`auto`はまだlegacy zeroであり、公式全重みでの学習・画質は未検証。
 2026-10-06の関連CPU回帰テスト338件、変更Pythonのpy_compileとCUDAを抑止した実importが通過した。
 再起動後の`GET /training/vae-sources?arch=krea2`でもQwen 2.1の64ch/16x codecが選択可能。
 aligned exportはcodec宣言のない復元不能な保存を拒否する。frontendは静的確認済みで、ownerのbuild・画面確認は未了。

@@ -72,6 +72,18 @@ class Flux2BlockSwapWrapper(nn.Module):
         self.device = next(transformer.parameters()).device
 
     def forward(
+        self, hidden_states, encoder_hidden_states=None, pooled_projections=None,
+        timestep=None, img_ids=None, txt_ids=None, guidance=None, joint_attention_kwargs=None,
+        controlnet_block_samples=None, controlnet_single_block_samples=None,
+        return_dict=True, controlnet_blocks_repeat=False,
+    ):
+        from core.models.flux2.vae_alignment import alignment_context
+        with alignment_context(self.transformer,hidden_states,img_ids,timestep):
+            return self._forward_native(hidden_states,encoder_hidden_states,pooled_projections,
+                timestep,img_ids,txt_ids,guidance,joint_attention_kwargs,controlnet_block_samples,
+                controlnet_single_block_samples,return_dict,controlnet_blocks_repeat)
+
+    def _forward_native(
         self,
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor = None,
@@ -104,20 +116,16 @@ class Flux2BlockSwapWrapper(nn.Module):
             return run_rewired_flux2(self.transformer, hidden_states, encoder_hidden_states,
                 timestep, img_ids, txt_ids, guidance, joint_attention_kwargs, return_dict,
                 block_offloader=self._block_offloader if swap_on else None)
-        if not swap_on and self._single_procs is None and fbcache is None:
+        if not swap_on and self._single_procs is None and fbcache is None and controlnet_block_samples is None and controlnet_single_block_samples is None:
             return self.transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
-                pooled_projections=pooled_projections,
                 timestep=timestep,
                 img_ids=img_ids,
                 txt_ids=txt_ids,
                 guidance=guidance,
                 joint_attention_kwargs=joint_attention_kwargs,
-                controlnet_block_samples=controlnet_block_samples,
-                controlnet_single_block_samples=controlnet_single_block_samples,
                 return_dict=return_dict,
-                controlnet_blocks_repeat=controlnet_blocks_repeat,
             )
 
         # === Unified custom forward (block swap and/or NAG) ===
@@ -148,15 +156,11 @@ class Flux2BlockSwapWrapper(nn.Module):
             else len(transformer.transformer_blocks)
         )
 
-        # 1. Timestep embedding + modulation parameters.
-        # Use timestep[:1] (same t for all batch elements) so the batch-1 modulation
-        # broadcasts to both the image (img_b) and text (txt_b) streams. For the non-NAG
-        # path this is numerically identical to the full-batch timestep.
-        ts = timestep[:1] if timestep.ndim >= 1 else timestep
-        ts = ts.to(hidden_states.dtype) * 1000
+        # Training can use a different sigma for each batch item.
+        ts = timestep.to(hidden_states.dtype) * 1000
         g = None
         if guidance is not None:
-            g = (guidance[:1] if guidance.ndim >= 1 else guidance).to(hidden_states.dtype) * 1000
+            g = guidance.to(hidden_states.dtype) * 1000
 
         # FLUX.2 uses time_guidance_embed (not time_text_embed)
         temb = transformer.time_guidance_embed(ts, g)
@@ -164,7 +168,7 @@ class Flux2BlockSwapWrapper(nn.Module):
         # Get modulation parameters
         double_stream_mod_img = transformer.double_stream_modulation_img(temb)
         double_stream_mod_txt = transformer.double_stream_modulation_txt(temb)
-        single_stream_mod = transformer.single_stream_modulation(temb)[0]
+        single_stream_mod = transformer.single_stream_modulation(temb)
 
         # 2. Input projection for image and text
         hidden_states = transformer.x_embedder(hidden_states)
@@ -222,8 +226,8 @@ class Flux2BlockSwapWrapper(nn.Module):
                 encoder_hidden_states, hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
-                    temb_mod_params_img=double_stream_mod_img,
-                    temb_mod_params_txt=double_stream_mod_txt,
+                    temb_mod_img=double_stream_mod_img,
+                    temb_mod_txt=double_stream_mod_txt,
                     image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )
@@ -317,7 +321,7 @@ class Flux2BlockSwapWrapper(nn.Module):
                 hidden_states = block(
                     hidden_states=hidden_states,
                     encoder_hidden_states=None,
-                    temb_mod_params=single_stream_mod,
+                    temb_mod=single_stream_mod,
                     image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=joint_attention_kwargs,
                 )

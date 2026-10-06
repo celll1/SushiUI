@@ -13749,7 +13749,7 @@ components:
               type: string
           example:
             minimax_h3:
-              full_finetune: "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented"
+              relora: "MiniMax-H3 ReLoRA is not implemented; quantized bases cannot accept dense merges without format-specific requantization. Use LoRA instead."
         training_feature_unsupported:
           type: object
           description: |
@@ -26278,6 +26278,12 @@ components:
             | `full_finetune` | `full_finetune` | selected denoiser/conditioner parameters |
             | `controlnet` | `controlnet` | a ControlNet / ControlNet-LLLite |
             | `vae_decoder` | `vae_decoder` | the VAE decoder only, encoder frozen |
+
+            MiniMax-H3 Full is experimental and requires an unquantized DiT,
+            train_unet=true, frozen text/image encoders, a bundled target codec
+            and paired_spatial calibration. Specify vae_swap_source for a fresh
+            base, or use a native aligned Full checkpoint. Unlearned swap
+            generation quality is not accepted yet.
 
             Ming Design and Layer support native DiT/caption LoRA and full fine-tuning, including
             conditioner groups, inherited/configured U-Net topology, native

@@ -19,7 +19,7 @@ from .qwen_image_21_adapter import QwenImage21LoRAAdapter, QwenImage21FullParame
 from .ming_image_01_adapter import MingImage01FullParameterAdapter
 from .ltx2_adapter import Ltx2LoRAAdapter, Ltx2FullParameterAdapter
 # H3's aligned Full adapter remains internal pending public training acceptance.
-from .minimax_h3_adapter import MiniMaxH3LoRAAdapter
+from .minimax_h3_adapter import MiniMaxH3LoRAAdapter, MiniMaxH3AlignedFullParameterAdapter
 from .acestep_adapter import AceStepLoRAAdapter, AceStepFullParameterAdapter
 from .sensenova_adapter import SenseNovaLoRAAdapter, SenseNovaFullParameterAdapter
 from .sensenova_sdxl_chimera_adapter import SenseNovaSDXLChimeraFullParameterAdapter
@@ -53,6 +53,7 @@ __all__ = [
     "Ltx2LoRAAdapter",
     "Ltx2FullParameterAdapter",
     "MiniMaxH3LoRAAdapter",
+    "MiniMaxH3AlignedFullParameterAdapter",
     "AceStepLoRAAdapter",
     "AceStepFullParameterAdapter",
     "SenseNovaLoRAAdapter",

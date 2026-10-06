@@ -6,7 +6,21 @@ Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §1
 LoRA 系での拒否は他 arch と同様に残る。
 フェーズごとの到達点は §11 の表を参照。
 
-### 2026-10-06: 現在の対応範囲
+### 2026-10-07: 現在の対応範囲
+
+最新API検証: 専用run #173で公式dense H3のaligned bundleを読み込み、配布INT8
+ConvRot TEでcaption encoding（39.76秒）、交換先LTX VAEでlatent encoding（2.80秒）、
+Fullの1更新と4 shardのcodec同梱保存まで完走した。入力は元H3が生成した狐動画と
+合成無音trackで、ユーザー実画像は使用していない。target C128・/32・時間/8、
+2段U-netを併用し、49層block swap・fused AdamW8bitを使用した。有限GradNorm
+14.1523を記録し、保存optimizerの638 state/nameとstrict bundle preflightを確認した。
+実GPUでのoptimizer再開と画質回復はこの試験には含まない。
+
+公開Full gateを解除し、上記の共通per-run契約を必須とする実験的機能へ移した。
+frontendは共有capability表からFull選択とVAE交換の注意表示へ到達する既存経路を
+静的確認した。owner専用build/type-checkは未実行。専用run/datasetはDB・diskから
+削除し、診断ログのみignoredなlocal/verificationに保持した。以下のgate維持・
+API未完の記述は以前の段階記録であり、この結果で更新する。
 
 画質の受入基準（2026-10-07、所有者指定）: 元codecとの完全一致は要求しない。
 主要な物体・概形・配置を識別できる水準を目指し、ぼけや細部の差は残ってよい。
@@ -54,7 +68,7 @@ base LRを照合する。warmup後のcurrent LRは比較せず、fused group再�
 最新到達点: H3公式全重みでtarget-native /32 VAE・paired_spatial・2段U-netを併用した
 Full更新、native bundle保存復元、optimizer精度保持と次更新まで通過。
 公式TEによる条件付け・生成decodeまで通過したが、H3→LTXの未学習生成画質は未受入。
-公開Full経路の解放と他モデルの公式全重みでの受入は未完。
+公開Full経路は実験的に解放済み。他モデルの公式全重みでの受入は未完。
 以下は段階別の検証記録であり、途中の未完事項は後続の結果で更新する。
 
 H3公式captionで31回denoise→本番`decode_video`→73枚・256×256 RGB出力まで確認した。

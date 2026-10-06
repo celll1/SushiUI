@@ -3634,6 +3634,8 @@ CFG_UNCOND_DROP_DEFAULTS_BY_ARCH: Dict[str, float] = {
 FULL_FINETUNE_TRAIN_TEXT_ENCODER_DEFAULTS_BY_ARCH: Dict[str, bool] = {
     "_default": True,
     "sensenova": False,
+    # H3 aligned Full keeps the caption conditioner frozen.
+    "minimax_h3": False,
 }
 
 

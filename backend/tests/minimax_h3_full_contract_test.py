@@ -81,3 +81,9 @@ def test_adapter_rejects_unsupported_encoder_ownership():
 def test_unreadable_fresh_checkpoint_reports_a_config_error(tmp_path):
     with pytest.raises(ValueError, match="Cannot inspect H3 Full checkpoint"):
         preflight_full_training({"vae_swap_source": "registry:ltx2"}, str(tmp_path / "missing.safetensors"))
+
+
+def test_full_caption_encoder_default_is_frozen():
+    from api.param_defaults import resolve_full_finetune_train_text_encoder
+    assert resolve_full_finetune_train_text_encoder(None, "minimax_h3") is False
+    assert resolve_full_finetune_train_text_encoder(True, "minimax_h3") is True

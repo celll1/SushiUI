@@ -16,6 +16,23 @@ and SenseNova SDXL Chimera already use U-Nets and are outside DiT rewiring.
 
 ## Default topology
 
+VAE swap and rewiring operate at different boundaries: the VAE/bridges own
+the external latent grid and channels; rewiring changes hidden-token grids
+inside the backbone. Ming implements their composition and rebuilds topology
+identity after native IO expansion while retaining the region declarations.
+Its alignment/rewiring CPU tests cover fp32/bf16 forward/backward, and the
+saved-DiT coarse-grid GPU probe uses an existing two-stage topology. Other
+backbones require their own latent-runtime/artifact wiring before this is
+claimed as supported. See [VAE migration](VAE_SWAP_MIGRATION_DESIGN.md) for
+the current boundary and [alignment evidence](../experiments/VAE_SWAP_ALIGNMENT.md).
+
+The baseline grid for rewiring is the swapped VAE's token grid. For a simple
+image codec, pixel alignment is VAE spatial scale times patch size times the
+LCM of cumulative region down factors, computed separately for H and W.
+Reference/text/padding streams retain their native contracts. Smaller grids
+must still pass every region's divisibility and minimum-size validation;
+enabling both options does not authorize changing the saved layer spans.
+
 A new user-selected U-Net conversion defaults to two nested regions with four
 blocks at the deepest level. This does not automatically convert ordinary models
 or replace the topology declared by an existing checkpoint.

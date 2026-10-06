@@ -4390,13 +4390,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <p className="text-xs text-amber-400">{vaeSwapAdvisory.reason}</p>
                   )}
 
-                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
+                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "acestep"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
-                        Paired spatial calibration uses the target VAE token grid. First swap calibrates
-                        from this run&apos;s dataset; resume restores the saved bridges. RGB VAEs discard alpha.
+                        {baseModelArch === "acestep"
+                          ? "Paired temporal calibration uses the target codec time grid and bounded audio windows from this run's dataset. Resume restores the saved bridges. RVQ conditioning keeps the original codec."
+                          : "Paired spatial calibration uses the target VAE token grid. First swap calibrates from this run's dataset; resume restores the saved bridges. RGB VAEs discard alpha."}
                       </p>
+                      {baseModelArch === "acestep" && (
+                        <p className="text-xs text-amber-400">
+                          ACE requires a bundled 48kHz stereo Oobleck codec and trainable DiT.
+                          {params.bundle_vae === false && " Enable Bundle VAE before saving this run."}
+                          {params.train_unet === false && " Enable DiT training before saving this run."}
+                        </p>
+                      )}
                       {baseModelArch === "ltx2" && (
                         <p className="text-xs text-amber-400">
                           LTX requires a bundled RGB codec and trainable DiT. The target codec owns
@@ -4418,16 +4426,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         Initialization
                         <select value={params.vae_swap_new_channel_init ?? ""}
                           onChange={(e) => updateParam("vae_swap_new_channel_init",
-                            e.target.value === "" ? undefined : e.target.value as "auto" | "zero" | "paired_spatial")}
+                            e.target.value === "" ? undefined : e.target.value as "auto" | "zero" | "paired_spatial" | "paired_temporal")}
                           className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1">
-                          <option value="">Default (paired spatial)</option>
-                          <option value="auto">Auto (paired spatial)</option>
-                          <option value="paired_spatial">Paired spatial</option>
+                          <option value="">Default ({baseModelArch === "acestep" ? "paired temporal" : "paired spatial"})</option>
+                          <option value="auto">Auto ({baseModelArch === "acestep" ? "paired temporal" : "paired spatial"})</option>
+                          <option value="paired_spatial" disabled={baseModelArch === "acestep"}>Paired spatial</option>
+                          <option value="paired_temporal" disabled={baseModelArch !== "acestep"}>Paired temporal (audio)</option>
                           <option value="zero" disabled={pixelSpaceMiniT2I || !["zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova"].includes(baseModelArch || "")}>Legacy zero</option>
                         </select>
                       </label>
                       <label className="block text-xs text-gray-400">
-                        {baseModelArch === "ltx2" ? "Calibration images/clips" : "Calibration images"}
+                        {baseModelArch === "acestep" ? "Calibration audio clips" : baseModelArch === "ltx2" ? "Calibration images/clips" : "Calibration images"}
                         <input type="number" min={2} max={256}
                           value={params.vae_swap_calibration_samples ?? ""}
                           placeholder="Default"
@@ -4435,7 +4444,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                             e.target.value === "" ? undefined : Number(e.target.value))}
                           className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1" />
                       </label>
-                      <label className="block text-xs text-gray-400">
+                      {baseModelArch !== "acestep" && <label className="block text-xs text-gray-400">
                         Calibration resolution
                         <select value={params.vae_swap_calibration_resolution ?? ""}
                           onChange={(e) => updateParam("vae_swap_calibration_resolution",
@@ -4444,7 +4453,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <option value="">Default</option>
                           {[128, 256, 512].map(size => <option key={size} value={size}>{size}</option>)}
                         </select>
-                      </label>
+                      </label>}
                     </div>
                   )}
 

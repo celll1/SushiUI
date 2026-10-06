@@ -35,6 +35,10 @@ def latent_alignment_pair(root):
 def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
+    if arch == "acestep":
+        if mode not in ("auto", "paired_temporal"):
+            raise ValueError("ACE audio swap requires auto or paired_temporal initialization")
+        return "paired_temporal"
     if mode == "auto":
         return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2") else "zero"
     if mode not in ("zero", "paired_spatial"):
@@ -214,6 +218,15 @@ def preflight_vae_swap(
     check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
     mode = initialization_mode(config, arch)
+    if arch == "acestep":
+        from api.param_defaults import TRAINING_DEFAULTS
+        if bundle_vae_explicit_false:
+            raise ValueError("ACE audio swaps require a bundled target codec")
+        if not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]):
+            raise ValueError("ACE audio swaps require train_unet=true")
+        count = config.get("vae_swap_calibration_samples", TRAINING_DEFAULTS["vae_swap_calibration_samples"])
+        if type(count) is not int or not 2 <= count <= 256:
+            raise ValueError("ACE audio calibration sample count must be an integer from 2 to 256")
     if arch in ("ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2") and mode != "paired_spatial":
         raise ValueError(f"{arch} VAE swaps require paired_spatial initialization")
     if arch == "ltx2":

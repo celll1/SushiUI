@@ -53,7 +53,7 @@ def configure_training_swap(trainer):
 def apply_swap(trainer, resolved, *, handler, module=None):
     from core.models.components.latent_io import ResizeReport
     from core.training.adapters.base_adapter import reject_quantized_base
-    from api.param_defaults import TRAINING_DEFAULTS
+    from core.training.vae_swap import initialization_mode
     from .vae_boundary import bind_encoding_contract, install_decoder_alignment
 
     compatible, reason = handler.check_vae_compatibility(resolved.facts(), trainer=trainer)
@@ -75,9 +75,7 @@ def apply_swap(trainer, resolved, *, handler, module=None):
         return ResizeReport((), channels, channels, channels, 0, 0)
     if module is not None:
         raise ValueError("ACE swapped checkpoints require their saved audio alignment")
-    mode = trainer.config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
-    if mode != "auto":
-        raise ValueError("ACE audio swap uses auto paired_temporal initialization")
+    initialization_mode(trainer.config, "acestep")
     reject_quantized_base(model, model_label="ACE audio VAE swap")
     old = trainer.vae
     source = AudioCodecContract.from_oobleck(old)

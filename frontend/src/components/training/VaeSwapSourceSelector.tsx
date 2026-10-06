@@ -149,8 +149,8 @@ export default function VaeSwapSourceSelector({
       </select>
       <p className="text-xs text-gray-500 mt-1">
         Replaces the VAE and resizes the backbone&apos;s latent input/output
-        layers to the new channel count. Supported backbones use paired spatial
-        calibration on the target grid; the initialization control shows the available
+        layers to the new channel count. Supported backbones use paired
+        {arch === "acestep" ? " temporal" : " spatial"} calibration on the target grid; the initialization control shows the available
         modes. Pixel MiniT2I and SenseNova also migrate their patch projections. Saves retain the
         alignment and VAE identity; disabling VAE bundling requires a restorable source.
         {loading && " Listing candidates…"}

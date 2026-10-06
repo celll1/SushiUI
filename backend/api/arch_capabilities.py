@@ -1376,14 +1376,15 @@ _add_training_feature_advisory(
 _add_training_feature_unsupported(
     "minimax_h3", "vae_swap",
     "a VAE swap resizes the latent-facing layers, which only a full fine-tune trains and saves, and full_finetune is refused for MiniMax-H3")
-_add_training_feature_unsupported(
-    "acestep", "vae_swap",
-    "ACE-Step's latent path runs through a frozen RVQ with a silence latent and per-chunk masks; replacing its autoencoder is outside the migration design's scope (§12)")
+_add_training_feature_advisory(
+    "acestep", "vae_swap", "experimental",
+    "ACE-Step defaults to paired_temporal on the replacement codec's native time grid. Unquantized full fine-tuning with train_unet=true and a bundled 48kHz stereo Oobleck codec is required. Calibration uses bounded audio windows from the run's dataset. RVQ, timbre and reference conditioning retain the original codec; decoder bridges and target codec identity are saved, restored and compatible with U-net topology. Small native-model calibration, training, generation and artifact restoration are CPU-verified; official full-weight training, quality and throughput acceptance remain pending.",
+    methods=["full_finetune"])
 _add_training_feature_advisory(
     "sensenova", "vae_swap", "experimental",
     "SenseNova defaults to paired_spatial on the replacement codec's native grid. It aggregates trained generation patch and PixelShuffle projections, retaining the decoder, understanding tower and reference path. Full fine-tuning with generation fm_modules enabled is required; learned bridges join that optimizer scope. The generation patch inherits the checkpoint (4 latent cells for a pixel base), so token width is patch*VAE scale. Shared calibration, native codec bundling, strict bridge restoration and U-net topology preservation are verified with synthetic small native models and 4-D/independent-frame 5-D codecs. Attached refiners preserve trained weights when expanding channels. Official full-weight paired training, quality and throughput acceptance remain pending. Legacy zero remains explicit; its earlier official-weight functional measurements are recorded in VAE_SWAP_MIGRATION_DESIGN.md 10.6",
     methods=["full_finetune"])
-for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2"):
+for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "acestep"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",

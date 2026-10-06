@@ -96,6 +96,8 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
     from core.models.minit2i.residual_unet import preflight_checkpoint, restore_topology
     topology, saved_config = preflight_checkpoint(path)
     raw, metadata = read_state_dict(path)
+    from core.models.components.spatial_swap import read_declaration, install, validate_loaded
+    alignment = read_declaration(metadata)
 
     tf_sd = _transformer_subdict(raw, TRANSFORMER_PREFIX)
     if not tf_sd:
@@ -113,17 +115,32 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
             config = json.loads(metadata["mmjit_config"])
         except Exception:
             config = None
+    if alignment is not None:
+        raw_config = metadata.get("mmjit_config")
+        if not isinstance(raw_config, str) or len(raw_config.encode("utf-8")) > 65536:
+            raise ValueError("Aligned MiniT2I checkpoint requires bounded native mmjit_config JSON")
+        from core.models.minit2i.residual_unet import native_config
+        declared_config = json.loads(raw_config)
+        if not isinstance(declared_config, dict):
+            raise ValueError("MiniT2I mmjit_config must be an object")
+        config = native_config(declared_config)
     if config is None:
         det_variant, config = detect_variant_from_state_dict(tf_sd, prefix="")
         variant = variant or det_variant
 
     model = MiniT2IMMJiTModel(**config)
+    if alignment is not None:
+        if (model.mmjit_config.vae_type == "none" or int(model.mmjit_config.in_channels) !=
+                max(alignment["old_channels"], alignment["new_channels"])):
+            raise ValueError("MiniT2I spatial alignment disagrees with native config")
+        install(model, alignment)
     model.to(torch_dtype)
     missing, unexpected = model.load_state_dict(tf_sd, strict=False)
     if unexpected:
         raise RuntimeError(f"[MiniT2I single-file] unexpected transformer keys: {unexpected[:8]}")
     if missing:
         raise RuntimeError(f"[MiniT2I single-file] missing transformer keys: {missing[:8]}")
+    validate_loaded(model)
     model.eval()
     model.to("cpu")
     restore_topology(model, topology)
@@ -155,7 +172,9 @@ def save_single_file(
     """
     from core.models.minit2i.residual_unet import model_topology_metadata, native_config
     topology_metadata = model_topology_metadata(transformer)
-    saved_config = native_config(transformer) if topology_metadata else None
+    from core.models.components.spatial_swap import artifact_metadata
+    alignment_metadata = artifact_metadata(transformer)
+    saved_config = native_config(transformer) if topology_metadata or alignment_metadata else None
 
     def _named():
         for k, v in transformer.state_dict().items():
@@ -164,7 +183,8 @@ def save_single_file(
             for k, v in text_encoder.state_dict().items():
                 yield f"{TEXT_ENCODER_PREFIX}{k}", v
         if vae is not None:
-            for k, v in vae.state_dict().items():
+            native_vae = getattr(vae, "inner", vae) if alignment_metadata else vae
+            for k, v in native_vae.state_dict().items():
                 yield f"{VAE_PREFIX}{k}", v
 
     state, dropped_tied = dedup_tensors(_named())
@@ -186,7 +206,8 @@ def save_single_file(
         metadata["tied_weights_dropped"] = json.dumps(dropped_tied)
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
-    if topology_metadata:
+    if saved_config is not None:
         metadata["mmjit_config"] = json.dumps(saved_config)
         metadata.update(topology_metadata)
+        metadata.update(alignment_metadata)
     return save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)

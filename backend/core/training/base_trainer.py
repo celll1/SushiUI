@@ -15003,7 +15003,7 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
-        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2", "is_lens", "is_flux2", "is_anima")):
+        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2", "is_lens", "is_flux2", "is_anima", "is_minit2i")):
             import math
             from core.models.components.latent_adapter import topology_alignment
             model = getattr(self, "transformer_original", None) if getattr(self, "is_zimage", False) else self.transformer

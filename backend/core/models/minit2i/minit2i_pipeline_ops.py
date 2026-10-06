@@ -28,8 +28,8 @@ def align_to_grid(value: int, align: int = GRID_ALIGN) -> int:
     return max(align, round(value / align) * align)
 
 
-def normalize_resolution(width: int, height: int) -> tuple[int, int]:
-    return align_to_grid(width), align_to_grid(height)
+def normalize_resolution(width: int, height: int, *, align: int = GRID_ALIGN) -> tuple[int, int]:
+    return align_to_grid(width, align), align_to_grid(height, align)
 
 
 @torch.no_grad()
@@ -380,7 +380,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
     n = len(ts) - 1
     total = n - start_idx
     timestep_scalars = snapshot_schedule_scalars(ts)
-    spectrum = build_output_forecaster(spectrum_params, total, "MiniT2I")
+    spectrum = build_output_forecaster(spectrum_params or {}, total, "MiniT2I")
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     style_multi_active = style_refs is not None and len(style_refs) > 1
     style_any_active = style_active or style_multi_active

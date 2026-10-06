@@ -1,22 +1,8 @@
-"""minit2i_ops.py — MiniT2I (pixel-space MM-JiT) loader + block-swap + attention
-free functions (P3c).
+"""MiniT2I component loading, encoding, training and periodic samples.
 
-VERBATIM bodies of ``BaseTrainer._load_minit2i_components``,
-``BaseTrainer.setup_minit2i_block_swap`` and
-``BaseTrainer._setup_attention_backend_minit2i`` (base_trainer.py), moved out of
-the spine with the mechanical ``self.`` -> ``trainer.`` receiver rename only.
-
-Construction-order note (plan P3b/P3c): the arch handler binds at the END of
-``BaseTrainer.__init__`` — AFTER ``_load_model_components`` runs — so the
-load-time dispatcher (and ``_load_checkpoint_as_base``) call ``load_components``
-directly. ``setup_block_swap`` keeps a 2-line delegator on the trainer (called
-LATE by mode subclasses via hasattr) and ``setup_attention_backend`` keeps a
-delegator (called from the moved loader body); each body is defined exactly once
-here.
-
-REPA setup is central and architecture-neutral (``BaseTrainer._setup_repa``,
-called once from ``__init__`` after every load path); this module only supplies
-MiniT2I's token geometry to the shared loss helper.
+Loading precedes BaseTrainer's handler binding, so the loader and checkpoint
+resume dispatcher call load_components directly. Block swap runs after adapter
+setup; REPA uses the shared owner with MiniT2I's native token geometry.
 """
 from __future__ import annotations
 
@@ -71,19 +57,6 @@ def load_components(trainer) -> None:
         trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
         trainer.vae.requires_grad_(False)
         trainer.vae.eval()
-        # High-res latent caching encodes full bucket-resolution images (up to
-        # ~2048px) through the VAE. A single fp32 encode at that size peaks at
-        # tens of GB (early full-res conv stages + the bottleneck spatial
-        # self-attention), independent of the tiny transformer step. Tiled
-        # encode/decode splits the image into overlapping tiles so VAE memory
-        # is bounded by the tile size, not the image size.
-        for _m in ("enable_tiling", "enable_slicing"):
-            if hasattr(trainer.vae, _m):
-                try:
-                    getattr(trainer.vae, _m)()
-                except Exception as _e:
-                    print(f"{trainer.log_prefix} VAE {_m} failed: {_e}")
-        print(f"{trainer.log_prefix} MiniT2I VAE tiling/slicing enabled (bounds high-res encode VRAM)")
 
     # Latent space: the base's own declaration first (the loader already built the
     # transformer at its channel count), then this run's swap on top of it. Before
@@ -95,6 +68,16 @@ def load_components(trainer) -> None:
     _mt_cfg = trainer.transformer.mmjit_config
     trainer.minit2i_vae_type = str(getattr(_mt_cfg, "vae_type", "none"))
     trainer.minit2i_latent = trainer.minit2i_vae_type != "none"
+    from core.models.minit2i.vae_alignment import latent_geometry
+    trainer.minit2i_vae_scale_factor = latent_geometry(trainer.transformer)[0]
+    # Configure the resolved codec, including the native VAE behind a swap facade.
+    codec = getattr(trainer.vae, "inner", trainer.vae)
+    for name in ("enable_tiling", "enable_slicing"):
+        if hasattr(codec, name):
+            try:
+                getattr(codec, name)()
+            except Exception as exc:
+                print(f"{trainer.log_prefix} VAE {name} failed: {exc}")
 
     trainer.text_encoder_2 = None
     trainer.tokenizer_2 = None
@@ -518,9 +501,13 @@ def generate_sample(
     )
 
     print(f"{trainer.log_prefix} Generating MiniT2I sample: {prompt[:50]}...")
-    width, height = _mt_norm(width, height)
+    from core.models.minit2i.vae_alignment import latent_geometry, generation_token_stride
+    from core.models.components.latent_adapter import topology_alignment
+    import math
+    width, height = _mt_norm(width, height, align=generation_token_stride(trainer.transformer) *
+        math.lcm(*topology_alignment(getattr(trainer.transformer, "_residual_unet_spec", None))))
     is_latent = getattr(trainer, "minit2i_latent", False)
-    vsf = getattr(trainer, "minit2i_vae_scale_factor", 8)
+    vsf, external_channels = latent_geometry(trainer.transformer)
     noise_scale = float(getattr(trainer, "minit2i_noise_scale", 2.0))
 
     trainer.transformer.eval()
@@ -576,7 +563,7 @@ def generate_sample(
                     trainer.device, t_dtype, seed=seed if seed >= 0 else None,
                     neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
                     neg_mask=neg_mask,
-                    channels=int(cfg.in_channels), noise_scale=noise_scale, clamp_output=False,
+                    channels=external_channels, noise_scale=noise_scale, clamp_output=False,
                     progress_callback=_denoise_progress_callback,
                     spectrum_params={
                         "cfg_schedule_type": cfg_schedule_type,

@@ -1,10 +1,4 @@
-"""
-MiniT2IArchHandler — P0/P1 stub handler for arch "minit2i".
-
-Empty subclass: name + wiring spec are real; every canonical method raises
-NotImplementedError. Bodies are moved from base_trainer.py in phases P3-P7.
-Nothing calls these until a later phase flips the corresponding dispatcher.
-"""
+"""MiniT2I pixel/latent training, per-checkpoint geometry and codec migration."""
 
 from __future__ import annotations
 
@@ -45,13 +39,13 @@ class MiniT2IArchHandler(ArchHandler):
     consumes_crop_decode_loss = False
     supplies_predicted_latent = False
 
+    def __init__(self, trainer=None):
+        super().__init__(trainer)
+        if trainer is not None:
+            self.resolve_wiring(trainer)
+
     def resolve_wiring(self, trainer):
-        """MINIT2I_WIRING describes the PIXEL variant; a latent checkpoint has a
-        different channel count, patch size and compression ratio, all of which
-        are config values in the file (``vendor/mmjit.MMJiTConfig``). Read them,
-        so the resize slices with the checkpoint's own P and the run's wiring
-        reports its own geometry.
-        """
+        """Resolve native patch layout separately from the external codec geometry."""
         from core.models.minit2i.minit2i_vae import VAE_SCALE_FACTOR
 
         cfg = getattr(getattr(trainer, "transformer", None), "mmjit_config", None)
@@ -59,22 +53,42 @@ class MiniT2IArchHandler(ArchHandler):
             return self.wiring
         channels, patch = int(cfg.in_channels), int(cfg.patch_size)
         latent_io = self.wiring.latent_io.replace(pack_elems=patch * patch)
+        from core.models.components.latent_adapter import NormalizedImageVAE
+        vae = getattr(trainer, "vae", None)
+        if isinstance(vae, NormalizedImageVAE):
+            self.pixel_align = vae.spatial_scale_factor * patch
+            return self.wiring.replace(latent_channels=vae.config.latent_channels,
+                latent_ndim=4, vae_scale_factor=vae.spatial_scale_factor,
+                vae_norm="identity", vae_norm_pack=1, latent_io=latent_io)
         if str(getattr(cfg, "vae_type", "none")) == "none":
+            self.pixel_align = patch
             return self.wiring.replace(latent_io=latent_io)
+        self.pixel_align = VAE_SCALE_FACTOR * patch
         return self.wiring.replace(
             latent_channels=channels, vae_scale_factor=VAE_SCALE_FACTOR,
             vae_norm="shift_scale", latent_io=latent_io)
 
     def apply_vae_swap(self, trainer, resolved, module=None):
-        """The shared resize, plus MiniT2I's own record of which VAE it uses.
-
-        ``vae_type`` is a config field of the checkpoint (``MMJiTConfig``), and
-        the loader reads it to decide whether the model is latent at all, so a
-        swap that moved only the weights would reload as pixel-space. A source
-        with no registry family is recorded as ``"custom"``; the checkpoint's
-        ``component.vae.*`` block is what resolves it on the next load.
-        """
+        """Preserve latent mode and saved bridges when restoring a custom codec."""
         from core.models.minit2i.minit2i_vae import is_latent_vae
+
+        pair = getattr(trainer.transformer, "vae_latent_bridge", None)
+        if pair is not None:
+            if module is None and resolved.source != pair.declaration["source"]:
+                raise ValueError("Changing an aligned MiniT2I VAE requires a fresh base checkpoint")
+            from dataclasses import replace
+            from core.models.components.latent_io import ResizeReport
+            trainer.vae_identity = replace(resolved, state_dict=None)
+            trainer.vae_latent_channels = pair.declaration["new_channels"]
+            trainer.wiring = self.resolve_wiring(trainer)
+            width = int(trainer.transformer.mmjit_config.in_channels)
+            return ResizeReport((), width, width, width, 0, 0)
+        from core.training.vae_swap import initialization_mode
+        if module is None and initialization_mode(trainer.config, self.name) == "paired_spatial":
+            from core.models.minit2i.vae_alignment import initialize_swap
+            return initialize_swap(trainer, resolved, handler=self)
+        if module is None and (resolved.ndim != 4 or resolved.scale_factor != 8):
+            raise ValueError("Legacy zero MiniT2I swaps require a 4-D 8x VAE; use paired_spatial")
 
         report = super().apply_vae_swap(trainer, resolved, module=module)
         cfg = getattr(trainer.transformer, "mmjit_config", None)
@@ -83,17 +97,13 @@ class MiniT2IArchHandler(ArchHandler):
             cfg.vae_type = family if is_latent_vae(family) else "custom"
         return report
 
+    def calibrate_before_training(self, trainer, datasets, bucket_manager):
+        from core.models.minit2i.vae_alignment import calibrate
+        calibrate(trainer, datasets)
+
     def check_vae_compatibility(self, facts, *, trainer=None,
                                 base_model_path=None):
-        """The family gate against THIS checkpoint's geometry.
-
-        ``vae_source.check_vae_compatibility`` answers from the arch's wiring
-        constant, which for MiniT2I is the pixel variant -- so it refuses every
-        candidate for every checkpoint, including the latent ones a swap is for.
-        The pixel refusal is real and stays: moving a pixel checkpoint into a
-        latent space changes patch_size as well as the channel count, which is
-        not a channel resize (design 5.1, and 10 for the arch that does it).
-        """
+        """Check image codecs against the base's per-checkpoint pixel/latent mode."""
         io_config = self._io_config(trainer, base_model_path)
         if not io_config:
             return False, ("MiniT2I's latent geometry is a per-checkpoint config "
@@ -107,22 +117,14 @@ class MiniT2IArchHandler(ArchHandler):
                 "resize. Train a latent variant (scratch:minit2i:<variant>:sdxl "
                 "or :flux1) and swap that")
 
-        # The same three structural questions the shared gate asks, against the
-        # checkpoint's geometry instead of the arch table it cannot express.
         from core.models.minit2i.minit2i_vae import VAE_SCALE_FACTOR
 
         ndim = facts.get("ndim")
-        if ndim is not None and ndim != 4:
-            return False, (f"{ndim}-D latents cannot drive minit2i, which expects "
-                           f"4-D")
+        if ndim not in (4, 5):
+            return False, "MiniT2I swaps require a declared 4-D or independent-frame 5-D image codec"
         scale = facts.get("scale_factor")
-        if scale is not None and int(scale) != VAE_SCALE_FACTOR:
-            return False, (f"spatial compression {scale}x differs from MiniT2I's "
-                           f"{VAE_SCALE_FACTOR}x")
-        temporal = facts.get("scale_temporal")
-        if temporal is not None and int(temporal) != 1:
-            return False, (f"temporal compression {temporal}x differs from "
-                           f"MiniT2I's 1x")
+        if type(scale) is not int or scale < 1 or (scale % VAE_SCALE_FACTOR and VAE_SCALE_FACTOR % scale):
+            return False, f"MiniT2I swaps require integer spatial scale relative to {VAE_SCALE_FACTOR}x"
         return True, None
 
     @staticmethod

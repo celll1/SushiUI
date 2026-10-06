@@ -158,6 +158,9 @@ def peek_io_config(model_path: str) -> dict:
     """
     import json as _json
 
+    if model_path and model_path.endswith(".safetensors") and not os.path.isfile(model_path) and os.path.isfile(model_path + ".index.json"):
+        model_path += ".index.json"
+
     if not model_path or is_scratch_spec(model_path):
         if is_scratch_spec(model_path):
             _variant, vae_type = parse_scratch_spec(model_path)
@@ -341,7 +344,8 @@ def load_minit2i_components(
     if declared_vae is not None:
         # A swapped VAE need not belong to a registry family at all, so
         # `is_latent_vae(vae_type)` is not the question here -- the declaration is.
-        expected = int(transformer.mmjit_config.in_channels)
+        from core.models.minit2i.vae_alignment import latent_geometry
+        expected = latent_geometry(transformer)[1]
         if declared_vae.latent_channels != expected:
             raise ValueError(
                 f"{model_path} declares {declared_vae.latent_channels} latent "
@@ -351,7 +355,13 @@ def load_minit2i_components(
         print(f"[MiniT2ILoader] Declares a non-native VAE ({declared_vae.provenance}, "
               f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
         vae = declared_vae.load_module(torch_dtype=vae_dtype)
+        pair = getattr(transformer, "vae_latent_bridge", None)
+        if pair is not None:
+            from core.models.components.spatial_swap import restored_image_codec
+            vae, declared_vae = restored_image_codec(vae, declared_vae, pair.declaration)
         vae.to("cpu")
+    elif getattr(transformer, "vae_latent_bridge", None) is not None:
+        raise ValueError("Aligned MiniT2I checkpoint requires a declared external codec")
     elif is_latent_vae(vae_type):
         vae = load_minit2i_vae(vae_type, torch_dtype=vae_dtype, local_dir=vae_local_dir)
         # Embedded (trained) VAE from a bundle_vae single-file overrides the base
@@ -383,7 +393,7 @@ def load_minit2i_components(
         "vae_source": vae_source,
         "vae_path": vae_path,
         "vae_type": vae_type,
-        "vae_scale_factor": VAE_SCALE_FACTOR,
+        "vae_scale_factor": getattr(vae, "spatial_scale_factor", VAE_SCALE_FACTOR),
         "declared_vae": declared_vae,
         "vae_identity": (None if declared_vae is None else declared_vae.facts()),
     }

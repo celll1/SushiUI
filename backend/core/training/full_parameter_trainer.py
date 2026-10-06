@@ -229,20 +229,7 @@ class FullParameterTrainer(BaseTrainer):
             self.adapter = Ltx2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Ltx2FullParameterAdapter")
         elif self.is_minimax_h3:
-            # LAYER 3 of the three-layer full-FT refusal for this architecture
-            # (design section 7). Layer 1 is
-            # `api.arch_capabilities.TRAINING_UNSUPPORTED["minimax_h3"]
-            # ["full_finetune"]`, which the UI filters its method dropdown from;
-            # layer 2 is the deliberate ABSENCE of a
-            # MiniMaxH3FullParameterAdapter class in
-            # `adapters/minimax_h3_adapter.py`.
-            #
-            # The refusal a queued run actually hits is
-            # `_refuse_unsupported_full_finetune`, raised BEFORE super().__init__()
-            # loads anything. This branch is the backstop for a caller that
-            # constructs the trainer some other way (a direct subclass, a test), so
-            # the absence of an adapter can never be reached as a silent fallthrough
-            # to the SD1.5 one.
+            # The staged aligned adapter still lacks public calibration/residency acceptance.
             raise ValueError(
                 "Full fine-tuning is not supported for MiniMax-H3. Its DiT is a 33 B dense "
                 "transformer: parameters, gradients and optimizer state do not fit the "

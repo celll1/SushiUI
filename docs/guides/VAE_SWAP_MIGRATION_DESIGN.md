@@ -8,6 +8,15 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3のembedded交換VAEを学習用に読み込む際、native用の一律fp16変換を適用せず、
+保存済みprecision/latent identityを維持する。校正済みpair・codec/model契約を確認し、
+外部channel、空間縮小率、frame policyとU-net累積縮小をtraining wiring/bucketへ反映する。
+内部のMiniMaxH3AlignedFullParameterAdapterは非量子化DiTとbridgeを学習対象とし、
+TE/両VAEを凍結、native Full bundleを保存する。量子化・未校正モデルはoptimizer構築前に拒否。
+公開Full trainer/APIの拒否は維持する。runtime校正、実転送residency、公式全重みでの受入は未完。
+合成画像のみでchannel増減・fp32/bf16・U-net併用の勾配/保存復元を確認。
+関連CPU88件、最終identity/wrapper検証7件、変更Python compile・CUDA無し実importが通過。
+
 LTX学習のRoPE bounds、dummy audio用clip実時間、training bucketのframe格子を
 VideoCodecContractへ接続した。independent/causal/H3 chunkを同じ座標helperで扱い、
 通常codecの座標は従来と一致する。H3 chunkの校正clipはsource LTX8と共通の最短73frameを選ぶ。

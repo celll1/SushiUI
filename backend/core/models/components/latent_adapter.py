@@ -108,6 +108,19 @@ class SpatialAlignmentPair(nn.Module):
         return self.input._ready and self.output._ready
 
     @torch.no_grad()
+    def untrained_flow_noise_residual(self, noise, *, convention):
+        """Calibrated noise complement for frozen original-channel heads; not a sampler policy."""
+        if convention not in ("eps_minus_x0", "x0_minus_eps"):
+            raise ValueError("Noise residual requires an explicit flow velocity convention")
+        incoming = self.input.epsilon(noise.to(self.input.projection.weight.dtype))
+        incoming[:, self.declaration["old_channels"]:] = 0
+        projected = self.output.epsilon(incoming.to(self.output.projection.weight.dtype))
+        residual = noise.float() - projected.float()
+        if convention == "x0_minus_eps":
+            residual = -residual
+        return residual
+
+    @torch.no_grad()
     def initialize_from_pair(self, incoming, outgoing):
         if not incoming._ready or not outgoing._ready:
             raise ValueError("Both calibration directions must be fitted before installation")

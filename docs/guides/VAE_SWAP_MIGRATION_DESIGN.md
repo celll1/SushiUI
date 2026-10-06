@@ -8,6 +8,40 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Animaの画質切り分けを追加した。dataset 30の既存manifestから40枚を選び、各itemの
+現在のtagsにgeneralがありsensitive/questionable/explicitがないこととpath一致をAPIで
+確認してから開いた。公式全DiTで512pxのpaired_spatial校正を行い、更新ゼロのartifactを
+作成。同じ狐prompt・seed63・CFG4・24 stepsで、通常velocity変換はU-net有無の両方で
+紫色の模様となった。校正枚数の増加だけでは未学習生成は回復しない。
+
+元codecで生成した合成狐をteacher encode→空間縮小→output bridge→交換codec decodeへ
+通すcodec単体試験では狐と青い本の概形が残り、target codec直接再構成とのPSNRは
+24.76dBだった（latent MSE 0.9152）。これは1合成画像の測定で、汎用画質の証明ではない。
+native clean予測を交換先へ写してvelocityを戻す候補では、U-netなしで狐と本を識別できた。
+拡張headの未学習出力をゼロcleanとして扱うローカル試験であり、既存headの意味を
+本番で変更してはいない。2段U-netでは橙色の塊に崩れた。
+
+別候補として初期Gaussianの写像残差を補った。`A0`はinput bridge出力の元channelだけを
+残す演算、`B`はoutput bridgeのbiasなし演算として、`r = eps_target - B A0 eps_target`。
+eps-minus-x0 velocityには+r、逆符号には-rを加える。sigmaで割らないため、clean予測方式の
+低sigma除算を避ける。U-netなしの公式全重み生成では狐と青い本の概形が残ったが、
+画質受入はこの1prompt/seedの実験候補に限る。元codec＋デフォルト2段U-netも灰色の
+模様へ崩れ、外側pool区間を4..24から8..20、さらに10..18へ短縮しても、最深部4層の
+交換先生成は橙色の塊だった。
+通常のpaired_spatial生成やデフォルトU-netの画質受入を代用しない。
+
+`SpatialAlignmentPair.untrained_flow_noise_residual`へ上記の検証用演算を共通化した。
+flow符号、channel増減、BCHW/独立frame BCFHW、BF16、biasとclean終点、不正形状・
+未校正の拒否を検証した。既存校正・Anima/U-netを含むCPU回帰67件、変更Pythonの
+compileとCUDA未初期化の実importが通過。helperを使用した公式重み生成も通過した。
+画像と校正行列はignored localのみで、gitに含めない。
+
+本番の既定動作は変更していない。採用前に、学習batchではその露出のnoise、生成では
+request所有のnoiseを明示的に渡し、CFG両分岐で同じ補正を使う経路が必要。img2img、
+inpaint/reference、ancestral等の追加noiseは別に扱う。校正後に学習されたextra headを
+元headのみと同一視しない。補正方針とnoise写像のsnapshotをartifactへ宣言し、旧artifactの
+velocity解釈を保持するresume契約、実学習と生成の整合性を確認してから公開する。
+
 Anima公式全重みの追加検証: 元16ch/8x codecをQwen 2.1の64ch/16xへpaired_spatialで
 交換し、デフォルト2段U-netと併用したAPI Full runを実行した。合成図形2枚のみで
 校正・TE/VAE encoding・2,091,929,216 parameterのAdafactor更新・codec同梱保存が通過。

@@ -14,6 +14,44 @@ def output_x0(model, image):
     return image if pair is None else pair.output.prediction(image, kind="x0")
 
 
+def initialize_swap(trainer, resolved, *, handler):
+    from core.models.components.spatial_swap import initialize_image_swap
+    from core.models.components.pixel_codec import RGBPixelCodec
+    from .latent_space import gen_geometry, latent_config_dict
+    from core.training.arch.sensenova import _fm_modules_trained
+    from core.training.ops.training_method import is_full_finetune
+    if not is_full_finetune(trainer) or not _fm_modules_trained(trainer):
+        raise ValueError("SenseNova paired calibration requires full_finetune with generation fm_modules enabled")
+    model = trainer.transformer
+    geometry = gen_geometry(model)
+    wiring = handler.resolve_wiring(trainer)
+    patch = handler._resolve_gen_patch(trainer.config,
+        base_patch=geometry.patch if geometry.is_latent else None)
+    old_vae = trainer.vae
+    if not geometry.is_latent:
+        trainer.vae = RGBPixelCodec()
+
+    def resize(channels):
+        report = migrate_generation_io(model, channels=channels, patch=patch, scale=resolved.scale_factor)
+        trainer.sensenova_config_dict = latent_config_dict(
+            getattr(trainer, "sensenova_config_dict", None), channels=channels, patch=patch)
+        return report
+
+    try:
+        return initialize_image_swap(trainer, resolved, handler=handler, model=model,
+            old_channels=geometry.channels, source_wiring=wiring, patch_size=patch,
+            resize=resize, pending_key="_sensenova_vae_calibration_source")
+    except Exception:
+        trainer.vae = old_vae
+        raise
+
+
+def calibrate(trainer, datasets):
+    from core.models.components.spatial_swap import calibrate_images
+    return calibrate_images(trainer, datasets, model=trainer.transformer,
+                           pending_key="_sensenova_vae_calibration_source")
+
+
 def _spatial_weights(value, size, *, sum_preserving=False):
     old = value.shape[-1]
     if value.shape[-2] != old or (old % size and size % old):

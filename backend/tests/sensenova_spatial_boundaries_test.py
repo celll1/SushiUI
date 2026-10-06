@@ -166,3 +166,92 @@ def test_patch_migration_preserves_unet_regions_and_updates_native_identity():
     validate_owner_topology(updated, model)
     for name, value in native_weights.items():
         assert torch.equal(value, model.language_model.state_dict()[name])
+
+
+def test_shared_calibration_and_native_codec_full_export_round_trip(tmp_path):
+    import numpy as np
+    from PIL import Image
+    from diffusers import AutoencoderKL
+    from core.models.common.vae_source import resolve_vae_source, load_declared_latent_io
+    from core.models.common.single_file_format import read_state_dict, strip_prefix, TRANSFORMER_PREFIX, VAE_PREFIX
+    from core.models.components.spatial_swap import restored_image_codec
+    from core.models.sensenova.vae_alignment import initialize_swap, calibrate
+    from core.models.sensenova.loader import save_sensenova_full_finetune_checkpoint, install_sensenova_state_dict, _assert_declared_latent_geometry
+    from core.training.arch.sensenova import SenseNovaArchHandler
+    from core.training.vae_swap import swap_metadata
+    from sensenova_full_finetune_save_test import _trained_tree, _Decoder, _plain
+    target = AutoencoderKL(in_channels=3, out_channels=3, latent_channels=2,
+        block_out_channels=(4,) * 5, down_block_types=("DownEncoderBlock2D",) * 5,
+        up_block_types=("UpDecoderBlock2D",) * 5, norm_num_groups=1, sample_size=128,
+        scaling_factor=1.)
+    target.save_pretrained(tmp_path / "target")
+    resolved = resolve_vae_source(f"file:{tmp_path / 'target'}", arch="sensenova")
+    model = _PixelTree()
+    trainer = SimpleNamespace(transformer=model, vae=None, config={"training_method":"full_finetune",
+        "vae_swap_calibration_samples":2,"vae_swap_calibration_resolution":128},
+        device=torch.device("cpu"), weight_dtype=torch.float32, vae_dtype=torch.float32,
+        text_encoder=None, text_encoder_2=None, _check_stop_requested=lambda:None,
+        sensenova_train_fm_modules=True)
+    handler = SenseNovaArchHandler(trainer)
+    trainer.arch = handler
+    trainer._main_model_module = lambda: model
+    trainer.move_main_model_to_cpu = lambda: model.to("cpu")
+    trainer.move_main_model_to_gpu = lambda: model.to("cpu")
+    trainer.move_vae_to_cpu = lambda: trainer.vae.to("cpu")
+    initialize_swap(trainer, resolved, handler=handler)
+    assert model.gen_in_channels == 3 and trainer.wiring.latent_channels == 2
+    assert trainer.wiring.vae_scale_factor == 16 and trainer.wiring.vae_norm == "identity"
+    assert model.vae_latent_bridge.declaration["old_scale"] == 1
+    assert not model.vae_latent_bridge.ready
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"synthetic{index}.png"
+        Image.fromarray(np.random.default_rng(index).integers(0, 256, (128, 128, 3), dtype=np.uint8)).save(path)
+        paths.append({"image_path":str(path)})
+    calibrate(trainer, [SimpleNamespace(items=paths)])
+    assert model.vae_latent_bridge.ready
+    assert not hasattr(trainer, "_sensenova_vae_calibration_source")
+    from core.training.adapters.sensenova_adapter import SenseNovaFullParameterAdapter
+    adapter = SenseNovaFullParameterAdapter(trainer)
+    parameters = adapter._fm_parameters("gen")
+    assert {id(p) for p in model.vae_latent_bridge.parameters()} <= {id(p) for p in parameters}
+    saved_pair = model.vae_latent_bridge
+    handler.apply_vae_swap(trainer, resolved, module=trainer.vae)
+    assert model.vae_latent_bridge is saved_pair
+    _, _, metadata = swap_metadata(trainer)
+    exported = _trained_tree("gen")
+    exported.vae_latent_bridge = model.vae_latent_bridge
+    path, _ = save_sensenova_full_finetune_checkpoint(exported, str(tmp_path / "full"),
+        branch="gen", save_format="mixed", config={"downsample_ratio":.5},
+        extra_metadata=metadata, vae=trainer.vae, max_shard_bytes=4096)
+    state, metadata = read_state_dict(path)
+    declaration = read_declaration(metadata)
+    assert declaration == model.vae_latent_bridge.declaration
+    assert not any(key.startswith("vae.inner.") for key in state)
+    restored = _Decoder(factory=_plain)
+    install(restored, declaration)
+    install_sensenova_state_dict(restored, strip_prefix(state, TRANSFORMER_PREFIX), {},
+        torch.float32, require_complete=True)
+    validate_loaded(restored)
+    for name, value in exported.vae_latent_bridge.state_dict().items():
+        assert torch.equal(value, restored.vae_latent_bridge.state_dict()[name])
+    saved_vae = load_declared_latent_io(path, arch="sensenova")
+    facade, saved_vae = restored_image_codec(saved_vae.load_module(torch_dtype=torch.float32), saved_vae, declaration)
+    for name, value in target.state_dict().items():
+        assert torch.equal(value, facade.inner.state_dict()[name]), name
+    config = SimpleNamespace(gen_in_channels=3, gen_patch_size=4)
+    _assert_declared_latent_geometry(config, saved_vae, path=path, alignment=declaration)
+    with pytest.raises(ValueError, match="generation grid"):
+        _assert_declared_latent_geometry(SimpleNamespace(gen_in_channels=2, gen_patch_size=4),
+            saved_vae, path=path, alignment=declaration)
+    with pytest.raises(ValueError, match="declared VAE"):
+        _assert_declared_latent_geometry(config, None, path=path, alignment=declaration)
+    pixels = torch.randn(1, 3, 64, 64)
+    assert facade.encode(pixels).latent_dist.mode().shape == (1, 2, 4, 4)
+    assert facade.decode(torch.randn(1, 2, 4, 4)).sample.shape == pixels.shape
+    broken = strip_prefix(state, TRANSFORMER_PREFIX)
+    broken.pop("vae_latent_bridge.input.projection.weight")
+    incomplete = _Decoder(factory=_plain)
+    install(incomplete, declaration)
+    with pytest.raises(RuntimeError, match="incomplete"):
+        install_sensenova_state_dict(incomplete, broken, {}, torch.float32, require_complete=True)

@@ -24,7 +24,12 @@ CPU合成検証ではFP32/BF16の入力応答・出力平均、チャネル増�
 実vendor推論、refiner併用、bridge state復元、U-net identity更新が通過。
 既存latent移行とfm_modules勾配の回帰62件を確認し、追加のU-net/refiner回帰も通過した。
 変更Pythonのpy_compileと実importはCUDAを初期化せずに通過した。
-この段階では公開autoは従来zeroのままで、共有校正owner・loader/export・API/UIへの配線は残る。
+SenseNovaの共有校正ownerとRGB teacher、bridgeのoptimizer対象、校正済みbridgeを再初期化しない復元を追加した。
+Full exportはalignment宣言とnative codecを同梱し、loaderは宣言に従って内部幅と外部チャネル数を分けて検証する。
+bridgeの宣言・重み欠落、未校正の保存を拒否する。facadeの正規化を二重適用せず、native codecの状態だけを保存する。
+実AutoencoderKLと合成画像による校正→分割Full保存→厳密bridge復元→native codec読込の往復が通過した。
+既存Full保存・latent移行を含む93件は通過し、追加統合fixtureのresolver引数と再読込用modelを修正した1件も通過。
+この段階では公開autoは従来zeroのまま。モデル全体を構築する公開loader・生成の統合検証、API/UIへの配線は残る。
 公式全重みによるSenseNova paired_spatialの学習・画質検証も未了。
 MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで
 入力を`alpha=t`、出力をx0として変換し、通常DiTとresidual U-netへ同じ境界を適用する。

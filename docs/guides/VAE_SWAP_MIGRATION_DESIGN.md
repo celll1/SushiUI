@@ -37,6 +37,22 @@ lambda=1e-5・64反復のローカル試験で、1024px・seed64/65のU-netな�
 channel減少時の非可逆性、反復演算の費用を扱う本番契約が未検証のため、runtime既定値は変更しない。
 校正kernel・診断画像・ログはignored localだけに保持する。
 
+同じteacher画像縮小の経路を公式Anima全DiT・TEでもGPU検証した。現在のAPIから
+generalタグとpath一致を再確認した40枚で、元C16/8xからQwen 2.1 C64/16xへ512px校正し、
+狐と青い本のprompt・seed63・CFG4・24steps・1024pxで11条件を比較した。
+元codecの3条件、通常pairedの2条件、直交化noiseと残差補正の3条件、逆写像の3条件が
+すべて有限latentを出し、returncode 0で完走した。交換後latentは64ch・64×64で、
+元codecの16ch・128×128より空間セル数は1/4。校正済みbridgeの保存も確認した。
+通常pairedは紫色の模様へ崩れるが、U-netなしのnoise補正では狐・本・尾を識別できた。
+逆写像でも同程度の概形が得られ、このAnimaの1例では明確な画質優位は確認できない。
+単発denoise計時はnoise補正2.99秒、64反復逆写像3.50秒。ウォームアップ・反復・
+全体のencode/decodeを揃えたthroughput受入ではない。
+既定2段U-netのavg poolは識別可能な形を失い、RMS poolは耳・体・青い本の大まかな配置が
+残っても強くぼける。1prompt/seedの改善を既定U-net併用や全モデルの画質保証へ代用しない。
+この結果からAnimaにも64反復の逆写像を一律に既定化せず、より軽いnoise補正を比較対象に残す。
+実験候補の本番配線と、学習中のbridge補正・snapshot復元との整合性は未検証。
+検証は既存runを作成・変更せず別プロセスで行い、校正画像とkernelはgitへ含めない。
+
 Qwen→LTXの画質切り分けを追加した。現在のdataset itemのpath・generalタグと
 sensitive/questionable/explicitがないことをAPIで確認した40枚だけで512px校正を行った。
 公式全DiT・TE、狐と青い本のprompt、seed63、CFG1、24steps、512pxで比較した。

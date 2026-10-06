@@ -15,6 +15,14 @@ from core.rewiring.spec import checkpoint_metadata, validate_model_identity, pre
 GRID_POLICY_KEY = "sushi_residual_grid_policy"
 GRID_POLICY = "zero_token_tail_v1"
 AUDIO_CODEC_KEY = "sushi_audio_codec_contract"
+AUDIO_TIME_KEY = "sushi_audio_time_contract"
+
+
+def audio_position_scale(config):
+    time = getattr(config, AUDIO_TIME_KEY, None)
+    if time is None:
+        return 1.0
+    return getattr(config, AUDIO_CODEC_KEY)["hop_length"] / time["source_hop"]
 
 
 def native_config(config):
@@ -65,6 +73,12 @@ def native_config(config):
         if contract.latent_channels > resolved["audio_acoustic_hidden_dim"]:
             raise ValueError("ACE-Step target audio width exceeds the decoder width")
         resolved[AUDIO_CODEC_KEY] = asdict(contract)
+    time = getattr(config, AUDIO_TIME_KEY, None)
+    if time is not None:
+        if (audio is None or not isinstance(time, dict) or set(time) != {"policy", "source_hop"}
+                or time["policy"] != "source_hop_v1" or type(time["source_hop"]) is not int or time["source_hop"] < 1):
+            raise ValueError("ACE-Step audio time contract differs")
+        resolved[AUDIO_TIME_KEY] = deepcopy(time)
     return resolved
 
 
@@ -83,6 +97,8 @@ def decoder_identity_config(model):
         owner["audio_acoustic_hidden_dim"], owner["in_channels"] = width, 3*width
         from dataclasses import asdict
         owner[AUDIO_CODEC_KEY] = asdict(alignment.target)
+        if getattr(alignment, "position_policy", "target_index_v1") == "source_hop_v1":
+            owner[AUDIO_TIME_KEY] = dict(policy="source_hop_v1", source_hop=alignment.source.hop_length)
     if owner != resolved:
         raise ValueError("ACE-Step owner/decoder geometry disagrees")
     return resolved
@@ -229,15 +245,20 @@ def preflight_forward(model, length, attention_mask, encoder_mask, *, batch_size
 
 def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden, encoder_mask=None, **kwargs):
     spec = validate_topology_identity(model._residual_unet_spec, model.config)
+    step = audio_position_scale(model.config)
+    regular = False
+    if positions.ndim == 2 and positions.shape[1] > 0:
+        regular = (positions[:,1:] - positions[:,:-1] == 1).all() if step == 1 else torch.allclose(
+            positions, positions[:, :1] + torch.arange(positions.shape[1], device=positions.device) * step, rtol=1e-6, atol=1e-5)
     if (positions.ndim != 2 or positions.shape[1] != hidden.shape[1]
             or positions.shape[0] not in (1, hidden.shape[0]) or not torch.isfinite(positions).all()
-            or not bool((positions[:,1:] - positions[:,:-1] == 1).all())):
+            or not bool(regular)):
         raise ValueError("ACE-Step residual positions must be a regular native temporal grid")
     native_count = hidden.shape[1]
     padded, _ = temporal_grid(spec, model.config, native_count)
     if padded > native_count:
         hidden = F.pad(hidden, (0, 0, 0, padded - native_count))
-        tail = torch.arange(1, padded - native_count + 1, device=positions.device)
+        tail = torch.arange(1, padded - native_count + 1, device=positions.device) * step
         positions = torch.cat((positions, positions[:, -1:] + tail), dim=1)
     cross_mask = None
     if encoder_mask is not None and not bool((encoder_mask == 1).all()):

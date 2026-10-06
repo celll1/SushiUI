@@ -8,6 +8,16 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+新規ACE swapの時間位置方針はsource_hop_v1とした。RoPEのtarget token位置jを
+j×target_hop/source_hopへ写し、局所attentionの元window幅を実時間で保持する。dense経路は
+window×source_hop//target_hop、U-net経路は補正済み座標の距離でwindowを判定し、粗い層では
+座標を平均する。padding tailも補正後の間隔を使う。codec bundle v2はposition_policyを明示し、
+decoder/U-netの構造identityに時間契約を含む。既存v1 artifactはtarget_index_v1として復元し、
+再保存しても以前の位置解釈を維持する。方針とdecoder configの不一致はモデル確保前に拒否する。
+小型実decoderの整数/非整数hop・dense/U-net・局所mask・RoPE座標、v1復元/再保存、改変拒否の
+CPUテスト6件と、関連boundary/artifact/sampler/backend/native回帰38件・20subtestが通過した。
+FlashAttentionの実GPU確認と公式重みの音質・速度検証は未完であり、公開generation gateは残す。
+
 ACE generation backendの無音/reference encodeは元codec、生成latent decodeは交換先codecへ分離した。
 source codecの失敗時も配置を復元する。text・cover・repaint・outpaintの元時間系列/保持区間を維持し、
 samplerのU-net preflightはtarget frame数を使う。target-hop paddingの余剰はpeak正規化前にcropする。

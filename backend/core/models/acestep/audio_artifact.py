@@ -26,7 +26,7 @@ def _contract(config):
 
 
 def read_record(metadata, owner_config):
-    from .residual_unet import native_config, AUDIO_CODEC_KEY
+    from .residual_unet import native_config, AUDIO_CODEC_KEY, AUDIO_TIME_KEY
     raw = (metadata or {}).get(KEY)
     if raw is None:
         if DECODER_KEY in (metadata or {}):
@@ -35,14 +35,20 @@ def read_record(metadata, owner_config):
     if not isinstance(raw, str) or len(raw.encode("utf-8")) > 65536:
         raise ValueError("Invalid ACE audio alignment metadata")
     record = json.loads(raw)
-    if not isinstance(record, dict) or set(record) != {
+    fields = {
             "version", "method", "token_policy", "normalization", "source", "target",
-            "source_config", "target_config", "source_hash", "target_hash", "source_dtype"}:
+            "source_config", "target_config", "source_hash", "target_hash", "source_dtype"}
+    if isinstance(record, dict) and record.get("version") == 2:
+        fields.add("position_policy")
+    if not isinstance(record, dict) or set(record) != fields:
         raise ValueError("Invalid ACE audio alignment record fields")
-    if type(record["version"]) is not int or record["version"] != 1 or (
+    if type(record["version"]) is not int or record["version"] not in (1, 2) or (
             record["method"], record["token_policy"], record["normalization"]) != (
                 "paired_temporal", "target_native", "identity"):
         raise ValueError("Unsupported ACE audio alignment contract")
+    policy = record.get("position_policy", "target_index_v1")
+    if policy not in ("source_hop_v1", "target_index_v1"):
+        raise ValueError("Unsupported ACE audio position policy")
     source, target = _contract(record["source_config"]), _contract(record["target_config"])
     source.check_pair(target)
     if not isinstance(record["source"], dict) or not isinstance(record["target"], dict):
@@ -65,6 +71,8 @@ def read_record(metadata, owner_config):
     expected = dict(source_native, audio_acoustic_hidden_dim=max(source.latent_channels, target.latent_channels),
                     in_channels=3*max(source.latent_channels, target.latent_channels),
                     **{AUDIO_CODEC_KEY: asdict(target)})
+    if policy == "source_hop_v1":
+        expected[AUDIO_TIME_KEY] = dict(policy=policy, source_hop=source.hop_length)
     if native_config(decoder) != expected:
         raise ValueError("ACE aligned decoder config differs from the audio boundary")
     if metadata.get("component.audio_vae.embedded") != "1" or metadata.get("component.audio_vae.prefix") != "vae.":
@@ -94,7 +102,8 @@ def export_bundle(model, codec, source_codec=None):
     if source_identity is None:
         raise ValueError("ACE audio export requires the original conditioning codec identity")
     state = {key: value.detach().cpu().contiguous() for key, value in codec.state_dict().items()}
-    record = dict(version=1, method="paired_temporal", token_policy="target_native", normalization="identity",
+    record = dict(version=2, method="paired_temporal", token_policy="target_native", normalization="identity",
+        position_policy=getattr(pair, "position_policy", "target_index_v1"),
         source=asdict(pair.source), target=asdict(pair.target), source_config=source_identity["config"],
         target_config=dict(codec.config), source_hash=source_identity["hash"], target_hash=content_hash_for_state_dict(state),
         source_dtype=source_identity["dtype"])
@@ -144,7 +153,7 @@ def preflight_headers(handle, record):
 def prepare_restore(model, record):
     from .vae_boundary import install_decoder_alignment
     pair = AudioAlignmentPair(AudioCodecContract(**record["source"]), AudioCodecContract(**record["target"]))
-    install_decoder_alignment(model, pair)
+    install_decoder_alignment(model, pair, position_policy=record.get("position_policy", "target_index_v1"))
     model._audio_source_codec_identity = dict(config=record["source_config"], hash=record["source_hash"], dtype=record["source_dtype"])
 
 

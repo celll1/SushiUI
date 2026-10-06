@@ -87,13 +87,15 @@ def sampler_target_inputs(alignment, source, attention, clean, mask, crossfade):
                 crossfade=(crossfade*alignment.source.hop_length+alignment.target.hop_length-1)//alignment.target.hop_length)
 
 
-def install_decoder_alignment(model, alignment):
+def install_decoder_alignment(model, alignment, *, position_policy="source_hop_v1"):
     """Install before optimizer creation; outer RVQ config is not rewritten."""
-    from .residual_unet import native_config, restore_topology, model_topology_metadata, decoder_identity_config, AUDIO_CODEC_KEY
+    from .residual_unet import native_config, restore_topology, model_topology_metadata, decoder_identity_config, AUDIO_CODEC_KEY, AUDIO_TIME_KEY
     from dataclasses import asdict
     from core.rewiring.spec import build_spec
 
     decoder = getattr(model, "decoder", model)
+    if position_policy not in ("source_hop_v1", "target_index_v1"):
+        raise ValueError("Unsupported ACE audio position policy")
     if getattr(decoder, "_audio_latent_alignment", None) is not None:
         raise ValueError("ACE audio alignment is already installed")
     model_topology_metadata(model)
@@ -119,6 +121,8 @@ def install_decoder_alignment(model, alignment):
     target_config = deepcopy(decoder.config)
     target_config.in_channels, target_config.audio_acoustic_hidden_dim = 3*width, width
     setattr(target_config, AUDIO_CODEC_KEY, asdict(alignment.target))
+    if position_policy == "source_hop_v1":
+        setattr(target_config, AUDIO_TIME_KEY, dict(policy=position_policy, source_hop=alignment.source.hop_length))
     graph = getattr(decoder, "_residual_unet_spec", None)
     if graph is not None:
         graph = build_spec("acestep", [{"name": "main", "block_count": config["num_hidden_layers"]}],
@@ -144,6 +148,11 @@ def install_decoder_alignment(model, alignment):
                 new_out.bias[:source].copy_(out.bias)
         decoder.proj_in[1], decoder.proj_out[1] = new_in, new_out
     decoder.config = target_config
+    alignment.position_policy = position_policy
     decoder._audio_latent_alignment = alignment.to(inp.weight)
+    if position_policy == "source_hop_v1":
+        for layer in decoder.layers:
+            if layer.self_attn.sliding_window is not None:
+                layer.self_attn.sliding_window = config["sliding_window"] * alignment.source.hop_length // alignment.target.hop_length
     if graph is not None:
         restore_topology(model, graph)

@@ -28,10 +28,14 @@ def initialize_swap(trainer,resolved,*,handler):
             restore_topology(model,build_spec("anima",[{"name":"main","block_count":len(model.blocks)}],
                 topology["regions"],native_config(model)))
         return report
+    from core.models.components.gaussian_alignment import POLICY
+    source_wiring=handler.resolve_wiring(trainer)
+    noise_policy=(POLICY if resolved.scale_factor>source_wiring.vae_scale_factor
+                  and resolved.latent_channels>=model.in_channels else None)
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
-        old_channels=model.in_channels,source_wiring=handler.resolve_wiring(trainer),
+        old_channels=model.in_channels,source_wiring=source_wiring,
         patch_size=2,resize=resize,pending_key="_anima_vae_calibration_source",
-        topology_config=lambda:native_config(model))
+        topology_config=lambda:native_config(model),noise_policy=noise_policy)
 
 
 def calibrate(trainer,datasets):
@@ -39,17 +43,29 @@ def calibrate(trainer,datasets):
     calibrate_images(trainer,datasets,model=trainer.transformer,pending_key="_anima_vae_calibration_source")
 
 
-def map_image(model, value, *, sigma=None, output=False):
+def noise_kwargs(model, noise):
+    if getattr(getattr(model,"vae_latent_bridge",None),"noise_alignment",None) is None:
+        return {}
+    if noise is None or noise.ndim not in (4,5):
+        raise ValueError("Aligned Anima requires its actual image exposure noise")
+    return {"alignment_noise":noise.unsqueeze(2) if noise.ndim==4 else noise}
+
+
+def map_image(model, value, *, sigma=None, output=False, noise=None):
     pair=getattr(model,"vae_latent_bridge",None)
     if pair is None:
         return value
     if value.ndim!=5 or value.shape[2]!=1:
         raise ValueError("Anima spatial VAE swap requires a single image frame")
     image=value.squeeze(2)
+    if noise is not None:
+        if noise.ndim!=5 or noise.shape[2]!=1:
+            raise ValueError("Aligned Anima noise requires a single image frame")
+        noise=noise.squeeze(2)
     if output:
-        image=pair.output.flow_velocity(image,convention="eps_minus_x0")
+        image=pair.flow_velocity(image,convention="eps_minus_x0",noise=noise)
     else:
         if sigma.ndim==2 and sigma.shape[1]==1:
             sigma=sigma[:,0]
-        image=pair.input.flow_state(image,sigma)
+        image=pair.flow_state(image,sigma,noise=noise)
     return image.unsqueeze(2)

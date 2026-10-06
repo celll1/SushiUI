@@ -7,6 +7,7 @@ These are intentionally kept self-contained so pipeline.py can call them
 without having to learn Anima internals.
 """
 
+from .vae_alignment import noise_kwargs
 from typing import Optional, Tuple, Dict, Any, Callable, List
 
 import math
@@ -498,6 +499,7 @@ def _anima_style_capture(
     real_transformer._style_ctx = capture_ctx
     try:
         real_transformer(
+            **noise_kwargs(real_transformer, style_eps_ref),
             x=ref_t.to(dtype),
             timesteps=timestep_batch,
             context=cond_embeds["prompt_embeds"],
@@ -636,6 +638,7 @@ def sample_txt2img(
     # FBCache: two instances (cond/uncond) for the 2-pass CFG. None when inactive/guarded.
     fbcache_cond, fbcache_uncond = _build_anima_fbcache(spectrum_params, spectrum, do_cfg)
     real_transformer = _unwrap_transformer(transformer)
+    alignment_kwargs = noise_kwargs(real_transformer, latents.detach().clone())
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
@@ -699,6 +702,7 @@ def sample_txt2img(
                 real_transformer._style_ctx = None
 
             v_cond = cond_transformer(
+                **alignment_kwargs,
                 x=latents,
                 timesteps=timestep_batch,
                 context=cond_embeds["prompt_embeds"],
@@ -718,6 +722,7 @@ def sample_txt2img(
                     real_transformer._fbcache = fbcache_uncond
                     real_transformer._fbcache_step = i
                 v_uncond = uncond_transformer(
+                    **alignment_kwargs,
                     x=latents,
                     timesteps=timestep_batch,
                     context=uncond_embeds["prompt_embeds"],
@@ -787,6 +792,7 @@ def sample_txt2img(
                     # instances built for the 2-pass loop.
                     real_transformer._fbcache = None
                 cond_ns = cond_transformer(
+                    **alignment_kwargs,
                     x=latents,
                     timesteps=timestep_batch,
                     context=cond_embeds["prompt_embeds"],
@@ -906,6 +912,7 @@ def sample_img2img(
     # FBCache: two instances (cond/uncond) for the 2-pass CFG. None when inactive/guarded.
     fbcache_cond, fbcache_uncond = _build_anima_fbcache(spectrum_params, spectrum, do_cfg)
     real_transformer = _unwrap_transformer(transformer)
+    alignment_kwargs = noise_kwargs(real_transformer, noise)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
@@ -961,6 +968,7 @@ def sample_img2img(
                 real_transformer._style_ctx = None
 
             v_cond = cond_transformer(
+                **alignment_kwargs,
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
                 target_input_ids=cond_embeds["t5_input_ids"],
@@ -976,6 +984,7 @@ def sample_img2img(
                     real_transformer._fbcache = fbcache_uncond
                     real_transformer._fbcache_step = i
                 v_uncond = uncond_transformer(
+                    **alignment_kwargs,
                     x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
                     target_input_ids=uncond_embeds["t5_input_ids"],
@@ -1006,6 +1015,7 @@ def sample_img2img(
                 if fbcache_cond is not None:
                     real_transformer._fbcache = None
                 cond_ns = cond_transformer(
+                    **alignment_kwargs,
                     x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
                     target_input_ids=cond_embeds["t5_input_ids"],
@@ -1132,6 +1142,7 @@ def sample_inpaint(
     # FBCache: two instances (cond/uncond) for the 2-pass CFG. None when inactive/guarded.
     fbcache_cond, fbcache_uncond = _build_anima_fbcache(spectrum_params, spectrum, do_cfg)
     real_transformer = _unwrap_transformer(transformer)
+    alignment_kwargs = noise_kwargs(real_transformer, noise)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
@@ -1187,6 +1198,7 @@ def sample_inpaint(
                 real_transformer._style_ctx = None
 
             v_cond = cond_transformer(
+                **alignment_kwargs,
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
                 target_input_ids=cond_embeds["t5_input_ids"],
@@ -1202,6 +1214,7 @@ def sample_inpaint(
                     real_transformer._fbcache = fbcache_uncond
                     real_transformer._fbcache_step = i
                 v_uncond = uncond_transformer(
+                    **alignment_kwargs,
                     x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
                     target_input_ids=uncond_embeds["t5_input_ids"],
@@ -1232,6 +1245,7 @@ def sample_inpaint(
                 if fbcache_cond is not None:
                     real_transformer._fbcache = None
                 cond_ns = cond_transformer(
+                    **alignment_kwargs,
                     x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
                     target_input_ids=cond_embeds["t5_input_ids"],

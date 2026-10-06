@@ -13,7 +13,30 @@ Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く�
 固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが
 表せないnoise残差を補う。学習・定期sample・txt2img/img2img/inpaint・CFG/NAG/style参照へ配線した。
 bufferはoptimizer対象外。既存checkpointは宣言されたpolicyを維持し、再校正や自動変更をしない。
-Z-Image/Krea以外のnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+Z-Image/Krea/Anima以外のnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+
+Animaも同じ新規交換条件で固定Gaussian補正を選ぶ。padding-mask channelは補正対象外で、
+eps_minus_x0の出力残差符号を使う。学習・定期sample・CFG・txt2img/img2img/inpaint・
+style参照の実noiseを明示的に渡し、従来checkpointのpolicyは変更しない。
+公式Anima全DiT・公式TEと、現在のgeneral ratingを再確認した既存40枚由来の校正係数で、
+本番補正による3prompt×2seed（63/64）を生成した。新たな実画像読込や試験用monkeypatchはない。
+C16/8x→C64/16x、1024px・24steps・CFG4・U-netなし。6出力がfinite/decodeまで完走し、
+狐/青い本、赤いリンゴ/黄色い洋梨、青い車/黒い車輪の主要対象・色・概形を認識できた。
+ぼけ、輪郭の格子状の乱れ、小さな色異常は残る。元の等出力サイズとの完全復元や、
+U-net併用・追加学習の画質受入ではない。tokenは1024、denoise観測2.906〜4.234秒で、
+読込・校正・decodeを含むthroughputではない。画像・比較scriptはignored
+`local/verification/anima_gaussian_production_quality/`のみ。CPU回帰34件とcompile・
+CUDA未初期化の実importが通過し、BF16 loaderでの固定係数bit一致も確認した。
+frontend説明と既存型/APIを静的確認し、新しい公開parameter/defaultはない。
+新policyの公式Full学習・保存再開は専用合成2枚・2段/deep4 U-netで検証した。
+step1保存→step2再開がexit0で完走し、689 optimizer状態がすべてcounter1→2、fresh 0。
+固定補正の全bufferがbit一致し、codec宣言・U-net構造も維持された。
+lossは1.954564→2.315892。少数stepの機能確認で、学習による画質回復の証拠ではない。
+詳細training DBも保持して検証した。保存した単一safetensorsを生成APIへ読み込み、
+C64・2段/deep4を復元し、256px・2steps・CFG1の生成HTTP200を確認。
+交換VAEのlive preview非対応警告は残る。専用run/datasetのDB・diskを整理し、
+選択モデルをMing Layerへ戻した。optimizer・診断・生成画像はignored
+`local/verification/anima_gaussian_api_full_results/`のみ。
 
 Kreaも同じ新規交換条件で固定Gaussian補正を選び、packed tokenを元のpixel順へ展開して補正する。
 共通packed-image境界はouter/inner双方のchannel順を検証し、同じnoise gridを要求する。

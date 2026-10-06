@@ -1304,9 +1304,9 @@ class Anima(nn.Module):
 
     def forward_mini_train_dit(self, x_B_C_T_H_W, timesteps_B_T, crossattn_emb,
                                 fps=None, padding_mask=None, source_attention_mask=None,
-                                t5_input_ids=None, t5_attn_mask=None):
+                                t5_input_ids=None, t5_attn_mask=None, alignment_noise=None):
         from .vae_alignment import map_image
-        x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T)
+        x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T,noise=alignment_noise)
         if t5_input_ids is not None and self.use_llm_adapter and hasattr(self, "llm_adapter"):
             crossattn_emb = self.llm_adapter(
                 source_hidden_states=crossattn_emb,
@@ -1550,7 +1550,7 @@ class Anima(nn.Module):
             x_B_T_H_W_D, t_embedding_B_T_D,
             adaln_lora_B_T_3D=adaln_lora_B_T_3D, use_fp32=use_fp32,
         )
-        return map_image(self,self.unpatchify(x_B_T_H_W_O),output=True)
+        return map_image(self,self.unpatchify(x_B_T_H_W_O),output=True,noise=alignment_noise)
 
     def forward(self, x, timesteps, context=None, fps=None, padding_mask=None,
                 target_input_ids=None, target_attention_mask=None, source_attention_mask=None,

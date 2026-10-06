@@ -673,7 +673,9 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
         batch_size = prefix.batch_size
         geometry = gen_geometry(transformer)
         z = transformer.patchify(image_prediction, geometry.patch)
-        image_input = transformer.patchify(image_prediction, geometry.vit_patch, channel_first=True)
+        from .vae_alignment import input_state
+        image_input = transformer.patchify(input_state(transformer, image_prediction, t),
+                                           geometry.vit_patch, channel_first=True)
         grid_hw = torch.tensor([[prefix.grid_h, prefix.grid_w]] * batch_size, device=image_prediction.device)
         image_embeds = transformer.extract_feature(
             image_input.view(batch_size * prefix.grid_h * prefix.grid_w, -1), gen_model=True, grid_hw=grid_hw,

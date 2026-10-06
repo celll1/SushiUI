@@ -287,6 +287,17 @@ class Ltx2FullParameterAdapter(BaseFullParameterAdapter):
         from core.models.ltx2.residual_unet import export_metadata
         from core.models.common.single_file_format import save_single_file_state
         metadata.update(export_metadata(trainer.transformer))
+        inner = getattr(trainer.transformer, "transformer", trainer.transformer)
+        if getattr(inner, "_video_latent_alignment", None) is not None:
+            from core.training.vae_swap import swap_metadata
+            from core.models.ltx2.video_artifact import export_record
+            resolved, bundled, codec_metadata = swap_metadata(trainer)
+            if resolved is None or not bundled:
+                raise ValueError("Aligned LTX full checkpoints require a bundled video codec")
+            metadata.update(codec_metadata)
+            metadata.update(export_record(trainer.transformer, trainer.vae, metadata))
+            for key, value in trainer.vae.inner.state_dict().items():
+                combined["vae."+key] = value.detach().to("cpu").contiguous()
         print(f"[Ltx2FullParameterAdapter] Saving to {output_path}...")
         written = save_single_file_state(combined,metadata,str(output_path))
         print(f"[Ltx2FullParameterAdapter] Saved {len(combined)} tensors -> {written}")

@@ -20,8 +20,19 @@ prompt modulation用sigmaとは分離する。global/per-token timestepの双方
 内部幅max(oldC,newC)、交換先RoPE縮小率、外部target Cを分離し、U-netのidentityを新しい内部configで再構成する。
 小型の実native AVモデルでチャネル増減、U-net併用、forwardの独立参照との一致、bridge/追加チャネルの勾配、
 optimizer更新をCPU検証した。既存native LTX経路は変更しない。
-残作業はcodec/bridge宣言のartifact同梱・ロード、companion rootとのgeometry照合、学習handlerの校正hook、
-動画bucket/cache/durationの交換先時間圧縮率への追従、公開API/UI配線と公式全重みの受入検証。
+codec/bridgeの単体Full checkpoint同梱・ロードも接続した。交換前config、外部codec geometryと時間圧縮policy、
+codec identity、raw codec configを保存する。companion rootは交換前configと照合する。
+単一/分割保存はindex/shard間の宣言・codec metadata・tensor所有者とbridge shapeをheader段階で検証し、
+宣言のないbridge、codec欠損、不一致のgeometry/identityを拒否する。復元したcodecはfrozenとし、再保存で
+正規化facadeのidentity scalingをraw codec configへ書き戻さない。
+共通VAE resolverはwrapped Conv3dの重み名と、bufferに保持したper-channel統計も認識する。
+小型の実LTX VAE（時間圧縮2x）と画像VAE（独立frame）で、チャネル増減・U-net併用のFull保存復元、
+codec encode/decode、optimizer状態のファイル再読込後の継続、再保存をCPU検証した。
+全保存tensorは完全一致、forwardとoptimizer継続はFP32誤差範囲で一致する。
+生成companion読み込みは外部componentのfrom_pretrainedだけfixtureに置き換え、実LTX2Pipeline constructorで
+交換先のspatial/temporal compression ratioとVAE facadeを確認した。これは公式全pipeline生成の証拠ではない。
+残作業は学習handlerの校正hook、動画bucket/cache/durationの交換先時間圧縮率への追従、
+公開API/UI配線と公式全重みの受入検証。aligned diffusers directoryとしての再保存/再ロードも未対応。
 既存LTX単体Full checkpoint readerは現在実装済みであり、§11 P6の「readerがない」という記述は当時の状態。
 
 Chimeraのlinear-state境界（v1、v2 direct velocity、v2 residual）の内部基盤を追加した。

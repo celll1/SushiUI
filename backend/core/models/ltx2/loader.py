@@ -421,12 +421,21 @@ def load_ltx2_from_diffusers(
     from .component_sources import validate_sources
     sources = validate_sources(dict(schema_version=1, root=os.path.abspath(model_path)))
     directory = _resolve_transformer_dir(model_path)
+    video_codec = None
+    video_identity = None
     if transformer_checkpoint is not None:
         from .residual_unet import preflight_checkpoint
         graph, saved_config = preflight_checkpoint(transformer_checkpoint)
         config = _source_transformer_config(directory)
-        if saved_config is None or native_config(saved_config) != native_config(config):
+        from core.models.common.single_file_format import read_metadata
+        from .video_artifact import read_record, canonical_config, restored_codec
+        saved_metadata = read_metadata(transformer_checkpoint)
+        record = read_record(saved_metadata, saved_config) if saved_config is not None else None
+        comparison = record["source_config"] if record is not None else saved_config
+        if comparison is None or canonical_config(comparison) != canonical_config(config):
             raise ValueError("LTX-2 saved transformer and companion root geometry disagree")
+        if record is not None:
+            video_codec, video_identity = restored_codec(transformer_checkpoint, saved_metadata, record, torch_dtype=torch_dtype)
         restored = load_ltx2_transformer_checkpoint(transformer_checkpoint, torch_dtype)
         quantized_transformer = getattr(restored, "transformer", restored)
     else:
@@ -442,8 +451,15 @@ def load_ltx2_from_diffusers(
     elif transformer_checkpoint is None:
         quantized_transformer = _load_quantized_ltx2_transformer(model_path, torch_dtype)
     overrides = {"transformer": quantized_transformer} if quantized_transformer is not None else {}
+    if video_codec is not None:
+        # from_pretrained type-checks ModelMixin; the normalized facade is installed after assembly.
+        video_codec.inner.spatial_compression_ratio = video_codec.spatial_compression_ratio
+        video_codec.inner.temporal_compression_ratio = video_codec.temporal_compression_ratio
+        overrides["vae"] = video_codec.inner
 
     pipeline = LTX2Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype, **overrides)
+    if video_codec is not None:
+        pipeline.register_modules(vae=video_codec)
 
     # Keep everything on CPU after load; P1b stages to GPU (or uses
     # model_cpu_offload_seq). from_pretrained already leaves modules on CPU.
@@ -461,11 +477,13 @@ def load_ltx2_from_diffusers(
         torch.cuda.empty_cache()
 
     transformer = getattr(pipeline, "transformer", None)
-    if graph is not None:
+    if graph is not None or getattr(transformer, "_video_latent_alignment", None) is not None:
         transformer = wrap_transformer(transformer, graph)
         pipeline.transformer = transformer
     inner = getattr(transformer, "transformer", transformer)
     inner._ltx2_component_sources = sources
+    if video_identity is not None:
+        inner._ltx2_vae_identity = video_identity
     vae = getattr(pipeline, "vae", None)
 
     # VAE scale factors (spatial 32x, temporal 8x) — pull from the transformer
@@ -517,14 +535,19 @@ def load_ltx2_transformer_checkpoint(path: str, torch_dtype: torch.dtype = torch
     graph, config = preflight_checkpoint(path)
     if config is None:
         raise ValueError("LTX-2 transformer checkpoint requires native transformer_config")
-    state, _ = read_state_dict(path)
-    state = {key.removeprefix("net."):value for key,value in state.items()}
+    state, metadata = read_state_dict(path)
+    from .video_artifact import read_record, prepare_restore
+    record = read_record(metadata, config)
+    state = {key.removeprefix("net."):value for key,value in state.items()
+             if not (record is not None and key.startswith("vae."))}
     report = scaled_quantization_report(quantized_state_dict_report(state,arch="LTX-2.3",path=path,label="transformer"),
                                         arch="LTX-2.3",path=path,label="transformer")
     construction = native_config(config)
     construction.pop(GRID_POLICY_KEY)
     with init_empty_weights():
         model = LTX2VideoTransformer3DModel.from_config(construction)
+        if record is not None:
+            prepare_restore(model, record)
         model.to(torch_dtype)
     swapped = _swap_ltx2_quantized_linears(model,state,torch_dtype)
     verify_quantized_swap(report,swapped,arch="LTX-2.3",path=path,label="transformer")
@@ -533,10 +556,12 @@ def load_ltx2_transformer_checkpoint(path: str, torch_dtype: torch.dtype = torch
                   key not in quantized_weights and not key.endswith(".weight_scale") else value)
              for key,value in state.items()}
     model.load_state_dict(state,strict=True,assign=True)
+    if record is not None and not model._video_latent_alignment.ready:
+        raise ValueError("Restored LTX video alignment is uncalibrated")
     if any(value.is_meta for value in list(model.parameters())+list(model.buffers())):
         raise ValueError("LTX-2 checkpoint left native tensors on the meta device")
     model.eval().requires_grad_(False)
-    return wrap_transformer(model,graph) if graph is not None else model
+    return wrap_transformer(model,graph) if graph is not None or record is not None else model
 
 
 def load_ltx2_from_path(model_path: str, torch_dtype: torch.dtype = torch.bfloat16):

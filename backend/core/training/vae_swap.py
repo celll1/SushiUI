@@ -352,7 +352,8 @@ def module_latent_hash(module) -> Optional[str]:
 
 def _materialized_config(module, fallback):
     from core.models.components.latent_adapter import NormalizedFrameVAE
-    if isinstance(module, NormalizedFrameVAE):
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+    if isinstance(module, (NormalizedFrameVAE, NormalizedVideoVAE)):
         module = module.inner
     config = getattr(module, "config", None)
     if config is None:

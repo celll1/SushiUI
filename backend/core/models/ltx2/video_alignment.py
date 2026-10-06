@@ -60,12 +60,19 @@ def install_video_alignment(model, alignment, contract):
     scales = [contract.temporal_scale, contract.image.spatial_scale, contract.image.spatial_scale]
     inner.register_to_config(vae_scale_factors=scales)
     inner.rope.scale_factors = tuple(scales)
+    inner.rope.audio_latents_per_second = float(config["audio_sampling_rate"]) / config["audio_hop_length"] / scales[0]
     inner._video_latent_alignment = alignment.to(device=inner.proj_in.weight.device, dtype=inner.proj_in.weight.dtype)
     inner._video_codec_contract = contract
+    inner._video_source_config = config
     if graph is not None:
         graph = build_spec("ltx2", [{"name": "main", "block_count": config["num_layers"]}],
                            graph["regions"], native_config(inner.config))
         restore_topology(inner, graph)
+    return aligned_wrapper(inner)
+
+
+def aligned_wrapper(inner):
+    declaration = inner._video_latent_alignment.declaration
     wrapper = AlignedLtx2BlockLoopWrapper(inner)
     wrapper.config = _Config(dict(inner.config), in_channels=declaration["new_channels"],
                             out_channels=declaration["new_channels"])

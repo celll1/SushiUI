@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from math import prod
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field, replace as _dc_replace
@@ -323,6 +324,8 @@ def observe_vae(shapes: Dict[str, Tuple[int, ...]]) -> Dict[str, Any]:
     """
     observed: Dict[str, Any] = {}
     conv_in = _suffix_key(shapes, _DECODER_CONVIN_SUFFIX)
+    if conv_in is None:
+        conv_in = _suffix_key(shapes, "decoder.conv_in.conv.weight")
     if conv_in is not None:
         shape = shapes[conv_in]
         if len(shape) >= 2:
@@ -330,6 +333,12 @@ def observe_vae(shapes: Dict[str, Tuple[int, ...]]) -> Dict[str, Any]:
         # A Conv2d weight is 4-D and faces a [B,C,H,W] latent; a causal Conv3d
         # weight is 5-D and faces [B,C,T,H,W]. The rank carries over.
         observed["ndim"] = len(shape)
+    means = _suffix_key(shapes, "latents_mean")
+    stds = _suffix_key(shapes, "latents_std")
+    if means is not None and stds is not None:
+        if any(prod(shapes[key]) != observed.get("latent_channels") for key in (means, stds)):
+            raise VaeSourceError("VAE per-channel statistics disagree with its latent channels")
+        observed["norm"] = "per_channel"
 
     ldm_keys = any(k.startswith("encoder.down.") or ".encoder.down." in k for k in shapes)
     bn_key = _suffix_key(shapes, _BN_RUNNING_MEAN_SUFFIX)
@@ -535,7 +544,7 @@ def _resolve_facts(
                 shift_factor = canonical[1]
 
     has_per_channel = (config.get("latents_mean") is not None
-                       and config.get("latents_std") is not None)
+                       and config.get("latents_std") is not None) or observed.get("norm") == "per_channel"
     if observed.get("norm"):
         norm = observed["norm"]
     elif has_per_channel:

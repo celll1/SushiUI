@@ -80,6 +80,10 @@ def restore_topology(model, spec):
 def wrap_transformer(model, spec):
     from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
     restore_topology(model, spec)
+    inner = getattr(model, "transformer", model)
+    if getattr(inner, "_video_latent_alignment", None) is not None:
+        from .video_alignment import AlignedLtx2BlockLoopWrapper, aligned_wrapper
+        return model if isinstance(model, AlignedLtx2BlockLoopWrapper) else aligned_wrapper(inner)
     return model if isinstance(model, Ltx2BlockLoopWrapper) else Ltx2BlockLoopWrapper(model)
 
 
@@ -323,11 +327,18 @@ def preflight_checkpoint(path, *, directory_config=None):
     if not isinstance(raw,dict) or type(raw.get("num_layers")) is not int:
         raise ValueError("LTX-2 checkpoint requires an explicit native transformer depth")
     config = native_config(raw)
+    from .video_artifact import read_record, KEY as VIDEO_ALIGNMENT_KEY
+    video_record = read_record(metadata, raw)
     if graph is not None:
         graph = validate_topology_identity(graph,config)
-    if any(key.startswith("net.") for key in keys) and not all(key.startswith("net.") for key in keys):
+    transformer_keys = [key for key in keys if not (video_record is not None and key.startswith("vae."))]
+    if video_record is not None and not any(key.startswith("vae.") for key in keys):
+        raise ValueError("Aligned LTX checkpoint is missing its bundled codec")
+    if video_record is None and any("_video_latent_alignment." in key for key in keys):
+        raise ValueError("LTX checkpoint has an orphaned video alignment")
+    if any(key.startswith("net.") for key in transformer_keys) and not all(key.startswith("net.") for key in transformer_keys):
         raise ValueError("LTX-2 checkpoint mixes native and net-prefixed tensors")
-    native_keys = [key.removeprefix("net.") for key in keys]
+    native_keys = [key.removeprefix("net.") for key in transformer_keys]
     blocks = {int(match.group(1)) for key in native_keys
               if (match := re.match(r"transformer_blocks\.(\d+)\.",key))}
     if blocks != set(range(config["num_layers"])) or not {
@@ -339,6 +350,14 @@ def preflight_checkpoint(path, *, directory_config=None):
               "audio_proj_in.weight":[audio_dim,config["audio_in_channels"]],
               "proj_out.weight":[config["out_channels"],video_dim],
               "audio_proj_out.weight":[config["audio_out_channels"],audio_dim]}
+    if video_record is not None:
+        d = video_record["declaration"]
+        width = max(d["old_channels"], d["new_channels"])
+        for direction, incoming, outgoing in (("input", d["new_channels"], width),
+                                               ("output", width, d["new_channels"])):
+            prefix = "_video_latent_alignment."+direction+"."
+            shapes.update({prefix+"projection.weight": [outgoing, incoming, 3, 3],
+                           prefix+"projection.bias": [outgoing], prefix+"calibrated": [], prefix+"bridge_spec": [5]})
     for layer in range(config["num_layers"]):
         shapes[f"transformer_blocks.{layer}.attn1.to_q.weight"] = [video_dim,video_dim]
         shapes[f"transformer_blocks.{layer}.audio_attn1.to_q.weight"] = [audio_dim,audio_dim]
@@ -346,6 +365,14 @@ def preflight_checkpoint(path, *, directory_config=None):
     checked_shapes = set()
     for shard in sources:
         with safe_open(str(shard),framework="pt",device="cpu") as handle:
+            shard_metadata = handle.metadata() or {}
+            if shard_metadata.get(VIDEO_ALIGNMENT_KEY) != metadata.get(VIDEO_ALIGNMENT_KEY):
+                raise ValueError("LTX index and shard video alignments disagree")
+            if read_record(shard_metadata, raw) != video_record:
+                raise ValueError("LTX index and shard video codec declarations disagree")
+            if video_record is not None and {k:v for k,v in shard_metadata.items() if k.startswith("component.vae.")} != {
+                    k:v for k,v in metadata.items() if k.startswith("component.vae.")}:
+                raise ValueError("LTX index and shard video codec metadata disagree")
             declared = (handle.metadata() or {}).get("transformer_config")
             if declared is None and declaration is None and directory_config is not None:
                 shard_config = dict(directory_config)

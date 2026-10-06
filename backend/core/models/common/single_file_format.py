@@ -345,6 +345,19 @@ def save_single_file_state(
 # Read (single file or shard index)
 # ---------------------------------------------------------------------------
 
+def read_metadata(path: str) -> dict:
+    """Read only the header/index, with the same sibling fallback as tensor loads."""
+    if path.endswith(_SHARD_SUFFIX) and not os.path.exists(path):
+        sibling_index = path[: -len(_SHARD_SUFFIX)] + _INDEX_SUFFIX
+        if os.path.exists(sibling_index):
+            path = sibling_index
+    if is_index_path(path):
+        with open(path, encoding="utf-8") as handle:
+            return dict(json.load(handle).get("metadata") or {})
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        return dict(handle.metadata() or {})
+
+
 def read_state_dict(path: str) -> Tuple[Dict[str, torch.Tensor], dict]:
     """Read a sushiUI single file or a shard index into ``(state_dict, metadata)``.
 

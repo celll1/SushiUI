@@ -84,7 +84,12 @@ class FullParameterTrainer(BaseTrainer):
         # entire load first (MiniMax-H3: a 21 GB DiT plus a 48 GiB memory-mapped
         # text encoder, minutes of work and a documented RAM cliff, to reach a
         # message that was knowable from the checkpoint header alone).
-        self._refuse_unsupported_full_finetune(kwargs.get("model_path"))
+        detected_arch = self._refuse_unsupported_full_finetune(kwargs.get("model_path"))
+        if detected_arch == "minimax_h3":
+            from core.models.minimax_h3.full_training_contract import preflight_full_training
+            preflight_full_training(dict(kwargs.get("train_config") or {},
+                train_unet=train_unet, train_text_encoder=train_text_encoder,
+                train_image_encoder=train_image_encoder), kwargs["model_path"])
 
         super().__init__(**kwargs)
 
@@ -188,6 +193,7 @@ class FullParameterTrainer(BaseTrainer):
             raise ValueError(
                 f"Full fine-tuning is not supported for architecture '{arch}': {reason} "
                 f"Use training_method='lora'.")
+        return arch
 
     def _create_adapter(self):
         """Create model-specific Full Parameter adapter based on detected model type."""
@@ -229,11 +235,9 @@ class FullParameterTrainer(BaseTrainer):
             self.adapter = Ltx2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Ltx2FullParameterAdapter")
         elif self.is_minimax_h3:
-            from api.arch_capabilities import TRAINING_UNSUPPORTED
-            raise ValueError(
-                "Full fine-tuning is not supported for MiniMax-H3: "
-                f"{TRAINING_UNSUPPORTED['minimax_h3']['full_finetune']}. "
-                "Use training_method='lora'.")
+            from core.training.adapters.minimax_h3_adapter import MiniMaxH3AlignedFullParameterAdapter
+            self.adapter = MiniMaxH3AlignedFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using MiniMaxH3AlignedFullParameterAdapter")
         elif self.is_acestep:
             self.adapter = AceStepFullParameterAdapter(self)
             print(f"{self.log_prefix} Using AceStepFullParameterAdapter")

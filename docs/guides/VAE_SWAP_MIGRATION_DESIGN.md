@@ -23,6 +23,17 @@ U-netのpoolingが異なるAdaLNラベルを混ぜない制約で拒否された
 振幅補正は相関ノイズや失われた空間/時間情報を復元するものではない。この候補は
 本番へ採用せず、ローカルスクリプト/生成物だけを保持する（gitには含めない）。
 
+H3 Full factoryを内部alignedアダプターへ接続し、共通の読込前契約を追加した。
+train_unet有効・text/image encoder学習無効・target codec同梱・paired_spatialを必須とし、
+新規交換では浮動小数点DiTのheaderを、保存済みbundleでは既存の厳密なnative preflightを
+確認する。API/VAE事前検査、runner、Full constructorで共有し、adapterも所有権を再確認する。
+交換sourceを省略した保存済みFull構成もrunnerの検査を通る。公式dense重みと公式Full
+bundleのheader検査はCUDA未初期化で通過した。公開capabilityゲートは実trainer/APIの
+end-to-end確認まで維持するため、factory接続だけでUIのFull選択を解放したとは扱わない。
+変更backendのcompile・実importと、Full契約/学習/codec保存復元/VAE交換のCPU回帰
+109件が通過した。frontendは既存capability理由に従ってFull選択を無効にする経路を
+静的確認した。owner専用build/type-checkは未実行。
+
 最新到達点: H3公式全重みでtarget-native /32 VAE・paired_spatial・2段U-netを併用した
 Full更新、native bundle保存復元、optimizer精度保持と次更新まで通過。
 公式TEによる条件付け・生成decodeまで通過したが、H3→LTXの未学習生成画質は未受入。

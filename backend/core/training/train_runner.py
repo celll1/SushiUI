@@ -1910,7 +1910,8 @@ def _preflight_vae_swap(train_config: Dict[str, Any], base_model_path: str,
     from core.training.vae_swap import preflight_vae_swap, resolve_vae_swap_source
 
     if (not resolve_vae_swap_source(train_config)
-            and train_config.get("bundle_vae") is not False):
+            and train_config.get("bundle_vae") is not False
+            and str(network_type).lower() not in ("full", "full_finetune")):
         return  # nothing to check, and arch detection reads the checkpoint
     preflight_vae_swap(
         train_config,

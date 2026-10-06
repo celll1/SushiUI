@@ -35,6 +35,10 @@ full checkpointは`component.vae.alignment`に宣言、DiT内にbridge、`vae.`�
 明示的なlegacy zeroは4D/8x交換だけに対応する。
 Z-ImageのCPU合成検証はnative/dense/U-netの勾配、実AutoencoderKLの校正・保存復元・再開を含む。
 公式全重みを用いたZ-Imageのswap学習、画質、optimizer付きrun再開は未検証。
+2026-10-06の関連CPU回帰テスト282件が通過。全変更Pythonのpy_compileとCUDAを抑止した実importも通過した。
+API再起動後の`GET /training/vae-sources?arch=zimage`で、Qwen 2.1の64ch/16x codecを
+交換候補として選択可能であることを確認した。frontendの型・既定値・保存経路は静的確認済み、
+ownerのbuildと画面操作による最終確認は別途必要。
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 

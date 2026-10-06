@@ -1367,7 +1367,7 @@ _add_training_feature_advisory(
     methods=["full_finetune"])
 _add_training_feature_advisory(
     "minimax_h3", "vae_swap", "experimental",
-    "H3 Full requires an unquantized DiT, train_unet=true, frozen text/image encoders, paired_spatial and a bundled target RGB codec. A fresh base must specify a VAE swap; native aligned Full checkpoints restore their codec and bridges. Target-native spatial/temporal grids and U-net coexistence, official 20.1B DiT updates, bundle restoration and one runner/API update with save are verified. GPU optimizer resume and quality acceptance remain pending; unlearned H3-to-LTX generation does not yet preserve recognizable objects. The audio codec is retained.",
+    "H3 Full requires an unquantized DiT, train_unet=true, frozen text/image encoders, paired_spatial and a bundled target RGB codec. A fresh base must specify a VAE swap; native aligned Full checkpoints restore their codec and bridges. Official 20.1B Full API training, bundle restoration, target-native spatial/temporal grids, U-net coexistence and Adafactor GPU continuation to step 2 with 638 restored optimizer states (0 fresh) are verified. This does not establish other optimizers' GPU resume or quality recovery; unlearned H3-to-LTX generation does not yet preserve recognizable objects. The audio codec is retained.",
     methods=["full_finetune"])
 _add_training_feature_advisory(
     "acestep", "vae_swap", "experimental",

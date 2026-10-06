@@ -8,6 +8,27 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+公式dense H3のAPI Full再開検証を追加した。元H3が生成した狐動画73frameと合成無音trackだけを
+使い、LTX交換codec・2段U-net・49層block swap・2slot・fused Adafactorで1step保存後に再開した。
+638 optimizer stateを復元（fresh 0）、step 2まで更新・codec同梱4shard保存を完走し、
+returncode 0、全638 optimizer counterが2、global_step=2、VAE宣言とU-net specの完全一致を確認。
+更新のGradNormは14.124457→15.492837、lossは2.490452→2.227435。
+保存済みの校正を復元する機能検証であり、画質回復や他optimizerのGPU再開の受入ではない。
+CPUのstrict bundle preflightでもstep 1/2を確認し、CUDAは初期化しなかった。
+使用済み専用run/datasetはDB・diskとも整理済み。小さな診断ログ・state・optimizerだけを
+ignored localへ保持した。APIのH3注意表示とarch/adapterの記述をこの実測へ更新する。
+変更PythonのcompileとCUDA未初期化の実importを確認した。frontendの注意表示は既存の
+`trainingFeatureAdvisory`契約で表示され、型・default・保存値・実行経路は変更しない。
+owner専用のbuild/type-checkは実行していない。
+
+SD1.5にはローカルの公開ベース重みがなかったため、
+[旧RunwayML配布のミラー](https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5)から
+`v1-5-pruned-emaonly.safetensors`を検証用D:へ取得した。配布組織はRunwayMLの公式組織ではない。
+revisionは`451f4fe16113bff5a5d2269ed5ad43b0592e9a14`、サイズ4,265,146,304 bytes、
+全ファイルSHA-256は`6ce0161689b3853acaa03779ec93eafe75a02f4ced659bee03f50797806fa2fa`で
+配布LFS hashと一致。共通model判定がsd15を返しCUDA未初期化であることを確認した。
+これ自体はVAE交換のGPU学習・画質受入ではなく、その検証の前提を満たした段階である。
+
 画質の完了条件は元画像の完全復元ではなく、主要な物体・概形・配置を認識できること。
 codec間の差が大きくても、変換行列・畳み込み・noise整合を比較せずに検証を打ち切らない。
 学習・保存復元の機能受入と、未学習生成の画質受入は別に記録する。

@@ -14,8 +14,7 @@ Two declarative fields carry everything the shared video machinery needs:
   generation that tiled differently. Measured stakes: rel-RMS 0.355 at 384x384
   (K0.5) and 0.0952 at 640x384 (Phase 0T) from flipping those flags alone.
 
-Aligned Full is experimental; one API update and save passed, while quality and
-GPU optimizer-resume acceptance remain pending.
+Aligned Full API save and Adafactor GPU continuation passed; quality remains pending.
 """
 
 from __future__ import annotations

@@ -63,6 +63,40 @@ def _spatial_weights(value, size, *, sum_preserving=False):
     return result * (old / size) ** 2 if sum_preserving else result
 
 
+def _expanded_refiner_io(refiner, channels):
+    """Head and noisy-state halves must move independently in the stem."""
+    if channels == refiner.in_channels:
+        return None
+    old = refiner.in_channels
+    stem, output = refiner.stem, refiner.out
+    if (channels < old or type(stem) is not nn.Conv2d or type(output) is not nn.Conv2d or
+            stem.in_channels != 2 * old or output.out_channels != old or
+            any(layer.groups != 1 or layer.kernel_size != (3, 3) or
+                layer.stride != (1, 1) or layer.padding != (1, 1) or layer.dilation != (1, 1)
+                for layer in (stem, output))):
+        raise ValueError("SenseNova refiner expansion requires native channel-wise IO")
+    new_stem = nn.Conv2d(2 * channels, stem.out_channels, 3, padding=1,
+        bias=stem.bias is not None).to(device=stem.weight.device, dtype=stem.weight.dtype)
+    new_output = nn.Conv2d(output.in_channels, channels, 3, padding=1,
+        bias=output.bias is not None).to(device=output.weight.device, dtype=output.weight.dtype)
+    with torch.no_grad():
+        new_stem.weight.zero_()
+        new_stem.weight[:, :old].copy_(stem.weight[:, :old])
+        new_stem.weight[:, channels:channels + old].copy_(stem.weight[:, old:])
+        if new_stem.bias is not None:
+            new_stem.bias.copy_(stem.bias)
+        new_output.weight.zero_()
+        new_output.weight[:old].copy_(output.weight)
+        if new_output.bias is not None:
+            new_output.bias.zero_()
+            new_output.bias[:old].copy_(output.bias)
+    for new, source in ((new_stem, stem), (new_output, output)):
+        new.weight.requires_grad_(source.weight.requires_grad)
+        if new.bias is not None:
+            new.bias.requires_grad_(source.bias.requires_grad)
+    return new_stem, new_output
+
+
 def migrate_generation_io(model, *, channels, patch, scale):
     """Retain constant-field input responses and block-averaged trained outputs."""
     from .latent_space import gen_geometry, validate_gen_patch
@@ -78,8 +112,8 @@ def migrate_generation_io(model, *, channels, patch, scale):
     if not model.use_pixel_head or model.use_deep_fm_head:
         raise ValueError("SenseNova spatial alignment requires the native ConvDecoder head")
     refiner = model.fm_modules["fm_refiner"] if "fm_refiner" in model.fm_modules else None
-    if refiner is not None and refiner.in_channels != channels:
-        raise ValueError("SenseNova spatial migration must preserve the attached refiner's internal width")
+    if refiner is not None and refiner.in_channels != geometry.channels:
+        raise ValueError("SenseNova refiner width disagrees with the generation head")
     topology = getattr(model, "_residual_unet_spec", None)
     if topology is not None:
         from .residual_unet import validate_owner_topology
@@ -103,6 +137,7 @@ def migrate_generation_io(model, *, channels, patch, scale):
     weight_in = _spatial_weights(incoming.weight, new_patch, sum_preserving=True)
     packed = outgoing.weight.reshape(geometry.channels, old_shuffle, old_shuffle, -1).permute(0, 3, 1, 2)
     weight_out = _spatial_weights(packed, shuffle).permute(0, 2, 3, 1)
+    expanded_refiner = _expanded_refiner_io(refiner, channels) if refiner is not None else None
     new_in = nn.Conv2d(channels, incoming.out_channels, new_patch, stride=new_patch,
         bias=incoming.bias is not None).to(device=incoming.weight.device, dtype=incoming.weight.dtype)
     new_out = nn.Conv2d(outgoing.in_channels, channels * shuffle ** 2, 3, padding=1,
@@ -128,6 +163,16 @@ def migrate_generation_io(model, *, channels, patch, scale):
     embeddings.patch_size = embeddings.config.patch_size = new_patch
     embeddings.config.num_channels = channels
     head.conv2, head.ps3 = new_out, nn.PixelShuffle(shuffle)
+    copied = weight_in.numel() + weight_out.numel()
+    extra = new_in.weight.numel() + new_out.weight.numel() - copied
+    replaced = ["fm_modules.vision_model_mot_gen.embeddings.patch_embedding", "fm_modules.fm_head.conv2"]
+    if expanded_refiner is not None:
+        source_elements = refiner.stem.weight.numel() + refiner.out.weight.numel()
+        refiner.stem, refiner.out = expanded_refiner
+        refiner.in_channels = channels
+        copied += source_elements
+        extra += refiner.stem.weight.numel() + refiner.out.weight.numel() - source_elements
+        replaced.extend(("fm_modules.fm_refiner.stem", "fm_modules.fm_refiner.out"))
     model.gen_in_channels = model.config.gen_in_channels = channels
     model.gen_patch_size = model.config.gen_patch_size = patch
     model.gen_vit_patch_size, model.gen_vae_scale_factor = new_patch, scale
@@ -139,7 +184,6 @@ def migrate_generation_io(model, *, channels, patch, scale):
             [{"name": "main", "block_count": config["llm_config"]["num_hidden_layers"]}],
             topology["regions"], config))
     return ResizeReport(
-        replaced=("fm_modules.vision_model_mot_gen.embeddings.patch_embedding", "fm_modules.fm_head.conv2"),
+        replaced=tuple(replaced),
         old_in_channels=geometry.channels, old_out_channels=geometry.channels,
-        new_channels=channels, copied_elements=weight_in.numel() + weight_out.numel(),
-        new_elements=new_in.weight.numel() + new_out.weight.numel() - weight_in.numel() - weight_out.numel())
+        new_channels=channels, copied_elements=copied, new_elements=extra)

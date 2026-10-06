@@ -172,6 +172,35 @@ def test_generic_codec_preserves_mode_sample_generator_and_alpha(rank):
     assert codec.config.latents_std == [1.]*3
 
 
+@pytest.mark.parametrize("facade", ["image", "frames"])
+@pytest.mark.parametrize("signature", ["unsupported", "explicit", "kwargs"])
+@pytest.mark.parametrize("decorated", [False, True])
+def test_decode_generator_is_forwarded_only_when_native_codec_accepts_it(facade, signature, decorated):
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    class ExplicitCodec(ToyCodec):
+        def decode(self, z, return_dict=False, generator=None):
+            self.received = generator
+            return (z,)
+    class KwargsCodec(ToyCodec):
+        def decode(self, z, return_dict=False, **kwargs):
+            self.received = kwargs["generator"]
+            return (z,)
+    inner = {"unsupported": ToyCodec, "explicit": ExplicitCodec, "kwargs": KwargsCodec}[signature](4)
+    from diffusers.utils.accelerate_utils import apply_forward_hook
+    if decorated:
+        inner.decode = apply_forward_hook(type(inner).decode).__get__(inner, type(inner))
+    wrapper = NormalizedImageVAE if facade == "image" else NormalizedFrameVAE
+    codec = wrapper(inner, declaration(3, 3))
+    z = torch.zeros((2, 3, 8, 12) if facade == "image" else (2, 3, 2, 8, 12))
+    generator = torch.Generator().manual_seed(16)
+    state = generator.get_state().clone()
+    result = codec.decode(z, return_dict=False, generator=generator)[0]
+    torch.testing.assert_close(result[:, :3], torch.full_like(z, .5))
+    assert torch.equal(generator.get_state(), state)
+    if signature != "unsupported":
+        assert inner.received is generator
+
+
 @pytest.mark.parametrize("rank", [4,5])
 def test_streamed_calibration_resamples_teacher_only(rank):
     torch.manual_seed(284)

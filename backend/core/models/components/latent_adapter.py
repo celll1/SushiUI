@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
 from math import lcm
 from types import SimpleNamespace
@@ -292,6 +293,13 @@ class NormalizedFrameVAE(nn.Module):
     def __init__(self, module, declaration):
         super().__init__()
         self.inner = module
+        decode = module.decode
+        # Diffusers' offload decorator omits __wrapped__ and hides native keywords.
+        if decode.__module__ == apply_forward_hook.__module__ and decode.__name__ == "wrapper":
+            decode = inspect.getclosurevars(decode).nonlocals["method"]
+        parameters = inspect.signature(decode).parameters
+        self._decode_accepts_generator = "generator" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
         self.declaration = dict(validate_declaration(declaration))
         self.norm_spec = SimpleNamespace(vae_norm=declaration["norm"], vae_norm_pack=declaration["norm_pack"])
         self.spatial_scale_factor = declaration["new_scale"]
@@ -326,6 +334,9 @@ class NormalizedFrameVAE(nn.Module):
     def decode(self, latents, return_dict=True, **kwargs):
         if latents.ndim != 5 or latents.shape[1] != self.declaration["new_channels"] or latents.shape[2] < 1:
             raise ValueError("Aligned image decode requires declared independent-frame latents")
+        # Diffusers image pipelines pass this even to deterministic frame codecs.
+        if not self._decode_accepts_generator:
+            kwargs.pop("generator", None)
         decoded = []
         for frame in latents.unbind(2):
             raw = denormalize(frame, self.inner, self.norm_spec)

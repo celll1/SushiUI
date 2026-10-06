@@ -7301,7 +7301,7 @@ paths:
     get:
       tags: [training]
       summary: Read editable sample settings and their live application state
-      description: The configured values are durable; a pending revision has not yet been adopted by the trainer.
+      description: The configured values are durable; a pending revision has not yet been adopted by the trainer. Live revisions are scoped to one execution and reset on restart or resume, which uses the saved run configuration.
       parameters:
         - name: run_id
           in: path

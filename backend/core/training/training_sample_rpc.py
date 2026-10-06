@@ -197,10 +197,15 @@ def list_results(output_dir: str | Path,
 
 
 def clear_all(output_dir: str | Path) -> int:
-    """Remove every request/result file. Called before a run is spawned so a
-    request left pending by a stopped or crashed run cannot leak into the next
-    one. Returns the number of files removed."""
-    return _clear_prefixes(output_dir, (REQUEST_PREFIX, RESULT_PREFIX))
+    """Reset execution-local RPC state; saved sample settings live in run YAML."""
+    removed = _clear_prefixes(output_dir, (REQUEST_PREFIX, RESULT_PREFIX))
+    for filename in (LIVE_CONFIG_FILENAME, LIVE_APPLIED_FILENAME):
+        try:
+            (Path(output_dir) / filename).unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+    return removed
 
 
 def sample_filename(step: int, sample_index: int,

@@ -16,6 +16,25 @@ KEY = "minimax_h3.video_alignment"
 FORMAT = "sushi_h3_native_full_v1"
 
 
+def native_metadata(path):
+    from safetensors import safe_open
+    try:
+        source = _artifact_path(path)
+        if not source.is_file():
+            return None
+        if str(source).endswith(".safetensors.index.json"):
+            metadata = json.loads(source.read_text(encoding="utf-8")).get("metadata") or {}
+        elif str(source).endswith(".safetensors"):
+            with safe_open(str(source),framework="pt",device="cpu") as handle:
+                metadata = handle.metadata() or {}
+        else:
+            return None
+    except Exception:
+        # Detection is a soft probe; recognized bundles undergo strict preflight.
+        return None
+    return metadata if isinstance(metadata,dict) and metadata.get("format") == FORMAT and metadata.get("model_type") == "minimax_h3" else None
+
+
 def canonical_config(config):
     return json.loads(json.dumps(native_config(config),allow_nan=False))
 
@@ -235,12 +254,17 @@ def restored_codec(path,record):
 
 
 def load_checkpoint(path,torch_dtype=torch.bfloat16):
+    path = _artifact_path(path)
+    return _restore_checkpoint(path,torch_dtype,preflight_checkpoint(path))
+
+
+def _restore_checkpoint(path,torch_dtype,preflight):
     from accelerate import init_empty_weights
     from core.models.common.vae_source import _WeightFile
     from .loader import _dit_target_dtype
     from .vendor import MiniMaxH3Transformer3DModel
     path = _artifact_path(path)
-    metadata,config,record,graph = preflight_checkpoint(path)
+    metadata,config,record,graph = preflight
     codec,identity = restored_codec(path,record)
     weights = _WeightFile(str(path))
     if {key:str(value) for key,value in weights.metadata.items()} != {key:str(value) for key,value in metadata.items()}:

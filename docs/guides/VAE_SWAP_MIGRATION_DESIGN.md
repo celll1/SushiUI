@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3のnative Full bundleを公開ModelLoader/architecture loaderから復元する分岐を追加した。
+単一safetensorsとshard indexのformat/model_typeを判別し、認識済みbundleの不正metadataは
+通常weight loaderへfallbackせずstrict preflightで拒否する。未知/壊れた通常fileの判別probeはsoftに扱う。
+shard metadataのmodel_type mappingにH3が欠けていたため、SD1.5への誤判定も修正した。
+保存済みcompanion参照のTE/projectionをheader gate後に先にmapし、埋込みtarget codec/bridge/DiT、
+audio VAE、tokenizer/processor/schedulersを復元する。元video VAEとcommunity image VAEは読み込まない。
+target codecの精度とTE/projectionの組はcheckpointの宣言を保持し、変更override/hybridを拒否する。
+geometry-only loadはTEとagreement診断を省略する。通常loadは既存のTE agreement advisoryも呼ぶ。
+frontendのComponentOrigin型に合わせ、外部参照TEのoriginはselected_externalとする。
+埋込みVAEはembedded_checkpointとして表示し、外部codecと誤表示しない。
+関連CPU回帰185件が通過し、GPU依存1件はskipした。変更Pythonのcompile・CUDA無し実importも通過。
+実小型codec/DiTを単一・shardedで復元して重み完全一致を確認し、companion builderはCPU用代替を使った。
+既存header拒否テストの__new__ mockが後続testへ残る問題も、signatureを保持する__init__ mockへ修正した。
+合成データのみ使用。学習run/サーバーは変更せず、frontend build/type-checkは所有者確認のままとする。
+これはloaderの接続であり、公開routeのtarget frame制約、校正/Full owner、GPU offloader、
+公式全重みでの学習・画質・速度の受け入れを意味しない。公開swap training gateは解除していない。
+
 video codecの共通frame_spansを追加した。独立frameは幅1、causalは先頭1+以降temporal scale、
 H3 chunkは既存の1,4,4,4,4の繰返しとし、全区間の和がdecode frame数と一致することを検査する。
 共通temporal_spec_for_codecはモデルのproduction floor/ceiling、FPS、placementを保持し、
@@ -17,7 +34,7 @@ H3 backendの時間pinとspatial maskのframe spanへ同じ契約を渡す。pro
 lattice上にない場合も、floor未満へtrimする誤った案内を出さず、必要な有効frame数を示す。
 U-netのspatial poolingはclean/noisy AdaLN labelを混在させられないため、部分cellのspatial pinは
 条件encode前に拒否する。pooling cell全体のpinとtemporal pinは実codec/実samplerで保持を検査する。
-公開routeのloaded-checkpoint contract解決、chain preset/cache、校正/Full owner、公開native loader、
+公開routeのloaded-checkpoint contract解決、chain preset/cache、校正/Full owner、
 公式全重みでの学習・画質・速度はまだ未完。内部plannerの接続で公開swap gateを解除しない。
 APIのrequest/response/defaultやfrontendは変更していない。
 共通時間span/既存editing planner/実H3生成/codecのCPU回帰228件が通過した。

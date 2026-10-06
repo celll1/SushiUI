@@ -232,6 +232,6 @@ def test_dense_restore_and_invalid_depth_curve_refuse_before_model_construction(
         config[field] = record["source_config"][field] = 1000000
         bad = save_single_file_state(state,{**md,"transformer_config":json.dumps(config),KEY:json.dumps(record)},
                                      str(tmp_path/(field+".safetensors")))
-        with patch.object(MiniMaxH3Transformer3DModel,"__new__",side_effect=AssertionError("model constructed")):
+        with patch.object(MiniMaxH3Transformer3DModel,"__init__",autospec=True,side_effect=AssertionError("model constructed")):
             with pytest.raises(ValueError,match="header"):
                 preflight_checkpoint(bad)

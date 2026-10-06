@@ -264,12 +264,12 @@ def test_full_finetune_refusal_reads_the_capability_table(monkeypatch):
     FullParameterTrainer._refuse_unsupported_full_finetune("any/path")
 
 
-def test_the_h3_adapter_module_exports_no_full_parameter_adapter():
-    """Layer 2 of the three-layer refusal: there is deliberately no
-    MiniMaxH3FullParameterAdapter to fall back to."""
-    from core.training.adapters import minimax_h3_adapter as A
+def test_staged_aligned_full_adapter_is_not_publicly_exported():
+    import core.training.adapters as adapters
+    from core.training.adapters.minimax_h3_adapter import MiniMaxH3AlignedFullParameterAdapter
 
-    assert [n for n in dir(A) if "FullParameter" in n] == []
+    assert issubclass(MiniMaxH3AlignedFullParameterAdapter, adapters.BaseFullParameterAdapter)
+    assert "MiniMaxH3AlignedFullParameterAdapter" not in adapters.__all__
 
 
 def test_training_unsupported_table_declares_it():

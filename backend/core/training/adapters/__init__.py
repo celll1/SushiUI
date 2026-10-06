@@ -18,9 +18,7 @@ from .krea2_adapter import Krea2LoRAAdapter, Krea2FullParameterAdapter
 from .qwen_image_21_adapter import QwenImage21LoRAAdapter, QwenImage21FullParameterAdapter
 from .ming_image_01_adapter import MingImage01FullParameterAdapter
 from .ltx2_adapter import Ltx2LoRAAdapter, Ltx2FullParameterAdapter
-# MiniMax-H3 exports a LoRA adapter ONLY: full fine-tuning is refused for this
-# architecture (design section 7) and the absence of a FullParameterAdapter class
-# here is one of the three layers of that refusal.
+# H3's aligned Full adapter remains internal pending public training acceptance.
 from .minimax_h3_adapter import MiniMaxH3LoRAAdapter
 from .acestep_adapter import AceStepLoRAAdapter, AceStepFullParameterAdapter
 from .sensenova_adapter import SenseNovaLoRAAdapter, SenseNovaFullParameterAdapter

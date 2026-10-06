@@ -14,9 +14,8 @@ Two declarative fields carry everything the shared video machinery needs:
   generation that tiled differently. Measured stakes: rel-RMS 0.355 at 384x384
   (K0.5) and 0.0952 at 640x384 (Phase 0T) from flipping those flags alone.
 
-Full fine-tuning is refused for this architecture in three places (design §7):
-this package ships no ``FullParameterAdapter``, ``full_parameter_trainer``
-raises, and ``api.arch_capabilities.TRAINING_UNSUPPORTED`` declares it.
+Public Full training remains refused until the aligned adapter's calibration,
+residency and official-weight acceptance are wired.
 """
 
 from __future__ import annotations
@@ -33,6 +32,32 @@ from core.training.ops.minimax_h3_ops import (
 
 
 class MiniMaxH3ArchHandler(ArchHandler):
+    def resolve_wiring(self, trainer):
+        from dataclasses import replace
+        from math import lcm
+        from core.models.components.latent_adapter import topology_alignment
+        from core.models.components.video_latent_adapter import NormalizedVideoVAE, temporal_spec_for_codec
+        model, vae = getattr(trainer, "transformer", None), getattr(trainer, "vae", None)
+        if model is None or not isinstance(vae, NormalizedVideoVAE):
+            return self.wiring
+        inner = getattr(model, "transformer", model)
+        if getattr(inner, "_video_codec_contract", None) != vae.contract:
+            raise ValueError("H3 training model and video codec contracts disagree")
+        contract = vae.contract
+        h, w = topology_alignment(getattr(inner, "_residual_unet_spec", None))
+        self.pixel_align = contract.image.spatial_scale*2*lcm(h, w)
+        spec = temporal_spec_for_codec(MINIMAX_H3_TEMPORAL, contract)
+        minimum = max(spec.min_decodable_frames, spec.frame_multiple+spec.frame_offset)
+        lengths = tuple(sorted({max(minimum,
+            ((n-spec.frame_offset+spec.frame_multiple-1)//spec.frame_multiple)*spec.frame_multiple+spec.frame_offset)
+            for n in MINIMAX_H3_TEMPORAL.default_clip_lengths}))
+        self.temporal = replace(spec, pixel_align=self.pixel_align,
+            default_clip_lengths=lengths, suggested_min_frames=minimum)
+        self.clip_vae_tiling_policy = None
+        return self.wiring.replace(latent_channels=contract.image.latent_channels,
+            vae_scale_factor=contract.image.spatial_scale, vae_scale_temporal=contract.temporal_scale,
+            vae_norm="identity", vae_norm_pack=1)
+
     name = "minimax_h3"
     wiring = MINIMAX_H3_WIRING
     adapter_capability = declare_adapter_capability(

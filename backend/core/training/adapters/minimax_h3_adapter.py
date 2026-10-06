@@ -12,7 +12,7 @@ LoRA targets (design §10, all 50 blocks):
   ``transformer_blocks.{i}.ff.{net.0.proj,net.2}``
   -> 300 modules, 83.1 M trainable parameters at rank 16 (MEASURED, Phase 0T).
 
-PERMANENTLY EXCLUDED, with reasons — these are design decisions, not deferrals:
+Excluded from LoRA targets:
   * ``proj_in`` / ``audio_proj_in`` / ``proj_out`` / ``audio_proj_out``: the
     modality I/O heads. They are small and structurally load-bearing for the
     packed-sequence split; adapting them shifts the modality interface itself
@@ -22,13 +22,10 @@ PERMANENTLY EXCLUDED, with reasons — these are design decisions, not deferrals
   * AdaLN: in the released ("pruned") variant the modulation is a frozen lookup
     TABLE plus a projection, not a target a LoRA can meaningfully wrap.
 
-There is deliberately **no FullParameterAdapter class in this module**. Full
-fine-tuning is refused for this architecture in three layers (design §7): this
-absence, the hard ``ValueError`` in ``full_parameter_trainer._create_adapter``,
-and the ``TRAINING_UNSUPPORTED`` declaration served by
-``GET /schema/arch-capabilities``.
+The aligned Full adapter is internal staging; the public trainer/API keep their
+refusal until calibration, residency and official-weight acceptance are wired.
 
-Save format: sd-scripts native — ``lora_unet_<flattened>.lora_down.weight`` /
+LoRA save format: sd-scripts native — ``lora_unet_<flattened>.lora_down.weight`` /
 ``lora_up.weight`` / ``alpha``; metadata ``model_type="minimax_h3"``.
 """
 
@@ -47,8 +44,53 @@ from core.adapters import (
 )
 
 from .base_adapter import (
-    BaseLoRAAdapter, resolve_component_lr, LORA_COMPONENT_UNET
+    BaseLoRAAdapter, BaseFullParameterAdapter, reject_quantized_base,
+    resolve_component_lr, LORA_COMPONENT_UNET
 )
+
+
+class MiniMaxH3AlignedFullParameterAdapter(BaseFullParameterAdapter):
+    """Train an unquantized aligned DiT and save its native video bundle."""
+
+    def _validate(self):
+        from core.models.components.video_latent_adapter import NormalizedVideoVAE
+        from core.models.minimax_h3.video_alignment import AlignedMiniMaxH3BlockLoopWrapper
+        model = self.trainer.transformer
+        reject_quantized_base(model, model_label="MiniMax H3 Full")
+        inner = getattr(model, "transformer", model)
+        pair = getattr(inner, "_video_latent_alignment", None)
+        vae = self.trainer.vae
+        identity = getattr(self.trainer, "vae_identity", None)
+        if (not isinstance(model, AlignedMiniMaxH3BlockLoopWrapper)
+                or pair is None or not pair.ready or not isinstance(vae, NormalizedVideoVAE)
+                or identity is None or identity.latent_hash != pair.declaration["target_identity"]
+                or vae.contract != getattr(inner, "_video_codec_contract", None)):
+            raise ValueError("H3 aligned Full training requires a calibrated matching video codec")
+        return model
+
+    def prepare_models_for_training(self):
+        model = self._validate()
+        enabled = bool(getattr(self.trainer, "train_unet", True))
+        model.requires_grad_(enabled)
+        model.train(enabled)
+        for name in ("vae", "audio_vae", "text_encoder", "text_encoder_2"):
+            module = getattr(self.trainer, name, None)
+            if module is not None:
+                module.requires_grad_(False).eval()
+
+    def arch_param_groups(self):
+        model = self._validate()
+        parameters = [p for p in model.parameters() if p.requires_grad]
+        if not parameters:
+            return []
+        return [{"params": parameters,
+                 "lr": resolve_component_lr(self.trainer, "unet_lr", label="MiniMax H3 DiT"),
+                 "name": "unet", "component": LORA_COMPONENT_UNET}]
+
+    def write_checkpoint(self, step, epoch, output_path):
+        self._validate()
+        from core.models.minimax_h3.video_artifact import save_checkpoint
+        return save_checkpoint(self.trainer, output_path, step=step, epoch=epoch)
 
 
 # Default LoRA scope. BOTH groups default ON: that is the 300-module target set

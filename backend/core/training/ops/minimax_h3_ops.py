@@ -34,10 +34,8 @@ loss on BOTH modalities. H3's convention, derived from ``x0 = x_t + sigma*v``
 Video rows ride the shift-12 sigma and audio rows the shift-3 sigma **of the same
 uniform draw**, mirroring the inference dual-schedule.
 
-Full fine-tuning is refused for this arch (design §7): see
-``full_parameter_trainer._create_adapter``, the absent ``FullParameterAdapter``
-class in ``adapters/minimax_h3_adapter.py``, and
-``api.arch_capabilities.TRAINING_UNSUPPORTED``.
+Public Full training remains refused; the internal aligned adapter has not yet
+passed official-weight residency and calibration acceptance.
 """
 from __future__ import annotations
 
@@ -198,8 +196,7 @@ def load_components(trainer) -> None:
     # held fixed). `move_vae_to_gpu` casts the VAE to `trainer.vae_dtype` on
     # every move, so leaving that at the run's bf16/fp32 would silently re-cast
     # the VAE away from the dtype the latents were measured under.
-    trainer.vae_dtype = torch.float16
-    trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
+    bind_video_codec(trainer, components)
 
     # Geometry + normalization vectors, so nothing downstream re-derives them.
     trainer.minimax_h3_latents_mean = components["latents_mean"]
@@ -279,6 +276,28 @@ def load_components(trainer) -> None:
           f"(latent_channels={trainer.vae_latent_channels}, fps={trainer.minimax_h3_fps}, "
           f"audio {trainer.minimax_h3_audio_sample_rate} Hz / "
           f"{trainer.minimax_h3_audio_latent_rate} latents/s)")
+
+
+def bind_video_codec(trainer, components):
+    """Embedded codec precision belongs to the saved latent identity."""
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+    from core.training.arch.minimax_h3 import MiniMaxH3ArchHandler
+    if isinstance(trainer.vae, NormalizedVideoVAE):
+        inner = getattr(trainer.transformer, "transformer", trainer.transformer)
+        identity = components.get("vae_identity")
+        pair = getattr(inner, "_video_latent_alignment", None)
+        if (identity is None or pair is None or not pair.ready
+                or identity.latent_hash != pair.declaration["target_identity"]):
+            raise ValueError("H3 training requires its calibrated embedded codec identity")
+        trainer.vae_dtype = next(trainer.vae.parameters()).dtype
+        trainer.vae_identity = identity
+        handler = getattr(trainer, "arch", None)
+        if not isinstance(handler, MiniMaxH3ArchHandler):
+            handler = MiniMaxH3ArchHandler()
+        trainer.wiring = handler.resolve_wiring(trainer)
+    else:
+        trainer.vae_dtype = torch.float16
+        trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 
 
 def setup_block_swap(trainer) -> None:

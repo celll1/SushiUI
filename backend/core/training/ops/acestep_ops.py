@@ -88,16 +88,17 @@ def load_components(trainer) -> None:
     print(f"{trainer.log_prefix} Loading ACE-Step components from {trainer.model_path}")
 
     from core.model_loader import ModelLoader
-    components = ModelLoader.load_acestep_from_path(trainer.model_path, trainer.weight_dtype)
+    components = ModelLoader.load_acestep_from_path(trainer.model_path, trainer.weight_dtype, for_training=True)
 
     trainer.transformer = components["dit"]
     trainer.transformer_original = trainer.transformer  # No wrapper for ACE-Step.
     trainer.acestep_dit_config = components["dit_config"]
     trainer.vae = components["vae"]
+    trainer.acestep_source_vae = components.get("source_vae")
     trainer.text_encoder = components["text_encoder"]
     trainer.tokenizer = components["tokenizer"]
     trainer.acestep_sample_rate = int(components.get("sample_rate", 48000))
-    trainer.acestep_latent_frame_rate = int(components.get("latent_frame_rate", 25))
+    trainer.acestep_latent_frame_rate = float(components.get("latent_frame_rate", 25))
     # Read directly by _build_cache_namespace (base_trainer.py) as a fallback
     # over self.vae.config.latent_channels, which AutoencoderOobleck's config
     # does not expose under that name (it uses decoder_input_channels).
@@ -164,6 +165,8 @@ def load_components(trainer) -> None:
     # adapter via apply_lora_to_unet (decoder.layers.*.{self_attn,cross_attn}
     # ONLY -- encoder/tokenizer/detokenizer/VAE/text_encoder stay frozen).
     trainer.vae.requires_grad_(False)
+    if trainer.acestep_source_vae is not None:
+        trainer.acestep_source_vae.requires_grad_(False).eval().to("cpu")
     trainer.text_encoder.requires_grad_(False)
     trainer.transformer.requires_grad_(False)
 
@@ -171,6 +174,9 @@ def load_components(trainer) -> None:
     # GPU move -- see module + function docstrings for why these are safe to
     # share across every training item/caption).
     _build_silence_latent(trainer)
+    if trainer.acestep_source_vae is not None:
+        trainer.acestep_source_vae = None
+        components["source_vae"] = None
     _build_empty_lyrics(trainer)
 
     # Plain GPU move. Block-swap init deferred to setup_block_swap() (called by
@@ -197,14 +203,19 @@ def _build_silence_latent(trainer) -> None:
     on whatever device the freshly-loaded VAE is on -- CPU, per
     ``load_acestep_from_path``'s "keep everything on CPU after load" policy --
     instead of lazily via a device-move-and-restore dance)."""
-    from core.models.acestep.defaults import SAMPLE_RATE, SILENCE_LATENT_FRAMES
+    from core.models.acestep.defaults import SILENCE_LATENT_FRAMES
 
-    vae = trainer.vae
+    vae = getattr(trainer, "acestep_source_vae", None)
+    aligned = getattr(getattr(getattr(trainer, "transformer", None), "decoder", None), "_audio_latent_alignment", None)
+    if aligned is not None and vae is None:
+        raise ValueError("ACE aligned silence setup requires the original conditioning codec")
+    vae = vae or trainer.vae
     vae_dtype = next(vae.parameters()).dtype
     vae_device = next(vae.parameters()).device
-    duration_sec = SILENCE_LATENT_FRAMES / 25.0  # 30s
+    frames = getattr(getattr(trainer, "acestep_dit_config", None), "timbre_fix_frame", SILENCE_LATENT_FRAMES)
+    samples = frames * vae.hop_length
     zeros = torch.zeros(
-        1, 2, int(round(duration_sec * SAMPLE_RATE)), device=vae_device, dtype=vae_dtype
+        1, vae.config.audio_channels, samples, device=vae_device, dtype=vae_dtype
     )
     with torch.no_grad():
         # .mode() (deterministic mean): silence must encode to a fixed,
@@ -469,10 +480,23 @@ def vae_encode_audio(trainer, waveform: torch.Tensor) -> torch.Tensor:
     vae_device = next(vae.parameters()).device
     vae_dtype = next(vae.parameters()).dtype
     px = waveform.unsqueeze(0).to(device=vae_device, dtype=vae_dtype)  # [1, 2, samples]
+    encoding = getattr(vae, "_sushi_audio_encoding_contract", None)
+    expected = None
+    if encoding is not None:
+        from core.models.components.audio_latent_adapter import AudioCodecContract
+        contract = AudioCodecContract(**encoding["target"])
+        if waveform.ndim != 2 or waveform.shape[0] != contract.waveform_channels or waveform.shape[-1] < 1:
+            raise ValueError("ACE audio encoding requires nonempty declared waveform channels")
+        divisor = encoding["sample_alignment"]
+        padding = (-px.shape[-1]) % divisor
+        px = F.pad(px, (0, padding))
+        expected = (1, contract.latent_frames(px.shape[-1]), contract.latent_channels)
     with torch.no_grad():
         latent_dist = vae.encode(px).latent_dist
         latents = latent_dist.sample()  # [1, 64, T]
         latents = latents.transpose(1, 2).contiguous()  # [1, T, 64]
+        if expected is not None and tuple(latents.shape) != expected:
+            raise ValueError("ACE target codec returned unexpected latent geometry")
     del px
     return latents
 
@@ -544,11 +568,18 @@ def train_step(
             f"[train_step_acestep] expected 3D latents [B, T, 64], got "
             f"{latents.dim()}D {tuple(latents.shape)}"
         )
-    batch_size, t_lat, c_lat = latents.shape
-    if c_lat != 64:
-        raise ValueError(f"[train_step_acestep] expected 64 latent channels, got {c_lat}")
-
     dit = trainer.transformer  # AceStepConditionGenerationModel (LoRA-wrapped decoder)
+    alignment = getattr(dit.decoder, "_audio_latent_alignment", None)
+    batch_size, t_lat, c_lat = latents.shape
+    source_channels = getattr(dit.config, "audio_acoustic_hidden_dim", 64)
+    expected_channels = source_channels if alignment is None else alignment.target.latent_channels
+    if c_lat != expected_channels:
+        raise ValueError(f"[train_step_acestep] expected {expected_channels} latent channels, got {c_lat}")
+    native_frames, native_channels = t_lat, source_channels
+    if alignment is not None:
+        samples = alignment.target.waveform_samples(t_lat)
+        native_frames = (samples + alignment.source.hop_length - 1) // alignment.source.hop_length
+        native_channels = alignment.source.latent_channels
 
     # Caption-independent conditioning asset, precomputed at load time (see
     # _build_silence_latent). Per-item lyric conditioning (lyric_hidden_states
@@ -561,9 +592,9 @@ def train_step(
     # silence src_latents/context, matching _generate_txt2aud_acestep's
     # no-reference-audio branch exactly (is_covers=False everywhere).
     from core.pipeline_backends.acestep import AceStepMixin
-    src_latents = AceStepMixin._acestep_silence_slice(silence_latent, t_lat).to(dtype=dtype)  # [1, T, 64]
+    src_latents = AceStepMixin._acestep_silence_slice(silence_latent, native_frames).to(dtype=dtype)  # Native RVQ domain.
     src_latents = src_latents.expand(batch_size, -1, -1)
-    chunk_masks = torch.ones(batch_size, t_lat, 64, dtype=dtype, device=device)
+    chunk_masks = torch.ones(batch_size, native_frames, native_channels, dtype=dtype, device=device)
     is_covers = torch.zeros(batch_size, dtype=torch.bool, device=device)
     # One timbre "packed" row per batch element (order_mask=arange(B) maps each
     # packed row 1:1 to its own batch index; matches unpack_timbre_embeddings'
@@ -575,6 +606,7 @@ def train_step(
     # `attention_mask` param) — all-valid (no padding: batches are grouped by
     # uniform latent-frame count, see base_trainer.py's acestep_audio_batches).
     diffusion_attention_mask = torch.ones(batch_size, t_lat, dtype=dtype, device=device)
+    native_attention_mask = torch.ones(batch_size, native_frames, dtype=dtype, device=device)
 
     if profile_vram:
         print_vram_usage("[train_step_acestep] Before prepare_condition")
@@ -591,11 +623,12 @@ def train_step(
             refer_audio_acoustic_hidden_states_packed=timbre_packed,
             refer_audio_order_mask=refer_audio_order_mask,
             hidden_states=src_latents,
-            attention_mask=diffusion_attention_mask,
+            attention_mask=native_attention_mask,
             silence_latent=silence_latent,
             src_latents=src_latents,
             chunk_masks=chunk_masks,
             is_covers=is_covers,
+            target_frames=t_lat if alignment is not None else None,
         )
 
     # Sigma sampling (flow-matching), same policy as ltx2/anima: sigma in

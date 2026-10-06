@@ -142,8 +142,9 @@ def test_context_validation_keeps_mask_semantics():
     mask[...,0] = 0
     with pytest.raises(ValueError, match="uniform"):
         native_context_to_target(pair, torch.cat((source,mask),-1))
-    with pytest.raises(ValueError, match="multiple"):
-        native_context_to_target(pair, torch.zeros(1,47,4))
+    assert native_context_to_target(pair, torch.zeros(1,47,4)).shape == (1,24,8)
+    with pytest.raises(ValueError, match="duration"):
+        native_context_to_target(pair, torch.zeros(1,47,4), target_frames=24)
     with pytest.raises(ValueError, match="geometry"):
         decoder_inputs(pair, torch.zeros(1,24,4), torch.zeros(1,48,8), .5)
 

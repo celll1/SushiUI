@@ -8,19 +8,36 @@ from torch import nn
 from core.models.components.audio_latent_adapter import calibration_audio_grid
 
 
+def bind_encoding_contract(codec, alignment):
+    from core.models.components.audio_latent_adapter import AudioCodecContract
+    from dataclasses import asdict
+    if AudioCodecContract.from_oobleck(codec) != alignment.target:
+        raise ValueError("ACE target codec differs from the audio encoding contract")
+    codec._sushi_audio_encoding_contract = dict(target=asdict(alignment.target),
+        sample_alignment=alignment.target.hop_length, policy="zero_tail_target_hop_v1")
+
+
 def _uniform_mask(mask, channels):
     if mask.ndim != 3 or mask.shape[-1] < 1 or not torch.equal(mask, mask[..., :1].expand_as(mask)):
         raise ValueError("ACE audio swap requires channel-uniform chunk masks")
     return mask[..., :1].expand(-1, -1, channels)
 
 
-def native_context_to_target(alignment, context):
+def native_context_to_target(alignment, context, *, target_frames=None):
     """Convert conditioning only; RVQ and timbre still consume native latents."""
     old, new = alignment.source.latent_channels, alignment.target.latent_channels
     if context.ndim != 3 or context.shape[-1] != 2 * old or min(context.shape) < 1:
         raise ValueError("ACE native context must contain source latents and chunk masks")
     samples = alignment.source.waveform_samples(context.shape[1])
-    frames = alignment.target.latent_frames(samples)
+    if target_frames is None:
+        frames = (samples + alignment.target.hop_length - 1) // alignment.target.hop_length
+    else:
+        if type(target_frames) is not int or target_frames < 1:
+            raise ValueError("ACE target conditioning frame count must be positive")
+        frames = target_frames
+        required = (alignment.target.waveform_samples(frames) + alignment.source.hop_length - 1) // alignment.source.hop_length
+        if required != context.shape[1]:
+            raise ValueError("ACE native conditioning duration differs from the target grid")
     source, mask = context.split(old, dim=-1)
     source = calibration_audio_grid(source.transpose(1, 2), frames)
     source = torch.nn.functional.pad(source, (0, 0, 0, alignment.backbone_channels-old))

@@ -1698,6 +1698,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         is_covers: torch.Tensor,
         precomputed_lm_hints_25Hz: Optional[torch.FloatTensor] = None,
         audio_codes: torch.FloatTensor = None,
+        target_frames: Optional[int] = None,
     ):
         
         dtype = hidden_states.dtype
@@ -1730,7 +1731,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         alignment = getattr(self.decoder, "_audio_latent_alignment", None)
         if alignment is not None:
             from ..vae_boundary import native_context_to_target
-            context_latents = native_context_to_target(alignment, context_latents)
+            context_latents = native_context_to_target(alignment, context_latents, target_frames=target_frames)
         return encoder_hidden_states, encoder_attention_mask, context_latents
 
     def forward(

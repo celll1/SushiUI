@@ -196,6 +196,7 @@ class AceStepFullParameterAdapter(BaseFullParameterAdapter):
     — including the condition encoder/tokenizer/detokenizer submodules (unlike
     LoRA, which only targets ``decoder.layers.*.{self_attn,cross_attn}``).
     Qwen3 text encoder + VAE stay frozen.
+    Audio-aligned models retain frozen native conditioning and train the decoder.
     """
 
     def prepare_models_for_training(self):
@@ -206,6 +207,10 @@ class AceStepFullParameterAdapter(BaseFullParameterAdapter):
         if train_dit and trainer.transformer is not None:
             trainer.transformer.requires_grad_(True)
             trainer.transformer.train()
+            if getattr(trainer.transformer.decoder, "_audio_latent_alignment", None) is not None:
+                for name in ("encoder", "tokenizer", "detokenizer"):
+                    getattr(trainer.transformer, name).requires_grad_(False).eval()
+                trainer.transformer.null_condition_emb.requires_grad_(False)
             print("[AceStepFullParameterAdapter] ACE-Step DiT set to train mode")
 
         if trainer.text_encoder is not None:

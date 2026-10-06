@@ -8,6 +8,18 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+校正済みACE artifactの正式generation loaderを接続した。保存時のdtypeで元codec identityを
+照合し、無音/reference用source codecとdecode用target codecを別componentとしてCPUで保持する。
+共通latent identityにはtarget C・hop・identity正規化を渡し、ModelInfoの既存VAE表示へ接続した。
+共通source resolverもACEの専用bundle宣言を読み、model:抽出と宣言済みlatent IOの復元に対応する。
+検査ではcodecを確保せず、geometryの矛盾を拒否し、実weight読込時はtarget hashも照合する。
+小型実モデルの正式generation loaderからsampler/decodeまでのCPU検証であり、外部TE/tokenizer・
+source file配置はfixtureである。公式重みの音質・GPU速度・全parameter学習再開は未検証。
+新規ACE swapの公開API gateは残し、preflight・初期化mode・音声校正UIの配線を続ける。
+変更Pythonのcompile・CUDAを抑止した実importと、source resolver・学習・generation backendの
+CPU回帰61件が通過した。ModelInfo型と既存VAE表示を静的確認し、owner build/type-checkは未実施。
+以下は各段階の検証履歴であり、後続段階で解消した未接続事項を含む。
+
 新規ACE swapの時間位置方針はsource_hop_v1とした。RoPEのtarget token位置jを
 j×target_hop/source_hopへ写し、局所attentionの元window幅を実時間で保持する。dense経路は
 window×source_hop//target_hop、U-net経路は補正済み座標の距離でwindowを判定し、粗い層では
@@ -16,7 +28,7 @@ decoder/U-netの構造identityに時間契約を含む。既存v1 artifactはtar
 再保存しても以前の位置解釈を維持する。方針とdecoder configの不一致はモデル確保前に拒否する。
 小型実decoderの整数/非整数hop・dense/U-net・局所mask・RoPE座標、v1復元/再保存、改変拒否の
 CPUテスト6件と、関連boundary/artifact/sampler/backend/native回帰38件・20subtestが通過した。
-FlashAttentionの実GPU確認と公式重みの音質・速度検証は未完であり、公開generation gateは残す。
+FlashAttentionの実GPU確認と公式重みの音質・速度検証は未完である。
 
 ACE generation backendの無音/reference encodeは元codec、生成latent decodeは交換先codecへ分離した。
 source codecの失敗時も配置を復元する。text・cover・repaint・outpaintの元時間系列/保持区間を維持し、
@@ -25,7 +37,7 @@ outpaintは保持区間に元waveformをsample-exactで戻し、repaintは既存
 pipelineの構造表示は元conditioning configでなく拡張decoder identityを使う。小型実ACE/Oobleckの
 非整数hop比・U-netでbackend検証6件、既存native/U-net回帰13件・20subtestが通過した。
 外部TE/tokenizer・sourceファイル配置はfixtureであり、公式weight load/GPUの証明ではない。
-正式loaderのgeneration gateは時間位置表現と公開contractを完成するまで残している。
+正式loaderのgeneration gateは後続のcodec identity・component配線で解除した。
 
 ACE native samplerのnoisy state、cover初期混合、retake、repaint clean/mask、decoder attention maskを
 target codecの時間系列へ接続した。RVQ/tokenize/LM hintsの入力は元codecの系列を保持する。

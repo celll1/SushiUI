@@ -424,8 +424,6 @@ def load_acestep_from_path(
 
     dit, dit_config = _build_dit(dit_path, torch_dtype)
     restored_codec = getattr(dit, "_audio_restored_codec", None)
-    if restored_codec is not None and not for_training:
-        raise NotImplementedError("ACE bundled audio swap requires target/source codec staging in the generation owner")
     source_vae = None
     if restored_codec is not None:
         from .audio_artifact import source_dtype, verify_source_codec
@@ -466,6 +464,8 @@ def load_acestep_from_path(
     print("[AceStepLoader] Loaded ACE-Step 1.5 components (CPU-resident).")
 
     contract = getattr(getattr(dit, "decoder", None), "_audio_latent_alignment", None)
+    from .audio_artifact import resolved_codec_identity
+    identity = resolved_codec_identity(dit, vae, dit_path)
     return {
         "type": "acestep",
         "is_audio": True,
@@ -473,6 +473,7 @@ def load_acestep_from_path(
         "dit_config": dit_config,
         "vae": vae,
         "source_vae": source_vae,
+        "vae_identity": None if identity is None else identity.facts(),
         "text_encoder": text_encoder,
         "text_encoder_config": te_config,
         "tokenizer": tokenizer,

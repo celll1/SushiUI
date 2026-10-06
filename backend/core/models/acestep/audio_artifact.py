@@ -157,6 +157,21 @@ def prepare_restore(model, record):
     model._audio_source_codec_identity = dict(config=record["source_config"], hash=record["source_hash"], dtype=record["source_dtype"])
 
 
+def resolved_codec_identity(model, codec, path):
+    from core.models.common.vae_source import ResolvedVAE
+    pair = getattr(model.decoder, "_audio_latent_alignment", None)
+    if pair is None:
+        return None
+    if AudioCodecContract.from_oobleck(codec) != pair.target or not pair.ready:
+        raise ValueError("ACE codec identity requires its restored calibrated boundary")
+    return ResolvedVAE(source="model:"+str(path), form="model", family="custom",
+        latent_channels=pair.target.latent_channels, scale_factor=1, scale_temporal=pair.target.hop_length,
+        ndim=3, norm="identity", norm_pack=1, vae_class="AutoencoderOobleck",
+        config=dict(codec.config, _class_name="AutoencoderOobleck"), content_hash=content_hash_for_state_dict(codec.state_dict()),
+        provenance="bundled ACE audio codec", locator=None, struct_native=False, identity_native=False,
+        scaling_factor=None, shift_factor=None, path=str(path), prefix="vae.")
+
+
 def restore_codec(record, state, dtype):
     from diffusers import AutoencoderOobleck
     if content_hash_for_state_dict(state) != record["target_hash"]:

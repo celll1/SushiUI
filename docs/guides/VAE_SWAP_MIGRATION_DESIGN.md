@@ -19,9 +19,14 @@ v2 residual交換には保存されたsource予測契約が必要で、欠損時
 校正hookは小型native VAEの8x→16x、4→2/6チャネルで接続した。交換元のmean/momentを保持し、
 交換先のposterior sampleを同じencodeから専用乱数で抽選して、位置数で重み付けしたFP64統計を集計する。
 fit用の一時kernel初期化も学習乱数を進めない。校正中断後の再試行と、完了後の再校正なしをCPU検証した。
-これは内部handlerの到達点であり、公開APIからのswap開始・保存復元・公式全重みの検証は未了。
-この段階ではChimeraの公開VAE交換ゲートは維持する。codec/bridge同梱とmanifest更新、
-再開復元、target-native生成格子、polarの校正を接続してから解除する。
+Full adapterの保存・native loaderの復元も接続した。生codec重み/config、空間bridge、交換元/交換先の
+予測契約と校正統計を同梱し、manifest/config/重みメタデータの不一致はheader段階で拒否する。
+小型実UNetとVAEで単一/分割保存、チャネル増減、optimizerファイル再読込後の更新一致、
+runtime dtype変更後もfrozen codecを保持した再保存、config既定値で統計を上書きしない再開をCPU検証した。
+校正・保存・既存学習・v1〜v4 flow回帰106件が通過した。これは公式全重みの学習・画質検証ではない。
+またCPU donor構築でCUDA乱数を初期化しないよう修正し、linear-stateのdonor転写では設計通り出力層を保持する。
+この段階ではChimeraの公開VAE交換ゲートは維持する。target-native生成格子、polar経路と校正、
+公開API/UIの配線、公式全重みの検証は未了。
 v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
 direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に
 target tangent/radialへ分解する必要がある。v4のdestruction-coordinate微分も変換に含める。

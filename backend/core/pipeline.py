@@ -1047,6 +1047,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "latent_channels": self.ltx2_components.get("latent_channels", 128),
                     "vae_scale_factor_spatial": self.ltx2_components.get("vae_scale_factor_spatial", 32),
                     "vae_scale_factor_temporal": self.ltx2_components.get("vae_scale_factor_temporal", 8),
+                    **self._fold_component_latent_identity(self.ltx2_components, "ltx2"),
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] LTX-2.3 model loaded successfully")
@@ -3992,7 +3993,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if not identity:
             return {}
         return self._fold_sd_latent_identity(
-            SimpleNamespace(_sushi_vae_identity=identity), arch)
+            SimpleNamespace(_sushi_vae_identity=identity, vae=components.get("vae")), arch)
 
     def _fold_sd_latent_identity(self, pipeline, arch: str) -> Dict[str, Any]:
         """Set ``_sushi_wiring`` for a loaded SD1.5/SDXL pipeline; return the
@@ -4018,12 +4019,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                                   or spec.latent_channels)
             codec=getattr(pipeline,"vae",None)
             scale=getattr(codec,"spatial_scale_factor",None)
+            from core.models.components.video_latent_adapter import NormalizedVideoVAE
+            if isinstance(codec, NormalizedVideoVAE):
+                scale = codec.spatial_compression_ratio
             options={"latent_channels":latent_channels}
             if scale is not None:
                 options["vae_scale_factor"]=int(scale)
                 from core.models.components.latent_adapter import NormalizedFrameVAE
-                if isinstance(codec,NormalizedFrameVAE):
+                if isinstance(codec,(NormalizedFrameVAE,NormalizedVideoVAE)):
                     options.update(vae_norm="identity",vae_norm_pack=1)
+                if isinstance(codec,NormalizedVideoVAE):
+                    options["vae_scale_temporal"] = codec.temporal_compression_ratio
             self._sushi_wiring = spec.replace(**options)
             fields: Dict[str, Any] = {"latent_channels": latent_channels}
             if identity:

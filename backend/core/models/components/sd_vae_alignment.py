@@ -1,4 +1,46 @@
 """SD U-Net codec boundaries with explicit VP or flow noise coefficients."""
+def checkpoint_metadata(model):
+    import json
+    from .spatial_swap import artifact_metadata
+    metadata=artifact_metadata(model)
+    if metadata:
+        metadata["unet_config"]=json.dumps(dict(model.config),sort_keys=True,allow_nan=False)
+    return metadata
+
+
+def split_unet_state(model):
+    state=model.state_dict()
+    bridge={key:value for key,value in state.items() if key.startswith("vae_latent_bridge.")}
+    return {key:value for key,value in state.items() if key not in bridge},bridge
+
+
+def restore_alignment(model,metadata,state):
+    import json
+    from .spatial_swap import read_declaration,install,validate_loaded
+    declaration=read_declaration(metadata)
+    if declaration is None:
+        return
+    raw=(metadata or {}).get("unet_config")
+    if not isinstance(raw,str) or len(raw.encode("utf-8"))>65536:
+        raise ValueError("Aligned SD checkpoint requires bounded native U-Net config")
+    config=json.loads(raw)
+    width=max(declaration["old_channels"],declaration["new_channels"])
+    if not isinstance(config,dict) or config.get("in_channels")!=width or config.get("out_channels")!=width:
+        raise ValueError("Aligned SD native config disagrees with internal latent width")
+    saved={key:value for key,value in config.items() if not key.startswith("_")}
+    actual={key:value for key,value in dict(model.config).items() if not key.startswith("_")}
+    if json.dumps(saved,sort_keys=True)!=json.dumps(actual,sort_keys=True):
+        raise ValueError("Aligned SD checkpoint disagrees with loaded native U-Net config")
+    install(model,declaration)
+    pair=model.vae_latent_bridge
+    parameter=next(model.parameters())
+    pair.to(device=parameter.device,dtype=parameter.dtype)
+    prefix="model.diffusion_model.vae_latent_bridge."
+    bridge={key[len(prefix):]:value for key,value in state.items() if key.startswith(prefix)}
+    pair.load_state_dict(bridge,strict=True)
+    validate_loaded(model)
+
+
 def resolve_wiring(handler,trainer):
     from .latent_adapter import NormalizedImageVAE
     vae=getattr(trainer,"vae",None)

@@ -8,6 +8,32 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Ming Design/Layerの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
+`gaussian_row_orthogonal_v1`を選ぶ。native時間`1-σ`に合わせ、入力へ`σ`補正、
+出力へ`x0_minus_eps`符号のnoise residualを適用する。参照入力はclean affine写像のままとし、
+native headが追加で返す参照frameのnoiseはゼロにする。LayerのF軸は独立画像として維持する。
+学習・定期sampleと生成のCFG、U-net、partition/global adapter、single/multi style、
+Reference Guideへ実露出noiseを渡す。guideの混合重みはnoiseにも適用し、Layerの補助canvasを除外する。
+生成時の初期noiseはvendor pipelineの実drawを捕捉し、frame-major順序を保ってCFGへ展開する。
+未追跡のstochastic/別schedulerはGaussian checkpointだけで拒否し、例外・cancel時はnoise scopeを解除する。
+既存checkpointのpolicyとchannel減少のlegacy演算は維持する。
+
+実Full trainer検証で既存のMing交換にも初期化順序の不具合を発見した。
+component loaderは最終`trainer.arch`の作成前に実行されるため、交換時はlocal handlerを解決する。
+最終handlerの生成でも交換VAEからwiringを解決し、24channel・16x・32pixel整列幅を保持する。
+小型実DiT/VAEの学習・投影oracle・Design/Layer・FP32/BF16・U-net・CFG・style/guide・
+partition/global・校正・保存復元・cancelの29条件が通過した。
+API request→config生成→実Full trainerの校正・MNT2/累積2・partition4/global/guidance・
+native bundle保存/読込もDesign/Layerで通過した。固定Gaussian bufferは保存復元でbit一致する。
+MNT2・CFG dropout・guidance・保留gradient付きの途中再開も、CPUのtensor配置を揃えたfixtureで
+非中断学習とnoise/caption/予測・parameter・optimizer stateがbit一致する2条件が通過した。
+通常のCPUロード配置ではGEMM丸めによる予測差が最大3.6e-7あり、配置を跨ぐbit一致は保証しない。
+旧経路・公開Full・全Ming再開条件を含む最終CPU回帰207件、追加の2参照common_concept style2件が通過。
+変更backendのcompile/importもCUDA未初期化で通過した。
+frontendの既定policy説明へMingを追加し、既存API型・default・編集/保存経路を静的確認した。
+owner frontend build/typecheckと公式全重みの交換Full学習・画質受入は残る。
+実画像・GPU・API runは使わず、ignored `local/verification/ming_gaussian_*`へ診断を保持した。
+
 画質の受入は完全な復元ではなく、概形・主要色を一定水準で保持することを目安とする。
 これは変換行列・空間畳み込み・noise補正の改善を省く理由にはしない。
 H3→LTXの色block主体の未学習出力はこの水準を満たさず、画質未受入を維持する。

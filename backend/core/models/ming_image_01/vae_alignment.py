@@ -1,5 +1,8 @@
 """Ming's external VAE domain, calibrated bridges and portable restoration."""
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+
 import torch
 
 from core.models.components.latent_adapter import (
@@ -10,6 +13,61 @@ MingVAEAlignment = SpatialAlignmentPair
 
 NAME = "vae_latent_bridge"
 WEIGHTS = "vae_alignment.safetensors"
+_noise_contexts = ContextVar("ming_alignment_noise", default=())
+
+
+def uses_gaussian(model):
+    return getattr(getattr(model, NAME, None), "noise_alignment", None) is not None
+
+
+def forward_with_noise(model, noise, *args, **kwargs):
+    if not uses_gaussian(model):
+        return model(*args, **kwargs)
+    token = _noise_contexts.set(_noise_contexts.get() + ((model, noise),))
+    try:
+        return model(*args, **kwargs)
+    finally:
+        _noise_contexts.reset(token)
+
+
+def validate_noise_contract(model, scheduler):
+    if not uses_gaussian(model):
+        return
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    if not isinstance(scheduler, FlowMatchEulerDiscreteScheduler) or scheduler.config.get("stochastic_sampling", False):
+        raise ValueError("Gaussian Ming alignment requires deterministic FlowMatchEuler sampling")
+
+
+@contextmanager
+def sampling_noise_scope(pipe, *, batch, frames):
+    bridge = pipe.transformer
+    if not uses_gaussian(bridge.transformer):
+        yield
+        return
+    validate_noise_contract(bridge.transformer, pipe.scheduler)
+    original = pipe.prepare_latents
+    previous = pipe.__dict__.get("prepare_latents")
+    def prepare(*args, **kwargs):
+        latents = original(*args, **kwargs)
+        if latents.ndim != 4 or latents.shape[0] != batch * frames:
+            raise ValueError("Ming initial noise must preserve frame-major sampling order")
+        bridge.alignment_noise = torch.stack(latents.chunk(frames, dim=0), dim=2).clone()
+        return latents
+    pipe.prepare_latents = prepare
+    try:
+        yield
+    finally:
+        bridge.alignment_noise = None
+        if previous is None:
+            pipe.__dict__.pop("prepare_latents", None)
+        else:
+            pipe.prepare_latents = previous
+
+
+def expanded_noise(noise, count):
+    if noise is None or noise.ndim != 5 or noise.shape[0] < 1 or count % noise.shape[0]:
+        raise ValueError("Gaussian Ming alignment requires this target exposure's B/C/F/H/W noise")
+    return noise.repeat(count // noise.shape[0], 1, 1, 1, 1) if count != noise.shape[0] else noise
 
 
 def resize_backbone(model, channels):
@@ -43,12 +101,25 @@ def aligned_forward(model, x, t, cap_feats, **kwargs):
     if not alignment.ready:
         raise RuntimeError("Ming VAE swap needs paired calibration before training or generation")
     refs = kwargs.pop("ref_x", None)
-    converted = [alignment.input.flow_state(value[None], 1-t[i]).squeeze(0) for i, value in enumerate(x)]
+    noise = next((value for owner, value in reversed(_noise_contexts.get()) if owner is model), None)
+    if uses_gaussian(model):
+        noise = expanded_noise(noise, len(x))
+        if any(tuple(value.shape) != tuple(noise[i].shape) for i, value in enumerate(x)):
+            raise ValueError("Ming exposure noise disagrees with the target grid/frame layout")
+    converted = [alignment.flow_state(value[None], 1-t[i], noise=None if noise is None else noise[i:i+1]).squeeze(0)
+                 for i, value in enumerate(x)]
     if refs is not None:
         refs = [None if value is None else alignment.input(value[None]).squeeze(0) for value in refs]
     result = model._native_forward(converted, t, cap_feats, ref_x=refs, **kwargs)
     native = result.sample if kwargs.get("return_dict", True) else result[0]
-    values = [alignment.output.flow_velocity(value[None], convention="x0_minus_eps").squeeze(0) for value in native]
+    values = []
+    for i, value in enumerate(native):
+        exposure = None if noise is None else noise[i:i+1]
+        if exposure is not None and value.shape[1] > exposure.shape[2]:
+            # The native head also emits clean reference frames, excluded from target noise/loss.
+            exposure = torch.cat((exposure, exposure.new_zeros(1, exposure.shape[1],
+                value.shape[1]-exposure.shape[2], *exposure.shape[3:])), dim=2)
+        values.append(alignment.flow_velocity(value[None], convention="x0_minus_eps", noise=exposure).squeeze(0))
     if kwargs.get("return_dict", True):
         from diffusers.models.modeling_outputs import Transformer2DModelOutput
         return Transformer2DModelOutput(sample=values)
@@ -96,8 +167,11 @@ def configure_swap(trainer):
     method = initialization_mode(trainer.config, "ming_image_01")
     if method != "paired_spatial":
         raise ValueError("Ming VAE swaps require paired_spatial initialization")
+    from core.training.arch.ming_image_01 import MingImage01ArchHandler
+    # Component loading precedes BaseTrainer's final handler binding.
+    handler = getattr(trainer, "arch", None) or MingImage01ArchHandler(trainer)
     resolved = resolve_vae_source(source)
-    compatible, reason = trainer.arch.check_vae_compatibility(resolved.facts(), trainer=trainer)
+    compatible, reason = handler.check_vae_compatibility(resolved.facts(), trainer=trainer)
     if not compatible:
         raise ValueError(reason)
     old = trainer.vae
@@ -111,7 +185,10 @@ def configure_swap(trainer):
         return
     declaration = ImageCodecContract.from_resolved(resolved).declaration(
         source=source, source_identity=source_identity, target_identity=resolved.latent_hash,
-        old_channels=model.in_channels, old_scale=trainer.arch.wiring.vae_scale_factor)
+        old_channels=model.in_channels, old_scale=handler.wiring.vae_scale_factor)
+    if resolved.scale_factor > declaration["old_scale"] and resolved.latent_channels >= model.in_channels:
+        from core.models.components.gaussian_alignment import POLICY
+        declaration["noise_policy"] = POLICY
     plan = SpatialSwapPlan.build(declaration, patch_size=2)
     from core.rewiring.training import prepare_topology_io_rebase
     from .residual_unet import native_config
@@ -124,9 +201,9 @@ def configure_swap(trainer):
     model.register_to_config(vae_alignment=declaration)
     trainer._ming_vae_calibration_source = old.to("cpu").requires_grad_(False).eval()
     trainer.vae = trainer.ming_image_01_components.vae = NormalizedFrameVAE(target, declaration)
-    trainer.wiring = trainer.arch.wiring.replace(latent_channels=resolved.latent_channels,
+    trainer.wiring = handler.wiring.replace(latent_channels=resolved.latent_channels,
         vae_scale_factor=resolved.scale_factor, vae_norm="shift_scale")
-    trainer.arch.pixel_align = plan.pixel_alignment
+    handler.pixel_align = plan.pixel_alignment
 
 
 def calibrate(trainer, datasets):

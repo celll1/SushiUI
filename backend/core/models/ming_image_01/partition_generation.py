@@ -3,6 +3,7 @@ import torch
 from .partition import MingPartitionAdapter
 from .partition_global import from_payload,generation_global_residual
 from core.training.partition import PartitionBox
+from .vae_alignment import forward_with_noise, expanded_noise, uses_gaussian
 
 
 class MingPartitionExecutor:
@@ -36,7 +37,7 @@ class MingPartitionExecutor:
 
     @torch.no_grad()
     def predict(self,hidden_states,timestep,encoder_hidden_states,*,ref_hidden_states=None,
-                encoder_hidden_states_2=None,return_dict=False):
+                encoder_hidden_states_2=None,return_dict=False,alignment_noise=None):
         if self.closed:raise RuntimeError("Ming generation partition executor is closed")
         from .sampling import MingGenerationCancelled
         def check():
@@ -48,7 +49,8 @@ class MingPartitionExecutor:
         output=torch.empty_like(grid)
         adapter=MingPartitionAdapter()
         alignment=getattr(self.model,"vae_latent_bridge",None)
-        global_grid=grid if alignment is None else alignment.input.flow_state(grid,1-timestep)
+        noise=expanded_noise(alignment_noise,len(hidden_states)) if uses_gaussian(self.model) else None
+        global_grid=grid if alignment is None else alignment.flow_state(grid,1-timestep,noise=noise)
         for core,box in zip(self.plan.cores,self.plan.inputs):
             check()
             native_box=PartitionBox(box.top,box.left,box.bottom,box.right)
@@ -56,7 +58,8 @@ class MingPartitionExecutor:
             if self.base_global is not None:
                 base=self.base_global.to(device=grid.device)(global_grid,native_box)
                 residual=base if residual is None else base+residual
-            prediction=self.model(list(grid[...,box.top*2:box.bottom*2,box.left*2:box.right*2].unbind()),
+            tile_noise=None if noise is None else noise[...,box.top*2:box.bottom*2,box.left*2:box.right*2]
+            prediction=forward_with_noise(self.model,tile_noise,list(grid[...,box.top*2:box.bottom*2,box.left*2:box.right*2].unbind()),
                 timestep,encoder_hidden_states,ref_x=ref_hidden_states,cap_feats_2=encoder_hidden_states_2,
                 target_spatial_position_ids=adapter.position_ids(self.plan.height,self.plan.width,native_box,device=grid.device),
                 target_input_residual=residual,return_dict=False)[0]

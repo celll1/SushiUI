@@ -100,3 +100,8 @@ def blend_guides(latents, guides, *, index, total, sigma, profile):
             layers = (1-config.strength)*result[:,:,1:]+config.strength*reference
             result = torch.cat((result[:,:,:1],layers),dim=2)
     return result.to(dtype=latents.dtype)
+
+
+def blend_guide_noise(noise, guides, *, index, total, profile):
+    projected = [PreparedGuide(guide.noise, guide.noise, guide.config) for guide in guides]
+    return blend_guides(noise, projected, index=index, total=total, sigma=1., profile=profile)

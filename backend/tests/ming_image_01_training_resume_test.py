@@ -35,6 +35,8 @@ from core.models.ming_image_01.training_resume import RUNTIME_KEY
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "global", id="global_partition_guidance_sigma_null_mnt_layer"),
     pytest.param("cpu_prefetch", [], "generation_edit", False, None, None, None, "global_lora", id="global_lora_pending_resume_design"),
     pytest.param("cpu_prefetch", [], "layer_decompose", False, None, None, .5, "global_lora", id="global_lora_pending_resume_layer"),
+    pytest.param("swap_onthefly", [], "generation_edit", False, None, None, .5, "gaussian", id="gaussian_swap_pending_resume_design"),
+    pytest.param("swap_onthefly", [], "layer_decompose", False, None, None, .5, "gaussian", id="gaussian_swap_pending_resume_layer"),
 ])
 def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monkeypatch, text_mode, groups, profile, caption_only, quantization, conditioner_quant, cfg_rate, guidance_enabled, rejection=None, optimizer_type=None):
     from core.training import latent_cache
@@ -105,6 +107,14 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         "latent_encoding_mode": "swap_onthefly", "text_encoding_mode": text_mode,
         "train_unet": not caption_only, "train_adapter": True if caption_only else None,
         "adapter_lr": .0002 if caption_only else None}
+    if guidance_enabled == "gaussian":
+        from diffusers import AutoencoderKL
+        target=AutoencoderKL(in_channels=4,out_channels=4,latent_channels=24,block_out_channels=(8,)*5,
+            down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5,
+            norm_num_groups=4,layers_per_block=1,scaling_factor=.7,shift_factor=.2)
+        target.save_pretrained(tmp_path/"target_codec")
+        config.update(vae_swap_source=f"file:{tmp_path/'target_codec'}",vae_swap_calibration_samples=2,
+            vae_swap_calibration_resolution=128)
     if guidance_enabled:
         config.update(qwen_guidance_loss_weight=0. if guidance_enabled=="zero_low" else .5,qwen_guidance_loss_mix_mode="stochastic",
             qwen_guidance_loss_schedule="sigma",qwen_guidance_loss_extrapolation_max_rms=.5,
@@ -135,8 +145,8 @@ def test_mid_epoch_mnt_accumulation_resume_matches_uninterrupted(tmp_path, monke
         from api.param_defaults import TRAINING_DEFAULTS
         expected_chunk = config.get("qwen_full_kv_query_chunk_tokens",TRAINING_DEFAULTS["qwen_full_kv_query_chunk_tokens"])
         assert owner.transformer._ming_full_kv_query_chunk_tokens == expected_chunk
-        if quantization or conditioner_quant:
-            # Safetensors mmap alignment changes CPU GEMM rounding; canonicalize this exact-resume fixture.
+        if quantization or conditioner_quant or guidance_enabled == "gaussian":
+            # Loaded tensor alignment changes CPU GEMM rounding; canonicalize this exact-resume fixture.
             with torch.no_grad():
                 for module in (owner.transformer,owner.text_encoder):
                     for parameter in module.parameters():

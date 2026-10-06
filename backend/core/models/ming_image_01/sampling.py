@@ -11,6 +11,7 @@ from .results import MingResultGroup
 from .conditioning import MingConditioning
 from .vendor.inference_profile import InferenceProfile
 from .vendor.diffusion.pipeline import ImageGenerationPipeline
+from .vae_alignment import forward_with_noise, sampling_noise_scope, uses_gaussian
 
 
 class MingGenerationCancelled(RuntimeError):
@@ -26,6 +27,7 @@ class MingTransformerBridge(torch.nn.Module):
         self.in_channels = transformer.in_channels if alignment is None else alignment.declaration["new_channels"]
         self.partition_executor = None
         self.style_executor = None
+        self.alignment_noise = None
 
     @property
     def dtype(self):
@@ -39,11 +41,13 @@ class MingTransformerBridge(torch.nn.Module):
                 ref_hidden_states=None, encoder_hidden_states_2=None, return_dict=False):
         if self.style_executor is not None:
             return self.style_executor.predict(hidden_states,timestep,encoder_hidden_states,
-                ref_hidden_states=ref_hidden_states,encoder_hidden_states_2=encoder_hidden_states_2,return_dict=return_dict)
+                ref_hidden_states=ref_hidden_states,encoder_hidden_states_2=encoder_hidden_states_2,return_dict=return_dict,
+                alignment_noise=self.alignment_noise)
         if self.partition_executor is not None:
             return self.partition_executor.predict(hidden_states,timestep,encoder_hidden_states,
-                ref_hidden_states=ref_hidden_states,encoder_hidden_states_2=encoder_hidden_states_2,return_dict=return_dict)
-        return self.transformer(x=hidden_states, t=timestep, cap_feats=encoder_hidden_states,
+                ref_hidden_states=ref_hidden_states,encoder_hidden_states_2=encoder_hidden_states_2,return_dict=return_dict,
+                alignment_noise=self.alignment_noise)
+        return forward_with_noise(self.transformer, self.alignment_noise, x=hidden_states, t=timestep, cap_feats=encoder_hidden_states,
             ref_x=ref_hidden_states, cap_feats_2=encoder_hidden_states_2, return_dict=return_dict)
 
 
@@ -128,6 +132,14 @@ class MingSampler:
                 values["latents"] = blend_guides(values["latents"], reference_guides,
                     index=index, total=sampling.steps, sigma=_pipe.scheduler.sigmas[index+1],
                     profile=self.profile.inference_profile)
+                if self.pipe.transformer.alignment_noise is not None:
+                    from .reference_guide import blend_guide_noise
+                    noise = self.pipe.transformer.alignment_noise
+                    if values["latents"].ndim == 4:
+                        noise = noise.squeeze(2)
+                    noise = blend_guide_noise(noise, reference_guides, index=index, total=sampling.steps,
+                        profile=self.profile.inference_profile)
+                    self.pipe.transformer.alignment_noise = noise.unsqueeze(2) if noise.ndim == 4 else noise
             if preview_callback is not None:
                 preview_callback(index,sampling.steps,timestep,values["latents"],preview_state["clean"])
                 preview_state["clean"]=None
@@ -157,7 +169,8 @@ class MingSampler:
             from core.inference.callback_utils import callback_requests
             requested=lambda index:callback_requests(preview_callback,"wants_predicted_x0",index,sampling.steps)
             preview_scope=scheduler_preview(self.pipe.scheduler,preview_state,requested) if preview_callback is not None else nullcontext()
-            with preview_scope:
+            noise_scope = sampling_noise_scope(self.pipe, batch=batch, frames=frames) if uses_gaussian(self.components.transformer) else nullcontext()
+            with preview_scope, noise_scope:
                 result = self.pipe(
                     height=height, width=width, num_inference_steps=sampling.steps,
                     guidance_scale=sampling.cfg, generator=torch.Generator(device="cpu").manual_seed(seed),

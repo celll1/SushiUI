@@ -7,6 +7,7 @@ import torch
 from core.inference.reference_style import style_config_from_dict, StyleContext
 from .training_data import encode_frames
 from .style_transfer import style_scope
+from .vae_alignment import forward_with_noise, expanded_noise, uses_gaussian
 
 
 @dataclass
@@ -80,13 +81,14 @@ class MingStyleExecutor:
 
     @torch.no_grad()
     def predict(self, hidden_states, timestep, encoder_hidden_states, *, ref_hidden_states=None,
-                encoder_hidden_states_2=None, return_dict=False):
+                encoder_hidden_states_2=None, return_dict=False, alignment_noise=None):
         if self.closed or self.index >= self.total:
             raise RuntimeError("Ming style executor is closed or exhausted")
         self.check_cancel()
         count = len(hidden_states)
         if count not in {self.batch,2*self.batch}:
             raise ValueError("Ming style CFG batch disagrees with native sampler")
+        noise = expanded_noise(alignment_noise, count) if uses_gaussian(self.model) else None
         kwargs = dict(t=timestep, cap_feats=encoder_hidden_states, ref_x=ref_hidden_states,
                       cap_feats_2=encoder_hidden_states_2, return_dict=False)
         active = [style for style in self.styles if style.config.is_step_active(self.index,self.total)
@@ -94,7 +96,7 @@ class MingStyleExecutor:
         stores = []
         try:
             if not active:
-                outputs = self.model(x=hidden_states,**kwargs)[0]
+                outputs = forward_with_noise(self.model,noise,x=hidden_states,**kwargs)[0]
             else:
                 positive = hidden_states[:self.batch]
                 conditional = dict(t=timestep[:self.batch],cap_feats=encoder_hidden_states[:self.batch],
@@ -117,19 +119,20 @@ class MingStyleExecutor:
                     ctx = StyleContext("capture",style.config,progress=style.config.step_progress(self.index,self.total))
                     stores.append((ctx.store,style.config))
                     with style_scope(self.model,ctx,reference):
-                        self.model(x=reference,**conditional)
+                        style_noise = style.noise.unsqueeze(2).expand(-1,-1,frames,-1,-1)
+                        forward_with_noise(self.model,style_noise,x=reference,**conditional)
                 self.check_cancel()
                 cfg = stores[0][1]
                 ctx = StyleContext("inject",cfg,refs=stores,combine_mode=self.combine_mode,
                                    progress=cfg.step_progress(self.index,self.total))
                 with style_scope(self.model,ctx,positive):
-                    outputs = self.model(x=positive,**conditional)[0]
+                    outputs = forward_with_noise(self.model,None if noise is None else noise[:self.batch],x=positive,**conditional)[0]
                 if count == 2*self.batch:
                     self.check_cancel()
                     unconditional = dict(t=timestep[self.batch:],cap_feats=encoder_hidden_states[self.batch:],
                         cap_feats_2=encoder_hidden_states_2[self.batch:],
                         ref_x=None if ref_hidden_states is None else ref_hidden_states[self.batch:],return_dict=False)
-                    outputs += self.model(x=hidden_states[self.batch:],**unconditional)[0]
+                    outputs += forward_with_noise(self.model,None if noise is None else noise[self.batch:],x=hidden_states[self.batch:],**unconditional)[0]
             self.check_cancel()
             self.index += 1
             if return_dict:

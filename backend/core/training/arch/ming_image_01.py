@@ -23,6 +23,7 @@ class MingImage01ArchHandler(ArchHandler):
         super().__init__(trainer)
         if trainer is not None and getattr(trainer, "transformer", None) is not None:
             self.wiring = self.wiring.replace(te_out_dim=trainer.transformer.config.cap_feat_dim)
+            self.wiring = self.resolve_wiring(trainer)
 
     def lora_adapter_class(self):
         from core.training.adapters.ming_image_01_adapter import MingImage01LoRAAdapter

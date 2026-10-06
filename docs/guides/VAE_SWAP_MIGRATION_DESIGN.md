@@ -8,6 +8,27 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+公開txt2vid/img2vid/ref2vid/inpaint-video/outpaint-videoの事前検証へloaded codec契約を接続した。
+loaded_video_codec_contractはweightを読まず、codec facade/校正済みbridge/backbone/外部channel/
+component geometryの一致を確認する。不一致をモデル標準codecへのfallbackで隠さず400とする。
+validate_video_geometryはtargetのframe latticeと空間倍数を使い、モデルのproduction floor/ceiling、
+FPS、trained-range advisory、still-image特例を保持する。H3 causal2では124を125へsnapし、
+独立frame codecでは126を141へ変更せずそのまま使用する。
+inpaint/outpaint/continuation-overlap plannerへ同じ契約を渡す。LTX free placementの出力frame数も
+固定8k+1ではなくloaded codec格子で検査する。route/backendが別のcodec格子で検証する差を除去した。
+共通TemporalSpecへlatent_spatial_patchを追加し、必要空間倍数は元policyとtarget scale*patchのLCMとする。
+H3はpatch2、LTXはpatch1なので、LTXに不要な2倍制約を課さない。
+LTX pipelineのH3非一様chunk時計は未実装のため、当該codecを公開生成へ通さず400で明示する。
+これは残作業の保護ゲートであり、アーキテクチャ間交換の要求を満たしたことにはしない。
+OpenAPIの既存video endpoint説明を更新し、request/response/defaultのfieldは変更しない。
+既存geometry/editingと実小型H3/LTX paired codecのCPU回帰168件が通過した。
+追加したLTX chunk-clock拒否を含む14件も通過し、変更Pythonのcompile・CUDA無し実importと
+OpenAPI YAML parseを確認した。合成データのみ使用し、学習run/サーバーは変更していない。
+公開handlerからのcontract受渡しはASTでも確認したが、HTTP/GPUでの生成受け入れとは区別する。
+frontendはarchConstraints.tsの静的規則参照とStartupContextの取得・更新経路を確認した。
+現時点のcapability payload/chain gridは標準architecture契約のままで、loaded codecへ更新する
+配線を次段階に残す。frontend build/type-checkは所有者確認、公式全重み/GPUの受け入れも未完。
+
 H3のnative Full bundleを公開ModelLoader/architecture loaderから復元する分岐を追加した。
 単一safetensorsとshard indexのformat/model_typeを判別し、認識済みbundleの不正metadataは
 通常weight loaderへfallbackせずstrict preflightで拒否する。未知/壊れた通常fileの判別probeはsoftに扱う。
@@ -34,7 +55,7 @@ H3 backendの時間pinとspatial maskのframe spanへ同じ契約を渡す。pro
 lattice上にない場合も、floor未満へtrimする誤った案内を出さず、必要な有効frame数を示す。
 U-netのspatial poolingはclean/noisy AdaLN labelを混在させられないため、部分cellのspatial pinは
 条件encode前に拒否する。pooling cell全体のpinとtemporal pinは実codec/実samplerで保持を検査する。
-公開routeのloaded-checkpoint contract解決、chain preset/cache、校正/Full owner、
+chain preset/cache、校正/Full owner、
 公式全重みでの学習・画質・速度はまだ未完。内部plannerの接続で公開swap gateを解除しない。
 APIのrequest/response/defaultやfrontendは変更していない。
 共通時間span/既存editing planner/実H3生成/codecのCPU回帰228件が通過した。

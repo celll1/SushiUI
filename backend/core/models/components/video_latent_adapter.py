@@ -97,7 +97,7 @@ def temporal_spec_for_codec(spec, contract):
         multiple,offset,floor = contract.temporal_scale,1,1
     return replace(spec,frame_multiple=multiple,frame_offset=offset,min_decodable_frames=floor,
         latent_frames=contract.latent_frames,
-        pixel_align=lcm(spec.pixel_align,2*contract.image.spatial_scale))
+        pixel_align=lcm(spec.pixel_align,spec.latent_spatial_patch*contract.image.spatial_scale))
 
 
 class _VideoPosterior:

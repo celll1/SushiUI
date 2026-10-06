@@ -451,6 +451,7 @@ class TemporalSpec:
     # Spatial: the multiple both axes round to, and an orientation-agnostic
     # envelope (`(short, long)`) when the arch has one.
     pixel_align: int = 32
+    latent_spatial_patch: int = 1
     max_pixel_hw: Optional[Tuple[int, int]] = None
     # What route validation does with an off-grid or out-of-range clip length:
     # snap it (and warn), or refuse the request. This is a per-arch API contract,
@@ -677,7 +678,7 @@ MINIMAX_H3_TEMPORAL = TemporalSpec(
     # trained-range floor (124) instead, and that floor-side discrepancy is
     # unaffected by this correction.
     trained_max_frames=362,
-    pixel_align=32, max_pixel_hw=(768, 1344), snap_invalid_length=True,
+    pixel_align=32, latent_spatial_patch=2, max_pixel_hw=(768, 1344), snap_invalid_length=True,
     # `_decode` special-cases a lone latent frame (mirrors `_encode`'s own
     # `num_frames == 1` branch) and decodes it directly, bypassing the
     # multi-chunk path's 22-frame floor entirely. See

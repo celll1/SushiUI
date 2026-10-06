@@ -10480,6 +10480,15 @@ async def get_current_model():
     """Get currently loaded model info"""
     if pipeline_manager.current_model_info:
         info = dict(pipeline_manager.current_model_info)
+        info.pop("loaded_video_constraints",None)
+        _arch = info.get("type")
+        _codec = loaded_video_codec_contract(pipeline_manager,_arch,for_generation=False)
+        if _codec is not None:
+            from api.arch_capabilities import video_constraints_payload
+            info["latent_channels"] = _codec.image.latent_channels
+            info["loaded_video_constraints"] = video_constraints_payload(codec_contracts={_arch:_codec})[_arch]
+            if _arch == "ltx2" and _codec.temporal_policy == "minimax_h3_chunks_v1":
+                info["generation_available"] = False
         # Enrich with the loaded model's latent_channels so the frontend's
         # compatible-only VAE-override filter can match on latent channels instead
         # of hardcoding an arch->channels map. `_sushi_wiring` is the loaded
@@ -23087,7 +23096,9 @@ def _video_chain_grid(architecture: str) -> VideoGridSpec:
     """The architecture's frame grid, from the backend's own `TemporalSpec`."""
     from api.arch_capabilities import video_constraints_payload
 
-    payload = video_constraints_payload()
+    _codec = loaded_video_codec_contract(pipeline_manager,architecture) if (
+        (pipeline_manager.current_model_info or {}).get("type") == architecture) else None
+    payload = video_constraints_payload(codec_contracts={architecture:_codec})
     constraints = payload.get(architecture)
     if constraints is None:
         raise CustomValidationError(
@@ -23245,6 +23256,8 @@ def _video_chain_plan_continuation(
     return plan_video_continuation_context(
         request.continuation_mode, request.requested_overlap_frames,
         architecture, request.variant, request.requested_anchor_count,
+        video_codec_contract=loaded_video_codec_contract(pipeline_manager,architecture) if (
+            (pipeline_manager.current_model_info or {}).get("type") == architecture) else None,
     )
 
 

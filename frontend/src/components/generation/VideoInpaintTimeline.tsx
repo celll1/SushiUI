@@ -9,6 +9,7 @@ import FramePreviewTooltip from "../common/FramePreviewTooltip";
 import Timeline, { useTimelineContext, type TimelineDomain } from "../timeline/Timeline";
 import { cn } from "@/lib/utils";
 import { latentGroupSpans, snapRangeToLatentGroups } from "@/utils/api";
+import type { VideoConstraints } from "@/utils/api";
 import { formatFrameLabel, formatTimecode } from "@/utils/timecode";
 import {
   clampFrame,
@@ -90,6 +91,7 @@ export interface VideoInpaintTimelineProps {
   trimEnd: number;
   /** Pixel frames per latent frame, cycled (empty = arch declares no chunking). */
   latentChunkPattern: number[];
+  videoConstraints?: VideoConstraints;
   start: number;
   end: number;
   onRangeChange: (start: number, end: number) => void;
@@ -287,6 +289,7 @@ export default function VideoInpaintTimeline({
   trimStart,
   trimEnd,
   latentChunkPattern,
+  videoConstraints,
   start,
   end,
   onRangeChange,
@@ -314,7 +317,7 @@ export default function VideoInpaintTimeline({
   const safeRaw = Math.max(1, rawFrames);
   const trimmedFrames = Math.max(0, rawFrames - trimStart - trimEnd);
   const lastFrame = Math.max(0, trimmedFrames - 1);
-  const groups = latentGroupSpans(latentChunkPattern, trimmedFrames);
+  const groups = latentGroupSpans(latentChunkPattern, trimmedFrames, videoConstraints);
   const bounds = groups.length ? [0, ...groups.map(([, hi]) => hi)] : [];
   const effective = snapRangeToLatentGroups(groups, start, end);
   const selectedGroups = groups.filter(([lo, hi]) => lo < effective.end && hi > effective.start).length;
@@ -593,6 +596,7 @@ export default function VideoInpaintTimeline({
       <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
         <span>
           Handles snap to latent-group boundaries
+          {videoConstraints?.latent_frame_policy === "causal_first_frame_v1" && ` (first frame, then ${videoConstraints.temporal_scale} frame(s) per group)`}
           {latentChunkPattern.length > 0 && ` (pattern repeats every ${latentChunkPattern.length} group(s): ${latentChunkPattern.join(", ")} frame(s) each)`}
         </span>
         <InlineHelp label="Temporal inpaint range details">

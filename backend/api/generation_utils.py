@@ -1721,7 +1721,7 @@ def validate_video_steps(params: Dict[str, Any], arch: Optional[str],
     )
 
 
-def loaded_video_codec_contract(manager, arch):
+def loaded_video_codec_contract(manager, arch, *, for_generation=True):
     """Read the loaded pair without mapping weights or rediscovering a codec."""
     from api.error_handlers import ValidationError
     from core.models.components.wiring import temporal_spec_for_arch
@@ -1743,7 +1743,7 @@ def loaded_video_codec_contract(manager, arch):
         if (not isinstance(vae,NormalizedVideoVAE) or vae.contract != contract
                 or pair is None or not pair.ready):
             raise ValueError("Loaded video codec requires its calibrated aligned backbone")
-        if arch == "ltx2" and contract.temporal_policy == "minimax_h3_chunks_v1":
+        if for_generation and arch == "ltx2" and contract.temporal_policy == "minimax_h3_chunks_v1":
             raise ValueError("LTX generation does not yet implement the H3 chunk frame clock")
         expected = (contract.temporal_scale,contract.image.spatial_scale,contract.image.spatial_scale)
         if (model.config.in_channels != contract.image.latent_channels

@@ -2073,7 +2073,7 @@ def chain_context_for(arch: Optional[str],
     return entry["variants"].get(key, entry)
 
 
-def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
+def video_constraints_payload(*, codec_contracts=None) -> Dict[str, Dict[str, Any]]:
     """The `video_constraints` block of GET /schema/arch-capabilities.
 
     Serialises each video architecture's ``TemporalSpec`` (the same table route
@@ -2085,6 +2085,10 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
 
     payload: Dict[str, Dict[str, Any]] = {}
     for arch, spec in TEMPORAL_SPECS.items():
+        contract = (codec_contracts or {}).get(arch)
+        if contract is not None:
+            from core.models.components.video_latent_adapter import temporal_spec_for_codec
+            spec = temporal_spec_for_codec(spec,contract)
         payload[arch] = {
             "frame_multiple": spec.frame_multiple,
             "frame_offset": spec.frame_offset,
@@ -2146,6 +2150,10 @@ def video_constraints_payload() -> Dict[str, Dict[str, Any]]:
             # server will actually run. Empty = the arch declares none.
             "latent_chunk_pattern": list(spec.latent_chunk_pattern),
         }
+        if contract is not None:
+            payload[arch].update(latent_frame_policy=contract.temporal_policy,temporal_scale=contract.temporal_scale)
+            if contract.temporal_policy != "minimax_h3_chunks_v1":
+                payload[arch]["latent_chunk_pattern"] = [1] if contract.temporal_policy == "independent_frames_v1" else []
     return payload
 
 

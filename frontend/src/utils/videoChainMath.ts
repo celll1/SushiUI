@@ -5,6 +5,7 @@
 import type {
   ArchCapabilities,
   ChainContextCapability,
+  ChainContextVariantCapability,
   VideoChainPlan,
   VideoConstraints,
 } from "./api";
@@ -24,16 +25,8 @@ export const chainContextCapability = (
   return entry.variants?.[key] ?? entry;
 };
 
-// The `continuation_overlap_frames` values a `pinned_tail` continuation can be
-// given on this arch/variant, ascending. A latent frame is conditioned or
-// generated whole, so the candidate lengths are the cumulative sums of the
-// arch's `latent_chunk_pattern` — derived from the served pattern through the
-// SAME `latentGroupSpans` the inpaint range uses, never a second hardcoded list
-// (the pattern CYCLES: MiniMax-H3's [1,4,4,4,4] gives 1, 5, 9, 13, 17, 18, ...
-// — 17 is followed by 18, not 33) — kept inside the served
-// [min, max] window. Both bounds come from the backend, including the measured
-// floor that keeps a one-frame pin off the list; a client that offered a
-// shorter one would only earn a 400.
+// Pinned overlaps end on codec group boundaries inside the served min/max.
+// Loaded causal clocks do not repeat their initial single-frame group.
 export const chainContinuationOverlapLengths = (
   caps: ArchCapabilities | null | undefined,
   arch: string | null | undefined,
@@ -42,9 +35,9 @@ export const chainContinuationOverlapLengths = (
   const capability = chainContextCapability(caps, arch, variant);
   const max = capability?.chain_context_max_frames ?? 0;
   const min = capability?.chain_context_min_frames ?? 1;
-  const pattern = arch ? caps?.video_constraints?.[arch]?.latent_chunk_pattern : undefined;
-  if (!max || !pattern?.length) return [];
-  return latentGroupSpans(pattern, max)
+  const geometry = arch ? caps?.video_constraints?.[arch] : undefined;
+  if (!max || !geometry) return [];
+  return latentGroupSpans(geometry.latent_chunk_pattern, max, geometry)
     .map(([, end]) => end)
     .filter((end) => end >= min && end <= max);
 };
@@ -55,23 +48,25 @@ export const chainContinuationOverlapLengths = (
 // `[pixelStart, pixelEndExclusive]` per latent frame, for a clip of `frames`
 // pixel frames. Mirrors the backend's `latent_frame_spans`
 // (backend/api/generation_utils.py): the pattern is cycled, and on a valid clip
-// length the spans tile the clip exactly. An empty pattern yields no spans,
-// which is how "this arch declares no chunking" reaches the UI.
+// length the spans tile the clip exactly. Loaded causal codecs have a single
+// initial frame followed by fixed-width groups, not a cyclic pattern.
 export const latentGroupSpans = (
   pattern: number[] | undefined,
-  frames: number
+  frames: number,
+  codec?: Pick<VideoConstraints, "latent_frame_policy" | "temporal_scale">
 ): [number, number][] => {
   const spans: [number, number][] = [];
-  if (!pattern || pattern.length === 0 || frames <= 0) return spans;
+  const causal = codec?.latent_frame_policy === "causal_first_frame_v1";
+  const independent = codec?.latent_frame_policy === "independent_frames_v1";
+  if (!Number.isFinite(frames) || frames <= 0) return spans;
+  if (!causal && !independent && !pattern?.length) return spans;
   let cursor = 0;
   for (let index = 0; cursor < frames; index += 1) {
-    const width = pattern[index % pattern.length];
-    // `Math.min` here trims a final span that would run past `frames`; the
-    // backend's `latent_frame_spans` does not do this trim, so on an
-    // off-grid `frames` this span could come out narrower than the
-    // backend's. Currently unreachable in practice because
-    // `videoTrimmedLengthValid` (InpaintPanel.tsx) blocks submit unless
-    // `frames` is already a multiple of the pattern.
+    const width = independent ? 1 : causal
+      ? (index === 0 ? 1 : codec?.temporal_scale ?? 0)
+      : pattern![index % pattern!.length];
+    if (!Number.isInteger(width) || width < 1) return [];
+    // Preview may clip its final span; submit separately checks the frame grid.
     spans.push([cursor, Math.min(frames, cursor + width)]);
     cursor += width;
   }

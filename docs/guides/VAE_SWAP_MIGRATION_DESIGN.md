@@ -8,12 +8,12 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
-SD1.5/SDXLのGaussian補正は、共通pairのVP入力・prediction演算と学習境界まで実装した。
+SD1.5/SDXLのGaussian補正は、共通pairのVP入力・prediction演算と学習・通常生成境界まで実装した。
 入力は`alpha*A(x0)+alpha*b+sigma*Q(noise)`、epsilon出力は固定noise補空間残差、
 VP v出力は`alpha`倍の残差、x0出力は通常のaffine写像。flow vは既存の符号規約を維持する。
 学習は実露出noise・実schedulerのalpha/sigmaを渡し、標準/混合精度、epsilon/v/sampleで検証する。
-SDの新規交換へpolicyを既定選択する変更はまだ行っていない。生成側で初期noise、
-ancestral更新、CFG/NAGのbatch展開、style別noise、guide/inpaint混合を追跡する配線が必要。
+SDの新規交換へpolicyを既定選択する変更はまだ行っていない。生成側では初期noise、
+ancestral更新、CFG/NAGのbatch展開、style別noise、guide/inpaint混合を追跡する。
 単に最初のnoiseを全stepで使うだけでは、追加されたstochastic noiseとの整合性を満たさない。
 この段階のCPU演算・学習回帰を、SDのGaussian生成・公式全重みGPU受入の代わりにはしない。
 共有Gaussian、SD sampling、Qwen/Krea/Anima/Z-Image回帰176件と、修正後のSD保存復元1件が通過。
@@ -25,8 +25,14 @@ clean=0のnoise-only履歴を同じstep乱数で更新する。generatorの状�
 本体の乱数を二重に消費しない。DDIM（eta=0.7）、DDPM、Euler ancestral、KDPM2 ancestral、
 SDE DPM++を含む実schedulerで、既知cleanを持つ合成oracleとnoise分解を照合した。
 追跡・拒否テスト31件、既存SD sampling回帰34件が通過。backend compile/importも通過。
-このクラスはまだ生成loopへ接続していない。CFG/NAG展開、style別noise、guide/inpaintの
-noise-only state混合と、本体stepと同じ明示generatorを渡す接続が残る。
+`sampling_boundary`の一時sessionからtxt2img/img2img/通常inpaintへ接続した。
+CFG/NAGのbatch展開、single/multi style参照の個別noise、guide/inpaintのnoise-only state混合を配線。
+ancestral generatorが指定されない場合は初期noise生成後のgeneratorを複製し、
+生成session専用に使う。global RNGを巻き戻さず、本体stepと追跡へ同じ乱数を渡す。
+小型実U-Net/VAEによる生成・cancel回帰76件、追跡/参照noise/RNG/混合等37件が通過。
+後者にはhook cleanupの回帰1件を含む。変更backendのcompile/importも通過し、CUDA未初期化。
+outpaint noise-init/time-travel/B3参照は未接続で、Gaussian宣言checkpointでは明示拒否する。
+通常の非Gaussian outpaintは変更しない。公式全重みでの新SD policy生成・Full学習受入は残る。
 PNDMのv-predictionは合成oracleで約0.014の分解誤差があり、この追跡方式では拒否する。
 clip/thresholding・learned variance・churn・per-token timestepも現段階では拒否する。
 Flowの`stochastic_sampling`は実装がgeneratorを無視するため拒否し、無条件に同じ乱数と見なさない。
@@ -37,7 +43,7 @@ Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く�
 固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが
 表せないnoise残差を補う。学習・定期sample・txt2img/img2img/inpaint・CFG/NAG/style参照へ配線した。
 bufferはoptimizer対象外。既存checkpointは宣言されたpolicyを維持し、再校正や自動変更をしない。
-Z-Image/Krea/Anima/Qwen 2.1以外のnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+SD1.5/SDXLは上記の部分配線段階。他の未配線architectureも残り、全architectureの画質受入を意味しない。
 
 Qwen 2.1も同じ新規交換条件で固定Gaussian補正を選ぶ。生成対象のtarget-token noiseを
 入力/出力へ渡し、cleanな参照画像tokenは補正しない。通常/partition学習、guidance lossのnull条件、

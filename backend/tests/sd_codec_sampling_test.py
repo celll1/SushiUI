@@ -133,22 +133,28 @@ def test_decorator_removes_hooks_after_failure_and_native_noop():
 
 @pytest.mark.parametrize("arch",["sd15","sdxl"])
 @pytest.mark.parametrize("mode",["txt2img","img2img","inpaint"])
-def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,mode):
+@pytest.mark.parametrize("gaussian",[False,True])
+@pytest.mark.parametrize("sampler",["EulerDiscreteScheduler","EulerAncestralDiscreteScheduler"])
+def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,mode,gaussian,sampler,feature="base"):
     import numpy as np
     from PIL import Image
-    from diffusers import AutoencoderKL,UNet2DConditionModel,EulerDiscreteScheduler
+    import diffusers
+    from diffusers import AutoencoderKL,UNet2DConditionModel
+    from core.models.components.gaussian_alignment import POLICY
     from backend.tests.repa_sd_unet_tap_test import _tiny_unet,CROSS_DIM,POOLED_DIM
     from core.models.components.latent_adapter import NormalizedImageVAE
     from core.inference import custom_sampling as sampling
     model=UNet2DConditionModel.from_config(_tiny_unet(arch).config,in_channels=8,out_channels=8)
-    decl=declaration(8,4)
+    old,new=(4,8) if gaussian else (8,4)
+    decl=declaration(old,new)
+    if gaussian:decl=dict(decl,noise_policy=POLICY)
     install(model,decl)
-    model.vae_latent_bridge.initialize_from_pair(identity(SpatialLatentBridge(4,8),.2),identity(SpatialLatentBridge(8,4),.3))
-    vae=AutoencoderKL(latent_channels=4,block_out_channels=(4,)*5,norm_num_groups=4,
+    model.vae_latent_bridge.initialize_from_pair(identity(SpatialLatentBridge(new,old),.2),identity(SpatialLatentBridge(old,new),.3))
+    vae=AutoencoderKL(latent_channels=new,block_out_channels=(4,)*5,norm_num_groups=4,
         down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5)
     codec=NormalizedImageVAE(vae,decl)
     pipeline=SimpleNamespace(unet=model,vae=codec,vae_scale_factor=8,
-        scheduler=EulerDiscreteScheduler(num_train_timesteps=100),
+        scheduler=getattr(diffusers,sampler)(num_train_timesteps=100),
         text_encoder_2=object() if arch=="sdxl" else None)
     observed=[]
     def progress(step,total,latents,**kwargs):observed.append(tuple(latents.shape))
@@ -164,6 +170,18 @@ def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,
         kwargs["strength"]=1.
     if mode=="inpaint":
         kwargs["mask_image"]=Image.new("L",(192,128),255)
+        if gaussian:kwargs["mask_image"].paste(0,(0,0,96,128))
+    if feature in ("style","multi_style"):
+        from core.inference.reference_style import StyleTransferConfig
+        refs=[(StyleTransferConfig(block_range=(0,100)),torch.randn(1,new,8,12),
+            torch.randn(1,new,8,12)) for _ in range(2 if feature=="multi_style" else 1)]
+        if feature=="style":
+            kwargs.update(style_cfg=refs[0][0],style_ref_x0=refs[0][1],style_eps_ref=refs[0][2])
+        else:kwargs["style_refs"]=refs
+    elif feature=="nag":
+        kwargs.update(nag_enable=True,nag_negative_prompt_embeds=torch.randn_like(kwargs["prompt_embeds"]))
+    elif feature=="guide":
+        kwargs["ref_guide_configs"]=[dict(image=Image.new("RGB",(192,128),"blue"),strength=.3)]
     function={"txt2img":sampling.custom_sampling_loop,"img2img":sampling.custom_img2img_sampling_loop,
         "inpaint":sampling.custom_inpaint_sampling_loop}[mode]
     with patch("core.vram_optimization.move_vae_to_gpu"), \
@@ -173,8 +191,11 @@ def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,
          patch.object(sampling,"get_inpaint_use_dedicated_model_setting",return_value=False),torch.no_grad():
         image=function(**kwargs)
     assert image.size==(192,128)
-    assert observed and all(shape==(1,4,8,12) for shape in observed)
+    assert observed and all(shape==(1,new,8,12) for shape in observed)
     assert not model._forward_pre_hooks and not model._forward_hooks
+    assert not hasattr(model,"_sushi_sd_noise_session")
+
+
     assert not torch.cuda.is_initialized()
     def cancelled(*args,**kwargs):raise RuntimeError("cancelled at step")
     kwargs["progress_callback"]=cancelled
@@ -185,3 +206,12 @@ def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,
          pytest.raises(RuntimeError,match="cancelled at step"):
         function(**kwargs)
     assert not model._forward_pre_hooks and not model._forward_hooks
+    assert not hasattr(model,"_sushi_sd_noise_session")
+
+
+@pytest.mark.parametrize("arch",["sd15","sdxl"])
+@pytest.mark.parametrize("mode",["txt2img","img2img","inpaint"])
+@pytest.mark.parametrize("feature",["style","multi_style","nag","guide"])
+def test_gaussian_public_advanced_paths(arch,mode,feature):
+    test_public_sampling_loops_use_external_channels_and_native_codec_grid(
+        arch,mode,True,"EulerAncestralDiscreteScheduler",feature)

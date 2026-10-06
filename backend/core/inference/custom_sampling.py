@@ -12,7 +12,8 @@ import os
 import torch
 from core.inference.callback_utils import callback_requests
 from core.inference.schedule_utils import snapshot_schedule_scalars
-from core.inference.sd_codec_boundary import aligned_sampling
+from core.inference.sd_codec_boundary import (aligned_sampling,initialize_noise_tracking,aligned_scheduler_step,
+    reference_noise_kwargs,blend_tracked_noise)
 
 # Infer normalization from the codec, including native BatchNorm and identity facades.
 from core.models.components.vae_registry import (
@@ -200,6 +201,7 @@ def apply_reference_guide_blend(
     step_index,
     timesteps,
     scheduler,
+    model=None,
 ):
     """Apply reference guide blending after scheduler.step.
 
@@ -228,6 +230,10 @@ def apply_reference_guide_blend(
                 ref_at_t = rg["clean_latent"]
 
             latents = (1 - weight) * latents + weight * ref_at_t
+            if getattr(model,"_sushi_sd_noise_session",None) is not None:
+                ref_noise_state=(scheduler.add_noise(torch.zeros_like(rg["clean_latent"]),rg["noise"],
+                    next_t.unsqueeze(0)) if step_index<len(timesteps)-1 else torch.zeros_like(ref_at_t))
+                blend_tracked_noise(model,ref_noise_state,weight)
 
             if pred_original_sample is not None:
                 pred_original_sample = (1 - weight) * pred_original_sample + weight * rg["clean_latent"]
@@ -2231,6 +2237,8 @@ def custom_sampling_loop(
         )
         latents = latents * scheduler.init_noise_sigma
 
+    initialize_noise_tracking(unet,scheduler,latents,generator)
+
     ref_guides = []
     if ref_guide_configs:
         from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
@@ -2551,7 +2559,7 @@ def custom_sampling_loop(
                     ref_t_scaled = scheduler.scale_model_input(ref_t, t)
                     progress = style_cfg.step_progress(i, num_inference_steps)
 
-                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,{"encoder_hidden_states": current_prompt_embeds},style_eps_ref)
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -2675,7 +2683,7 @@ def custom_sampling_loop(
                     ref_t_scaled = scheduler.scale_model_input(ref_t, t)
                     ref_progress = _sref_cfg.step_progress(i, num_inference_steps)
 
-                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,{"encoder_hidden_states": current_prompt_embeds},_sref_eps)
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -2820,7 +2828,7 @@ def custom_sampling_loop(
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
+        step_output = aligned_scheduler_step(unet,scheduler,noise_pred,t,latents,generator=step_generator)
         latents = step_output.prev_sample
 
         needs_pred_original = (
@@ -2841,7 +2849,7 @@ def custom_sampling_loop(
         if ref_guides:
             ref_frac = i / num_inference_steps
             latents, pred_original_sample = apply_reference_guide_blend(
-                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
+                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler,model=unet
             )
 
         # In-loop hard-flatten of the flat background (SD1.5/SDXL, opt-in).
@@ -3257,6 +3265,9 @@ def custom_img2img_sampling_loop(
         generator = torch.Generator(device=device).manual_seed(current_seed)
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
     latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
+    if getattr(unet,"_sushi_sd_noise_session",None) is not None:
+        initialize_noise_tracking(unet,scheduler,
+            scheduler.add_noise(torch.zeros_like(init_latents),noise,timesteps[0:1]),generator)
 
     # Current prompt embeds
     current_prompt_embeds = prompt_embeds
@@ -3664,7 +3675,7 @@ def custom_img2img_sampling_loop(
                     ref_t_scaled = scheduler.scale_model_input(ref_t, t)
                     progress = style_cfg.step_progress(i, num_inference_steps)
 
-                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,{"encoder_hidden_states": current_prompt_embeds},style_eps_ref)
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -3788,7 +3799,7 @@ def custom_img2img_sampling_loop(
                     ref_t_scaled = scheduler.scale_model_input(ref_t, t)
                     ref_progress = _sref_cfg.step_progress(i, num_inference_steps)
 
-                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,{"encoder_hidden_states": current_prompt_embeds},_sref_eps)
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -3937,7 +3948,7 @@ def custom_img2img_sampling_loop(
 
         # Compute previous noisy sample
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
+        step_output = aligned_scheduler_step(unet,scheduler,noise_pred,t,latents,generator=step_generator)
         latents = step_output.prev_sample
 
         needs_pred_original = (
@@ -3958,7 +3969,7 @@ def custom_img2img_sampling_loop(
         if ref_guides:
             ref_frac = (t_start + i) / num_inference_steps
             latents, pred_original_sample = apply_reference_guide_blend(
-                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
+                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler,model=unet
             )
 
         # In-loop hard-flatten of the flat background (SD1.5/SDXL, opt-in).
@@ -4813,6 +4824,10 @@ def custom_inpaint_sampling_loop(
     else:
         latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
 
+    if getattr(unet,"_sushi_sd_noise_session",None) is not None:
+        initialize_noise_tracking(unet,scheduler,
+            scheduler.add_noise(torch.zeros_like(init_latents),noise,timesteps[0:1]),generator)
+
     # OUTPAINT B1: precompute the low-frequency boundary color proximal's
     # STATIC inputs once (mask_latent/image_latents never change across
     # steps) -- collar_weight (W_b(d)) and the extended keep-side low-freq
@@ -5617,7 +5632,7 @@ def custom_inpaint_sampling_loop(
                     ref_t_scaled = scheduler.scale_model_input(ref_t, t)
                     progress = style_cfg.step_progress(i, num_inference_steps)
 
-                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,{"encoder_hidden_states": current_prompt_embeds},style_eps_ref)
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -5741,7 +5756,7 @@ def custom_inpaint_sampling_loop(
                     ref_t_scaled = scheduler.scale_model_input(ref_t, t)
                     ref_progress = _sref_cfg.step_progress(i, num_inference_steps)
 
-                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,{"encoder_hidden_states": current_prompt_embeds},_sref_eps)
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -6388,7 +6403,7 @@ def custom_inpaint_sampling_loop(
                 noise_pred = _ssc_to_output(_ssc_x0)
 
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
-        step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
+        step_output = aligned_scheduler_step(unet,scheduler,noise_pred,t,latents,generator=step_generator)
         latents = step_output.prev_sample
 
         # DEBUG-ONLY (OUTPAINT_DEBUG_LATENT_DUMP): the current x_t immediately
@@ -6432,7 +6447,7 @@ def custom_inpaint_sampling_loop(
         if ref_guides:
             ref_frac = (t_start + i) / num_inference_steps
             latents, pred_original_sample = apply_reference_guide_blend(
-                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
+                latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler,model=unet
             )
 
         # In-loop hard-flatten of the generated background (SD1.5/SDXL, opt-in).
@@ -6514,6 +6529,10 @@ def custom_inpaint_sampling_loop(
 
                 # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
                 latents = (1 - _ip_mask) * init_latents_proper + _ip_mask * latents
+                if getattr(unet,"_sushi_sd_noise_session",None) is not None:
+                    anchor_noise=(scheduler.add_noise(torch.zeros_like(image_latents),noise,
+                        noise_timestep.reshape(1)) if i<len(timesteps)-1 else torch.zeros_like(latents))
+                    blend_tracked_noise(unet,anchor_noise,1-_ip_mask)
 
                 # Apply same mask blending to pred_original_sample for consistent x0 preview
                 # Without this, the preview shows unblended generation (incorrect outside mask area)

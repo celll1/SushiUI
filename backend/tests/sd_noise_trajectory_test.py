@@ -92,3 +92,57 @@ def test_generator_list_is_independent_and_missing_rng_refuses():
         assert torch.equal(owner.get_state(),before)
     with pytest.raises(ValueError,match="explicit step generator"):
         SDNoiseTrajectory.clone_generator(None)
+
+
+@pytest.mark.parametrize("batch",[1,2,3])
+def test_session_uses_reference_noise_only_for_the_requested_exposure(batch):
+    from core.inference.sd_codec_boundary import SDNoiseSession
+    scheduler=diffusers.EulerAncestralDiscreteScheduler();scheduler.set_timesteps(4)
+    state=torch.randn(1,8,5,7)*scheduler.init_noise_sigma
+    session=SDNoiseSession();session.initialize(scheduler,state,torch.Generator().manual_seed(19))
+    t=scheduler.timesteps[0];reference=torch.randn(1,8,5,7)
+    baseline=session.exposure(t,torch.zeros(batch,8,5,7))
+    overridden=session.exposure(t,torch.zeros(batch,8,5,7),reference)
+    torch.testing.assert_close(overridden,reference.repeat(batch,1,1,1),rtol=0,atol=0)
+    torch.testing.assert_close(session.exposure(t,torch.zeros(batch,8,5,7)),baseline,rtol=0,atol=0)
+
+
+@pytest.mark.parametrize("explicit",[False,True])
+def test_wired_step_preserves_native_output_and_consumes_rng_once(explicit):
+    import copy
+    from types import SimpleNamespace
+    from core.inference.sd_codec_boundary import (SDNoiseSession,initialize_noise_tracking,
+        aligned_scheduler_step,blend_tracked_noise)
+    scheduler=diffusers.EulerAncestralDiscreteScheduler();scheduler.set_timesteps(4)
+    oracle=copy.deepcopy(scheduler)
+    state=torch.randn(1,8,5,7)*scheduler.init_noise_sigma
+    model=SimpleNamespace(_sushi_sd_noise_session=SDNoiseSession())
+    seed_generator=torch.Generator().manual_seed(19)
+    initialize_noise_tracking(model,scheduler,state,seed_generator)
+    session=model._sushi_sd_noise_session
+    generator=torch.Generator().manual_seed(23) if explicit else None
+    owner_rng=generator if explicit else session.generator
+    oracle_rng=SDNoiseTrajectory.clone_generator(owner_rng)
+    t=scheduler.timesteps[0];prediction=torch.randn_like(state)
+    scheduler.scale_model_input(state,t);oracle.scale_model_input(state,t)
+    result=aligned_scheduler_step(model,scheduler,prediction,t,state,generator=generator)
+    expected=oracle.step(prediction,t,state,generator=oracle_rng)
+    torch.testing.assert_close(result.prev_sample,expected.prev_sample,rtol=0,atol=0)
+    assert torch.equal(owner_rng.get_state(),oracle_rng.get_state())
+    before=session.trajectory.state.clone();anchor=torch.randn_like(before)
+    weight=torch.rand(1,1,5,7)
+    blend_tracked_noise(model,anchor,weight)
+    torch.testing.assert_close(session.trajectory.state,(1-weight)*before+weight*anchor,rtol=0,atol=0)
+
+
+def test_gaussian_outpaint_refuses_keyword_and_positional_calls_before_sampling():
+    from types import SimpleNamespace
+    from core.inference.sd_codec_boundary import aligned_sampling
+    pipeline=SimpleNamespace(unet=SimpleNamespace(vae_latent_bridge=SimpleNamespace(noise_alignment=object())))
+    @aligned_sampling
+    def sample(pipeline,outpaint_noise_init=False):
+        raise AssertionError("must refuse before loading the VAE")
+    with pytest.raises(ValueError,match="outpaint noise tracking"):
+        sample(pipeline,outpaint_noise_init=True)
+    with pytest.raises(ValueError,match="outpaint noise tracking"):
+        sample(pipeline,True)

@@ -73,6 +73,58 @@ class SDNoiseTrajectory:
         return self.state
 
 
+class SDNoiseSession:
+    def __init__(self):
+        self.trajectory=None
+        self.generator=None
+
+    def initialize(self,scheduler,state,generator):
+        self.trajectory=SDNoiseTrajectory(scheduler,state)
+        if generator is None:
+            self.generator=torch.Generator(device=state.device)
+            self.generator.seed()
+        else:
+            self.generator=SDNoiseTrajectory.clone_generator(generator)
+
+    def exposure(self,timestep,sample,override=None):
+        if self.trajectory is None:
+            raise ValueError("Gaussian SD generation has no initialized noise trajectory")
+        noise=self.trajectory.noise(timestep) if override is None else override
+        if sample.shape[0]%noise.shape[0] or sample.shape[2:]!=noise.shape[2:]:
+            raise ValueError("Gaussian SD exposure noise does not match the model batch/grid")
+        return noise.repeat(sample.shape[0]//noise.shape[0],1,1,1).to(sample)
+
+
+def initialize_noise_tracking(model,scheduler,state,generator):
+    session=getattr(model,"_sushi_sd_noise_session",None)
+    if session is not None:
+        session.initialize(scheduler,state,generator)
+
+
+def aligned_scheduler_step(model,scheduler,prediction,timestep,latents,*,generator):
+    session=getattr(model,"_sushi_sd_noise_session",None)
+    if session is not None:
+        if session.trajectory is None:
+            raise ValueError("Gaussian SD scheduler has no initialized noise trajectory")
+        generator=generator if generator is not None else session.generator
+        session.trajectory.step(timestep,generator=generator)
+    return scheduler.step(prediction,timestep,latents,generator=generator)
+
+
+def reference_noise_kwargs(model,kwargs,noise):
+    if getattr(model,"_sushi_sd_noise_session",None) is not None:
+        return {**kwargs,"_sushi_alignment_noise":noise}
+    return kwargs
+
+
+def blend_tracked_noise(model,noise_state,weight):
+    session=getattr(model,"_sushi_sd_noise_session",None)
+    if session is not None:
+        if session.trajectory is None:
+            raise ValueError("Gaussian SD blend has no initialized noise trajectory")
+        session.trajectory.state=(1-weight)*session.trajectory.state+weight*noise_state
+
+
 def coefficients(scheduler, timestep, reference):
     name=type(scheduler).__name__
     if name in _SCALED or name in _VP_SIGMAS or name=="FlowMatchEulerDiscreteScheduler":
@@ -116,15 +168,21 @@ def sampling_boundary(model,scheduler):
     if prediction not in targets:
         raise ValueError(f"Unsupported SD spatial prediction type: {prediction}")
     context=[]
+    session=SDNoiseSession() if getattr(pair,"noise_alignment",None) is not None else None
+    previous_session=getattr(model,"_sushi_sd_noise_session",None)
+    model._sushi_sd_noise_session=session
 
     def incoming(module,args,kwargs):
+        kwargs=dict(kwargs)
+        override=kwargs.pop("_sushi_alignment_noise",None)
         sample=args[0] if args else kwargs["sample"]
         timestep=args[1] if len(args)>1 else kwargs["timestep"]
         alpha,sigma,process=coefficients(scheduler,timestep,sample)
         if prediction=="flow_prediction" and process!="flow":
             raise ValueError("Aligned flow prediction requires a flow sigma schedule")
-        mapped=map_input(module,sample,alpha=alpha)
-        context.append((sigma,process))
+        noise=session.exposure(timestep,sample,override) if session is not None else None
+        mapped=map_input(module,sample,alpha=alpha,sigma=sigma,noise=noise)
+        context.append((alpha,sigma,process,noise))
         if args:
             return (mapped,*args[1:]),kwargs
         return args,{**kwargs,"sample":mapped}
@@ -132,32 +190,42 @@ def sampling_boundary(model,scheduler):
     def outgoing(module,args,kwargs,output):
         if not context:
             return output
-        sigma,process=context.pop()
+        alpha,sigma,process,noise=context.pop()
         if output is None:
             return output
         value=output[0] if isinstance(output,tuple) else output.sample
         mapped=map_prediction(module,value,noise_process=process,
-            prediction_target=targets[prediction],sigma=sigma)
+            prediction_target=targets[prediction],sigma=sigma,alpha=alpha,noise=noise)
         if isinstance(output,tuple):
             return (mapped,*output[1:])
         return type(output)(sample=mapped)
 
-    pre=model.register_forward_pre_hook(incoming,with_kwargs=True)
-    post=None
+    pre=post=None
     try:
+        pre=model.register_forward_pre_hook(incoming,with_kwargs=True)
         post=model.register_forward_hook(outgoing,with_kwargs=True,always_call=True)
         yield
     finally:
-        pre.remove()
+        if pre is not None:
+            pre.remove()
         if post is not None:
             post.remove()
         context.clear()
+        if previous_session is None:
+            del model._sushi_sd_noise_session
+        else:
+            model._sushi_sd_noise_session=previous_session
 
 
 def aligned_sampling(function):
     @wraps(function)
     def run(*args,**kwargs):
         pipeline=args[0] if args else kwargs["pipeline"]
+        pair=getattr(pipeline.unet,"vae_latent_bridge",None)
+        if getattr(pair,"noise_alignment",None) is not None:
+            supplied=inspect.signature(function).bind_partial(*args,**kwargs).arguments
+            if supplied.get("outpaint_noise_init",False):
+                raise ValueError("Gaussian SD outpaint noise tracking is not yet wired")
         with sampling_boundary(pipeline.unet,pipeline.scheduler):
             return function(*args,**kwargs)
     return run

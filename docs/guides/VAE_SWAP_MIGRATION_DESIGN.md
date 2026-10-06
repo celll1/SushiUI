@@ -43,6 +43,22 @@ SDXLは元からU-netであり、DiTの2段U-net化を追加した検証では�
 専用run/datasetのDBとdiskは整理済み。小さな診断記録・optimizer・生成PNGはignored localの
 `local/verification/sdxl_api_swap_results/`へ保持し、選択モデルは元のMing Layerへ戻した。
 
+SDXLの未学習画質も、general ratingをAPIで再確認した40枚による本番校正hookで比較した。
+teacher入力40回は256px、交換VAE入力40回は512pxで、両方の実encode shapeを記録した。
+公式全重み・両CLIP encoder、DDIM epsilon・24steps・CFG6・1024pxで、狐/青い本、
+リンゴ/洋梨、青い車の3promptをseed63/64の2通り、元codec/paired/white/CGで計24枚生成。
+通常pairedは両seedで紫の単色に崩れた。SVD行直交化Gaussianとepsilon residualを合わせる候補、
+および3×3出力kernelの64反復逆写像（ridge=1e-5）を加える候補は、seed63で主要対象と色が残る。
+元画像との個数・配置は一致せず、ぼけと格子模様がある。seed64では両候補に強い縦縞が残り、
+狐・本・果物・車の輪郭も不安定で、2seedを通じた画質回復は未受入。本番noise policyは変更しない。
+seed64の追加確認では、samplerが実際に作る初期latentと補正用Gaussianのshape/dtype/値を
+9生成すべてで完全一致と確認した。固定noiseの取り違えでは説明できないが、縦縞の原因は未確定。
+標準Diffusers SDXL decodeはmean/stdを4ch固定でreshapeするため、そのままの呼出しは失敗した。
+比較では最終latentを取り出し、正規化を所有する交換VAE facadeでdecodeした。本番APIのcustom
+samplingは別経路で、上記の保存checkpoint生成は正常終了している。追加学習は行っていない。
+画像・校正kernel・比較scriptはignored `local/verification/sdxl_official_quality/`のみ。
+専用DB run/datasetは作らず、元のAPI選択モデルを変えていない。
+
 現在のKrea全3shardも、公式`krea/Krea-2-Raw`の配布metadataと全SHA-256を再照合した。
 revision `6b0ece7fffb640c5e3bcbe0a7f10f66b8e60a603`の各transformer shardと完全一致。
 provenanceと検証logはignored localへ保持し、元M:の重みは変更していない。

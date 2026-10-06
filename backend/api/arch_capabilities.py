@@ -1358,6 +1358,10 @@ _add_training_feature_advisory(
     "LTX defaults to paired_spatial on the replacement codec's spatial and temporal grid. Unquantized full fine-tuning with train_unet=true and a bundled RGB codec is required. Image codecs preserve independent frames; supported video codecs use an explicit causal first-frame contract. The audio codec is retained. Small native-model calibration, U-net coexistence, single-file codec/bridge restoration and clip-cache reuse are CPU-verified; official full-weight training, quality and throughput acceptance remain pending.",
     methods=["full_finetune"])
 _add_training_feature_advisory(
+    "anima", "vae_swap", "experimental",
+    "Anima paired_spatial keeps the target-native image grid and bundles its codec and bridges. Official 2.1B full-weight calibration, training, mid-epoch resume with 689 optimizer tensors, U-net coexistence, artifact loading and generation are verified using a 64-channel 16x Qwen 2.1 codec. The two-image synthetic calibration and two updates do not establish quality recovery; recognizable-object generation and broader throughput acceptance remain pending.",
+    methods=["full_finetune"])
+_add_training_feature_advisory(
     "ideogram4", "vae_swap", "experimental",
     "Ideogram defaults to paired_spatial on the target codec grid. Full fine-tuning with ideogram4_train_uncond=true and unquantized dual DiTs is required. Shared calibration, dual bridge restoration, native codec bundling and U-net coexistence are verified with small native models; official full-weight training, quality and throughput acceptance remain pending.",
     methods=["full_finetune"])

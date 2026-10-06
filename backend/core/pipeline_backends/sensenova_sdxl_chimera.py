@@ -29,8 +29,10 @@ class SenseNovaSDXLChimeraMixin:
             seed = random.SystemRandom().randint(0, 2**31 - 1)
         width = int(params.get("width") or init_image.width)
         height = int(params.get("height") or init_image.height)
-        if width % 8 or height % 8:
-            raise ValueError("Chimera width and height must be divisible by 8")
+        from core.models.sensenova_sdxl_chimera.vae_alignment import latent_geometry
+        _channels, _scale, align = latent_geometry(components["unet"])
+        if width <= 0 or height <= 0 or width % align or height % align:
+            raise ValueError(f"Chimera width and height must be positive and divisible by {align}")
         steps = int(params.get("steps") or GENERATION_DEFAULTS["steps"])
         cfg_scale = float(params.get("cfg_scale", GENERATION_DEFAULTS["cfg_scale"]))
         from core.inference.custom_sampling import cfg_schedule_peak
@@ -82,8 +84,8 @@ class SenseNovaSDXLChimeraMixin:
             if mask_image is not None:
                 generate_mask = pipeline_ops.prepare_generate_mask(
                     mask_image,
-                    latent_height=height // 8,
-                    latent_width=width // 8,
+                    latent_height=source_latents.shape[-2],
+                    latent_width=source_latents.shape[-1],
                     device=device,
                     dtype=dtype,
                 )
@@ -288,6 +290,10 @@ class SenseNovaSDXLChimeraMixin:
         dtype = next(unet.parameters()).dtype
 
         positive = negative = latents = None
+        from core.models.sensenova_sdxl_chimera.vae_alignment import latent_geometry
+        _channels, _scale, align = latent_geometry(unet)
+        if height <= 0 or width <= 0 or height % align or width % align:
+            raise ValueError(f"Chimera width and height must be positive and divisible by {align}")
         try:
             transformer.to(device)
             bridge.to(device=device, dtype=dtype)

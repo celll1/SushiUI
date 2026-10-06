@@ -87,6 +87,55 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     b = restored["vae"].encode(torch.ones(1, 3, 128, 192)).latent_dist.mode()
     torch.testing.assert_close(a, b, rtol=0, atol=0)
     assert restored["vae"].decode(b).sample.shape == (1, 3, 128, 192)
+    from core.models.sensenova_sdxl_chimera import pipeline_ops
+    conditioning = pipeline_ops.ChimeraConditioning(
+        encoder_hidden_states=kwargs["encoder_hidden_states"],
+        pooled_text_embeds=kwargs["added_cond_kwargs"]["text_embeds"],
+        context_positions=torch.zeros(1, 3, 3), attention_mask=torch.ones(1, 3, dtype=torch.bool),
+        fingerprint="synthetic", key_lengths=(3,),
+    )
+    observed = []
+    original_processors = dict(restored["unet"].attn_processors)
+    def record_grid(model, args, forward_kwargs):
+        observed.append((tuple(args[0].shape), forward_kwargs["added_cond_kwargs"]["time_ids"].clone()))
+    handle = restored["unet"].register_forward_pre_hook(record_grid, with_kwargs=True)
+    try:
+        generated = pipeline_ops.sample_txt2img_latents(restored["unet"], conditioning, conditioning,
+            height=128, width=192, steps=2, cfg_scale=3., cfg_mode="batched", seed=14,
+            prediction=restored["prediction"])
+        assert generated.shape == (1, channels, 8, 12)
+        assert pipeline_ops.decode_latents(restored["vae"], generated).size == (192, 128)
+        edited = pipeline_ops.sample_img2img_latents(restored["unet"], conditioning, conditioning, b,
+            steps=2, denoising_strength=1., cfg_scale=3., cfg_mode="sequential", seed=14,
+            prediction=restored["prediction"])
+        assert edited.shape == generated.shape and torch.isfinite(edited).all()
+        if channels == 2 and kind == "flow_velocity":
+            from core.pipeline_backends.sensenova_sdxl_chimera import SenseNovaSDXLChimeraMixin
+            components = dict(restored, understanding=dict(transformer=torch.nn.Linear(2, 2), tokenizer=object()))
+            manager = SimpleNamespace(sensenova_sdxl_chimera_components=components, device="cpu")
+            with patch.object(pipeline_ops, "build_conditioning", return_value=conditioning), \
+                 patch.object(pipeline_ops, "prepare_generate_mask", wraps=pipeline_ops.prepare_generate_mask) as mask:
+                source_image = Image.new("RGB", (192, 128), (20, 30, 40))
+                result, _, _ = SenseNovaSDXLChimeraMixin._generate_edit_sensenova_sdxl_chimera(
+                    manager, dict(width=192, height=128, steps=2, cfg_scale=1., seed=14),
+                    source_image, Image.new("L", source_image.size, 0))
+                assert result.size == (192, 128)
+                assert mask.call_args.kwargs["latent_height"] == 8
+                assert mask.call_args.kwargs["latent_width"] == 12
+            with patch.object(pipeline_ops, "build_conditioning", side_effect=AssertionError("must fail before caption encoding")):
+                with pytest.raises(ValueError, match="divisible by 32"):
+                    SenseNovaSDXLChimeraMixin._generate_txt2img_sensenova_sdxl_chimera(
+                        manager, dict(width=192, height=144, steps=2, cfg_scale=1., seed=14))
+    finally:
+        handle.remove()
+        restored["unet"].set_attn_processor(dict(original_processors))
+    assert observed
+    for shape, time_ids in observed:
+        assert shape[1:] == (max(4, channels), 8, 12)
+        assert torch.equal(time_ids[:, :2], torch.tensor([[128., 192.]]).expand(shape[0], -1))
+    with pytest.raises(ValueError, match="divisible by 32"):
+        pipeline_ops.sample_txt2img_latents(restored["unet"], conditioning, None,
+            height=144, width=192, steps=1, cfg_scale=1., seed=14, prediction=restored["prediction"])
     optimizer = torch.optim.AdamW(restored["unet"].parameters(), lr=1e-4)
     optimizer.load_state_dict(torch.load(optimizer_path, weights_only=True))
     step(trainer.unet, trainer.chimera_prediction, trainer.optimizer)

@@ -80,7 +80,7 @@ def _tiny_unet() -> UNet2DConditionModel:
         down_block_types=("CrossAttnDownBlock2D", "DownBlock2D"),
         up_block_types=("UpBlock2D", "CrossAttnUpBlock2D"),
         cross_attention_dim=2048,
-        attention_head_dim=2,
+        attention_head_dim=1,
         norm_num_groups=4,
         addition_embed_type="text_time",
         addition_time_embed_dim=8,

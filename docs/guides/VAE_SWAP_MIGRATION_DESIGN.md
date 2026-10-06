@@ -25,7 +25,11 @@ Full adapterの保存・native loaderの復元も接続した。生codec重み/c
 runtime dtype変更後もfrozen codecを保持した再保存、config既定値で統計を上書きしない再開をCPU検証した。
 校正・保存・既存学習・v1〜v4 flow回帰106件が通過した。これは公式全重みの学習・画質検証ではない。
 またCPU donor構築でCUDA乱数を初期化しないよう修正し、linear-stateのdonor転写では設計通り出力層を保持する。
-この段階ではChimeraの公開VAE交換ゲートは維持する。target-native生成格子、polar経路と校正、
+復元済みの小型実UNetとVAEで、交換先16x格子のtxt2img・img2img・decodeを接続した。
+外部2/6チャネル、内部max幅、128×192→8×12格子、SDXL time IDsの実pixel寸法を確認した。
+編集backendのmaskも実encode結果の格子を使う。native UNetのdownsample段数を含むpixel alignmentを検証し、
+3軸RoPEのhead幅を8の倍数へ厳密化した（軸幅は1/2,1/4,1/4で、それぞれ偶数が必要）。
+この段階ではChimeraの公開VAE交換ゲートは維持する。polar経路と校正、
 公開API/UIの配線、公式全重みの検証は未了。
 v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
 direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に

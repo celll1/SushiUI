@@ -128,10 +128,10 @@ def build_donor_equal_unet(
             f"Chimera U-Net parameter count {built_count} differs from donor {donor_count}"
         )
     head_dims = _attention_head_dims(built)
-    illegal = [width for width in head_dims if width % 4]
+    illegal = [width for width in head_dims if width % 8]
     if illegal:
         raise ValueError(
-            f"SenseNova three-axis RoPE requires head widths divisible by 4, got {illegal}"
+            f"SenseNova three-axis RoPE requires head widths divisible by 8, got {illegal}"
         )
     return built, ChimeraUNetBuildReport(
         initialization=initialization,

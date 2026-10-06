@@ -119,6 +119,8 @@ class ResolvedVAE:
             "latent_channels": self.latent_channels,
             "scale_factor": self.scale_factor,
             "scale_temporal": self.scale_temporal,
+            "pixel_channels": self.config.get("in_channels", self.config.get("input_channels", 3)),
+            "output_channels": self.config.get("out_channels", self.config.get("output_channels", 3)),
             "ndim": self.ndim,
             "norm": self.norm,
             "norm_pack": self.norm_pack,

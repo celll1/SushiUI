@@ -4377,6 +4377,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       value={params.vae_swap_source ?? ""}
                       onChange={(source) => setParams(prev => ({
                         ...prev, vae_swap_source: source, sdxl_vae_type: "none",
+                        bundle_vae: source && !prev.vae_swap_source
+                          ? bundleVaeDefaultsByArch?.["_swapped"] ?? prev.bundle_vae
+                          : prev.bundle_vae,
                       }))}
                       arch={baseModelArch || null}
                       baseModelPath={baseModelPath || null}
@@ -4387,13 +4390,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <p className="text-xs text-amber-400">{vaeSwapAdvisory.reason}</p>
                   )}
 
-                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
+                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
                         Paired spatial calibration uses the target VAE token grid. First swap calibrates
                         from this run&apos;s dataset; resume restores the saved bridges. RGB VAEs discard alpha.
                       </p>
+                      {baseModelArch === "ltx2" && (
+                        <p className="text-xs text-amber-400">
+                          LTX requires a bundled RGB codec and trainable DiT. The target codec owns
+                          spatial and temporal compression; the audio codec is retained.
+                          {params.bundle_vae === false && " Enable Bundle VAE before saving this run."}
+                          {params.train_unet === false && " Enable DiT training before saving this run."}
+                        </p>
+                      )}
                       {baseModelArch === "sensenova_sdxl_chimera" && (
                         <p className="text-xs text-amber-400">
                           Chimera requires the U-Net or Joint stage and a bundled RGB VAE.
@@ -4416,7 +4427,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         </select>
                       </label>
                       <label className="block text-xs text-gray-400">
-                        Calibration images
+                        {baseModelArch === "ltx2" ? "Calibration images/clips" : "Calibration images"}
                         <input type="number" min={2} max={256}
                           value={params.vae_swap_calibration_samples ?? ""}
                           placeholder="Default"

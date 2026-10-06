@@ -8,7 +8,9 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
-LTX-2.3の動画target-native境界を内部部品として追加した。公開VAE swap設定はまだ解放していない。
+LTX-2.3の動画target-native境界を追加し、Full fine-tuneの公開VAE swap設定をexperimentalとして配線した。
+unquantized DiT・train_unet=true・paired_spatial・bundled RGB codecを必須とし、LoRA系は拒否する。
+API preflightは新規交換の保存不能設定と、復元済み交換codecのbundling無効もモデルロード前に拒否する。
 `video_latent_adapter.py`はRGBクリップの時間圧縮契約を明示し、causal first-frameと独立frameを区別する。
 5D codecはクリップ全体を一度にencode/decodeし、4D codecだけB×Tへ展開する。宣言したチャネル数、
 空間・時間の圧縮率と実codecの返却shapeが違えば拒否する。正規化はcodec内で一度だけ行う。
@@ -38,7 +40,12 @@ text encoder/connectorsもCPUへ置く。teacherとtargetを交互にGPUへ置�
 4Dの独立frameに限定する。学習dummy audioの長さとサンプル寸法・frame数は交換先の圧縮率を使う。
 小型nativeモデルで、loaderからの交換・freeze、静止画/合成clip校正、進捗・中断再試行、
 U-net併用の実train_stepとbridge勾配、チャネル減少時の共通検証、wrapper維持をCPU検証した。
-残作業は動画bucket/cache/resumeの全経路監査、公開API/UI配線と公式全重みの受入検証。
+共通TemporalSpecを使う動画bucketから、実decode・codec encode・disk cache再利用まで合成動画で検証した。
+交換動画codecのcache identityは重み・正規化に加えcodecの空間/時間圧縮率とframe規則を含む。
+復元後の同一contractは同じcacheへ到達し、別contractは別namespaceへ分離する。native cache hashは維持する。
+UIは時間圧縮率・入力チャネルと、LTXの校正画像/clip・bundling必須条件を表示する。
+新規VAE選択時のbundling defaultはSSOT mapの_swappedから取得し、保存済みconfig復元時には適用しない。
+残作業はbatch境界resumeの公式全重み受入、公式全重みの学習・生成・画質・速度検証。
 aligned diffusers directoryとしての再保存/再ロードも未対応。全アーキテクチャ対応完了を意味しない。
 既存LTX単体Full checkpoint readerは現在実装済みであり、§11 P6の「readerがない」という記述は当時の状態。
 

@@ -3586,6 +3586,7 @@ def resolve_training_sample_defaults(
 # False (smaller checkpoints, shared-store VAE reuse).
 BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
     "_default": False,
+    "_swapped": True,
     "sd15": True,
     "sdxl": True,
     "sensenova_sdxl_chimera": True,
@@ -3690,7 +3691,7 @@ def resolve_bundle_vae(value, arch: str, vae_swapped: bool = False) -> bool:
     if value is not None:
         return bool(value)
     if vae_swapped:
-        return True
+        return BUNDLE_VAE_DEFAULTS_BY_ARCH["_swapped"]
     return bool(BUNDLE_VAE_DEFAULTS_BY_ARCH.get(
         arch, BUNDLE_VAE_DEFAULTS_BY_ARCH["_default"]))
 

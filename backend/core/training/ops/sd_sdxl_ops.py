@@ -806,33 +806,39 @@ def train_step(
         repa_handle = arm_spatial_tap(trainer._repa_tap_module, _site)
 
     # Predict noise using UNet
+    from core.models.components.sd_vae_alignment import training_coefficients,map_input,map_prediction
+    prediction_target=getattr(trainer,"prediction_target","epsilon")
     try:
+        alignment_alpha,alignment_sigma=training_coefficients(trainer.unet,trainer.noise_scheduler,timesteps,
+            noise_process=noise_process,reference=noisy_latents,alphas_cumprod=alphas_cumprod_cached)
         if trainer.mixed_precision:
             with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                unet_latents=map_input(trainer.unet,noisy_latents,alpha=alignment_alpha)
                 if trainer.is_sdxl and added_cond_kwargs is not None:
                     model_pred = trainer.unet(
-                        noisy_latents,
+                        unet_latents,
                         timesteps,
                         text_embeddings,
                         added_cond_kwargs=added_cond_kwargs
                     ).sample
                 else:
                     model_pred = trainer.unet(
-                        noisy_latents,
+                        unet_latents,
                         timesteps,
                         text_embeddings
                     ).sample
         else:
+            unet_latents=map_input(trainer.unet,noisy_latents,alpha=alignment_alpha)
             if trainer.is_sdxl and added_cond_kwargs is not None:
                 model_pred = trainer.unet(
-                    noisy_latents,
+                    unet_latents,
                     timesteps,
                     text_embeddings,
                     added_cond_kwargs=added_cond_kwargs
                 ).sample
             else:
                 model_pred = trainer.unet(
-                    noisy_latents,
+                    unet_latents,
                     timesteps,
                     text_embeddings
                 ).sample
@@ -843,7 +849,10 @@ def train_step(
     if profile_vram:
         print_vram_usage("[train_step] After UNet forward")
 
-    prediction_target = getattr(trainer, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility
+    with torch.autocast(device_type=trainer.device.type,dtype=trainer.training_dtype,enabled=trainer.mixed_precision):
+        model_pred=map_prediction(trainer.unet,model_pred,noise_process=noise_process,
+            prediction_target=prediction_target,sigma=alignment_sigma)
+
     target = get_target_unified(
         noise_process=noise_process,
         prediction_target=prediction_target,

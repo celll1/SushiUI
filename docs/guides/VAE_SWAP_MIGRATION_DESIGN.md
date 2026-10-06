@@ -14,8 +14,17 @@ VideoCodecContractへ接続した。independent/causal/H3 chunkを同じ座標he
 aligned wrapperが座標を内部生成する場合も同helperを使い、明示座標は維持する。
 小型の実LTXモデルでchannel増減・per-token sigma・U-net併用を3policyで確認し、
 bridgeと追加channelへ勾配が届く。CPU回帰77件・26subtest、変更Python compile/実importが通過。
-これは公式全重みの学習・画質受け入れを意味しない。LTX生成pipelineのnoise/condition配置は
-依然一律stride前提で、H3 chunk targetの公開生成拒否は維持する。
+これは公式全重みの学習・画質受け入れを意味しない。
+
+LTX交換モデル専用codec_pipelinesをloader・training swap・image/condition派生pipelineへ接続した。
+diffusers 0.38.0の各__call__/prepare_latentsだけを継承元から抽出し、frame数とRoPE計算を置換する。
+Apache-2.0ヘッダー・元source SHA256・再生成toolを保持し、生成物の再現一致をテストする。
+通常モデルのクラス選択は変更しない。noise/unpackは実target frame数、audio長はpixel実時間を使う。
+H3 conditionのpixel開始点とclip切詰めはframe spansで求め、動画の異なるchunk位相や短すぎる
+残り区間は明示拒否する。実小型H3 VAE+LTX DiTの2stepでtext/image/condition、dense/U-netを確認。
+22pixel→7latentの格子、音声長、保持latent完全一致を検査し、既存学習/保存復元を含む29件が通過。
+全変更Pythonのcompile・CUDA無し実importも通過。合成データのみ、run/サーバー変更なし。
+外側のoutpaint snap/trim・公開編集経路の全policy受入は未完で、H3 targetの公開生成拒否は維持する。
 
 現在モデル情報へloaded_video_constraintsを追加し、校正済みbundled video codecの実frame格子、
 空間倍数、frame-group policy/temporal scale、モデル由来のFPS/範囲を返す。
@@ -44,7 +53,7 @@ wire復元で明示anchor_countを配列長で上書きせず、矛盾を検出�
 確認dialogはcodec geometry変更後の再検証を必須とし、閉じた後や新planへの古い応答を捨てる。
 編集中のprompt/referenceはgeometry変更だけでは再planで置き換えない。
 HTTP経由のCPU回帰103件、frontend pure-function/Syntax確認6件、Python compile/実importが通過。
-prompt/cache、LTX chunk時計、校正/Full owner、
+prompt/cache、LTX outpaint/editing時計、校正/Full owner、
 公式全重みでの学習・画質・速度、実UI確認は引き続き未完。
 
 公開txt2vid/img2vid/ref2vid/inpaint-video/outpaint-videoの事前検証へloaded codec契約を接続した。

@@ -75,6 +75,8 @@ def apply_swap(trainer, resolved, *, handler, module=None):
     pipeline.transformer = wrapper
     trainer.vae = NormalizedVideoVAE(target, contract)
     pipeline.register_modules(vae=trainer.vae)
+    from .codec_pipelines.geometry import install_pipeline_clock
+    install_pipeline_clock(pipeline)
     pipeline.vae_spatial_compression_ratio = contract.image.spatial_scale
     pipeline.vae_temporal_compression_ratio = contract.temporal_scale
     from diffusers.video_processor import VideoProcessor

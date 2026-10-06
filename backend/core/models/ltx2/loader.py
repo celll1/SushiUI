@@ -479,6 +479,8 @@ def load_ltx2_from_diffusers(
     pipeline = LTX2Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype, **overrides)
     if video_codec is not None:
         pipeline.register_modules(vae=video_codec)
+        from .codec_pipelines.geometry import install_pipeline_clock
+        install_pipeline_clock(pipeline)
 
     # Keep everything on CPU after load; P1b stages to GPU (or uses
     # model_cpu_offload_seq). from_pretrained already leaves modules on CPU.

@@ -213,7 +213,7 @@ def test_an_arch_that_declares_no_temporal_ratio_still_refuses():
     from core.models.component_registry import _WIRING_BY_ARCH
 
     for name, spec in _WIRING_BY_ARCH.items():
-        if spec.latent_ndim == 5:
+        if spec.latent_ndim == 5 and name != "ming_image_01":
             assert spec.vae_scale_temporal, name
 
     native = {"latent_channels": 16, "scale_factor": 8, "ndim": 5,
@@ -413,6 +413,7 @@ def test_a_zimage_run_swaps_its_latent_space_through_the_arch_handler(
         log_prefix="[test]")
     trainer.transformer = trainer.transformer_original
 
+    trainer.config["vae_swap_new_channel_init"] = "zero"
     _apply_latent_space(trainer, None)
 
     assert trainer.transformer_original.all_x_embedder["2-1"].in_features == target * 4

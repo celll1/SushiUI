@@ -308,7 +308,8 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             if swap_bundled and trainer.vae is not None:
                 print(f"[ZImageFullParameterAdapter] Bundling swapped VAE "
                       f"({swapped.provenance}) under 'vae.' ...")
-                for key, value in trainer.vae.state_dict().items():
+                vae_module = getattr(trainer.vae, "inner", trainer.vae)
+                for key, value in vae_module.state_dict().items():
                     combined_state_dict[f"vae.{key}"] = value.detach().cpu()
             else:
                 print(f"[ZImageFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
@@ -339,6 +340,8 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             from core.models.zimage_residual_unet import native_config, model_topology_metadata
             metadata["transformer_config"] = json.dumps(native_config(trainer.transformer))
             metadata.update(model_topology_metadata(trainer.transformer))
+            from core.models.components.spatial_swap import artifact_metadata
+            metadata.update(artifact_metadata(target_transformer))
         try:
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(

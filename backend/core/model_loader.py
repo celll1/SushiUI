@@ -1166,6 +1166,7 @@ class ModelLoader:
         torch_dtype: torch.dtype,
         *,
         path: str = "<state dict>",
+        alignment_declaration=None,
     ):
         """Build the Z-Image DiT for ``state_dict`` and install the weights into it.
 
@@ -1190,6 +1191,11 @@ class ModelLoader:
         """
         from core.models.zimage_transformer import ZImageTransformer2DModel
         from core.models.zimage_residual_unet import preflight_artifact, validate_topology_identity, restore_topology
+        if alignment_declaration is not None:
+            from core.models.components.latent_adapter import validate_declaration
+            declaration = validate_declaration(alignment_declaration)
+            if max(declaration["old_channels"], declaration["new_channels"]) != in_channels:
+                raise ValueError("Z-Image internal channels disagree with spatial alignment")
         topology = None
         if Path(path).is_file() or Path(str(path)+".index.json").is_file():
             topology, _declared_config = preflight_artifact(path)
@@ -1216,6 +1222,9 @@ class ModelLoader:
                 axes_dims=transformer_config["axes_dims"],
                 axes_lens=transformer_config["axes_lens"],
             ).to(torch_dtype)
+
+            from core.models.components.spatial_swap import install
+            install(transformer, alignment_declaration)
 
         # Convert Comfy format (fused QKV) to official format (separate Q/K/V).
         # sushiUI full-FT saves are ALREADY in official layout - skip conversion.
@@ -1289,6 +1298,8 @@ class ModelLoader:
             state_dict = cast_float8_tensors(state_dict, torch_dtype)
 
         transformer.load_state_dict(state_dict, strict=True, assign=True)
+        from core.models.components.spatial_swap import validate_loaded
+        validate_loaded(transformer)
         restore_topology(transformer, topology)
         return transformer
 
@@ -1514,6 +1525,10 @@ class ModelLoader:
             # weights were never trained against.
             declared_vae = load_declared_latent_io(file_path, arch="zimage")
             raw_state_dict, _raw_metadata = read_state_dict(file_path)
+            from core.models.components.spatial_swap import read_declaration, restored_image_codec
+            alignment_declaration = read_declaration(_raw_metadata)
+            if alignment_declaration is not None and declared_vae is None:
+                raise ValueError("Aligned Z-Image checkpoint is missing its codec declaration")
 
             # Normalize: both genuine Comfy checkpoints AND sushiUI full-FT saves
             # (official-layout keys under model.diffusion_model. + embedded VAE/TE).
@@ -1585,7 +1600,9 @@ class ModelLoader:
                     break
 
             if declared_vae is not None:
-                if declared_vae.latent_channels != actual_in_channels:
+                expected_channels = (max(alignment_declaration["old_channels"], alignment_declaration["new_channels"])
+                    if alignment_declaration is not None else declared_vae.latent_channels)
+                if expected_channels != actual_in_channels:
                     raise ValueError(
                         f"{file_path} declares {declared_vae.latent_channels} latent "
                         f"channels but its x_embedder faces {actual_in_channels}; "
@@ -1609,7 +1626,8 @@ class ModelLoader:
             # ``_build_ideogram4_transformer_from_state``.
             transformer = ModelLoader._build_zimage_transformer_from_state(
                 transformer_config, actual_n_layers, actual_in_channels,
-                comfy_state_dict, zimage_layout, torch_dtype, path=file_path)
+                comfy_state_dict, zimage_layout, torch_dtype, path=file_path,
+                alignment_declaration=alignment_declaration)
             del comfy_state_dict
 
             print(f"[ModelLoader] Moving transformer to {device}...")
@@ -1621,6 +1639,8 @@ class ModelLoader:
             # Step 6: Load VAE based on in_channels
             if declared_vae is not None:
                 vae = declared_vae.load_module(torch_dtype=torch.float32)
+                if alignment_declaration is not None:
+                    vae, declared_vae = restored_image_codec(vae, declared_vae, alignment_declaration)
                 vae.to(device=device)
                 vae.eval()
                 zimage_vae_source = declared_vae.provenance

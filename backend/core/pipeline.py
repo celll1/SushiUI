@@ -2400,7 +2400,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # If discovery cannot reach it, the stale override survives a switch to
         # PiD (or to tiling off) and silently keeps running with the previous
         # request's threshold. Unlike a plain VAE swap this does not self-heal.
-        for attr in ("vae", "real_vae"):
+        for attr in ("vae", "real_vae", "inner"):
             inner = getattr(vae, attr, None)
             if inner is not None and inner is not vae and inner not in targets:
                 targets.append(inner)

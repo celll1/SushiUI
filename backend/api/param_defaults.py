@@ -3086,8 +3086,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # VAE swap (arch-independent, full fine-tune only): "" = no swap, else
     # "registry:<key>" / "file:<path>" / "model:<path>" (design §7.1).
     "vae_swap_source": "",
-    # How channels the old VAE did not have are initialised in the resized latent
-    # Auto selects spatial calibration for Ming/Qwen; legacy handlers retain zero.
+    # Auto selects spatial calibration for Ming/Qwen/Z-Image; others retain zero.
     "vae_swap_new_channel_init": "auto",
     "vae_swap_calibration_samples": 32,
     "vae_swap_calibration_resolution": 256,

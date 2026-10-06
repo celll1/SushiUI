@@ -20,11 +20,11 @@ def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21") else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21"):
-        raise ValueError("paired_spatial is currently wired for Ming and Qwen 2.1; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage"):
+        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1 and Z-Image; select zero for this architecture")
     return mode
 
 
@@ -163,6 +163,11 @@ def apply_latent_space(trainer, declared) -> None:
         get_arch_handler(trainer).apply_vae_swap(trainer, declared,
                                                  module=trainer.vae)
     if swap_source:
+        handler = get_arch_handler(trainer)
+        root = getattr(trainer, handler.latent_io_root_attr, None) if handler.latent_io_root_attr else trainer
+        pair = getattr(root, "vae_latent_bridge", None)
+        if pair is not None and swap_source == pair.declaration["source"]:
+            return
         apply_configured_vae_swap(trainer, swap_source)
 
 
@@ -223,6 +228,8 @@ def preflight_vae_swap(
                 f"vae_swap_source={source!r} cannot drive {arch or 'this model'}: "
                 f"{described.get('reason') or 'incompatible'}")
         facts = described
+    if arch == "zimage" and mode == "zero" and (facts.get("ndim") != 4 or facts.get("scale_factor") != 8):
+        raise ValueError("Legacy zero Z-Image swaps require a 4-D 8x VAE; use paired_spatial")
     compatible, reason = check_arch_vae_compatibility(
         facts, arch, base_model_path=base_model_path)
     if not compatible:
@@ -316,6 +323,9 @@ def module_latent_hash(module) -> Optional[str]:
 
 
 def _materialized_config(module, fallback):
+    from core.models.components.latent_adapter import NormalizedFrameVAE
+    if isinstance(module, NormalizedFrameVAE):
+        module = module.inner
     config = getattr(module, "config", None)
     if config is None:
         return dict(fallback or {})
@@ -350,7 +360,10 @@ def validate_latent_io(trainer) -> list:
     root = (trainer if handler.latent_io_root_attr is None
             else getattr(trainer, handler.latent_io_root_attr, None))
     if spec is not None and root is not None and wiring.latent_channels:
-        problems.extend(verify_latent_io(root, spec, wiring.latent_channels))
+        pair = getattr(root, "vae_latent_bridge", None)
+        channels = (max(pair.declaration["old_channels"], pair.declaration["new_channels"])
+                    if pair is not None else wiring.latent_channels)
+        problems.extend(verify_latent_io(root, spec, channels))
     problems.extend(_verify_vae_geometry(trainer, wiring))
     return problems
 

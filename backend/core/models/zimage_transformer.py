@@ -662,9 +662,16 @@ class ZImageTransformer2DModel(nn.Module):
         cap_feats: List[torch.Tensor],
         patch_size=2,
         f_patch_size=1,
+        alignment_sigma=None,
     ):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
+
+        pair = getattr(self, "vae_latent_bridge", None)
+        if pair is not None:
+            sigma = 1 - t if alignment_sigma is None else alignment_sigma
+            x = [pair.input.flow_state(image.unsqueeze(0), sigma[i:i+1]).squeeze(0)
+                 for i, image in enumerate(x)]
 
         rewiring = getattr(self, "_residual_unet_spec", None)
         if rewiring is not None:
@@ -881,4 +888,7 @@ class ZImageTransformer2DModel(nn.Module):
         unified = list(unified.unbind(dim=0))
         x = self.unpatchify(unified, x_size, patch_size, f_patch_size)
 
+        if pair is not None:
+            x = [pair.output.flow_velocity(image.unsqueeze(0), convention="x0_minus_eps").squeeze(0)
+                 for image in x]
         return x, {}

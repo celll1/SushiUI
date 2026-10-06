@@ -15003,10 +15003,11 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
-        if getattr(self, "is_ming_image_01", False) or getattr(self, "is_qwen_image_21", False):
+        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage")):
             import math
             from core.models.components.latent_adapter import topology_alignment
-            h, w = topology_alignment(getattr(self.transformer, "_residual_unet_spec", None))
+            model = getattr(self, "transformer_original", None) if getattr(self, "is_zimage", False) else self.transformer
+            h, w = topology_alignment(getattr(model, "_residual_unet_spec", None))
             alignment *= math.lcm(h, w)
         return alignment
 
@@ -19246,8 +19247,9 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                                 elif not (self.is_lens or self.is_ideogram4):
-                                    expected_latent_height = height // 8
-                                    expected_latent_width = width // 8
+                                    scale = int(getattr(getattr(self, "wiring", None), "vae_scale_factor", 8) or 8)
+                                    expected_latent_height = height // scale
+                                    expected_latent_width = width // scale
                                     if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
                                         print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
                                         print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")

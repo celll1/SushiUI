@@ -38,7 +38,7 @@ try:
         ComponentWiringSpec,
         SD15_WIRING, SDXL_WIRING, ZIMAGE_WIRING, ANIMA_WIRING, LENS_WIRING,
         IDEOGRAM4_WIRING, MINIT2I_WIRING, KREA2_WIRING, FLUX2_WIRING, LTX2_WIRING,
-        ACESTEP_WIRING, MING_IMAGE_01_WIRING,
+        ACESTEP_WIRING, MING_IMAGE_01_WIRING, QWEN_IMAGE_21_WIRING,
         MINIMAX_H3_WIRING,
         MINIMAX_MUSIC3_WIRING,
         SENSENOVA_WIRING,
@@ -54,6 +54,7 @@ try:
         "minit2i": MINIT2I_WIRING,
         "krea2": KREA2_WIRING,
         "ming_image_01": MING_IMAGE_01_WIRING,
+        "qwen_image_21": QWEN_IMAGE_21_WIRING,
         "flux2": FLUX2_WIRING,
         "ltx2": LTX2_WIRING,
         "acestep": ACESTEP_WIRING,
@@ -844,7 +845,7 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
         record["latent_ndim"] = spec.latent_ndim
     if record["components"]["audio_vae"]["present"]:
         record["latent_ndim"] = 5
-    record["is_video"] = record["latent_ndim"] == 5 and arch != "ming_image_01"
+    record["is_video"] = record["latent_ndim"] == 5 and arch not in ("ming_image_01", "qwen_image_21")
 
     return record
 

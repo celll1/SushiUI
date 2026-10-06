@@ -47,6 +47,8 @@ VAE_CLASS_BY_ARCH: Dict[str, Optional[str]] = {
     "ideogram4": "AutoencoderKLFlux2",
     "anima": "AutoencoderKLQwenImage",
     "krea2": "AutoencoderKLQwenImage",
+    "ming_image_01": "AutoencoderKLQwenImage",
+    "qwen_image_21": "AutoencoderKLQwenImage21",
     "ltx2": "AutoencoderKLLTXVideo",
     # The video VAE. MiniMax-H3 also owns a SECOND autoencoder
     # (AutoencoderKLMiniMaxH3Audio) that this per-arch map cannot express; a VAE
@@ -61,6 +63,7 @@ VAE_CLASS_BY_ARCH: Dict[str, Optional[str]] = {
 # latent_channels fallback when a VAE class omits the key in config.json.
 _VAE_CLASS_DEFAULT_LC: Dict[str, int] = {
     "AutoencoderKLQwenImage": 16,
+    "AutoencoderKLQwenImage21": 64,
     "AutoencoderKLFlux2": 32,
 }
 

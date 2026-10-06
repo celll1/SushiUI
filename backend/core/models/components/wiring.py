@@ -272,9 +272,9 @@ MING_IMAGE_01_WIRING = ComponentWiringSpec(
 
 QWEN_IMAGE_21_WIRING = ComponentWiringSpec(
     te_out_dim=4096, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
-    latent_channels=64, latent_ndim=4, latent_packing="none",
+    latent_channels=64, latent_ndim=5, latent_packing="none",
     vae_scale_factor=16, vae_norm="per_channel",
-    latent_io=QWEN_IMAGE_21_LATENT_IO,
+    latent_io=QWEN_IMAGE_21_LATENT_IO, vae_scale_temporal=8,
 )
 
 FLUX2_WIRING = ComponentWiringSpec(

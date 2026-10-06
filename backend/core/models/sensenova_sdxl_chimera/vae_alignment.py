@@ -4,6 +4,19 @@ from .flow import FLOW_V1_PREDICTION,FLOW_V2_PREDICTION,FLOW_V2_VELOCITY_PREDICT
 PENDING_KEY = "_chimera_vae_calibration_source"
 
 
+def latent_geometry(unet):
+    """External channels, codec scale, and pixel alignment on the target grid."""
+    pair = getattr(unet, "vae_latent_bridge", None)
+    if pair is None:
+        return 4, 8, 8
+    declaration = pair.declaration
+    from core.models.components.latent_adapter import validate_declaration
+    validate_declaration(declaration)
+    channels, scale = declaration["new_channels"], declaration["new_scale"]
+    blocks = getattr(getattr(unet, "config", None), "block_out_channels", (1,))
+    return channels, scale, scale*2**(len(blocks)-1)
+
+
 class TargetLatentMoments:
     """Pixel-weighted channel moments from the same bounded calibration pass."""
     def __init__(self, channels):

@@ -54,8 +54,8 @@ def sensenova_rope_factors(
     """Precompute broadcastable trigonometric factors for a position grid."""
     if positions.ndim != 3 or positions.shape[-1] != 3:
         raise ValueError(f"expected positions [B,S,3], got {tuple(positions.shape)}")
-    if width % 4:
-        raise ValueError(f"SenseNova rotary head width must be divisible by 4, got {width}")
+    if width < 8 or width % 8:
+        raise ValueError(f"SenseNova rotary head width must be a positive multiple of 8, got {width}")
     widths = (width // 2, width // 4, width // 4)
     bases = (rope_theta, rope_theta_hw, rope_theta_hw)
     return tuple(

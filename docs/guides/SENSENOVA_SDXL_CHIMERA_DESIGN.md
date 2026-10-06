@@ -268,7 +268,7 @@ dispatch. It uses SenseNova's `rotate_half` layout and checkpoint-declared
 `rope_theta` / `rope_theta_hw` conventions.
 
 For an attention head of width `D_head`, format v2 requires divisibility by
-four and uses the SenseNova split:
+eight and uses the SenseNova split (each axis width must be even):
 
 ```text
 t: D_head / 2

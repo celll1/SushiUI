@@ -1136,8 +1136,10 @@ def sample_txt2img_latents(
     cfg_probe_callback: Callable[[dict[str, float | int]], None] | None = None,
     prediction: dict | None = None,
 ) -> torch.Tensor:
-    if height % 8 or width % 8:
-        raise ValueError("Chimera width and height must be divisible by 8")
+    from .vae_alignment import latent_geometry
+    channels, scale, align = latent_geometry(unet)
+    if height <= 0 or width <= 0 or height % align or width % align:
+        raise ValueError(f"Chimera width and height must be positive and divisible by {align}")
     if cfg_mode not in {"sequential", "batched"}:
         raise ValueError(f"unsupported Chimera CFG mode: {cfg_mode}")
     if cfg_norm not in {"none", "global", "channel"}:
@@ -1145,7 +1147,8 @@ def sample_txt2img_latents(
     device = next(unet.parameters()).device
     dtype = next(unet.parameters()).dtype
     generator = torch.Generator(device=device).manual_seed(int(seed))
-    sample = torch.randn((1, 4, height // 8, width // 8), generator=generator, device=device, dtype=dtype)
+    sample = torch.randn((1, channels, height // scale, width // scale),
+                         generator=generator, device=device, dtype=dtype)
     times = shifted_timesteps(steps, timestep_shift, device=device)
     original_height = int(original_height or height)
     original_width = int(original_width or width)
@@ -1216,11 +1219,17 @@ def sample_img2img_latents(
         raise ValueError(f"unsupported Chimera CFG norm: {cfg_norm}")
     if source_latents.ndim != 4 or source_latents.shape[0] != 1:
         raise ValueError("Chimera source latents must have shape [1,C,H,W]")
+    from .vae_alignment import latent_geometry
+    channels, scale, align = latent_geometry(unet)
+    if source_latents.shape[1] != channels:
+        raise ValueError("Chimera source latent channels disagree with the loaded codec")
     device = next(unet.parameters()).device
     dtype = next(unet.parameters()).dtype
     source_latents = source_latents.to(device=device, dtype=dtype)
-    height = int(source_latents.shape[-2] * 8)
-    width = int(source_latents.shape[-1] * 8)
+    height = int(source_latents.shape[-2] * scale)
+    width = int(source_latents.shape[-1] * scale)
+    if height <= 0 or width <= 0 or height % align or width % align:
+        raise ValueError("Chimera source latent grid is incompatible with the native UNet downsampling")
     if generate_mask is not None:
         expected = (1, 1, source_latents.shape[-2], source_latents.shape[-1])
         if tuple(generate_mask.shape) != expected:

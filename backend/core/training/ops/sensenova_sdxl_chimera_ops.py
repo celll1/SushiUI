@@ -506,7 +506,9 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         pooled = gate_conditioning_tensor(pooled, timesteps, latents)
     positions = auxiliary["context_positions"].to(device=latents.device)
     context_mask = auxiliary["context_attention_mask"].to(device=latents.device)
-    height, width = latents.shape[-2] * 8, latents.shape[-1] * 8
+    from core.models.sensenova_sdxl_chimera.vae_alignment import latent_geometry
+    _channels, scale, _align = latent_geometry(trainer.unet)
+    height, width = latents.shape[-2] * scale, latents.shape[-1] * scale
     time_ids = ctx.time_ids
     if time_ids is None:
         time_ids = torch.tensor(

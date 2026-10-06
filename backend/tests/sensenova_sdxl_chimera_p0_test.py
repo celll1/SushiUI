@@ -17,7 +17,7 @@ from core.models.sensenova_sdxl_chimera import (
 )
 
 
-def _tiny_sdxl_unet():
+def _tiny_sdxl_unet(*, heads=1):
     from diffusers import UNet2DConditionModel
 
     return UNet2DConditionModel(
@@ -30,7 +30,7 @@ def _tiny_sdxl_unet():
         down_block_types=("DownBlock2D", "CrossAttnDownBlock2D"),
         up_block_types=("CrossAttnUpBlock2D", "UpBlock2D"),
         cross_attention_dim=2048,
-        attention_head_dim=2,
+        attention_head_dim=heads,
         transformer_layers_per_block=1,
         use_linear_projection=True,
         addition_embed_type="text_time",
@@ -60,6 +60,9 @@ def test_donor_equal_unet_rejects_incompatible_contracts():
     donor.register_to_config(cross_attention_dim=16)
     with pytest.raises(ValueError, match="cross_attention_dim=2048"):
         build_donor_equal_unet(donor)
+    invalid_rotary = _tiny_sdxl_unet(heads=4)
+    with pytest.raises(ValueError, match="head widths divisible by 8"):
+        build_donor_equal_unet(invalid_rotary)
 
 
 def test_selected_layers_are_relative_unique_and_include_last():

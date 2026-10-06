@@ -62,6 +62,28 @@ def test_mutable_engine_never_evicts_an_active_slot():
         engine.prefetch(1)
 
 
+def test_mutable_ring_pause_preserves_updated_masters_and_reloads_fresh_slots():
+    masters={0:{torch.float32:torch.tensor([1.,2.])},1:{torch.float32:torch.tensor([3.,4.])}}
+    pointed={}
+    engine=MutableLruTransferEngine(keys=[0,1],masters=masters,ring_size=1,device=torch.device("cpu"),
+        point_bundle=lambda key,bundle:pointed.update({key:bundle[torch.float32]}))
+    engine.acquire(0)
+    with pytest.raises(RuntimeError,match="active layers"):
+        engine.park_slots()
+    pointed[0].add_(5)
+    engine.release(0,dirty=True)
+    engine.prefetch(1)
+    engine.park_slots()
+    assert engine.slots_parked and not engine.slots and not engine.key_slot
+    assert pointed[0].data_ptr()==masters[0][torch.float32].data_ptr()
+    assert torch.equal(masters[0][torch.float32],torch.tensor([6.,7.]))
+    engine.acquire(0)
+    assert not engine.slots_parked and len(engine.slots)==1
+    assert torch.equal(pointed[0],masters[0][torch.float32])
+    engine.release(0,dirty=False)
+    engine.close()
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_checkpointed_mutable_conductor_matches_resident_update():
     torch.manual_seed(1234)

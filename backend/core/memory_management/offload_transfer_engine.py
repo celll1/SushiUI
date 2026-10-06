@@ -261,6 +261,8 @@ class MutableLruTransferEngine:
         if not planes:
             raise ValueError("masters must contain at least one tensor plane")
         self.slots: list[Dict[Plane, torch.Tensor]] = []
+        self._slot_specs = {}
+        self._slots_parked = False
         for _ in range(self.ring_size):
             slot = {}
             for plane in planes:
@@ -273,6 +275,7 @@ class MutableLruTransferEngine:
                 slot[plane] = torch.empty(
                     max(t.numel() for t in tensors), dtype=dtype, device=self.device
                 )
+                self._slot_specs[plane] = (max(t.numel() for t in tensors), dtype)
             self.slots.append(slot)
 
         self.key_slot: Dict[int, int] = {}
@@ -322,6 +325,7 @@ class MutableLruTransferEngine:
         self._h2d_submissions += len(bundle)
 
     def prefetch(self, key: int) -> None:
+        self.resume_slots()
         if key in self.key_slot:
             return
         if key not in self.masters:
@@ -378,6 +382,34 @@ class MutableLruTransferEngine:
         if self.cuda_available:
             self.stream.synchronize()
 
+    def park_slots(self) -> None:
+        """Free idle device slots while retaining mutable CPU masters and hooks."""
+        if self.active:
+            raise RuntimeError("cannot park mutable offload during active layers")
+        self.synchronize()
+        for key in self.keys:
+            self.point_bundle(key, self.masters[key])
+        self.key_slot.clear()
+        self.slot_key = [None] * self.ring_size
+        self.ready_event = [None] * self.ring_size
+        self.lru = list(range(self.ring_size))
+        self.slots.clear()
+        self._slots_parked = True
+
+    @property
+    def slots_parked(self) -> bool:
+        return self._slots_parked
+
+    def resume_slots(self) -> None:
+        """Allocate a fresh ring after a temporary residency pause."""
+        if not self._slots_parked:
+            return
+        slots = [{plane: torch.empty(size,dtype=dtype,device=self.device)
+                  for plane,(size,dtype) in self._slot_specs.items()}
+                 for _ in range(self.ring_size)]
+        self.slots = slots
+        self._slots_parked = False
+
     def close(self) -> None:
         self.synchronize()
         for key in self.keys:
@@ -387,6 +419,7 @@ class MutableLruTransferEngine:
         self.slot_key = [None] * self.ring_size
         self.ready_event = [None] * self.ring_size
         self.slots.clear()
+        self._slots_parked = False
 
     def stats(self) -> MutableTransferStats:
         return MutableTransferStats(

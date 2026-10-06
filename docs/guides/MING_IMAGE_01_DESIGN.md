@@ -2617,3 +2617,18 @@ frame duplication/canvas omission, stale profile identity, early Layer input/tas
 refusals, and all-frame partition token descriptions. The owner checklist separates
 compiler/browser confirmation from model execution requiring available resources.
 No frontend build/type-check or live API/GPU was run.
+
+### Target-native VAE swap alignment
+
+Full fine-tuning can select an RGB/RGBA image VAE through `vae_swap_source`.
+The shared default `vae_swap_new_channel_init: auto` resolves to `paired_spatial`
+on Ming. First initialization fits separate 3x3 clean-latent maps on a small
+runtime subset, with only one VAE resident on GPU; saved checkpoints include
+learned bridges and the target VAE, so resume and generation do not refit.
+The target grid stays coarse: patch2 on a 16x VAE gives 1024 image tokens at
+1024px, versus native Ming's 4096. Expanded IO and bridge passthrough retain
+the target's extra channel capacity. RGB swaps discard alpha. This supports
+independent image frames, not temporal alignment. See
+[the calibration and timing note](../experiments/VAE_SWAP_ALIGNMENT.md) for
+validation scope, the measured DiT-only forward speedup and remaining quality
+acceptance. Other backbone architectures keep their prior initialization.

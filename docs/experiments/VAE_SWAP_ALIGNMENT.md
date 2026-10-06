@@ -107,10 +107,11 @@ loadable full model, and retains the original token count.
 
 ## Training integration contract (2026-10-06)
 
-The requested default for a new VAE swap is **paired_spatial**, not the
-per-cell linear probe. This is a target for the integration, not a shipped
-API default: `vae_swap_new_channel_init` still accepts only `zero` until the
-backbone, checkpoint reader and generation paths can restore the new layers.
+The production default is `vae_swap_new_channel_init: auto`: Ming resolves
+this to **paired_spatial**; other backbone architectures retain their existing
+zero-expansion path. Explicit `paired_spatial` on an unwired backbone refuses
+before loading. Ming supports compatible RGB/RGBA image VAEs, including
+Qwen2.1; this does not ship spatial bridges on every other backbone.
 
 `core/models/components/vae_alignment.py::SpatialLatentBridge` implements the
 shared trainable 3x3 operator. It imports the probe's channel-major `unfold`
@@ -129,9 +130,10 @@ and normalization domains**, not a dataset prerequisite on every start.
 Initializers can reuse the fitted matrices; a trained checkpoint must embed
 the bridge's learned weights and geometry. Resume and inference must load
 those weights without opening the calibration images or fitting again.
-The existing approved general-only Ming/Qwen matrices can seed this pair;
-they are not interchangeable with matrices for another VAE, even when the
-channel counts match. The general-only restriction applies to images the
+The earlier packed Ming/Qwen probe matrices cannot initialize the production
+coarse-grid bridge: the calibration domain has changed. Matrices also are not
+interchangeable across VAE weights, even when channel counts match.
+The general-only restriction applies to images the
 coding agent uses for validation or for producing fixed bundled matrices.
 Production calibration on a user's training dataset has no rating filter.
 At first swap, the training integration should sample the selected run's
@@ -153,20 +155,54 @@ The architecture-neutral integration must:
    Epsilon prediction maps without a clean bias. This does not whiten the
    transformed noise: the measured 2.51x RMS gain still needs diffusion-level
    validation, separate from reconstruction and fold-equivalence tests.
-5. Preserve the existing backbone token geometry initially. Ming/Qwen uses
-   a packed 16-channel Ming domain against Qwen's 64-channel domain; that
-   preserves Ming's original token count, not a fourfold token reduction.
-   Reference latents, U-Net scales, partition paths and sampling must obey
-   the same bridge geometry as the target stream.
+5. Use the **target VAE's native grid** with Ming's spatial patch size 2.
+   Only calibration downsamples old clean latents to that grid. Production
+   never expands it back to the original token count. At 1024px, Ming 8x
+   yields 4096 image tokens and Qwen 16x yields 1024. Native IO expands to
+   `max(old_channels,new_channels)`, preserving overlapping channel weights
+   and enabling all extra channels to learn. Separate calibrated maps seed
+   the legacy subspace; extra channels have trainable passthrough paths.
+   U-Net topology identity and global-adapter channel/coordinate columns
+   migrate to the expanded IO. References, partitions, previews and sampling
+   use the same target grid and normalized latent domain.
 6. Store a versioned bridge declaration and tensors with the checkpoint,
    restore before strict state loading, and load the declared target VAE in
    generation as well as training. Existing checkpoints retain their saved
    IO weights and must never be initialized again merely by Edit config.
 
-Other image VAE pairs can use the same operator after pair-specific
-calibration if their grids can be related by integer spatial packing and
+Other image VAE pairs on Ming can use the same operator after pair-specific
+calibration if their scales have an integer ratio to 8x and
 their pixel preprocessing is explicit (RGB/RGBA, alpha and normalization).
 The operator alone does not establish architecture-level compatibility.
-Non-integer grid relationships, real temporal compression, audio codecs,
-and pixel-space backbones require separate adapters and validation. Current
-production spatial/temporal compatibility refusals remain in force.
+Each ordered image frame is encoded independently, including when the
+selected VAE has a 5-D/video interface. Real temporal alignment, audio codecs,
+pixel-space backbones and non-integer spatial ratios are not supported here.
+RGB VAEs discard source alpha and return opaque output alpha.
+
+### Coarse-grid timing probe
+
+`examples/vae_swap_coarse_probe.py` uses the saved bf16 run172 DiT, its existing
+two-stage U-Net topology, SDPA, 256+256 synthetic conditioning tokens and
+synthetic latents. It does not read dataset images or change run configuration.
+On RTX 6000 Ada, median forward over three measured calls after two warmups:
+
+| 1024px-equivalent target | Image tokens | DiT forward | Peak allocated |
+|---|---:|---:|---:|
+| Native 16-channel / 8x | 4096 | 0.455 s | 12.33 GiB |
+| Aligned 64-channel / 16x | 1024 | 0.173 s | 11.83 GiB |
+
+Measured forward speedup is **2.62x** (repeat with backward verification: 2.70x), not an end-to-end training-iteration
+claim. The probe uses synthetic center-channel maps to measure geometry and
+bridge overhead; it does not establish calibrated image quality. Earlier
+packed-grid reconstruction scores above do not apply to this coarse-grid
+initializer. Quality preservation and convergence after a real swap remain
+separate acceptance work.
+
+GPU verification also passes a finite bf16 backward with nonzero gradients
+on the extra input channels. `examples/vae_swap_synthetic_calibration.py`
+fits both directions using generated RGBA patterns and the real Ming/Qwen
+VAEs, checks finite RGBA decoding, and saves/reloads the target VAE with
+identical encoded latents. This caught and fixed Qwen2.1's Conv2d-weight
+storage being mistaken for a 4-D interface on restoration: its causal
+wrapper still consumes 5-D latents. No dataset images or fixed image-derived
+matrices are included in these probes or checkpoints.

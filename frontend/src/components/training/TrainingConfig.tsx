@@ -4384,6 +4384,47 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   )}
 
+                  {baseModelArch === "ming_image_01" && trainingMethod === "full_finetune"
+                    && !!params.vae_swap_source && (
+                    <div className="border border-gray-700 rounded p-2 space-y-2">
+                      <p className="text-xs text-gray-400">
+                        Paired spatial calibration uses the target VAE token grid. First swap calibrates
+                        from this run&apos;s dataset; resume restores the saved bridges. RGB VAEs discard alpha.
+                      </p>
+                      <label className="block text-xs text-gray-400">
+                        Initialization
+                        <select value={params.vae_swap_new_channel_init ?? ""}
+                          onChange={(e) => updateParam("vae_swap_new_channel_init",
+                            e.target.value === "" ? undefined : e.target.value as "auto" | "paired_spatial")}
+                          className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                          <option value="">Default (paired spatial)</option>
+                          <option value="auto">Auto (paired spatial)</option>
+                          <option value="paired_spatial">Paired spatial</option>
+                          <option value="zero" disabled>Legacy zero — choose paired spatial</option>
+                        </select>
+                      </label>
+                      <label className="block text-xs text-gray-400">
+                        Calibration images
+                        <input type="number" min={2} max={256}
+                          value={params.vae_swap_calibration_samples ?? ""}
+                          placeholder="Default"
+                          onChange={(e) => updateParam("vae_swap_calibration_samples",
+                            e.target.value === "" ? undefined : Number(e.target.value))}
+                          className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1" />
+                      </label>
+                      <label className="block text-xs text-gray-400">
+                        Calibration resolution
+                        <select value={params.vae_swap_calibration_resolution ?? ""}
+                          onChange={(e) => updateParam("vae_swap_calibration_resolution",
+                            e.target.value === "" ? undefined : Number(e.target.value) as 128 | 256 | 512)}
+                          className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1">
+                          <option value="">Default</option>
+                          {[128, 256, 512].map(size => <option key={size} value={size}>{size}</option>)}
+                        </select>
+                      </label>
+                    </div>
+                  )}
+
                   {baseModelArch === "sensenova" && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">

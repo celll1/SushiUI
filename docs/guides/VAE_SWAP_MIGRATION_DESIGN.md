@@ -8,6 +8,21 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3のnative video codecを共通resolverと正規化facadeへ接続した。nominal temporal stride=4だけでは
+frame数を決定できず、policyはminimax_h3_chunks_v1、1枚または17n+5→5n+2（n>=1）とする。
+encoderの22→7・39→12とdecodeの逆写像、1枚経路を小型の実H3 VAE・合成RGBで確認した。
+pixel側は共通[-1,1] RGBと公式ImageNet mean/stdを相互変換し、latent側はper-channelを一度だけ適用する。
+動画facadeと独立静止画facadeの双方をFP32/BF16で検証した。異なるchunk設定、rank/stride/正規化の
+矛盾は拒否する。resolverはencoder/decoder/quant convのheaderとconfigを照合し、vendor codecを復元する。
+latent identityにはchunk geometry・pixel policy version・encoder padding/norm設定を含め、selectorは
+単なる4x temporalではなくframe規則を表示する。関連codec/frame/video回帰51件が通過した。
+復元後のmaterialized configから同じlatent hashを再現する確認と、既存source resolver回帰31件も通過した。
+変更Pythonのcompile・CUDAを抑止した実importを確認した。候補のdomain/frame_policy型と表示を静的確認し、
+ownerによるfrontend build/type-checkは未実施。ユーザー画像・動画・音声は使っていない。
+これはH3のFull FT・target-native packed DiT・samplerを完成させる変更ではなく、公開swap gateも未解除。
+次に2x2 patchのvideo IO境界、非均等の時刻座標、音声を保持したpacked layout、clip/cacheのtarget長、
+Full adapter/CPU offload、artifact復元・U-net identityを接続する。公式33B全重みの学習/画質検証は未完。
+
 ACEの新規VAE swapをexperimentalなFull FT機能として公開した。API/YAML preflightは
 auto/paired_temporal、train_unet=true、target codec同梱、校正件数2〜256を要求し、handlerは
 48kHz stereo Oobleck・identity正規化・aligned hopだけを許可する。量子化backboneは学習ownerで拒否する。

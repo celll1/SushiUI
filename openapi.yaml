@@ -31568,8 +31568,8 @@ components:
         domain:
           type: string
           nullable: true
-          enum: [audio, null]
-          description: Present for an audio codec; image/video candidates retain their existing rank fields.
+          enum: [audio, video, null]
+          description: Present for an audio codec or a video codec with a declared chunk frame policy; other image/video candidates retain their existing rank fields.
         sample_rate:
           type: integer
           nullable: true
@@ -31585,8 +31585,8 @@ components:
         frame_policy:
           type: string
           nullable: true
-          enum: [aligned_hop_v1, null]
-          description: Audio sample-count contract; encoding pads only to the target hop.
+          enum: [aligned_hop_v1, minimax_h3_chunks_v1, null]
+          description: Audio aligned-hop contract or H3's native chunk contract (1 frame, or 17n+5 pixel frames to 5n+2 latent frames for n >= 1). A nominal temporal scale alone does not describe the H3 frame mapping.
         source:
           type: string
           description: The value to send as the swap source.

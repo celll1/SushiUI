@@ -27,7 +27,7 @@ class VideoCodecContract:
             raise ValueError("Video codec normalization packing is unsupported")
         if type(self.temporal_scale) is not int or self.temporal_scale < 1:
             raise ValueError("Video codec temporal compression must be a positive integer")
-        if self.temporal_policy not in ("causal_first_frame_v1", "independent_frames_v1"):
+        if self.temporal_policy not in ("causal_first_frame_v1", "independent_frames_v1", "minimax_h3_chunks_v1"):
             raise ValueError("Video codec must declare its frame-count policy")
         if self.temporal_policy == "independent_frames_v1" and self.temporal_scale != 1:
             raise ValueError("Independent frames cannot have temporal compression")
@@ -35,6 +35,9 @@ class VideoCodecContract:
             raise ValueError("A 2D codec cannot encode causal video")
         if self.image.pixel_channels != 3:
             raise ValueError("Video boundary requires an RGB codec")
+        if self.temporal_policy == "minimax_h3_chunks_v1" and (
+                self.image.latent_rank != 5 or self.temporal_scale != 4 or self.image.normalization != "per_channel"):
+            raise ValueError("H3 chunk geometry requires rank-5 per-channel latents and temporal stride 4")
 
     @classmethod
     def from_resolved(cls, resolved, *, temporal_policy):
@@ -42,12 +45,24 @@ class VideoCodecContract:
 
     def latent_frames(self, pixel_frames):
         self._positive(pixel_frames)
+        if self.temporal_policy == "minimax_h3_chunks_v1":
+            if pixel_frames == 1:
+                return 1
+            if pixel_frames < 22 or (pixel_frames-5) % 17:
+                raise ValueError("H3 codec clips require 1 or 17n+5 frames with n >= 1")
+            return (pixel_frames-5)//17*5+2
         if (pixel_frames - 1) % self.temporal_scale:
             raise ValueError("Clip frame count is incompatible with the codec's temporal compression")
         return (pixel_frames - 1) // self.temporal_scale + 1
 
     def pixel_frames(self, latent_frames):
         self._positive(latent_frames)
+        if self.temporal_policy == "minimax_h3_chunks_v1":
+            if latent_frames == 1:
+                return 1
+            if latent_frames < 7 or (latent_frames-2) % 5:
+                raise ValueError("H3 codec latents require 1 or 5n+2 frames with n >= 1")
+            return (latent_frames-2)//5*17+5
         return (latent_frames - 1) * self.temporal_scale + 1
 
     @staticmethod
@@ -84,11 +99,15 @@ class _VideoPosterior:
 
 
 class NormalizedVideoVAE(nn.Module):
-    """Encode full causal clips, or explicitly independent frames, exactly once."""
+    """Normalize declared clip/frame codecs exactly once."""
 
     def __init__(self, module, contract):
         super().__init__()
         self.inner, self.contract = module, contract
+        if contract.temporal_policy == "minimax_h3_chunks_v1" and (
+                module.config.get("clip_length") != 17 or module.config.get("token_drop") != 3
+                or getattr(module, "temporal_compression_ratio", None) != 4):
+            raise ValueError("H3 codec config disagrees with its chunk frame policy")
         image = contract.image
         self.norm_spec = SimpleNamespace(vae_norm=image.normalization, vae_norm_pack=image.normalization_pack)
         self.spatial_compression_ratio = image.spatial_scale
@@ -117,6 +136,9 @@ class NormalizedVideoVAE(nn.Module):
         if h % scale or w % scale:
             raise ValueError("Video dimensions are not divisible by the codec spatial compression")
         expected = (b, image.latent_channels, self.contract.latent_frames(t), h//scale, w//scale)
+        if self.contract.temporal_policy == "minimax_h3_chunks_v1":
+            from core.models.minimax_h3.vae_contract import transform_pixels
+            pixels = transform_pixels(pixels, encode=True)
         independent = image.latent_rank == 4
         if independent:
             pixels = pixels.permute(0, 2, 1, 3, 4).reshape(b*t, 3, h, w)
@@ -144,6 +166,9 @@ class NormalizedVideoVAE(nn.Module):
             result = result.reshape(b, t, 3, expected[-2], expected[-1]).permute(0, 2, 1, 3, 4)
         if tuple(result.shape) != expected:
             raise ValueError("Video codec returned unexpected pixel geometry")
+        if self.contract.temporal_policy == "minimax_h3_chunks_v1":
+            from core.models.minimax_h3.vae_contract import transform_pixels
+            result = transform_pixels(result, encode=False)
         return SimpleNamespace(sample=result) if return_dict else (result,)
 
     def save_pretrained(self, path, **kwargs):

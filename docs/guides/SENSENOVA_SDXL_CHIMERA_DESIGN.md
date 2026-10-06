@@ -601,6 +601,12 @@ override is unsupported in the first boundary because the U-Net was trained in
 the bundled donor VAE's latent identity, even though another SDXL-shaped VAE
 has the same four channels.
 
+Full FT can now migrate the bundled codec with `paired_spatial` on the target
+grid. The unet/joint stage trains both bridges; source and target prediction
+statistics are saved separately. v4 also pins a time-drift loss/integrator
+contract. This is an experimental CPU-verified implementation; official
+full-weight quality acceptance is pending. See `VAE_SWAP_MIGRATION_DESIGN.md`.
+
 ### 7.6 SenseNova multimodal route preservation
 
 Chimera does not replace the understanding path. It therefore advertises the

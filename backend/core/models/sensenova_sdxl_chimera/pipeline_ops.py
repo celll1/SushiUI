@@ -43,6 +43,7 @@ from .flow import (
     polar_tangent_projection,
 )
 from .prefix import encode_chimera_conditioning
+from .polar_vae_alignment import PolarInferencePrediction, polar_forward
 
 
 @dataclass(frozen=True)
@@ -232,7 +233,7 @@ def _unet_polar(
     *,
     cache_metadata: tuple,
     prediction: dict,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor] | PolarInferencePrediction:
     device = sample.device
     dtype = sample.dtype
     is_v4 = prediction.get("type") == FLOW_V4_PREDICTION
@@ -264,8 +265,7 @@ def _unet_polar(
     )
     set_chimera_attention_context(unet, context)
     expanded_timestep = timestep.to(device=device).expand(sample.shape[0])
-    from .polar_vae_alignment import polar_forward
-    radial, tangent, direction, radius = polar_forward(
+    result = polar_forward(
         unet,
         sample,
         expanded_timestep,
@@ -278,7 +278,7 @@ def _unet_polar(
         },
         return_dict=False,
     )
-    return radial, tangent, direction, radius
+    return result
 
 
 def encode_image_latents(
@@ -491,6 +491,7 @@ def _polar_cfg_step(
     collect_probe: bool,
 ) -> tuple[torch.Tensor, dict]:
     is_v4 = prediction.get("type") == FLOW_V4_PREDICTION
+    aligned_v4 = is_v4 and getattr(unet, "vae_latent_bridge", None) is not None
     analytic_noise_step = (
         (is_v4 or prediction.get("angular_schedule")
         == FLOW_V3_CONFIDENCE_ANGULAR_SCHEDULE)
@@ -586,7 +587,7 @@ def _polar_cfg_step(
             },
         }
     if not needs_cfg:
-        radial_cond, tangent_cond, direction, radius = _unet_polar(
+        polar_cond = _unet_polar(
             unet,
             sample,
             timestep,
@@ -595,6 +596,10 @@ def _polar_cfg_step(
             cache_metadata=cache_metadata,
             prediction=prediction,
         )
+        radial_cond, tangent_cond, direction, radius = polar_cond
+        if aligned_v4:
+            drift_cond = polar_cond.drift_tangent_per_time
+            drift_uncond = drift_cond
         radial_uncond = radial_cond
         tangent_uncond = tangent_cond
         tangent_raw = tangent_cond
@@ -628,7 +633,7 @@ def _polar_cfg_step(
                 *(positive_padded.key_lengths or (int(positive.encoder_hidden_states.shape[1]),)),
             ),
         )
-        radial_pair, tangent_pair, direction_pair, radius_pair = _unet_polar(
+        polar_pair = _unet_polar(
             unet,
             sample.repeat(2, 1, 1, 1),
             timestep,
@@ -637,6 +642,9 @@ def _polar_cfg_step(
             cache_metadata=cache_metadata,
             prediction=prediction,
         )
+        radial_pair, tangent_pair, direction_pair, radius_pair = polar_pair
+        if aligned_v4:
+            drift_uncond, drift_cond = polar_pair.drift_tangent_per_time.chunk(2)
         radial_uncond, radial_cond = radial_pair.chunk(2)
         tangent_uncond, tangent_cond = tangent_pair.chunk(2)
         direction = direction_pair[: sample.shape[0]]
@@ -648,7 +656,7 @@ def _polar_cfg_step(
             tangent_cond, tangent_uncond, cfg_scale, cfg_norm
         )
     else:
-        radial_uncond, tangent_uncond, direction, radius = _unet_polar(
+        polar_uncond = _unet_polar(
             unet,
             sample,
             timestep,
@@ -657,7 +665,8 @@ def _polar_cfg_step(
             cache_metadata=cache_metadata,
             prediction=prediction,
         )
-        radial_cond, tangent_cond, _direction_cond, _radius_cond = _unet_polar(
+        radial_uncond, tangent_uncond, direction, radius = polar_uncond
+        polar_cond = _unet_polar(
             unet,
             sample,
             timestep,
@@ -666,6 +675,10 @@ def _polar_cfg_step(
             cache_metadata=cache_metadata,
             prediction=prediction,
         )
+        radial_cond, tangent_cond, _direction_cond, _radius_cond = polar_cond
+        if aligned_v4:
+            drift_uncond = polar_uncond.drift_tangent_per_time
+            drift_cond = polar_cond.drift_tangent_per_time
         tangent_raw = tangent_uncond + float(cfg_scale) * (
             tangent_cond - tangent_uncond
         )
@@ -673,6 +686,17 @@ def _polar_cfg_step(
             tangent_cond, tangent_uncond, cfg_scale, cfg_norm
         )
 
+    drift_raw = drift_post = None
+    if aligned_v4:
+        drift_raw = drift_cond
+        drift_post = drift_cond
+        if needs_cfg:
+            combined_cond = torch.cat((tangent_cond, drift_cond), dim=1)
+            combined_uncond = torch.cat((tangent_uncond, drift_uncond), dim=1)
+            guided = _combine_cfg_velocity(combined_cond, combined_uncond, cfg_scale, cfg_norm)
+            tangent_post, drift_post = guided.chunk(2, dim=1)
+            drift_raw = drift_uncond + float(cfg_scale)*(drift_cond-drift_uncond)
+        drift_post = polar_tangent_projection(drift_post, direction)
     tangent_raw = polar_tangent_projection(tangent_raw, direction)
     tangent_post = polar_tangent_projection(tangent_post, direction)
     radial_anchor = radial_cond
@@ -686,15 +710,18 @@ def _polar_cfg_step(
         latent_mean=prediction["latent_mean"],
         radius_floor=prediction["radius_floor"],
         angular_step_limit=prediction.get("angular_step_limit"),
+        **({"tangent_drift": drift_post} if aligned_v4 else {}),
     )
     if not collect_probe:
         return result.sample, {}
 
-    def full(radial, tangent):
+    def full(radial, tangent, drift=None):
         tangent_velocity = tangent
         if is_v4:
             _coordinate, coordinate_prime = destruction_coordinate(timestep, sample)
             tangent_velocity = coordinate_prime * tangent
+        if drift is not None:
+            tangent_velocity = tangent_velocity + drift
         return polar_compose_velocity(
             sample,
             radial,
@@ -720,13 +747,16 @@ def _polar_cfg_step(
             "angular_endpoint_slope": prediction["angular_endpoint_slope"],
         })
     x0_cond = recover_clean(
-        sample, radial_cond, tangent_cond, timestep, **clean_kwargs
+        sample, radial_cond, tangent_cond, timestep, **clean_kwargs,
+        **({"tangent_drift": drift_cond} if aligned_v4 else {}),
     )
     x0_uncond = recover_clean(
-        sample, radial_uncond, tangent_uncond, timestep, **clean_kwargs
+        sample, radial_uncond, tangent_uncond, timestep, **clean_kwargs,
+        **({"tangent_drift": drift_uncond} if aligned_v4 else {}),
     )
     x0_raw = recover_clean(
-        sample, radial_anchor, tangent_raw, timestep, **clean_kwargs
+        sample, radial_anchor, tangent_raw, timestep, **clean_kwargs,
+        **({"tangent_drift": drift_raw} if aligned_v4 else {}),
     )
     radial_ratio = result.radius.float() / radius.float().clamp_min(
         float(prediction["radius_floor"])
@@ -735,10 +765,10 @@ def _polar_cfg_step(
         direction.float() * tangent_post.float()
     ).flatten(1).mean(1).abs()
     info = {
-        "conditional": full(radial_cond, tangent_cond),
-        "unconditional": full(radial_uncond, tangent_uncond),
-        "guided_raw": full(radial_anchor, tangent_raw),
-        "guided_post": full(radial_anchor, tangent_post),
+        "conditional": full(radial_cond, tangent_cond, drift_cond if aligned_v4 else None),
+        "unconditional": full(radial_uncond, tangent_uncond, drift_uncond if aligned_v4 else None),
+        "guided_raw": full(radial_anchor, tangent_raw, drift_raw),
+        "guided_post": full(radial_anchor, tangent_post, drift_post),
         "prediction_conditional": tangent_cond,
         "prediction_unconditional": tangent_uncond,
         "prediction_guided_raw": tangent_raw,

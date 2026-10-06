@@ -20,11 +20,11 @@ def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4") else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4"):
-        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova and Ideogram; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera"):
+        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, Chimera and Ideogram; select zero for this architecture")
     return mode
 
 
@@ -196,8 +196,14 @@ def preflight_vae_swap(
     check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
     mode = initialization_mode(config, arch)
-    if arch in ("ming_image_01", "qwen_image_21", "ideogram4") and mode != "paired_spatial":
+    if arch in ("ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera") and mode != "paired_spatial":
         raise ValueError(f"{arch} VAE swaps require paired_spatial initialization")
+    if arch == "sensenova_sdxl_chimera":
+        if bundle_vae_explicit_false:
+            raise ValueError("Chimera VAE swaps require a bundled target codec")
+        from api.param_defaults import TRAINING_DEFAULTS
+        if config.get("chimera_training_stage", TRAINING_DEFAULTS["chimera_training_stage"]) == "bridge_align":
+            raise ValueError("Chimera VAE swaps require the unet or joint training stage")
     if arch == "ideogram4":
         from api.param_defaults import TRAINING_DEFAULTS
         if not config.get("ideogram4_train_uncond",TRAINING_DEFAULTS["ideogram4_train_uncond"]):

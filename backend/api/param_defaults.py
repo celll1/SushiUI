@@ -3588,6 +3588,7 @@ BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
     "_default": False,
     "sd15": True,
     "sdxl": True,
+    "sensenova_sdxl_chimera": True,
 }
 
 

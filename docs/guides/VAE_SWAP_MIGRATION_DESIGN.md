@@ -37,8 +37,18 @@ radial headをbridgeより先に復元してoptimizerのparameter順も保存前
 v4境界は時間方向のdriftとdestruction-coordinate方向のtangentを別々に保持する。
 `d'(t)=0`の端点でdriftを`d'(t)`で割る変換は禁止する。Cartesian velocityとの一致は独立したFP64式で検証した。
 境界・校正・artifact・既存学習およびv2/v3/v4回帰の一括検証は134件通過した。
-v4のdrift対応loss/integratorと公開API/UIの配線、公式全重みの検証は未了。
-この段階ではChimeraの公開VAE交換ゲートは維持する。
+v4も校正・学習・生成・保存復元へ接続した。lossは従来のper-d接線MSEとradial MSEに、
+境界のper-t接線driftのゼロ目標MSEを加える。target polar pathにはこの追加driftがないため、
+端点でも座標接線の学習信号を失わず、変換が加える時間方向成分を学習できる。
+積分は`delta_d*tangent + delta_t*drift`を球面上の変位として使う。CFGは両接線成分をガイドし、
+global normは連結した両成分に共通係数を適用する。radialはpositive条件で固定する。
+debug clean推定も両成分を含む局所球面外挿にした（画質保証ではない）。
+v4 artifactはloss/integrator/drift単位の追加契約をmanifest/config/重みメタデータへ保存し、
+欠損や不一致はtensorロード前に拒否する。v2 aligned再開は保存統計を使い、native 4ch校正設定で再検証しない。
+公開API/UIはexperimentalとして解放した。Full FTのunet/joint stage、paired_spatial、RGB codec同梱が必須。
+UIの既定値はSSOTのChimera bundle=trueを使い、編集時の明示値を保持する。frontendは型・API契約・
+state復元・候補選択/取消・error経路を静的レビューした。ownerのbuild/type-checkは未実施。
+新規画像は合成データのみ。公式全重みの学習・画質・速度検証は未了。
 v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
 direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に
 target tangent/radialへ分解する必要がある。v4のdestruction-coordinate微分も変換に含める。
@@ -81,7 +91,7 @@ mutable block swap付きの両DiTサンプルも小型nativeモデル・BF16でG
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、MiniT2I、SenseNovaでpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、MiniT2I、SenseNova、Chimera、Ideogram4でpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 SenseNovaにはtarget-native境界の基盤を追加した。generation ViT入力は`alpha=t`、

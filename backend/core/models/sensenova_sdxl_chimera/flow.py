@@ -331,6 +331,7 @@ def destruction_coordinate_recover_clean(
     latent_centered_second_moment: float,
     radius_floor: float = 1e-8,
     determinant_floor: float = 1e-8,
+    tangent_drift: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Recover a local clean estimate from a v4 per-destruction tangent."""
     q = float(latent_centered_second_moment)
@@ -366,10 +367,16 @@ def destruction_coordinate_recover_clean(
         torch.full_like(clean_radius_square, q),
     ).sqrt()
 
+    if tangent_drift is not None:
+        remaining = (1.0 - coordinate)*tangent
+        remaining += (1.0 - _batch_scalar(timestep, centered))*polar_tangent_projection(
+            tangent_drift.to(direction), direction)
+        tangent = remaining
     tangent_norm = _rms_norm(tangent)
     pair_angle = tangent_norm / radius.clamp_min(float(radius_floor))
     tangent_direction = tangent / tangent_norm.clamp_min(float(radius_floor))
-    remaining_angle = (1.0 - coordinate) * pair_angle
+    remaining_angle = ((1.0 - coordinate)*pair_angle
+                       if tangent_drift is None else pair_angle)
     clean_direction = (
         remaining_angle.cos() * direction
         + remaining_angle.sin() * tangent_direction
@@ -464,6 +471,7 @@ def mixed_coordinate_polar_exp_euler_step(
     latent_mean: torch.Tensor | list[float] | tuple[float, ...],
     radius_floor: float = 1e-8,
     angular_step_limit: float | None = None,
+    tangent_drift: torch.Tensor | None = None,
 ) -> PolarStepResult:
     """Advance radial state in ``dt`` and direction in v4 ``dd`` units."""
     centered, radius_vector, direction = polar_state(
@@ -485,9 +493,15 @@ def mixed_coordinate_polar_exp_euler_step(
     if not bool(torch.isfinite(next_radius).all().item()):
         raise FloatingPointError("polar radial update produced a non-finite radius")
 
-    omega = tangent / radius
-    omega_norm = _rms_norm(omega)
-    angular_displacement = delta_d * omega_norm
+    if tangent_drift is None:
+        omega = tangent / radius
+        omega_norm = _rms_norm(omega)
+        angular_displacement = delta_d * omega_norm
+    else:
+        drift = polar_tangent_projection(tangent_drift.to(direction), direction)
+        omega = (delta_d*tangent + delta_t*drift)/radius
+        omega_norm = _rms_norm(omega)
+        angular_displacement = omega_norm
     cap_scale = torch.ones_like(angular_displacement)
     if angular_step_limit is not None:
         limit = float(angular_step_limit)

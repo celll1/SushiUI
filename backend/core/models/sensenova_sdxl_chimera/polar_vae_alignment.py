@@ -21,6 +21,19 @@ class PolarBoundaryPrediction:
     full_velocity: torch.Tensor
 
 
+@dataclass(frozen=True)
+class PolarInferencePrediction:
+    radial_velocity: torch.Tensor
+    tangent_per_coordinate: torch.Tensor
+    direction: torch.Tensor
+    radius: torch.Tensor
+    drift_tangent_per_time: torch.Tensor
+
+    def __iter__(self):
+        return iter((self.radial_velocity, self.tangent_per_coordinate,
+                     self.direction, self.radius))
+
+
 def transfer_prediction(unet, source_sample, source_radial, source_tangent,
                         target_sample, timestep, *, source_prediction, target_prediction):
     kind = source_prediction["type"]
@@ -78,9 +91,10 @@ def forward_prediction(unet, sample, timestep, *, prediction, **kwargs):
 def polar_forward(unet, sample, timestep, *, prediction, **kwargs):
     """Physical-state entry point shared by training and CFG inference."""
     if getattr(unet, "vae_latent_bridge", None) is not None:
-        if prediction["type"] == FLOW_V4_PREDICTION:
-            raise ValueError("Aligned Chimera v4 requires drift-aware loss and integration")
         result = forward_prediction(unet, sample, timestep, prediction=prediction, **kwargs)
+        if prediction["type"] == FLOW_V4_PREDICTION:
+            return PolarInferencePrediction(result.radial_velocity, result.tangent_per_coordinate,
+                result.direction, result.radius, result.drift_tangent_per_time)
         return result.radial_velocity, result.tangent_per_time, result.direction, result.radius
     from .unet import polar_unet_forward
     _, radius, direction = polar_state(sample, timestep,

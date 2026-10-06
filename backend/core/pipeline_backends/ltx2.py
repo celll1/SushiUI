@@ -37,7 +37,7 @@ from core.inference.outpaint_utils import center_crop_resize_frames as _center_c
 
 
 def _snap_offset_to_latent_index(
-    offset_frames: int, frame_scale_factor: int, latent_num_frames: int
+    offset_frames: int, frame_scale_factor: int, latent_num_frames: int, *, codec_contract=None, moving=False
 ) -> Tuple[int, int]:
     """Resolve a desired pixel-frame offset to the nearest VALID latent frame
     index (and its corresponding pixel start), per `LTX2VideoCondition.index`'s
@@ -50,6 +50,16 @@ def _snap_offset_to_latent_index(
         [0, latent_num_frames - 1].
     """
     offset_frames = max(0, int(offset_frames))
+    if codec_contract is not None and codec_contract.temporal_policy == "minimax_h3_chunks_v1":
+        spans = codec_contract.frame_spans(latent_num_frames)
+        candidates = list(enumerate(spans))
+        if moving and codec_contract.temporal_policy == "minimax_h3_chunks_v1":
+            candidates = [(index,span) for index,span in candidates
+                          if index % 5 == 0 and spans[-1][1]-span[0] >= 22]
+        if not candidates:
+            raise ValueError("The target codec timeline cannot hold the moving condition clip")
+        index,span = min(candidates,key=lambda pair:(abs(pair[1][0]-offset_frames),pair[0]))
+        return index,span[0]
     max_index = max(0, latent_num_frames - 1)
     if offset_frames <= 0 or max_index <= 0:
         return 0, 0
@@ -67,7 +77,7 @@ def _snap_offset_to_latent_index(
 
 
 def _trim_conditioning_sequence_frames(
-    start_frame: int, sequence_num_frames: int, target_num_frames: int, scale_factor: int
+    start_frame: int, sequence_num_frames: int, target_num_frames: int, scale_factor: int, *, codec_contract=None
 ) -> int:
     """Pure re-implementation of `LTX2ConditionPipeline.trim_conditioning_sequence`
     (pipeline_ltx2_condition.py:657-672), computed locally (rather than via a
@@ -75,6 +85,9 @@ def _trim_conditioning_sequence_frames(
     condition pipeline to be built (and block-swap-wrapped) before the
     fits-in-timeline check is known.
     """
+    if codec_contract is not None:
+        from core.models.ltx2.video_clock import condition_clip_frames
+        return condition_clip_frames(codec_contract,sequence_num_frames,target_num_frames-start_frame)
     num_frames = min(sequence_num_frames, target_num_frames - start_frame)
     if num_frames <= 0:
         return 0
@@ -1477,18 +1490,21 @@ class LTX2Mixin:
                        f"trim_start={trim_start}, trim_end={trim_end}",
             )
 
-        # ---- Preprocess ONCE to the working (÷32) resolution -- the RESULT
+        # ---- Preprocess ONCE to the working resolution -- the RESULT
         # is the exact-preserved content (mirrors the image-outpaint RESIZE
         # convention), not the raw upload. ----
         canonical_input_frames = _center_crop_resize_frames(trimmed_frames, width, height)
 
         vae_component = self.ltx2_components.get("vae")
+        codec_contract = getattr(vae_component,"contract",None)
         frame_scale_factor = int(getattr(vae_component, "temporal_compression_ratio", 8) or 8)
-        latent_num_frames = (total_frames - 1) // frame_scale_factor + 1
+        latent_num_frames = (codec_contract.latent_frames(total_frames) if codec_contract is not None
+                             else (total_frames - 1) // frame_scale_factor + 1)
 
         desired_offset = max(0, int(params.get("input_offset_frames", 0) or 0))
         latent_index, pixel_start = _snap_offset_to_latent_index(
-            desired_offset, frame_scale_factor, latent_num_frames
+            desired_offset, frame_scale_factor, latent_num_frames, codec_contract=codec_contract,
+            moving=canonical_input_frames.shape[0] > 1
         )
         if pixel_start != desired_offset:
             try:
@@ -1502,9 +1518,11 @@ class LTX2Mixin:
                 pass
 
         cond_num_frames = canonical_input_frames.shape[0]
-        t_eff = _trim_conditioning_sequence_frames(
-            pixel_start, cond_num_frames, total_frames, frame_scale_factor
-        )
+        try:
+            t_eff = _trim_conditioning_sequence_frames(
+                pixel_start, cond_num_frames, total_frames, frame_scale_factor, codec_contract=codec_contract)
+        except ValueError as exc:
+            raise ValidationError("Input clip is incompatible with the target video codec",detail=str(exc)) from exc
         if t_eff < 1:
             raise ValidationError(
                 "vid_outpaint placement leaves no room for the input clip",
@@ -1512,11 +1530,7 @@ class LTX2Mixin:
                        f"cond_num_frames={cond_num_frames}",
             )
 
-        # Frame-drop transparency: `t_eff` is `cond_num_frames` rounded DOWN to
-        # LTX-2.3's 8k+1 grid (`_trim_conditioning_sequence_frames`) -- when
-        # that rounds below the full (trimmed) clip length, tail frames are
-        # silently dropped from the preserved span unless surfaced here. The
-        # user requires the input preserved exactly, so this must be visible:
+        # Report tails omitted by the target codec's conditioning frame lattice.
         # warn, and record the EFFECTIVE preserved span (frame count + pixel
         # range) into `params` in place, so routes.py's `params.copy()` ->
         # gallery metadata/DB path picks it up automatically.

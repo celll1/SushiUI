@@ -24,7 +24,13 @@ H3 conditionのpixel開始点とclip切詰めはframe spansで求め、動画の
 残り区間は明示拒否する。実小型H3 VAE+LTX DiTの2stepでtext/image/condition、dense/U-netを確認。
 22pixel→7latentの格子、音声長、保持latent完全一致を検査し、既存学習/保存復元を含む29件が通過。
 全変更Pythonのcompile・CUDA無し実importも通過。合成データのみ、run/サーバー変更なし。
-外側のoutpaint snap/trim・公開編集経路の全policy受入は未完で、H3 targetの公開生成拒否は維持する。
+外側のoutpaint snap/trimもcodec frame spansへ接続した。H3の動画条件はchunk位相が一致し、
+最低22frameを保持できる開始点から選ぶ。まだ1frameしか入らない短い動画を黙ってstillへ変換せず拒否する。
+通常causal codecの既存tie-breakは維持する。condition pipelineとbackendは共通のclip切詰めhelperを使う。
+実小型H3 VAE+U-net LTXのbackend outpaintで39pixel framesへdecodeし、pixel17..39に配置する
+合成22frame入力がbyte完全一致することを確認。API geometry・chain等を含むCPU回帰109件と
+変更Python compile/実importが通過。公開chainの非均一継続格子の受入は未完で、H3 targetの
+公開生成拒否は維持する。GPU・公式重みでの検証も未完。
 
 現在モデル情報へloaded_video_constraintsを追加し、校正済みbundled video codecの実frame格子、
 空間倍数、frame-group policy/temporal scale、モデル由来のFPS/範囲を返す。
@@ -53,7 +59,7 @@ wire復元で明示anchor_countを配列長で上書きせず、矛盾を検出�
 確認dialogはcodec geometry変更後の再検証を必須とし、閉じた後や新planへの古い応答を捨てる。
 編集中のprompt/referenceはgeometry変更だけでは再planで置き換えない。
 HTTP経由のCPU回帰103件、frontend pure-function/Syntax確認6件、Python compile/実importが通過。
-prompt/cache、LTX outpaint/editing時計、校正/Full owner、
+prompt/cache、LTX chain継続時計、校正/Full owner、
 公式全重みでの学習・画質・速度、実UI確認は引き続き未完。
 
 公開txt2vid/img2vid/ref2vid/inpaint-video/outpaint-videoの事前検証へloaded codec契約を接続した。

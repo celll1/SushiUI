@@ -1406,8 +1406,8 @@ def _map_dit_state_dict(
       docstring). Each third is a leading row slice of a contiguous tensor, so
       the three views are contiguous and cost nothing. **No de-interleave**: that
       is the video VAE's convention, not this one.
-    * **fc1**: ``[gate; up]`` -> ``[up; gate]``, which is a real copy (the only
-      unavoidable one).
+    * **fc1**: ``[gate; up]`` -> ``[up; gate]``; readers use owned source bytes
+      for this copy, avoiding retained source mmap pages.
 
     A per-tensor ``weight_scale`` scalar is broadcast to the ``(out_features,)``
     vector ``Fp8Linear`` registers, and a split qkv's scalar is broadcast into
@@ -1463,7 +1463,10 @@ def _map_dit_state_dict(
         w4_suffix = next((suffix for suffix in _W4A8_SUFFIXES if key.endswith(suffix)), None)
         w4_module = key[:-len(w4_suffix)] if w4_suffix else None
         if w4_module in w4a8_layers:
-            tensor = handle.get_tensor(key)
+            reader = (getattr(handle, "get_tensor_for_transform", handle.get_tensor)
+                      if _rename_dit_key(key).endswith((".ff.net.0.proj.weight", ".ff.net.0.proj.weight_correction"))
+                      else handle.get_tensor)
+            tensor = reader(key)
             if ".attn.qkv_proj" in w4_module:
                 stem = _rename_dit_key(w4_module + ".weight").split(".attn.qkv_proj.")[0] + ".attn."
                 names = [stem + "to_q", stem + "to_k", stem + "to_v"]
@@ -1507,7 +1510,9 @@ def _map_dit_state_dict(
 
         target = _rename_dit_key(key)
         is_scale = key.endswith(".weight_scale")
-        tensor = handle.get_tensor(key)
+        reader = (getattr(handle, "get_tensor_for_transform", handle.get_tensor)
+                  if target.endswith(".ff.net.0.proj.weight") else handle.get_tensor)
+        tensor = reader(key)
 
         if ".attn.qkv_proj." in key:
             # Everything up to (and including) ".attn." -- the fused name AND the

@@ -4390,7 +4390,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <p className="text-xs text-amber-400">{vaeSwapAdvisory.reason}</p>
                   )}
 
-                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "acestep"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
+                  {!vaeSwapUnsupported && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
@@ -4405,9 +4405,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           {params.train_unet === false && " Enable DiT training before saving this run."}
                         </p>
                       )}
-                      {baseModelArch === "ltx2" && (
+                      {(baseModelArch === "ltx2" || baseModelArch === "minimax_h3") && (
                         <p className="text-xs text-amber-400">
-                          LTX requires a bundled RGB codec and trainable DiT. The target codec owns
+                          {baseModelArch === "ltx2" ? "LTX" : "H3"} requires a bundled RGB codec and trainable DiT. The target codec owns
                           spatial and temporal compression; the audio codec is retained.
                           {params.bundle_vae === false && " Enable Bundle VAE before saving this run."}
                           {params.train_unet === false && " Enable DiT training before saving this run."}
@@ -4442,7 +4442,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         </p>
                       )}
                       <label className="block text-xs text-gray-400">
-                        {baseModelArch === "acestep" ? "Calibration audio clips" : baseModelArch === "ltx2" ? "Calibration images/clips" : "Calibration images"}
+                        {baseModelArch === "acestep" ? "Calibration audio clips" : (baseModelArch === "ltx2" || baseModelArch === "minimax_h3") ? "Calibration images/clips" : "Calibration images"}
                         <input type="number" min={2} max={256}
                           value={params.vae_swap_calibration_samples ?? ""}
                           placeholder="Default"

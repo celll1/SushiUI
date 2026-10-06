@@ -8,6 +8,13 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+校正設定panelのfrontend固定arch一覧からH3が漏れていたため、VAE source selectorと同じ
+backendの`vae_swap` capabilityによる表示条件へ統一した。H3にもpaired_spatial初期化・
+校正画像/clip数・target校正解像度が表示され、LTXと同じbundled RGB codec/DiT条件を示す。
+対応architectureの追加時もpanelの固定一覧を更新する必要はない。
+API型・defaults・request serialization・編集復元・非対応archへの切替時のsource解除を静的確認した。
+公開parameterは追加せず、backend capabilityと既存`PARAM_KEYS`を使う。owner build/typecheck・実UI受入は未実施。
+
 Ming Design/Layerの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。native時間`1-σ`に合わせ、入力へ`σ`補正、
 出力へ`x0_minus_eps`符号のnoise residualを適用する。参照入力はclean affine写像のままとし、

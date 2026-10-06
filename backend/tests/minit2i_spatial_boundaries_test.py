@@ -18,12 +18,12 @@ def no_cuda():
         yield
 
 
-def model_for(channels):
+def model_for(channels, *, patch_size=2, vae_type="sdxl"):
     from core.models.minit2i.vendor.transformer import MiniT2IMMJiTModel
-    model = MiniT2IMMJiTModel(image_size=32, patch_size=2, in_channels=channels,
+    model = MiniT2IMMJiTModel(image_size=32, patch_size=patch_size, in_channels=channels,
         txt_input_size=16, hidden_size=32, txt_hidden_size=32, cond_vec_size=32,
         depth_double=3, txt_preamble_depth=1, num_heads=2, head_dim=16,
-        pca_channels=8, prompt_length=5, vae_type="sdxl", noise_scale=1.)
+        pca_channels=8, prompt_length=5, vae_type=vae_type, noise_scale=2. if vae_type=="none" else 1.)
     torch.nn.init.normal_(model.model.net.final_layer.linear.weight, std=.02)
     return model
 
@@ -108,8 +108,10 @@ def test_native_boundary_is_identity_and_uncalibrated_swap_fails():
 
 @pytest.mark.parametrize("old,new", [(4,8), (8,4)])
 @pytest.mark.parametrize("rewired", [False,True])
-def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, new, rewired):
+@pytest.mark.parametrize("pixel", [False,True])
+def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, new, rewired, pixel):
     from types import SimpleNamespace
+    import json
     import numpy as np
     from PIL import Image
     from diffusers import AutoencoderKL, AutoencoderKLQwenImage
@@ -128,6 +130,8 @@ def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, n
     teacher = AutoencoderKL(latent_channels=old,block_out_channels=(4,)*4,norm_num_groups=4,
         down_block_types=("DownEncoderBlock2D",)*4,up_block_types=("UpDecoderBlock2D",)*4,
         scaling_factor=.6,shift_factor=.2)
+    if pixel:
+        teacher=None
     target = AutoencoderKL(latent_channels=new,block_out_channels=(4,)*5,norm_num_groups=4,
         down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5,
         scaling_factor=.7,shift_factor=.1,sample_size=128)
@@ -136,12 +140,15 @@ def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, n
             temperal_downsample=[False]*4,latents_mean=[0.]*new,latents_std=[1.]*new)
     directory=tmp_path/"target"; target.save_pretrained(directory)
     source=f"file:{directory}"
-    model=model_for(old)
+    model=model_for(3,patch_size=16,vae_type="none") if pixel else model_for(old)
+    preserved={key:value.clone() for key,value in model.state_dict().items()
+        if "img_embedder.proj1" not in key and "final_layer.linear" not in key}
     if rewired:
         restore_topology(model,build_spec("minit2i",[{"name":"main","block_count":3}],
             [dict(id="s",stream="main",parent=None,start_block=1,end_block=2,
                 down_factor=[2,2],**OPERATORS)],native_config(model)))
-    base=save_single_file(str(tmp_path/"base.safetensors"),model,"b16")
+    base=save_single_file(str(tmp_path/"base.safetensors"),model,"b16",
+        extra_metadata={"mmjit_config":json.dumps(native_config(model))})
     preflight_vae_swap({"vae_swap_source":source},arch="minit2i",method="full_finetune",
         bundle_vae_explicit_false=False,base_model_path=base)
     trainer=SimpleNamespace(transformer=model,vae=teacher,
@@ -158,8 +165,15 @@ def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, n
     trainer.move_main_model_to_gpu=lambda:model.to("cpu")
     trainer.move_vae_to_cpu=lambda:trainer.vae.to("cpu")
     apply_latent_space(trainer,None)
+    trainer.minit2i_noise_scale=float(model.mmjit_config.noise_scale)
+    assert model.mmjit_config.patch_size==2
+    assert model.mmjit_config.noise_scale==(2. if pixel else 1.)
+    for key,value in preserved.items():
+        torch.testing.assert_close(model.state_dict()[key],value,rtol=0,atol=0)
     trainer.arch=MiniT2IArchHandler(trainer)
     assert trainer.wiring.vae_scale_factor==16 and trainer.wiring.latent_channels==new
+    assert model.vae_latent_bridge.declaration["old_scale"]==(1 if pixel else 8)
+    assert model.vae_latent_bridge.declaration["old_channels"]==(3 if pixel else old)
     assert BaseTrainer._arch_pixel_align(trainer)==(64 if rewired else 32)
     assert validate_latent_io(trainer)==[]
     images=[]
@@ -169,6 +183,28 @@ def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, n
         images.append({"image_path":str(path)})
     trainer.arch.calibrate_before_training(trainer,[SimpleNamespace(items=images)],None)
     assert model.vae_latent_bridge.ready and not hasattr(trainer,"_minit2i_vae_calibration_source")
+    if pixel:
+        from core.training.ops.minit2i_ops import load_components
+        fresh=SimpleNamespace(**vars(trainer))
+        fresh.model_path=base;fresh.resume_from_checkpoint=None
+        fresh.gradient_checkpointing=False;fresh.blocks_to_swap=0;fresh.use_flash_attention=False
+        fresh._main_model_module=lambda:fresh.transformer
+        fresh.move_main_model_to_cpu=lambda:fresh.transformer.to("cpu")
+        fresh.move_main_model_to_gpu=lambda:fresh.transformer.to("cpu")
+        fresh.move_vae_to_cpu=lambda:fresh.vae.to("cpu")
+        with patch("core.models.minit2i.minit2i_loader._resolve_flan_t5",return_value="synthetic"), \
+             patch("core.models.minit2i.minit2i_loader._load_flan_t5",return_value=(object(),torch.nn.Linear(1,1))):
+            load_components(fresh)
+        fresh.arch=MiniT2IArchHandler(fresh)
+        assert fresh.minit2i_latent and fresh.minit2i_vae_scale_factor==16
+        assert fresh.transformer.mmjit_config.patch_size==2
+        assert fresh.minit2i_noise_scale==2.
+        assert not fresh.transformer.vae_latent_bridge.ready
+        fresh.arch.calibrate_before_training(fresh,[SimpleNamespace(items=images)],None)
+        assert fresh.transformer.vae_latent_bridge.ready
+        assert not hasattr(fresh,"_minit2i_vae_calibration_source")
+        for key,value in preserved.items():
+            torch.testing.assert_close(fresh.transformer.state_dict()[key],value,rtol=0,atol=0)
     latent=vae_encode(trainer,torch.randn(1,3,128,192))
     assert latent.shape==(1,new,8,12)
     context,mask=torch.randn(1,5,16),torch.ones(1,5)
@@ -244,6 +280,36 @@ def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, n
     params=MiniT2IMixin._minit2i_common_params(owner,{"width":192,"height":128,"seed":3},192,128)
     assert (params["channels"],params["vae_scale_factor"],params["latent_h"],params["latent_w"])==(new,16,8,12)
     assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("dtype", [torch.float32,torch.bfloat16])
+@pytest.mark.parametrize("patch_size", [16,20])
+def test_pixel_patch_migration_preserves_coarse_input_output_and_body(dtype,patch_size):
+    from core.models.minit2i.vae_alignment import migrate_pixel_patches
+    from torch.nn import functional as F
+    model=model_for(3,patch_size=patch_size,vae_type="none").to(dtype)
+    net=model.model.net
+    before=deepcopy(model)
+    new_patch=migrate_pixel_patches(model)
+    assert new_patch==(2 if patch_size==16 else 4)
+    factor=patch_size//new_patch
+    coarse=torch.randn(1,3,new_patch,new_patch,dtype=dtype)
+    pixels=coarse.repeat_interleave(factor,-1).repeat_interleave(factor,-2)
+    torch.testing.assert_close(net.img_embedder.proj1(coarse),before.model.net.img_embedder.proj1(pixels),
+        rtol=.03 if dtype==torch.bfloat16 else 1e-5,atol=.003 if dtype==torch.bfloat16 else 1e-6)
+    hidden=torch.randn(2,5,32,dtype=dtype)
+    original=before.model.net.final_layer.linear(hidden).reshape(10,patch_size,patch_size,3).permute(0,3,1,2)
+    expected=F.avg_pool2d(original.float(),factor).to(dtype).permute(0,2,3,1).reshape(2,5,new_patch*new_patch*3)
+    torch.testing.assert_close(net.final_layer.linear(hidden),expected,
+        rtol=.03 if dtype==torch.bfloat16 else 1e-5,atol=.003 if dtype==torch.bfloat16 else 1e-6)
+    for key,value in before.state_dict().items():
+        if "img_embedder.proj1" not in key and "final_layer.linear" not in key:
+            torch.testing.assert_close(model.state_dict()[key],value,rtol=0,atol=0)
+    assert model.config.patch_size==net.cfg.patch_size==net.img_embedder.patch_size==net.final_layer.patch_size==new_patch
+    from core.models.components.pixel_codec import RGBPixelCodec
+    teacher=RGBPixelCodec()
+    torch.testing.assert_close(teacher.encode(pixels).latent_dist.mode(),pixels)
+    torch.testing.assert_close(teacher.encode(pixels).latent_dist.sample(),pixels)
 
 
 def test_public_codec_candidates_and_legacy_zero_contract():

@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、latent型MiniT2Iでpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、MiniT2Iでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで
@@ -22,7 +22,7 @@ latent型は共有校正owner、宣言付き単一/sharded loader、native codec
 生成noise/stride・定期sampleの外部形状、API/UIの候補と校正設定へ接続した。
 通常DiTとU-netの内部幅は`max(oldC,newC)`、外部幅と縮小率は交換先codecの宣言を使う。
 校正後にregionを保持してnative model identityを再作成し、resumeでは再校正しない。
-明示的なlegacy zeroは4-D/8x交換だけに対応する。
+MiniT2Iの明示的なlegacy zeroはlatent型の4-D/8x交換だけに対応し、pixel型からの移行は拒否する。
 CPU合成検証はFP32/BF16、チャネル増減、target-native非正方形格子、bias係数、勾配、
 実VAE校正、Full保存、学習loader再読込、txt2img/img2img/inpaint、定期sample、
 宣言・bridge重み欠落の拒否を含む。frontendの型・設定保持・候補取得・エラー処理は静的確認済み。
@@ -32,8 +32,18 @@ CPU合成検証はFP32/BF16、チャネル増減、target-native非正方形格�
 API再起動後、`/training/vae-sources?arch=minit2i&base_model_path=scratch:minit2i:b16:sdxl`
 でQwen 2.1の64ch/16x/5-D codecを交換候補として選択可能であることを確認した。
 公式全重みでの学習・画質・optimizer付きrun再開、ownerによるbuildとUI操作の確認は未了。
-pixel型からの移行は既存patch16をlatent patchへ変換する設計・検証も必要であり、
-latent型の境界を追加しただけでは対応済みとはしない。
+RGB pixel型も共有校正ownerへ接続した。共有`RGBPixelCodec`を校正時だけidentity teacherとして使い、
+入力patchの重みを面積集約して総和を維持し、出力patchの重み・biasも面積平均する。
+patchサイズは元patchの約1/8以上となる最小の約数（16→2、20→4）に変更する。
+Transformer本体の重みとcheckpointのnoise_scaleは保持し、実行時に元の格子へ拡大しない。
+patch16からpatch2・16x VAEへの移行では、同じ画像寸法のtoken数は1/4になる。
+これは格子の計算値であり、実重みの速度・画質の測定結果ではない。
+pixel型を含む関連110件のCPU合成検証が通過。FP32/BF16のpatch集約、実4-D/5-D codecの校正、
+pixel baseからの公開学習loader、loss逆伝搬、U-net併用、保存復元、生成と定期sampleを確認した。
+frontendはpixel型のswap選択時にもlatent encoding設定を表示し、legacy zeroは選択不可とする。
+再起動後の候補APIで`base_model_path=scratch:minit2i:b16:none`にもQwen 2.1の
+64ch/16x/5-D codecが互換候補として返ることを確認した。
+公式全重みでの学習・画質・optimizer付きrun再開は引き続き未検証。
 共有実装は`core/models/components/latent_adapter.py`に置く。
 `ImageCodecContract`は親モデル名ではなくcodecのチャネル・縮小率・rank・正規化から
 宣言を作り、`SpatialSwapPlan`は外部チャネルとバックボーン内部幅を分離する。

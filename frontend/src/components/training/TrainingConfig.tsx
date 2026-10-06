@@ -709,7 +709,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     (selectedModel?.architecture === "minit2i" && selectedModel.vae_type === "none")
     || (fromScratchMiniT2I && scratchVaeType === "none")
   );
-  const latentEncodingAvailable = !vaeUnsupported && !pixelSpaceMiniT2I;
+  const latentEncodingAvailable = !vaeUnsupported && (!pixelSpaceMiniT2I
+    || (trainingMethod === "full_finetune" && !!params.vae_swap_source));
 
   // FIFTH capability axis, and the opposite claim from the one above: a feature
   // the backend DOES implement and DOES accept, with what it costs. Shown next
@@ -4400,7 +4401,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <option value="">Default (paired spatial)</option>
                           <option value="auto">Auto (paired spatial)</option>
                           <option value="paired_spatial">Paired spatial</option>
-                          <option value="zero" disabled={!["zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i"].includes(baseModelArch || "")}>Legacy zero</option>
+                          <option value="zero" disabled={pixelSpaceMiniT2I || !["zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i"].includes(baseModelArch || "")}>Legacy zero</option>
                         </select>
                       </label>
                       <label className="block text-xs text-gray-400">

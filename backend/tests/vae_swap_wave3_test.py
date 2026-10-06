@@ -328,15 +328,13 @@ def test_minit2i_resizes_a_latent_checkpoint_and_syncs_every_channel_copy():
     assert verify_latent_io(model, spec, 4) == []
 
 
-def test_a_pixel_minit2i_checkpoint_is_refused_a_swap():
-    """Design 5.1: moving pixel -> latent changes patch_size as well as the
-    channel count, which is not a channel resize."""
+def test_a_pixel_minit2i_checkpoint_accepts_paired_codec_candidates():
     from core.training.arch.minit2i import MiniT2IArchHandler
 
     handler = MiniT2IArchHandler()
     pixel = SimpleNamespace(transformer=_minit2i(3, patch_size=16, vae_type="none"))
-    refused, why = handler.check_vae_compatibility(_facts(), trainer=pixel)
-    assert not refused and "pixel-space" in why
+    accepted, why = handler.check_vae_compatibility(_facts(), trainer=pixel)
+    assert accepted, why
 
     latent = SimpleNamespace(transformer=_minit2i(16, patch_size=2))
     ok, reason = handler.check_vae_compatibility(_facts(latent_channels=4),
@@ -390,9 +388,8 @@ def test_a_lora_run_cannot_swap_any_of_the_four(tmp_path):
                                bundle_vae_explicit_false=False)
 
 
-def test_preflight_refuses_a_pixel_minit2i_base(tmp_path):
-    """The served capability says minit2i can swap; the checkpoint says this
-    one cannot, and preflight is where that is answered."""
+def test_preflight_refuses_legacy_zero_on_a_pixel_minit2i_base(tmp_path):
+    """Pixel migration requires patch conversion, which legacy zero cannot do."""
     from core.models.minit2i.vendor.single_file import save_single_file
 
     base = tmp_path / "pixel.safetensors"
@@ -400,7 +397,7 @@ def test_preflight_refuses_a_pixel_minit2i_base(tmp_path):
                      variant="b16")
     directory = _standalone_vae_dir(tmp_path, 16, "vae16")
     with pytest.raises(ValueError, match="pixel-space"):
-        preflight_vae_swap({"vae_swap_source": f"file:{directory}"},
+        preflight_vae_swap({"vae_swap_source": f"file:{directory}","vae_swap_new_channel_init":"zero"},
                            arch="minit2i", method="full_finetune",
                            bundle_vae_explicit_false=False,
                            base_model_path=str(base))

@@ -242,6 +242,10 @@ def preflight_vae_swap(
         raise ValueError("Legacy zero SD swaps require a 4-D 8x VAE; use paired_spatial")
     if arch == "minit2i" and mode == "zero" and (facts.get("ndim") != 4 or facts.get("scale_factor") != 8):
         raise ValueError("Legacy zero MiniT2I swaps require a 4-D 8x VAE; use paired_spatial")
+    if arch == "minit2i" and mode == "zero":
+        from core.training.arch.minit2i import MiniT2IArchHandler
+        if MiniT2IArchHandler._io_config(None, base_model_path).get("vae_type") == "none":
+            raise ValueError("Legacy zero MiniT2I cannot migrate a pixel-space base; use paired_spatial")
     compatible, reason = check_arch_vae_compatibility(
         facts, arch, base_model_path=base_model_path)
     if not compatible:

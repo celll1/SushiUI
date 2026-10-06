@@ -140,10 +140,10 @@ export default function VaeSwapSourceSelector({
       </select>
       <p className="text-xs text-gray-500 mt-1">
         Replaces the VAE and resizes the backbone&apos;s latent input/output
-        layers to the new channel count. Ming and Qwen 2.1 use paired spatial calibration
-        on the target grid; other models copy overlapping channels and zero
-        the rest. The result is a checkpoint that only loads with
-        this VAE; it is bundled into every save.
+        layers to the new channel count. Supported backbones use paired spatial
+        calibration on the target grid; the initialization control shows the available
+        modes. Pixel MiniT2I also migrates its patch projections. Saves retain the
+        alignment and VAE identity; disabling VAE bundling requires a restorable source.
         {loading && " Listing candidates…"}
         {error && ` Candidates could not be listed: ${error}`}
         {/* An unknown arch skips the fetch entirely, which otherwise leaves the

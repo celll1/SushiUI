@@ -87,6 +87,8 @@ class MiniT2IArchHandler(ArchHandler):
         if module is None and initialization_mode(trainer.config, self.name) == "paired_spatial":
             from core.models.minit2i.vae_alignment import initialize_swap
             return initialize_swap(trainer, resolved, handler=self)
+        if module is None and trainer.transformer.mmjit_config.vae_type == "none":
+            raise ValueError("Legacy zero MiniT2I cannot migrate a pixel-space base; use paired_spatial")
         if module is None and (resolved.ndim != 4 or resolved.scale_factor != 8):
             raise ValueError("Legacy zero MiniT2I swaps require a 4-D 8x VAE; use paired_spatial")
 
@@ -109,13 +111,9 @@ class MiniT2IArchHandler(ArchHandler):
             return False, ("MiniT2I's latent geometry is a per-checkpoint config "
                            "value and this base's could not be read, so a "
                            "replacement VAE cannot be checked against it")
-        if str(io_config.get("vae_type", "none")) == "none":
-            return False, (
-                "this MiniT2I checkpoint is pixel-space (in_channels=3, "
-                "patch_size=16); moving it into a latent space changes the patch "
-                "geometry as well as the channel count, which is not a channel "
-                "resize. Train a latent variant (scratch:minit2i:<variant>:sdxl "
-                "or :flux1) and swap that")
+        pixel = str(io_config.get("vae_type", "none")) == "none"
+        if pixel and io_config.get("in_channels") != 3:
+            return False, "MiniT2I pixel migration requires an RGB base checkpoint"
 
         from core.models.minit2i.minit2i_vae import VAE_SCALE_FACTOR
 
@@ -123,8 +121,9 @@ class MiniT2IArchHandler(ArchHandler):
         if ndim not in (4, 5):
             return False, "MiniT2I swaps require a declared 4-D or independent-frame 5-D image codec"
         scale = facts.get("scale_factor")
-        if type(scale) is not int or scale < 1 or (scale % VAE_SCALE_FACTOR and VAE_SCALE_FACTOR % scale):
-            return False, f"MiniT2I swaps require integer spatial scale relative to {VAE_SCALE_FACTOR}x"
+        baseline = 1 if pixel else VAE_SCALE_FACTOR
+        if type(scale) is not int or scale < 1 or (scale % baseline and baseline % scale):
+            return False, f"MiniT2I swaps require integer spatial scale relative to {baseline}x"
         return True, None
 
     @staticmethod

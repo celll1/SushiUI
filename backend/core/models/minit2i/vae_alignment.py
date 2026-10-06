@@ -14,6 +14,57 @@ def generation_token_stride(model):
     return latent_geometry(model)[0] * int(model.mmjit_config.patch_size)
 
 
+def pixel_latent_patch_size(model):
+    from .minit2i_vae import VAE_SCALE_FACTOR
+    patch = int(model.mmjit_config.patch_size)
+    first = max(1, (patch + VAE_SCALE_FACTOR - 1) // VAE_SCALE_FACTOR)
+    return next(size for size in range(first, patch + 1) if patch % size == 0)
+
+
+def migrate_pixel_patches(model):
+    """Aggregate trained pixel patches; keep constant-field responses and the body."""
+    import torch
+    from torch import nn
+    from torch.nn import functional as F
+    net, cfg = model.model.net, model.mmjit_config
+    old_patch = int(cfg.patch_size)
+    patch = pixel_latent_patch_size(model)
+    incoming, outgoing = net.img_embedder.proj1, net.final_layer.linear
+    if (cfg.vae_type != "none" or cfg.in_channels != 3 or old_patch % patch or
+            type(incoming) is not nn.Conv2d or type(outgoing) is not nn.Linear or
+            incoming.kernel_size != (old_patch, old_patch) or
+            incoming.stride != (old_patch, old_patch) or incoming.groups != 1 or
+            incoming.padding != (0, 0) or incoming.dilation != (1, 1) or
+            outgoing.out_features != old_patch * old_patch * 3):
+        raise ValueError("MiniT2I pixel migration requires native RGB patch projections")
+    device, dtype = incoming.weight.device, incoming.weight.dtype
+    conv = nn.Conv2d(3, incoming.out_channels, patch, stride=patch,
+        bias=incoming.bias is not None).to(device=device, dtype=dtype)
+    linear = nn.Linear(outgoing.in_features, patch * patch * 3,
+        bias=outgoing.bias is not None).to(device=outgoing.weight.device, dtype=outgoing.weight.dtype)
+    with torch.no_grad():
+        weight = F.adaptive_avg_pool2d(incoming.weight.float(), patch) * (old_patch / patch) ** 2
+        conv.weight.copy_(weight)
+        if incoming.bias is not None:
+            conv.bias.copy_(incoming.bias)
+        weight = outgoing.weight.reshape(old_patch,old_patch,3,-1).permute(2,3,0,1)
+        weight = F.adaptive_avg_pool2d(weight.float(), patch).permute(2,3,0,1).reshape_as(linear.weight)
+        linear.weight.copy_(weight)
+        if outgoing.bias is not None:
+            bias = outgoing.bias.reshape(old_patch,old_patch,3).permute(2,0,1)[None]
+            linear.bias.copy_(F.adaptive_avg_pool2d(bias.float(), patch)[0].permute(1,2,0).flatten())
+    conv.weight.requires_grad_(incoming.weight.requires_grad)
+    linear.weight.requires_grad_(outgoing.weight.requires_grad)
+    if conv.bias is not None:
+        conv.bias.requires_grad_(incoming.bias.requires_grad)
+    if linear.bias is not None:
+        linear.bias.requires_grad_(outgoing.bias.requires_grad)
+    net.img_embedder.proj1, net.final_layer.linear = conv, linear
+    net.img_embedder.patch_size = net.final_layer.patch_size = cfg.patch_size = patch
+    model.register_to_config(patch_size=patch)
+    return patch
+
+
 def initialize_swap(trainer, resolved, *, handler):
     from core.models.components.latent_io import resize_latent_io
     from core.models.components.spatial_swap import initialize_image_swap
@@ -22,14 +73,18 @@ def initialize_swap(trainer, resolved, *, handler):
     from .residual_unet import native_config, restore_topology
     model = trainer.transformer
     cfg = model.mmjit_config
-    if cfg.vae_type == "none" or trainer.vae is None:
-        raise ValueError("MiniT2I pixel-to-latent patch migration is not yet wired")
+    pixel = cfg.vae_type == "none"
+    if pixel and int(cfg.in_channels) != 3:
+        raise ValueError("MiniT2I pixel migration requires an RGB base checkpoint")
     reject_quantized_base(model, model_label="MiniT2I VAE swap")
     wiring = handler.resolve_wiring(trainer)
+    patch = pixel_latent_patch_size(model) if pixel else int(cfg.patch_size)
 
     def resize(channels):
         topology = getattr(model, "_residual_unet_spec", None)
-        report = resize_latent_io(model, wiring.latent_io, channels)
+        if pixel:
+            migrate_pixel_patches(model)
+        report = resize_latent_io(model, wiring.latent_io.replace(pack_elems=patch * patch), channels)
         cfg.vae_type = "custom"
         model.register_to_config(vae_type="custom")
         if topology is not None:
@@ -38,10 +93,18 @@ def initialize_swap(trainer, resolved, *, handler):
                 topology["regions"], native_config(model)))
         return report
 
-    return initialize_image_swap(trainer, resolved, handler=handler, model=model,
-        old_channels=int(cfg.in_channels), source_wiring=wiring,
-        patch_size=int(cfg.patch_size), resize=resize,
-        pending_key="_minit2i_vae_calibration_source")
+    old_vae = trainer.vae
+    if pixel:
+        from core.models.components.pixel_codec import RGBPixelCodec
+        trainer.vae = RGBPixelCodec()
+    try:
+        return initialize_image_swap(trainer, resolved, handler=handler, model=model,
+            old_channels=int(cfg.in_channels), source_wiring=wiring,
+            patch_size=patch, resize=resize,
+            pending_key="_minit2i_vae_calibration_source")
+    except Exception:
+        trainer.vae = old_vae
+        raise
 
 
 def calibrate(trainer, datasets):

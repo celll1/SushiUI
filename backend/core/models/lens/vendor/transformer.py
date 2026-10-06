@@ -458,6 +458,20 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
 
     def forward(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,
                 timestep, img_shapes, attention_kwargs=None):
+        pair = getattr(self,"vae_latent_bridge",None)
+        if pair is None:
+            return self._forward_native(hidden_states,encoder_hidden_states,encoder_hidden_states_mask,
+                timestep,img_shapes,attention_kwargs)
+        from core.models.lens.residual_unet import _grid
+        from core.models.components.spatial_swap import map_packed_image
+        grid = _grid(img_shapes,hidden_states.shape[0],hidden_states.shape[1])
+        states = map_packed_image(pair,hidden_states,grid,sigma=timestep/1000.0)
+        output = self._forward_native(states,encoder_hidden_states,encoder_hidden_states_mask,
+            timestep,img_shapes,attention_kwargs)
+        return map_packed_image(pair,output,grid,output=True)
+
+    def _forward_native(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,
+                        timestep, img_shapes, attention_kwargs=None):
         if getattr(self, "_residual_unet_spec", None) is not None:
             from core.models.lens.residual_unet import run_rewired_lens
             return run_rewired_lens(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask,

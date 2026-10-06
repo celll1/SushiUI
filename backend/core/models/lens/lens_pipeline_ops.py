@@ -298,17 +298,22 @@ def _unpatchify(latents: torch.Tensor) -> torch.Tensor:
     return x.reshape(b, c4 // 4, h * 2, w * 2)
 
 
+def token_stride(vae=None):
+    from core.models.components.wiring import LENS_WIRING
+    return int(getattr(vae,"spatial_scale_factor",LENS_WIRING.vae_scale_factor))*2
+
+
 def prepare_latents(
     height: int, width: int, dtype: torch.dtype, device, seed: Optional[int] = None,
-    channels: int = 32,
+    channels: int = 32, *, vae=None,
 ) -> torch.Tensor:
     """Random noise latents for txt2img. Shape: (1, latent_h * latent_w, C * 4).
 
     ``channels`` is the RAW latent channel count; a VAE-swapped checkpoint's is
     not Lens's native 32, and the sequence width is 4x it (2x2 packing).
     """
-    latent_h = height // 16
-    latent_w = width // 16
+    latent_h = height // token_stride(vae)
+    latent_w = width // token_stride(vae)
     shape = (1, latent_h * latent_w, channels * 4)
     generator = None
     if seed is not None and seed >= 0:
@@ -330,8 +335,8 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
     img_np = np.array(image).astype(np.float32) / 127.5 - 1.0  # [-1, 1]
     img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
 
-    latent_h = height // 16
-    latent_w = width // 16
+    latent_h = height // token_stride(vae)
+    latent_w = width // token_stride(vae)
 
     # Encode: (1, 32, H//8, W//8)
     from core.models.components.vae_registry import normalize

@@ -15003,7 +15003,7 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
-        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2")):
+        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2", "is_lens")):
             import math
             from core.models.components.latent_adapter import topology_alignment
             model = getattr(self, "transformer_original", None) if getattr(self, "is_zimage", False) else self.transformer
@@ -19217,18 +19217,17 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
-                                elif self.is_krea2 or self.is_qwen_image_21:
-                                    # Krea 2: packed latent [1, (H//16)*(W//16), C*4];
-                                    # C is 16 unless this run swapped its VAE.
-                                    latent_stride = self.wiring.vae_scale_factor * (2 if self.is_krea2 else 1)
+                                elif self.is_krea2 or self.is_qwen_image_21 or self.is_lens:
+                                    # These image paths cache packed tokens, not BCHW latents.
+                                    latent_stride = self.wiring.vae_scale_factor * (1 if self.is_qwen_image_21 else 2)
                                     expected_seq_len = (height // latent_stride) * (width // latent_stride)
                                     expected_width = int(getattr(
                                         getattr(self, "wiring", None),
                                         "latent_channels", 0) or (64 if self.is_qwen_image_21 else 16))
-                                    if self.is_krea2:
+                                    if not self.is_qwen_image_21:
                                         expected_width *= 4
                                     if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != expected_width:
-                                        print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix} WARNING: Packed image latent shape mismatch for {item['image_path']}")
                                         print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, {expected_width}]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
@@ -20356,8 +20355,8 @@ class BaseTrainer(ABC):
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
                         if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
-                            latent_stride = (self.wiring.vae_scale_factor * (2 if self.is_krea2 else 1)
-                                             if self.is_qwen_image_21 or self.is_krea2 else 16)
+                            latent_stride = (self.wiring.vae_scale_factor * (1 if self.is_qwen_image_21 else 2)
+                                             if self.is_qwen_image_21 or self.is_krea2 or self.is_lens else 16)
                             batch_lens_latent_shape = (height // latent_stride, width // latent_stride)
 
                         self._collect_concept_sample_loss = (

@@ -126,6 +126,9 @@ def calibrate_images(trainer, datasets, *, model, pending_key):
     old, source_spec = pending
     pair = getattr(model, NAME)
     fit = PairedSpatialCalibration(pair, ridge=1e-2)
+    if getattr(trainer,"is_lens",False):
+        # Lens's mxfp4 allocations are released only by discarding the encoder.
+        trainer.move_text_encoder_to_cpu()
     text_modules = [module for module in (getattr(trainer, "text_encoder", None),
                     getattr(trainer, "text_encoder_2", None)) if module is not None]
     text_devices = [next(module.parameters()).device for module in text_modules]

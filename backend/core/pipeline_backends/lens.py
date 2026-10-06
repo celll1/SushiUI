@@ -311,7 +311,9 @@ class LensMixin:
             if any(prompt_has_negative_weight(prompt) for prompt in prompts):
                 raise ValidationError("Lens residual U-Net does not support NegPip")
         try:
-            preview_plan(topology, height // 16, width // 16)
+            from core.models.lens.lens_pipeline_ops import token_stride
+            stride = token_stride(self.lens_components["vae"])
+            preview_plan(topology,height//stride,width//stride)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
         params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
@@ -855,6 +857,7 @@ class LensMixin:
         from core.models.lens.lens_pipeline_ops import (
             prepare_latents, denoise_loop, vae_decode,
         )
+        from core.models.lens.lens_pipeline_ops import token_stride
         from core.models.lens.lens_resolution import align_to_grid
 
         print("[Lens] Starting txt2img generation")
@@ -881,12 +884,12 @@ class LensMixin:
 
         req_width = int(params.get("width", 1024))
         req_height = int(params.get("height", 1024))
-        width, height = align_to_grid(req_width, req_height)
+        width, height = align_to_grid(req_width, req_height,multiple=token_stride(vae))
         if (width, height) != (req_width, req_height):
             print(f"[Lens] Resolution aligned: {req_width}×{req_height} → {width}×{height}")
 
-        latent_h = height // 16
-        latent_w = width // 16
+        latent_h = height // token_stride(vae)
+        latent_w = width // token_stride(vae)
 
         prepared_loras = self._lens_rewiring_preflight(params, height, width)
 
@@ -910,7 +913,7 @@ class LensMixin:
             # Stage 2: Prepare latents
             latents = prepare_latents(
                 height, width, dtype=dtype, device=device, seed=seed,
-                channels=int(transformer.config.out_channels))
+                channels=int(vae.config.latent_channels),vae=vae)
 
             # Training-free reference-style transfer setup (no-op / None when no style
             # reference is attached -- byte-identical default path below). VAE-encodes
@@ -1017,6 +1020,7 @@ class LensMixin:
         from core.models.lens.lens_pipeline_ops import (
             vae_encode, denoise_loop_img2img, vae_decode,
         )
+        from core.models.lens.lens_pipeline_ops import token_stride
         from core.models.lens.lens_resolution import align_to_grid
 
         print("[Lens] Starting img2img generation")
@@ -1044,11 +1048,11 @@ class LensMixin:
 
         req_width = int(params.get("width", init_image.width))
         req_height = int(params.get("height", init_image.height))
-        width, height = align_to_grid(req_width, req_height)
+        width, height = align_to_grid(req_width, req_height,multiple=token_stride(vae))
         if (width, height) != (req_width, req_height):
             print(f"[Lens] Resolution aligned: {req_width}×{req_height} → {width}×{height}")
-        latent_h = height // 16
-        latent_w = width // 16
+        latent_h = height // token_stride(vae)
+        latent_w = width // token_stride(vae)
 
         prepared_loras = self._lens_rewiring_preflight(params, height, width)
 
@@ -1177,6 +1181,7 @@ class LensMixin:
         from core.models.lens.lens_pipeline_ops import (
             vae_encode, denoise_loop_inpaint, vae_decode, prepare_mask_latent,
         )
+        from core.models.lens.lens_pipeline_ops import token_stride
         from core.models.lens.lens_resolution import align_to_grid
 
         print("[Lens] Starting inpaint generation (repaint)")
@@ -1205,11 +1210,11 @@ class LensMixin:
 
         req_width = int(params.get("width", init_image.width))
         req_height = int(params.get("height", init_image.height))
-        width, height = align_to_grid(req_width, req_height)
+        width, height = align_to_grid(req_width, req_height,multiple=token_stride(vae))
         if (width, height) != (req_width, req_height):
             print(f"[Lens] Resolution aligned: {req_width}×{req_height} → {width}×{height}")
-        latent_h = height // 16
-        latent_w = width // 16
+        latent_h = height // token_stride(vae)
+        latent_w = width // token_stride(vae)
 
         if (init_image.width, init_image.height) != (width, height):
             init_image = init_image.resize((width, height), Image.LANCZOS)

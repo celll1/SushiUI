@@ -54,9 +54,17 @@ def calibrate(trainer, datasets):
 
 def _spatial_weights(value, size, *, sum_preserving=False):
     old = value.shape[-1]
-    if value.shape[-2] != old or (old % size and size % old):
-        raise ValueError("SenseNova trained IO migration requires integer patch ratios")
-    if size <= old:
+    if value.shape[-2] != old or type(size) is not int or size < 1:
+        raise ValueError("SenseNova trained IO migration requires square positive patches")
+    if old % size and size % old:
+        # Fractional bin overlaps avoid adaptive pooling's duplicated boundary cells.
+        edges = torch.arange(size + 1, device=value.device, dtype=torch.float64) * old / size
+        cells = torch.arange(old, device=value.device, dtype=torch.float64)
+        overlap = (torch.minimum(edges[1:, None], cells[None] + 1) -
+                   torch.maximum(edges[:-1, None], cells[None])).clamp_min(0)
+        average = (overlap * size / old).float()
+        result = torch.matmul(torch.matmul(average, value.float()), average.T)
+    elif size <= old:
         result = F.adaptive_avg_pool2d(value.float(), size)
     else:
         result = F.interpolate(value.float(), size=(size, size), mode="nearest")

@@ -18,6 +18,11 @@ class AlignedLtx2BlockLoopWrapper(Ltx2BlockLoopWrapper):
         arguments.pop("__class__", None)
         pair = self.transformer._video_latent_alignment
         grid = (num_frames, height, width)
+        if video_coords is None:
+            from .video_clock import prepare_video_coords
+            arguments["video_coords"] = prepare_video_coords(
+                self.rope, self.transformer._video_codec_contract, hidden_states.shape[0],
+                num_frames, height, width, hidden_states.device, fps=fps)
         # Sigma conditions prompt modulation; timestep defines the actual video state.
         state_sigma = timestep / 1000
         arguments["hidden_states"] = map_video_tokens(pair.input, hidden_states, grid=grid, sigma=state_sigma)

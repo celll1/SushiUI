@@ -8,6 +8,15 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+LTX学習のRoPE bounds、dummy audio用clip実時間、training bucketのframe格子を
+VideoCodecContractへ接続した。independent/causal/H3 chunkを同じ座標helperで扱い、
+通常codecの座標は従来と一致する。H3 chunkの校正clipはsource LTX8と共通の最短73frameを選ぶ。
+aligned wrapperが座標を内部生成する場合も同helperを使い、明示座標は維持する。
+小型の実LTXモデルでchannel増減・per-token sigma・U-net併用を3policyで確認し、
+bridgeと追加channelへ勾配が届く。CPU回帰77件・26subtest、変更Python compile/実importが通過。
+これは公式全重みの学習・画質受け入れを意味しない。LTX生成pipelineのnoise/condition配置は
+依然一律stride前提で、H3 chunk targetの公開生成拒否は維持する。
+
 現在モデル情報へloaded_video_constraintsを追加し、校正済みbundled video codecの実frame格子、
 空間倍数、frame-group policy/temporal scale、モデル由来のFPS/範囲を返す。
 標準/schema capability tableを変更せず、現在モデルのコピーだけをenrichする。外部channelも

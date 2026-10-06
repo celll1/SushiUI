@@ -8,6 +8,17 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+ACEの学習component入口から新規Oobleck交換をsetupし、optimizer構築前にdecoder境界を配置する。
+autoは3タップpaired_temporalであり、RVQ/timbreは元codecの無音・条件を使う。校正は既存の
+timbre_fix_frameまでの音声窓をlibsndfileで部分読込し、全ファイルをRAMに展開しない。
+元/先codecは順番に配置し、共有residency ownerでDiT・optimizer・TEを退避する。二回の読込の
+waveform hashが異なれば拒否し、校正元codec identityは成功時に記録する。停止/失敗後は未校正の
+pendingを保持し、再試行できる。target hopへの最小padding、進捗通知、元codecの解放も接続した。
+復元済みcodecの学習identityとwiringを回復する。元と異なるcodecへの再交換はfresh baseを必要とする。
+合成音声・小型実ACE/Oobleckで新規校正・U-net併用・保存復元・学習勾配・読込上限・停止再試行を
+7件、既存の学習/復元回帰12件で確認した。公開API gateと生成ownerは引き続き未開放であり、
+sampler全分岐・時間位置表現・公式全重みでの音質/速度/optimizer再開は未完である。
+
 共通source resolverはAutoencoderOobleckのconfigと実weight headerを照合し、rank3・identity正規化・
 sample rate・waveform channels・hop長を返す。画像のpixel channelsとは分離し、selectorも音声の
 sample/frame単位で表示する。source latent identityには音声geometryを含める。小型実codecの

@@ -148,6 +148,9 @@ def load_components(trainer) -> None:
         resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
         pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
 
+    from core.models.acestep.vae_training import configure_training_swap
+    configure_training_swap(trainer)
+
     # Gradient checkpointing: AceStepDiTLayer/AceStepEncoderLayer subclass
     # transformers' GradientCheckpointingLayer, so the standard PreTrainedModel
     # toggle applies.

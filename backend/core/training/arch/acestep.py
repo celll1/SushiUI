@@ -17,6 +17,31 @@ from core.training.components.wiring import ACESTEP_WIRING
 
 
 class AceStepArchHandler(ArchHandler):
+    def resolve_wiring(self, trainer):
+        from dataclasses import replace
+        model = getattr(trainer, "transformer", None)
+        pair = getattr(getattr(model, "decoder", None), "_audio_latent_alignment", None)
+        if pair is None:
+            return self.wiring
+        return replace(self.wiring, latent_channels=pair.target.latent_channels,
+                       vae_scale_factor=1, vae_scale_temporal=pair.target.hop_length)
+
+    def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
+        if (facts.get("vae_class") != "AutoencoderOobleck" or facts.get("ndim") != 3
+                or facts.get("norm") != "identity" or facts.get("frame_policy") != "aligned_hop_v1"):
+            return False, "ACE audio swap requires an aligned Oobleck audio codec"
+        if facts.get("sample_rate") != 48000 or facts.get("waveform_channels") != 2:
+            return False, "ACE audio swap requires 48kHz stereo; rate/channel conversion is not implemented"
+        return True, None
+
+    def apply_vae_swap(self, trainer, resolved, *, module=None):
+        from core.models.acestep.vae_training import apply_swap
+        return apply_swap(trainer, resolved, handler=self, module=module)
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager=None):
+        from core.models.acestep.vae_training import calibrate
+        calibrate(trainer, datasets)
+
     name = "acestep"
     wiring = ACESTEP_WIRING
     adapter_capability = declare_adapter_capability(

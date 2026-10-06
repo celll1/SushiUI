@@ -46,13 +46,16 @@ def decoder_output(alignment, velocity):
     return alignment.output.flow_velocity(velocity.transpose(1, 2)).transpose(1, 2)
 
 
-def install_decoder_alignment(decoder, alignment):
+def install_decoder_alignment(model, alignment):
     """Install before optimizer creation; outer RVQ config is not rewritten."""
-    from .residual_unet import native_config, restore_topology
+    from .residual_unet import native_config, restore_topology, model_topology_metadata, decoder_identity_config
     from core.rewiring.spec import build_spec
 
+    decoder = getattr(model, "decoder", model)
     if getattr(decoder, "_audio_latent_alignment", None) is not None:
         raise ValueError("ACE audio alignment is already installed")
+    model_topology_metadata(model)
+    decoder_identity_config(model)
     source = alignment.source.latent_channels
     config = native_config(decoder.config)
     if config["audio_acoustic_hidden_dim"] != source or config["in_channels"] != 3*source:
@@ -100,4 +103,4 @@ def install_decoder_alignment(decoder, alignment):
     decoder.config = target_config
     decoder._audio_latent_alignment = alignment.to(inp.weight)
     if graph is not None:
-        restore_topology(decoder, graph)
+        restore_topology(model, graph)

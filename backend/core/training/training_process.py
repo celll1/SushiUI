@@ -255,7 +255,7 @@ class TrainingProcess:
             from core.training.training_sample_rpc import clear_all as _clear_sample_rpc
             removed = _clear_sample_rpc(self.output_dir)
             if removed:
-                print(f"[Training] Removed {removed} stale sample-request/result file(s) before spawn")
+                print(f"[Training] Removed {removed} stale sample RPC file(s) before spawn")
         except Exception as e:   # noqa: BLE001
             print(f"[Training] WARNING: Failed to clear stale sample requests before spawn: {e}")
 

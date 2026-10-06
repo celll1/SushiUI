@@ -12,6 +12,10 @@ resume, then atomically publishes `.sample_live_config.json` in the output
 directory. The trainer reads that run-scoped revision before its next sample
 decision, replaces all editable values together, and writes
 `.sample_live_applied.json`. GET distinguishes desired and applied revisions.
+Before spawning a new or resumed execution, the launcher clears both live
+revision files along with pending sample RPCs. The saved YAML is authoritative
+at startup, so an older live override cannot undo a later Edit config save.
+Live edits remain durable because PUT also saves their values into that YAML.
 The sample itself uses one snapshot; a change during generation affects only a
 later sample. The step-0 image is never rewritten by a live edit. PNG metadata
 records `sample_settings_revision` alongside the actual prompt and generation

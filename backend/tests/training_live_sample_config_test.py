@@ -97,6 +97,34 @@ def test_live_sample_edit_rejects_empty_positive_prompt():
         )
 
 
+def test_resume_discards_live_override_and_keeps_saved_sample_settings(tmp_path, monkeypatch):
+    run = SimpleNamespace(
+        id=172, output_dir=str(tmp_path),
+        config_yaml=yaml.safe_dump({"config": {"process": [{"sample": {
+            "sample_every": 1000, "prompts": [{"positive": "saved prompt"}],
+        }}]}}),
+    )
+    config_path = tmp_path / "run_config.yaml"
+    config_path.write_text(run.config_yaml, encoding="utf-8")
+    training_sample_rpc.write_live_config(tmp_path, {
+        "run_id": 172, "revision": 1, "config": {"sample_every": 0},
+    })
+    training_sample_rpc.write_live_applied(tmp_path, {
+        "run_id": 172, "revision": 1, "step": 2014,
+    })
+    monkeypatch.setattr(routes.training_process_manager, "processes", {})
+
+    assert training_sample_rpc.clear_all(tmp_path) == 2
+    assert training_sample_rpc.clear_all(tmp_path) == 0
+    assert training_sample_rpc.read_live_config(tmp_path, 172) is None
+    assert training_sample_rpc.read_live_applied(tmp_path, 172) is None
+    assert config_path.read_text(encoding="utf-8") == run.config_yaml
+    status = routes._live_sample_status(run)
+    assert status["config"]["sample_every"] == 1000
+    assert status["desired_revision"] == 0
+    assert status["applied_revision"] is None
+
+
 def test_live_sample_edit_refuses_nonrunning_run(tmp_path, monkeypatch):
     run = SimpleNamespace(
         id=45, run_name="idle", output_dir=str(tmp_path),

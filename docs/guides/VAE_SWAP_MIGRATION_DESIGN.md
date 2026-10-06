@@ -38,7 +38,10 @@ tokenizer companionだけを置き換え、cond prefix KVは実Qwen3 decoderで�
 関連CPU回帰122件が通過。frontendは静的確認で、owner build・画面操作は未了。
 追加のeditor inspectionを含む31件・12 subtestsも通過し、変更Pythonのpy_compile・実import・OpenAPI解析を確認した。
 API再起動後の`/training/vae-sources?arch=sensenova`で、Qwen系64ch/16x/5-D codecを互換候補として確認した。
-既存refinerの内部幅を拡張する移行はまだ拒否する。公式全重みとoptimizer付きrun再開は未検証。
+既存refinerの内部幅拡張も対応した。stemのhead/noisy入力を別々に移し、既存チャネルの出力と学習済みgate・bodyを保持する。
+追加stem入力と追加出力はゼロ残差で開始し、両方に勾配が届く。FP32/BF16の合成テスト、
+refiner付きnativeモデルの校正→full保存→公開loader復元→推論・逆伝搬、U-net併用を含む36件が通過した。
+公式全重みとoptimizer付きrun再開は未検証。
 公式全重みによるSenseNova paired_spatialの学習・画質検証も未了。
 MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで
 入力を`alpha=t`、出力をx0として変換し、通常DiTとresidual U-netへ同じ境界を適用する。

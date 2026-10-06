@@ -32,11 +32,31 @@ ancestral generatorが指定されない場合は初期noise生成後のgenerato
 小型実U-Net/VAEによる生成・cancel回帰76件、追跡/参照noise/RNG/混合等37件が通過。
 後者にはhook cleanupの回帰1件を含む。変更backendのcompile/importも通過し、CUDA未初期化。
 outpaint noise-init/time-travel/B3参照は未接続で、Gaussian宣言checkpointでは明示拒否する。
-通常の非Gaussian outpaintは変更しない。公式全重みでの新SD policy生成・Full学習受入は残る。
+通常の非Gaussian outpaintは変更しない。新SD policyの公式Full学習・保存再開受入は残る。
 PNDMのv-predictionは合成oracleで約0.014の分解誤差があり、この追跡方式では拒否する。
 clip/thresholding・learned variance・churn・per-token timestepも現段階では拒否する。
 Flowの`stochastic_sampling`は実装がgeneratorを無視するため拒否し、無条件に同じ乱数と見なさない。
 これらの拒否は追跡クラス内だけの契約で、既存の非Gaussian生成の選択肢を変更しない。
+
+新SD Gaussian生成経路は、公式SD1.5/SDXL全U-Net・CLIPとQwen公式VAEでGPU検証した。
+既存general40枚のnative-teacher-grid校正係数を再利用し、現在のrating/pathをAPIで再確認した。
+実画像の追加読込はない。未選択の新policyを試験モデルへ宣言し、保存係数から固定noise補正を
+captureした。入力/出力の数値monkeypatchは使わず、実`custom_sampling_loop`を通した。
+C4/8x→C64/16x、1024px・24steps・CFG6、Euler/Euler ancestral、3prompt×seed63/64の各12枚。
+latent gridは64×64（4096 cells）。SDのnative U-Netを使い、追加DiT U-net化は適用していない。
+SD1.5は狐・果物・青い車の概形と主要色を12枚で確認したが、洋梨の描き分け・個数・本の色は
+全seedで一致せず、blur/格子texture/一部の色artifactがある。細部品質や完全復元の受入ではない。
+SDXLはseed63で概形を保つ一方、seed64は全3prompt/両samplerで強い縞が残り、画質は未受入。
+元の公式SDXL U-Net/VAEでも512px・Euler・24steps・CFG6で同じ64×64投影noiseと通常C4 noiseを
+3prompt×2seedで比較した（12枚）。投影seed64は元VAE出力にも強い縞があり、通常noiseでも
+一部構図が反復した。交換decodeだけの問題とはいえない。今回の元codec対照のsize条件は512pxで、
+交換生成の1024px条件とは異なる。以前のDDIM/size条件1024px対照（下記）でも同じ現象を確認済み。
+同一latent gridの元モデル対照を踏まえ、低解像度backboneでの概形安定性も含めて改善を続ける。
+生成時間はSD1.5 1.062〜1.438秒、SDXL 1.766〜2.203秒（decode込み、componentsはGPU常駐）。
+比較する同条件の元codec計測はないため速度向上率は主張しない。画像/script/ログはignored
+`local/verification/sd15_gaussian_production_quality/`、`sdxl_gaussian_production_quality/`、
+`sdxl_gaussian_native_control/`にのみ置いた。DB run/dataset/galleryは作成せず、試験process終了と
+GPU解放を確認。APIのMing Layer選択・training inactive・generation idleも維持した。
 
 Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く、channel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。校正した3×3入力/出力kernelと、中心行列のSVD行直交射影を

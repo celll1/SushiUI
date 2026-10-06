@@ -150,8 +150,10 @@ class PairedSpatialCalibration:
     def __init__(self, alignment, *, ridge):
         self.alignment = alignment
         d = alignment.declaration
-        self.incoming = SpatialLatentBridge(d["new_channels"], d["old_channels"])
-        self.outgoing = SpatialLatentBridge(d["old_channels"], d["new_channels"])
+        # Fitted scratch kernels must not advance the training RNG.
+        with torch.random.fork_rng(devices=[]):
+            self.incoming = SpatialLatentBridge(d["new_channels"], d["old_channels"])
+            self.outgoing = SpatialLatentBridge(d["old_channels"], d["new_channels"])
         self.input_fit = SpatialBridgeCalibrator(self.incoming, ridge=ridge)
         self.output_fit = SpatialBridgeCalibrator(self.outgoing, ridge=ridge)
 

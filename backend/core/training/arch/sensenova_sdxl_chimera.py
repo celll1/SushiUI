@@ -33,6 +33,31 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
         quantized_base_reason=PHASE3_PENDING,
     )
 
+    def resolve_wiring(self, trainer):
+        from core.models.sensenova_sdxl_chimera.vae_alignment import resolve_wiring
+        return resolve_wiring(self, trainer)
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager):
+        from core.models.sensenova_sdxl_chimera.vae_alignment import calibrate
+        calibrate(trainer, datasets)
+
+    def apply_vae_swap(self, trainer, resolved, module=None):
+        if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
+            from core.models.components.sd_vae_alignment import restore_swap_identity
+            return restore_swap_identity(trainer, resolved, handler=self, module=module)
+        if module is not None:
+            raise ValueError("Chimera aligned VAE restoration requires its saved spatial bridge")
+        from api.param_defaults import TRAINING_DEFAULTS
+        mode = trainer.config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
+        if mode not in ("auto", "paired_spatial"):
+            raise ValueError("Chimera VAE swaps require paired_spatial initialization")
+        from core.models.sensenova_sdxl_chimera.vae_alignment import initialize_swap
+        return initialize_swap(trainer, resolved, handler=self)
+
+    def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
+        from core.models.components.sd_vae_alignment import check_codec_compatibility
+        return check_codec_compatibility(facts)
+
     def load_components(self, trainer) -> None:
         from core.training.ops import sensenova_sdxl_chimera_ops as ops
 

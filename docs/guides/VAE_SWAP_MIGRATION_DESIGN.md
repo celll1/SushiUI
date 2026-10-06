@@ -22,6 +22,14 @@ paired_spatial校正、73frameのtarget encode（latent `[1,128,10,8,8]`）ま�
 3.727→3.738GiBだった。34層目で空き0.83GiBの安全停止。loaderのSwiGLU並べ替えコピーと
 元ファイル参照の併用が次の調査対象であり、GPU slot増殖と断定できる計測ではない。
 
+H3 readerのSwiGLU変換元をowned file readへ変更し、並べ替えコピーと元mmapページの重複を
+除いた。単一/hybrid選択、FP8・INT8 ConvRot・W4A8を含むCPU回帰43件が通過。
+公式20.1B H3の読込直後RSSは31.745→16.816GiBへ低下し、全50層のforward/逆伝搬と
+638tensor全ての2回更新が86.69秒で通過した。合成画像2枚の校正、target /32・128ch、
+2段U-net（最深4層）を併用。観測RSS最大49.929GiB、CUDA reserved最大約8.002GiB。
+入力conditioning/audioは合成tensorであり、公式TE/audio VAEや画質受入の証拠ではない。
+Full保存・optimizer再開・公式条件付けの検証が残るため、公開Full gateは維持する。
+
 H3のembedded交換VAEを学習用に読み込む際、native用の一律fp16変換を適用せず、
 保存済みprecision/latent identityを維持する。校正済みpair・codec/model契約を確認し、
 外部channel、空間縮小率、frame policyとU-net累積縮小をtraining wiring/bucketへ反映する。

@@ -166,10 +166,10 @@ def test_base_only_mapping_through_the_reader_is_identical_to_the_direct_handle(
     path = _write_dit(tmp_path / "dit.safetensors", _dit_tensors(6, offset=0.0))
     header = _header_of(path)
 
-    with safe_open(path, framework="pt", device="cpu") as handle:
+    with safe_open(path, framework="pt", device="cpu") as handle, open_dit_reader(path) as reader:
         direct, direct_stats = _map_dit_state_dict(handle, header, CONFIG, torch.bfloat16)
         through, through_stats = _map_dit_state_dict(
-            SingleTensorReader(handle), header, CONFIG, torch.bfloat16)
+            reader, header, CONFIG, torch.bfloat16)
 
     assert direct_stats == through_stats
     assert direct_stats["qkv_split"] and direct_stats["swiglu_swapped"]
@@ -205,6 +205,29 @@ def test_open_dit_reader_without_an_overlay_yields_a_single_reader(tmp_path):
         assert isinstance(reader, SingleTensorReader) and not reader.is_hybrid
         assert torch.equal(reader.get_tensor("rope.inv_freq"),
                            torch.arange(4, dtype=torch.float32))
+
+
+def test_swiglu_transform_reads_owned_source_instead_of_mapping():
+    mapped, _ = _fake_pair(num_blocks=2, quant_marker=False)
+    owned, _ = _fake_pair(num_blocks=2, quant_marker=False)
+    header = {key: {"shape": list(value.shape)} for key, value in mapped.tensors.items()}
+    _map_dit_state_dict(SingleTensorReader(mapped, owned), header, CONFIG, torch.bfloat16)
+    assert owned.requested == ["blocks.0.mlp.fc1.weight", "blocks.1.mlp.fc1.weight"]
+    assert not set(owned.requested).intersection(mapped.requested)
+
+
+def test_owned_hybrid_reads_preserve_selection_and_tracking():
+    base, overlay = _fake_pair(num_blocks=2, quant_marker=False)
+    base_owned, overlay_owned = _fake_pair(num_blocks=2, quant_marker=False)
+    class Selector:
+        def source_for(self, key):
+            return OVERLAY if key.startswith("blocks.1.") else BASE
+    reader = HybridTensorReader(base, overlay, Selector(), base_owned, overlay_owned)
+    for block, owner in ((0, base_owned), (1, overlay_owned)):
+        key = f"blocks.{block}.mlp.fc1.weight"
+        assert reader.get_tensor_for_transform(key) is owner.tensors[key]
+    assert reader.overlay_keys_read == {"blocks.1.mlp.fc1.weight"}
+    assert not base.requested and not overlay.requested
 
 
 

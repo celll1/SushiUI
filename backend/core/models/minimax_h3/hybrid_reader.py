@@ -20,14 +20,17 @@ installs them with ``load_state_dict(assign=True)``, so the live model's CPU
 weights ARE the file mappings. A hybrid model therefore keeps TWO files mapped
 for its whole CPU lifetime (12-21 GB each), and on Windows both stay
 undeletable/unreplaceable until the model is dropped. That is the cost of not
-materialising two state dicts, and nothing here tries to undo it.
+materialising two state dicts. SwiGLU value transforms use owned file reads so
+their copied outputs do not retain the source's mapped pages.
 
 The CONCURRENT count is two, not the four the design doc feared:
 ``_guard_component_file`` maps one file at a time (and only when the header
 declares ``.comfy_quant`` markers at all), and both guard passes are finished
 before this module opens anything. This module adds no mapping beyond the two it
-is asked for and copies no tensor -- ``get_tensor`` returns the handle's own
+is asked for -- ``get_tensor`` returns the handle's own
 result unchanged, same storage, same ``data_ptr``.
+``get_tensor_for_transform`` reads owned CPU bytes through a separate file
+descriptor, without a second mmap or a change to per-key source selection.
 """
 
 from __future__ import annotations
@@ -46,15 +49,19 @@ class SingleTensorReader:
     "without" cannot exist if there is no "without".
     """
 
-    __slots__ = ("_base",)
+    __slots__ = ("_base", "_owned")
 
     is_hybrid = False
 
-    def __init__(self, base_handle: Any):
+    def __init__(self, base_handle: Any, owned=None):
         self._base = base_handle
+        self._owned = owned
 
     def get_tensor(self, key: str) -> torch.Tensor:
         return self._base.get_tensor(key)
+
+    def get_tensor_for_transform(self, key: str) -> torch.Tensor:
+        return (self._owned or self._base).get_tensor(key)
 
 
 class HybridTensorReader:
@@ -71,11 +78,12 @@ class HybridTensorReader:
     """
 
     __slots__ = ("_base", "_overlay", "_selector", "_overlay_keys_read",
-                 "_base_token", "_overlay_token")
+                 "_base_token", "_overlay_token", "_base_owned", "_overlay_owned")
 
     is_hybrid = True
 
-    def __init__(self, base_handle: Any, overlay_handle: Any, selector: Any):
+    def __init__(self, base_handle: Any, overlay_handle: Any, selector: Any,
+                 base_owned=None, overlay_owned=None):
         # Imported here, not at module scope: ``hybrid_spec`` imports ``loader``,
         # which is what constructs this class.
         from .hybrid_spec import BASE, OVERLAY
@@ -88,6 +96,8 @@ class HybridTensorReader:
         self._base_token = BASE
         self._overlay_token = OVERLAY
         self._overlay_keys_read: Set[str] = set()
+        self._base_owned = base_owned
+        self._overlay_owned = overlay_owned
 
     def get_tensor(self, key: str) -> torch.Tensor:
         source = self._selector.source_for(key)
@@ -100,6 +110,15 @@ class HybridTensorReader:
                 f"source must be {self._base_token!r} or {self._overlay_token!r}. Refusing "
                 f"rather than guessing a file.")
         return self._base.get_tensor(key)
+
+    def get_tensor_for_transform(self, key: str) -> torch.Tensor:
+        source = self._selector.source_for(key)
+        if source == self._overlay_token:
+            self._overlay_keys_read.add(key)
+            return (self._overlay_owned or self._overlay).get_tensor(key)
+        if source != self._base_token:
+            raise ValueError(f"Invalid hybrid source for {key}: {source!r}")
+        return (self._base_owned or self._base).get_tensor(key)
 
     @property
     def overlay_keys_read(self) -> Set[str]:
@@ -121,10 +140,11 @@ def open_dit_reader(
     docstring).
     """
     from safetensors import safe_open
+    from core.models.common.unmapped_safetensors import UnmappedTensorReader
 
-    with safe_open(base_path, framework="pt", device="cpu") as base_handle:
+    with safe_open(base_path, framework="pt", device="cpu") as base_handle, UnmappedTensorReader(base_path) as base_owned:
         if overlay_path is None:
-            yield SingleTensorReader(base_handle)
+            yield SingleTensorReader(base_handle, base_owned)
             return
-        with safe_open(overlay_path, framework="pt", device="cpu") as overlay_handle:
-            yield HybridTensorReader(base_handle, overlay_handle, selector)
+        with safe_open(overlay_path, framework="pt", device="cpu") as overlay_handle, UnmappedTensorReader(overlay_path) as overlay_owned:
+            yield HybridTensorReader(base_handle, overlay_handle, selector, base_owned, overlay_owned)

@@ -33,8 +33,18 @@ def _sample_components(trainer):
     modules = tuple(dict.fromkeys((trainer.transformer,trainer.transformer_uncond,trainer.text_encoder,trainer.vae)))
     if any(module is None for module in modules):
         raise ValueError("Ideogram samples require both DiTs, text encoder and VAE")
-    if any(getattr(module,"_layer_offload_conductor",None) is not None for module in modules):
-        raise ValueError("Ideogram sample residency cannot bypass a live block-swap conductor")
+    conductors = {module:getattr(module,"_layer_offload_conductor",None) for module in modules}
+    conductors = {module:conductor for module,conductor in conductors.items() if conductor is not None}
+    for conductor in conductors.values():
+        conductor.flush()
+    rings_parked = {conductor:conductor.engine.slots_parked for conductor in conductors.values()}
+    managed = {module:conductor.managed_tensor_ids() for module,conductor in conductors.items()}
+    def move(module,device):
+        if module in conductors:
+            conductors[module].park_device_slots()
+            module._apply(lambda tensor:tensor if id(tensor) in managed[module] else tensor.to(device))
+        else:
+            module.to(device)
     placements = [{name:value.device for name,value in (*module.named_parameters(),*module.named_buffers())}
         for module in modules]
     modes = [module.training for module in modules]
@@ -50,15 +60,17 @@ def _sample_components(trainer):
                 def stage(*active):
                     trainer._check_stop_requested()
                     for module in modules:
-                        module.to("cpu")
+                        move(module,"cpu")
                         module.eval()
                     torch.cuda.empty_cache()
                     for module in active:
-                        module.to(trainer.device)
+                        move(module,trainer.device)
+                        if module in conductors:
+                            conductors[module].resume_device_slots()
                 yield stage
             finally:
                 for module in modules:
-                    module.to("cpu")
+                    move(module,"cpu")
                 torch.cuda.empty_cache()
                 for module,devices,mode in zip(modules,placements,modes):
                     current = dict((*module.named_parameters(),*module.named_buffers()))
@@ -66,6 +78,9 @@ def _sample_components(trainer):
                         if current[name].device != device:
                             current[name].data = current[name].data.to(device)
                     module.train(mode)
+                for conductor,was_parked in rings_parked.items():
+                    if not was_parked:
+                        conductor.resume_device_slots()
     finally:
         for parameter,gradient,device in gradients:
             parameter.grad = gradient.to(device)

@@ -1347,7 +1347,7 @@ _add_training_required_value(
 # --- Sample generation during training --------------------------------------
 _add_training_feature_unsupported(
     "ideogram4", "training_samples",
-    "plain dual-DiT native text sampling is CPU-verified internally, including paired VAE and U-net; public sampling remains gated pending block-swap/quantized residency and official-weight acceptance")
+    "plain dual-DiT native text sampling is verified internally on small models with paired VAE, U-net and mutable block swap; public sampling remains gated pending quantized residency and official-weight acceptance")
 _add_training_feature_unsupported(
     "minimax_h3", "training_samples",
     "step-0 and periodic sampling are not implemented for MiniMax-H3; its training sample handler warns and returns None")

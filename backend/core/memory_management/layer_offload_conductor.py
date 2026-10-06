@@ -272,6 +272,18 @@ class LayerOffloadConductor:
         self._backward_seen.clear()
         self._recompute_seen.clear()
 
+    def managed_tensor_ids(self) -> set[int]:
+        """Tensor ownership excluded from ordinary model device moves."""
+        return {id(tensor) for idx in self.swappable
+                for _,_,tensor in self._owned_tensors(self.layers[idx])}
+
+    def park_device_slots(self) -> None:
+        self.flush()
+        self.engine.park_slots()
+
+    def resume_device_slots(self) -> None:
+        self.engine.resume_slots()
+
     def load_layer_to_gpu(self, layer_idx: int, async_transfer: bool = True) -> None:
         del async_transfer
         if layer_idx in self.swappable:

@@ -31,6 +31,7 @@ from .adapters import (
     FLUX2FullParameterAdapter,
     AnimaFullParameterAdapter,
     LensFullParameterAdapter,
+    Ideogram4FullParameterAdapter,
     MiniT2IFullParameterAdapter,
     Krea2FullParameterAdapter,
     QwenImage21FullParameterAdapter,
@@ -212,6 +213,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_lens:
             self.adapter = LensFullParameterAdapter(self)
             print(f"{self.log_prefix} Using LensFullParameterAdapter")
+        elif self.is_ideogram4:
+            self.adapter = Ideogram4FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using Ideogram4FullParameterAdapter")
         elif self.is_minit2i:
             self.adapter = MiniT2IFullParameterAdapter(self)
             print(f"{self.log_prefix} Using MiniT2IFullParameterAdapter")

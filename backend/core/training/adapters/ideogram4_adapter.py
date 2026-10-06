@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 
 from .base_adapter import (
-    BaseLoRAAdapter, BaseFullParameterAdapter, resolve_component_lr, LORA_COMPONENT_UNET
+    BaseLoRAAdapter, BaseFullParameterAdapter, resolve_component_lr, reject_quantized_base, LORA_COMPONENT_UNET
 )
 from core.adapters import LoRALinearLayer, is_adapter_covered
 
@@ -120,22 +120,60 @@ class Ideogram4LoRAAdapter(BaseLoRAAdapter):
 
 
 class Ideogram4FullParameterAdapter(BaseFullParameterAdapter):
-    """Full-parameter adapter for Ideogram 4 (Phase 2b — requires a bf16 base).
+    """Train plain DiT branches; preserve the frozen asymmetric-CFG twin."""
 
-    The shipped fp8 checkpoint stores Linear weights as non-trainable buffers
-    (Fp8Linear), so full fine-tuning needs an unquantized (bf16) transformer.
-    Left as an explicit guard until the bf16 load path is added.
-    """
+    def _validate(self):
+        trainer = self.trainer
+        if trainer.transformer is None or getattr(trainer, "transformer_uncond", None) is None:
+            raise ValueError("Ideogram 4 full artifacts require both conditional and unconditional transformers")
+        if bool(getattr(trainer, "train_text_encoder", False)):
+            raise ValueError("Ideogram 4 full fine-tuning keeps its Qwen3-VL encoder frozen")
+        if getattr(trainer, "train_unet", True):
+            reject_quantized_base(trainer.transformer, model_label="Ideogram 4 conditional DiT")
+            if getattr(trainer, "ideogram4_train_uncond", False):
+                reject_quantized_base(trainer.transformer_uncond, model_label="Ideogram 4 unconditional DiT")
 
     def prepare_models_for_training(self):
-        raise NotImplementedError(
-            "Ideogram 4 full fine-tuning requires a bf16 base transformer (the fp8 "
-            "checkpoint stores weights as buffers and cannot be trained directly). "
-            "Use LoRA, or provide/dequantize a bf16 base (Phase 2b)."
-        )
+        self._validate()
+        trainer = self.trainer
+        enabled = bool(getattr(trainer, "train_unet", True))
+        for module, trainable in ((trainer.transformer, enabled),
+                (trainer.transformer_uncond, enabled and getattr(trainer, "ideogram4_train_uncond", False))):
+            module.requires_grad_(trainable)
+            module.train(trainable)
+        for module in (trainer.text_encoder, trainer.vae):
+            if module is not None:
+                module.requires_grad_(False)
+                module.eval()
 
     def arch_param_groups(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError("Ideogram 4 full fine-tuning is not yet supported (Phase 2b).")
+        self._validate()
+        trainer = self.trainer
+        if not getattr(trainer, "train_unet", True):
+            return []
+        modules = [trainer.transformer]
+        if getattr(trainer, "ideogram4_train_uncond", False):
+            modules.append(trainer.transformer_uncond)
+        params = list(dict.fromkeys(p for module in modules for p in module.parameters() if p.requires_grad))
+        if not params:
+            return []
+        from api.param_defaults import TRAINING_DEFAULTS
+        rate = resolve_component_lr(trainer, "unet_lr", label="Ideogram 4 full DiT")
+        rate *= float(trainer.config.get("ideogram4_lr_factor", TRAINING_DEFAULTS["ideogram4_lr_factor"]))
+        return [{"params":params, "lr":rate, "name":"unet", "component":"unet"}]
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):
-        raise NotImplementedError("Ideogram 4 full fine-tuning is not yet supported (Phase 2b).")
+        from core.models.ideogram4.residual_unet import save_checkpoint
+        trainer = self.trainer
+        self._validate()
+        base_dir = getattr(trainer, "ideogram4_base_dir", None)
+        if not base_dir:
+            raise ValueError("Ideogram 4 full export requires a restorable companion directory")
+        output_path = Path(output_path)
+        if output_path.is_dir():
+            output_path = output_path / f"ideogram4_step_{step}.safetensors"
+        elif output_path.suffix != ".safetensors":
+            output_path = Path(str(output_path) + ".safetensors")
+        return save_checkpoint(trainer.transformer, trainer.transformer_uncond, output_path,
+            metadata={"component.base_dir":str(base_dir), "step":str(step), "epoch":str(epoch),
+                "training_method":"full_finetune"})

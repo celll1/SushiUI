@@ -8,6 +8,11 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+Ideogram4にはplain dual-DiT Full FTの内部基盤を追加した。条件付きと任意の無条件DiTを
+学習対象にし、TE/VAEは固定する。非学習の無条件DiTはCPUに保持し、推論に必要な双方を保存する。
+実native小型DiTのoptimizer更新・両branch復元、量子化branchの事前拒否、adapter dispatchをCPUで検証した。
+公開Full FTのゲートはまだ解除していない。paired_spatial・縮小率変更、周期サンプルと公式重みの受け入れが残る。
+
 本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、

@@ -35,6 +35,8 @@ def load_components(trainer) -> None:
     print(f"{trainer.log_prefix} Loading Ideogram 4 components from {trainer.model_path}")
 
     trainer.ideogram4_train_uncond = bool(trainer.config.get("ideogram4_train_uncond", False))
+    from core.training.ops.training_method import is_full_finetune
+    load_unconditional = trainer.ideogram4_train_uncond or is_full_finetune(trainer)
     trainer.ideogram4_uncond_loss_weight = float(trainer.config.get("ideogram4_uncond_loss_weight", 1.0))
 
     from core.models.ideogram4.ideogram4_loader import load_ideogram4_components, load_ideogram4_single_file
@@ -42,19 +44,20 @@ def load_components(trainer) -> None:
     if source.is_file() or Path(str(source)+".index.json").is_file():
         if not source.is_file():source = Path(str(source)+".index.json")
         components = load_ideogram4_single_file(file_path=str(source),torch_dtype=trainer.weight_dtype,
-                                              load_unconditional=trainer.ideogram4_train_uncond)
+                                              load_unconditional=load_unconditional)
     else:
         components = load_ideogram4_components(
             model_path=trainer.model_path,
             torch_dtype=trainer.weight_dtype,
-            load_unconditional=trainer.ideogram4_train_uncond,
+            load_unconditional=load_unconditional,
         )
 
     trainer.transformer = components["transformer"]
+    trainer.ideogram4_base_dir = components.get("base_dir") or (str(source) if source.is_dir() else None)
     trainer.transformer_original = trainer.transformer
     trainer.transformer_uncond = components.get("unconditional_transformer")
-    if trainer.ideogram4_train_uncond and trainer.transformer_uncond is None:
-        raise ValueError("Ideogram 4 train_uncond requires a loaded unconditional transformer")
+    if load_unconditional and trainer.transformer_uncond is None:
+        raise ValueError("Ideogram 4 full artifacts and train_uncond require a loaded unconditional transformer")
     trainer.vae = components["vae"]
     trainer.text_encoder = components["text_encoder"]
     trainer.tokenizer = components["tokenizer"]
@@ -124,7 +127,7 @@ def load_components(trainer) -> None:
 
     print(f"{trainer.log_prefix} Moving Ideogram 4 transformer to {trainer.device}")
     trainer.transformer.to(trainer.device)
-    if trainer.transformer_uncond is not None:
+    if trainer.transformer_uncond is not None and trainer.ideogram4_train_uncond:
         trainer.transformer_uncond.to(trainer.device)
 
     # Setup attention backend if non-native (use_flash_attention is derived from it)

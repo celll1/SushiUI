@@ -95,6 +95,7 @@ from api.generation_utils import (
     resolve_video_defaults,
     resolve_image_defaults,
     validate_video_geometry,
+    loaded_video_codec_contract,
     validate_video_steps,
     is_still_image_video_request,
     plan_keyframe_placements,
@@ -3271,7 +3272,8 @@ async def generate_txt2vid(
         # clip length. Inside the try because a snap emits a `warnings[]` entry,
         # which needs the generation context started above; a raise from here is
         # still re-raised as a 4xx by the except clause below.
-        validate_video_geometry(params, _vid_arch)
+        validate_video_geometry(params, _vid_arch,
+            video_codec_contract=loaded_video_codec_contract(pipeline_manager,_vid_arch))
         # Same place, same source (TemporalSpec): a step count the arch's
         # scheduler cannot build a schedule from. It has to be checked HERE and
         # not left to the sampler -- MiniMax-H3 raised for num_inference_steps=1
@@ -4902,7 +4904,8 @@ async def generate_img2vid(
         # the generation context started above; a raise from here is still
         # re-raised as a 4xx by the except clause below. See the same pair of
         # calls in /generate/txt2vid for what each one owns.
-        validate_video_geometry(params, _vid_arch)
+        validate_video_geometry(params, _vid_arch,
+            video_codec_contract=loaded_video_codec_contract(pipeline_manager,_vid_arch))
         validate_video_steps(params, _vid_arch)
 
         from api.arch_capabilities import check_arch_capabilities, arch_supports_feature
@@ -5503,7 +5506,8 @@ async def generate_ref2vid(
     try:
         pipeline_manager.reset_cancel_flag()
 
-        validate_video_geometry(params, _vid_arch)
+        validate_video_geometry(params, _vid_arch,
+            video_codec_contract=loaded_video_codec_contract(pipeline_manager,_vid_arch))
         validate_video_steps(params, _vid_arch)
 
         from api.arch_capabilities import check_arch_capabilities, arch_supports_feature
@@ -5894,11 +5898,14 @@ async def generate_outpaint_video(
     # planned with the resolved overlap, so the generated span grows and the
     # OUTPUT length stays what was asked for.
     from api.generation_utils import plan_video_continuation_context
+    _video_codec_contract = loaded_video_codec_contract(
+        pipeline_manager,(pipeline_manager.current_model_info or {}).get("type"))
     _continuation = plan_video_continuation_context(
         continuation_mode, continuation_overlap_frames,
         (pipeline_manager.current_model_info or {}).get("type"),
         _h3_variant or None,
         continuation_anchor_count,
+        video_codec_contract=_video_codec_contract,
     )
     if _continuation["mode"] != "boundary_frame" and _ref_image_files:
         raise CustomValidationError(
@@ -5930,7 +5937,8 @@ async def generate_outpaint_video(
     if outpaint_video_audio_mode is None:
         outpaint_video_audio_mode = str(_resolved["outpaint_video_audio_mode"])
 
-    _spec = temporal_spec_for_arch(_vid_arch)
+    from core.models.components.video_latent_adapter import temporal_spec_for_codec
+    _spec = temporal_spec_for_codec(temporal_spec_for_arch(_vid_arch),_video_codec_contract)
     _placements = tuple(_spec.outpaint_placements) if _spec is not None else ("free",)
     _align = _spec.pixel_align if _spec is not None else 32
     if width < _align or height < _align or width % _align != 0 or height % _align != 0:
@@ -5951,10 +5959,13 @@ async def generate_outpaint_video(
     if "free" in _placements:
         # LTX-2.3's shipped contract, unchanged: the OUTPUT timeline is what the
         # model generates end to end, so it is what must sit on the 8k+1 grid.
-        if total_frames < 9 or total_frames % 8 != 1:
+        _multiple = _spec.frame_multiple if _spec is not None else 8
+        _offset = _spec.frame_offset if _spec is not None else 1
+        _floor = max(9,_spec.floor()) if _spec is not None else 9
+        if total_frames < _floor or (total_frames - _offset) % _multiple != 0:
             raise CustomValidationError(
-                "total_frames must be >= 9 and satisfy (total_frames - 1) % 8 == 0",
-                detail=f"Got total_frames={total_frames}. Use values like 9, 17, ..., 121 (8k + 1, k >= 1).",
+                f"total_frames must be >= {_floor} and satisfy (total_frames - {_offset}) % {_multiple} == 0",
+                detail=f"Got total_frames={total_frames}. Use a length on the loaded codec's frame grid.",
             )
     else:
         # A boundary-conditioned arch generates only the MISSING span, so the
@@ -6205,6 +6216,7 @@ async def generate_outpaint_video(
         head_frames=int(trimmed_len),
         tail_frames=int(bridge_frames.shape[0]) if bridge_frames is not None else None,
         overlap_frames=_continuation["overlap_frames"],
+        video_codec_contract=_video_codec_contract,
     )
 
     # ---- ref2va placement gate (needs the plan). Shared with the backend's
@@ -6245,7 +6257,7 @@ async def generate_outpaint_video(
         # not this endpoint's OUTPUT timeline (the preserved frames are pasted,
         # never sampled), and the span is resolved by the placement planner.
         # Spatial validation already ran above as a pre-decode 400.
-        validate_video_geometry(params, _vid_arch, frame_key=None)
+        validate_video_geometry(params, _vid_arch, frame_key=None,video_codec_contract=_video_codec_contract)
         validate_video_steps(params, _vid_arch)
 
         from api.arch_capabilities import check_arch_capabilities
@@ -6716,7 +6728,9 @@ async def generate_inpaint_video(
     if inpaint_video_audio_mode is None:
         inpaint_video_audio_mode = str(_resolved["inpaint_video_audio_mode"])
 
-    _spec = temporal_spec_for_arch(_vid_arch)
+    _video_codec_contract = loaded_video_codec_contract(pipeline_manager,_vid_arch)
+    from core.models.components.video_latent_adapter import temporal_spec_for_codec
+    _spec = temporal_spec_for_codec(temporal_spec_for_arch(_vid_arch),_video_codec_contract)
     _align = _spec.pixel_align if _spec is not None else 32
     if width < _align or height < _align or width % _align != 0 or height % _align != 0:
         raise CustomValidationError(
@@ -7108,6 +7122,7 @@ async def generate_inpaint_video(
         _vid_arch,
         clip_frames=int(trimmed_len),
         allow_full_range=spatial_mask_manifest is not None,
+        video_codec_contract=_video_codec_contract,
     )
     if spatial_mask_timeline is not None:
         components = getattr(pipeline_manager, "minimax_h3_components", None) or {}
@@ -7198,7 +7213,7 @@ async def generate_inpaint_video(
         # `frame_key=None`: the length that has to be on the arch's grid is the
         # trimmed CLIP's, which the span planner above owns and refuses rather
         # than snaps. This call is the spatial and frame-rate rules.
-        validate_video_geometry(params, _vid_arch, frame_key=None)
+        validate_video_geometry(params, _vid_arch, frame_key=None,video_codec_contract=_video_codec_contract)
         validate_video_steps(params, _vid_arch)
 
         from api.arch_capabilities import check_arch_capabilities

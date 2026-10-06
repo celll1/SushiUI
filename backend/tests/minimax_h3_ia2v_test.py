@@ -488,7 +488,7 @@ def test_the_track_is_prepared_after_the_clip_length_is_snapped():
     import api.routes as routes
 
     source = inspect.getsource(routes.generate_img2vid)
-    assert source.index("validate_video_geometry(params, _vid_arch)") < \
+    assert source.index("validate_video_geometry(params, _vid_arch,") < \
         source.index("prepare_pinned_audio(")
 
 

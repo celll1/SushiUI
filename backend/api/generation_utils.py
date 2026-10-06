@@ -1721,8 +1721,44 @@ def validate_video_steps(params: Dict[str, Any], arch: Optional[str],
     )
 
 
+def loaded_video_codec_contract(manager, arch):
+    """Read the loaded pair without mapping weights or rediscovering a codec."""
+    from api.error_handlers import ValidationError
+    from core.models.components.wiring import temporal_spec_for_arch
+    if temporal_spec_for_arch(arch) is None:
+        return None
+    components = getattr(manager, f"{arch}_components", None) or {}
+    try:
+        if arch == "minimax_h3":
+            from core.models.minimax_h3.generation_codec import generation_contract
+            return generation_contract(components)
+        from core.models.components.video_latent_adapter import NormalizedVideoVAE
+        model = components.get("transformer")
+        inner = getattr(model,"transformer",model)
+        contract = getattr(inner,"_video_codec_contract",None)
+        vae = components.get("vae")
+        if contract is None and not isinstance(vae,NormalizedVideoVAE):
+            return None
+        pair = getattr(inner,"_video_latent_alignment",None)
+        if (not isinstance(vae,NormalizedVideoVAE) or vae.contract != contract
+                or pair is None or not pair.ready):
+            raise ValueError("Loaded video codec requires its calibrated aligned backbone")
+        if arch == "ltx2" and contract.temporal_policy == "minimax_h3_chunks_v1":
+            raise ValueError("LTX generation does not yet implement the H3 chunk frame clock")
+        expected = (contract.temporal_scale,contract.image.spatial_scale,contract.image.spatial_scale)
+        if (model.config.in_channels != contract.image.latent_channels
+                or tuple(model.config.vae_scale_factors) != expected
+                or components.get("latent_channels") != contract.image.latent_channels
+                or components.get("vae_scale_factor_spatial") != contract.image.spatial_scale
+                or components.get("vae_scale_factor_temporal") != contract.temporal_scale):
+            raise ValueError("Loaded video codec geometry disagrees with its backbone")
+        return contract
+    except (ValueError,AttributeError,TypeError) as exc:
+        raise ValidationError("Loaded video codec contract is invalid",detail=str(exc)) from exc
+
+
 def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
-                            *, frame_key: Optional[str] = "num_frames") -> List[str]:
+                            *, frame_key: Optional[str] = "num_frames", video_codec_contract=None) -> List[str]:
     """Validate (and, where the arch says so, SNAP) a video request's geometry.
 
     Spec-driven: every rule comes from the arch's ``TemporalSpec``
@@ -1761,6 +1797,8 @@ def validate_video_geometry(params: Dict[str, Any], arch: Optional[str],
     from core.models.components.wiring import temporal_spec_for_arch
 
     spec = temporal_spec_for_arch(arch)
+    from core.models.components.video_latent_adapter import temporal_spec_for_codec
+    spec = temporal_spec_for_codec(spec,video_codec_contract)
     warnings: List[str] = []
     if spec is None:
         return warnings

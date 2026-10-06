@@ -1295,6 +1295,11 @@ paths:
         (LTX-2.3-shaped) values; an omitted field on MiniMax-H3 resolves to the
         MiniMax-H3 overlay instead.
 
+        A native checkpoint with a calibrated bundled video-codec swap uses
+        that codec's frame lattice and spatial alignment for validation; the
+        model's FPS, production envelope and trained-range warnings remain.
+        The native-codec constraints below describe unmodified checkpoints.
+
         **LTX-2.3 constraints (validated before generation):**
         - `width` and `height` must both be divisible by 32.
         - `num_frames` must satisfy (num_frames - 1) % 8 == 0 (e.g. 9, 17, ..., 121).
@@ -1476,7 +1481,8 @@ paths:
           produces exactly the layout it produced before placement existed.
         - Two resolved indices may not collide, and every index must fall in
           `[0, num_frames - 1]` AFTER `num_frames` has been snapped to the
-          `17n + 5` grid. Because the server does that snapping, `-1` is the
+          native `17n + 5` grid (a calibrated bundled codec uses its own
+          frame lattice and spatial alignment). Because the server does that snapping, `-1` is the
           only way to name the last frame reliably.
         - The anchor at frame 0, if there is one, is STRETCHED onto
           (`width`, `height`); every other anchor is aspect-preserving
@@ -1653,7 +1659,9 @@ paths:
         - a soundtrack is truncated to the generated duration and resampled to
           the audio VAE's 32 kHz, mono upmixed to stereo.
 
-        **The same MiniMax-H3 constraints as `/generate/txt2vid` apply**:
+        A calibrated bundled video-codec swap uses the loaded codec's frame
+        lattice and spatial alignment, retaining model FPS and production bounds.
+        **The same native MiniMax-H3 constraints as `/generate/txt2vid` apply**:
         `width`/`height` divisible by 32 with SushiUI's short edge <= 768 /
         long edge <= 1344 policy restriction; `num_frames` of the form
         `17 * n + 5`, at least 124 with no enforced maximum (362 is
@@ -2300,7 +2308,11 @@ paths:
         of the returned frames and of an FFV1 encode (`video_lossless`); the
         default H.264 mp4 is lossy for preserved and generated frames alike.
 
-        **Granularity.** The video VAE stores frames in groups of up to 4
+        A calibrated bundled video-codec swap uses its own frame-group spans,
+        frame lattice and spatial alignment. Model production bounds remain;
+        an invalid input clip is refused rather than resized to the new lattice.
+
+        **Native granularity.** The video VAE stores frames in groups of up to 4
         (MiniMax-H3's temporal chunking is `(1, 4, 4, 4, 4)` repeating), and a
         group is regenerated or preserved as a whole. A requested range is
         therefore expanded OUTWARD to group boundaries -- never shrunk, so the
@@ -2807,6 +2819,11 @@ paths:
         output length in the response's `warnings[]` when it differs from the
         request. Conditioning uses boundary frames only; interior source motion
         is not provided to the model.
+
+        A calibrated bundled video-codec swap uses its own frame lattice,
+        spatial alignment and continuation-overlap boundaries. Model production
+        bounds, FPS and placement rules remain. LTX free placement validates the
+        full output timeline against the loaded codec's lattice.
 
         **Strict preservation guarantee:** the placed input frames in the
         returned video are BYTE-IDENTICAL to the (trimmed + preprocessed)

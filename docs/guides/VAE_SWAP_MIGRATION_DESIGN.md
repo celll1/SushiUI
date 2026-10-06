@@ -10,8 +10,48 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 最新到達点: H3公式全重みでtarget-native /32 VAE・paired_spatial・2段U-netを併用した
 Full更新、native bundle保存復元、optimizer精度保持と次更新まで通過。
-公式TE/audio条件付け・生成画質受入と公開Full経路の解放は未完。
+公式TEによる条件付け・生成decodeまで通過したが、H3→LTXの未学習生成画質は未受入。
+公開Full経路の解放と他モデルの公式全重みでの受入は未完。
 以下は段階別の検証記録であり、途中の未完事項は後続の結果で更新する。
+
+H3公式captionで31回denoise→本番`decode_video`→73枚・256×256 RGB出力まで確認した。
+最初の直接decode検証はFP32 latent/BF16 VAEのdtype不一致で失敗したが、本番helperは
+VAE dtypeへのcastを既に持っていた。検証を同helperへ揃え、decode前にlatentを保存した。
+元H3/元VAEの同prompt・seedでは狐の概形が出る。交換先LTX VAE・2段U-net・合成校正
+のbundleは色の塊になり、画質受入にはならない。bundleには合成条件でのFull更新2回が
+含まれるため、厳密な未更新モデル同士のA/Bではない。
+
+DBで現在のratingタグを再確認したgeneral画像のみを校正/評価に使用した。
+6枚・256解像度の校正と独立2枚の評価では、交換先VAE単体の再構成に対するPSNRは
+11.16/15.65dB。40枚・512解像度で102,400観測を校正し、未使用2枚で16.74/19.15dB。
+評価画像と解像度が異なるため、この差を枚数だけの効果とは解釈しない。
+後者は概形が残るがぼけ/格子状の崩れがあり、元/交換先VAE単体の再構成は概形を保つ。
+画像・校正係数・検証bundleはgitに含めず、`local/verification/h3_official_quality/`に保持する。
+本番の校正画像選択をgeneralへ制限する変更ではない。
+
+40枚の校正を生成へ適用しても崩れは残り、U-netを外した比較でも狐の概形は戻らなかった。
+入力3×3係数が白色ノイズを変換した際の各native channelの標準偏差は0.328〜1.061、
+出側native channel部分は0.742〜4.269だった。これは係数の静的な振幅評価であり、
+生成中の全分布や原因の確定ではない。追加headをclean residualとして解釈してclean latent
+を介して戻すローカル試験も概形を回復できず、本番には採用しない。
+
+targetの生成gridは`[10,8,8]`・160 video rows、nativeは`[22,16,16]`・1,408 rows。
+target/2段U-netの31評価は49層offloadで約101秒、GPU全配置で7.25秒だった。
+後者のdenoise中の観測CUDA allocated/reservedは37.73/37.88GiB、RSSは約3.86GiB。
+これは小解像度・caption 25tokensの単一測定であり、元モデルとの速度比や大解像度での
+配置可否を主張しない。GPU全配置の結果は本番のblock swap defaultを変更する根拠ではない。
+
+公式H3が生成した73frameの狐動画を元VAEでdecodeして交換先VAEでencodeし、公式TEの
+25token条件と生成済みnative audio latentを使うFull更新も2回通過した。
+全638tensorの各step更新と有限gradientを確認し、lossは2.9351/3.3067（時刻は別々）。
+総93.59秒、観測RSS最大45.72GiB、CUDA reserved約8.28GiB。
+VAEは符号化後CPUへ戻して学習し、ユーザー画像はこの学習テストに使っていない。
+audio VAEによる符号化・音質の受入や画質回復学習の証拠ではない。
+公開Full拒否の理由は古い「33Bで48GBに収まらない」から、実際の公開trainer/API未受入へ
+更新した。trainer fallbackもAPI capabilityの同じ理由を読み、公開gate自体は維持する。
+変更Pythonのcompile・CUDA未初期化の実importと、API/trainer両拒否理由の一致を確認。
+training capability CPU回帰9件が通過した。frontendの理由は既存string mapを読むため
+型/操作経路は変わらず、owner専用build/type-checkは実行していない。
 
 生成側も`cpu_master_layout.py`を共用し、frozen hook conductorとforward-only block
 offloaderでpageable CPU masterを借用する。H2D-onlyのpinning指定無視と初期配置時の

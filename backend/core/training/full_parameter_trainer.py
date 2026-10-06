@@ -229,13 +229,11 @@ class FullParameterTrainer(BaseTrainer):
             self.adapter = Ltx2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Ltx2FullParameterAdapter")
         elif self.is_minimax_h3:
-            # The staged aligned adapter still lacks public calibration/residency acceptance.
+            from api.arch_capabilities import TRAINING_UNSUPPORTED
             raise ValueError(
-                "Full fine-tuning is not supported for MiniMax-H3. Its DiT is a 33 B dense "
-                "transformer: parameters, gradients and optimizer state do not fit the "
-                "single-GPU 48 GB envelope this integration targets, and the released base is "
-                "weight-only FP8 (a full fine-tune would have to dequantize it first). Use "
-                "training_method='lora' -- LoRA is measured at 22.45 GB peak on this box.")
+                "Full fine-tuning is not supported for MiniMax-H3: "
+                f"{TRAINING_UNSUPPORTED['minimax_h3']['full_finetune']}. "
+                "Use training_method='lora'.")
         elif self.is_acestep:
             self.adapter = AceStepFullParameterAdapter(self)
             print(f"{self.log_prefix} Using AceStepFullParameterAdapter")

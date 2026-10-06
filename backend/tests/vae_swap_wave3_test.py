@@ -342,8 +342,8 @@ def test_a_pixel_minit2i_checkpoint_is_refused_a_swap():
     ok, reason = handler.check_vae_compatibility(_facts(latent_channels=4),
                                                  trainer=latent)
     assert ok, reason
-    refused, why = handler.check_vae_compatibility(_facts(ndim=5), trainer=latent)
-    assert not refused and "5-D" in why
+    ok, reason = handler.check_vae_compatibility(_facts(ndim=5), trainer=latent)
+    assert ok, reason  # Paired swaps wrap independent image frames.
 
 
 def test_minit2i_peeks_its_geometry_out_of_a_saved_checkpoint(tmp_path):
@@ -464,6 +464,7 @@ def test_a_minit2i_run_swaps_its_latent_space_through_the_arch_handler(tmp_path)
     directory = _standalone_vae_dir(tmp_path, 4, "vae4")
     trainer = _trainer("minit2i", _minit2i(16, patch_size=2),
                        _tiny_vae(16), _swap_config(directory))
+    trainer.config["vae_swap_new_channel_init"] = "zero"
 
     apply_latent_space(trainer, None)
 

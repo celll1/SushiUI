@@ -35,7 +35,7 @@ def trainer(vae):
     unet.conv_in = torch.nn.Conv2d(4, 8, 3)
     unet.conv_out = torch.nn.Conv2d(8, 4, 3)
     return SimpleNamespace(
-        vae=vae, unet=unet, config={}, vae_dtype=torch.float32,
+        vae=vae, unet=unet, config={"vae_swap_new_channel_init":"zero"}, vae_dtype=torch.float32,
         base_vae_identity=None, arch=SD15ArchHandler(None), bundle_vae=True,
     )
 

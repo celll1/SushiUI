@@ -45,13 +45,19 @@ class MiniT2IMixin:
             seed = random.randint(0, 2**32 - 1)
         req_w = int(params.get("width", default_w))
         req_h = int(params.get("height", default_h))
-        width, height = normalize_resolution(req_w, req_h)
+        from core.models.minit2i.vae_alignment import latent_geometry, generation_token_stride
+        from core.models.components.latent_adapter import topology_alignment
+        import math
+        transformer = self.minit2i_components["transformer"]
+        alignment = generation_token_stride(transformer) * math.lcm(*topology_alignment(
+            getattr(transformer, "_residual_unet_spec", None)))
+        width, height = normalize_resolution(req_w, req_h, align=alignment)
         if (width, height) != (req_w, req_h):
             print(f"[MiniT2I] Resolution aligned: {req_w}x{req_h} -> {width}x{height}")
         cfg = self.minit2i_components["transformer"].mmjit_config
         scheduler = self.minit2i_components["scheduler"]
         vae_type = self.minit2i_components.get("vae_type", "none")
-        vsf = int(self.minit2i_components.get("vae_scale_factor", 8))
+        vsf, external_channels = latent_geometry(transformer)
         return {
             "seed": seed,
             "prompt": params.get("prompt", ""),
@@ -65,7 +71,7 @@ class MiniT2IMixin:
             # Latent-space fields (vae_type != "none"): work in [1, C, H/vsf, W/vsf].
             "vae_type": vae_type,
             "is_latent": vae_type != "none",
-            "channels": int(cfg.in_channels),
+            "channels": external_channels,
             "noise_scale": float(getattr(cfg, "noise_scale", 2.0)),
             "vae_scale_factor": vsf,
             "latent_h": height // vsf,

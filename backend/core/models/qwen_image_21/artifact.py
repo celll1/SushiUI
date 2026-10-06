@@ -155,8 +155,12 @@ def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> t
         topology = validate_topology_identity(topology, config)
     state, metadata = read_state_dict(path)
     variant = _validate_component(path, metadata, "transformer")
+    config = dict(config)
+    declaration = config.pop("vae_alignment", None)
     with init_empty_weights():
         model = QwenImage21Transformer2DModel(**config)
+        from .vae_alignment import install
+        install(model, declaration)
     from .partition_global import stash_partition_global_payload
     stash_partition_global_payload(model, state, metadata)
     if variant == "int8_convrot":
@@ -168,6 +172,8 @@ def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> t
         if swapped != len(layers):
             raise ValueError(f"{path}: installed {swapped}/{len(layers)} ConvRot layers")
     model = _finish_load(model, state, "Qwen-Image 2.1 transformer")
+    if declaration is not None and not model.vae_latent_bridge.ready:
+        raise ValueError("Saved Qwen VAE alignment is not calibrated")
     if variant == "bf16":
         model.to(dtype=dtype)
     restore_topology(model, topology)

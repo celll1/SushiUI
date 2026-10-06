@@ -145,7 +145,7 @@ def load_qwen_image_21_components(
             )
         components = load_qwen_image_21_components(
             companion_path, torch_dtype=torch_dtype,
-            load_text_encoder=load_text_encoder if component == "transformer" else False,
+            load_text_encoder=load_text_encoder if component == "transformer" or metadata.get("train_text_encoder") == "0" else False,
             load_transformer=component == "transformer",
         )
         config = json.loads(metadata.get("config") or "{}")
@@ -164,16 +164,23 @@ def load_qwen_image_21_components(
                 key[len("text_encoder."):]: value for key, value in state.items()
                 if key.startswith("text_encoder.")
             }
-            if not transformer_state or not te_state or len(transformer_state) + len(te_state) != len(state):
+            vae_state = {key:value for key,value in state.items() if key.startswith("vae.")}
+            declaration = config.pop("vae_alignment", None)
+            if (not transformer_state or (not te_state and declaration is None)
+                    or len(transformer_state) + len(te_state) + len(vae_state) != len(state)):
                 raise ValueError(f"{model_path}: incomplete Qwen-Image 2.1 training bundle")
             with init_empty_weights():
                 transformer = QwenImage21Transformer2DModel(**config)
+                from .vae_alignment import install
+                install(transformer, declaration)
             from .partition_global import stash_partition_global_payload
             stash_partition_global_payload(transformer, transformer_state, metadata)
             transformer = _finish_load(transformer, transformer_state, "Qwen-Image 2.1 transformer")
+            if declaration is not None and not transformer.vae_latent_bridge.ready:
+                raise ValueError("Saved Qwen VAE alignment is not calibrated")
             transformer.to(dtype=torch_dtype)
             restore_topology(transformer, topology)
-            if load_text_encoder:
+            if load_text_encoder and te_state:
                 te_config_path = (
                     components["manifest"].text_encoder_config
                     if components.get("manifest") is not None else
@@ -193,6 +200,10 @@ def load_qwen_image_21_components(
         components["transformer"] = transformer
         components["transformer_variant"] = variant
         components["checkpoint_path"] = model_path
+        declaration = getattr(transformer, "config", {}).get("vae_alignment")
+        if declaration is not None:
+            from .vae_alignment import load_saved_vae
+            components["vae"], components["vae_identity"] = load_saved_vae(model_path, declaration, torch_dtype)
     else:
         raise ValueError(
             "Qwen-Image 2.1 uses a split component artifact. Select its directory containing manifest.json."
@@ -209,6 +220,10 @@ def load_qwen_image_21_components(
         latent_channels=64,
         pixel_alignment=32,
     )
+    declaration = getattr(components.get("transformer"), "config", {}).get("vae_alignment")
+    if declaration is not None:
+        components.update(vae_scale_factor=declaration["new_scale"],
+                          latent_channels=declaration["new_channels"], pixel_alignment=declaration["new_scale"]*2)
     return components
 
 

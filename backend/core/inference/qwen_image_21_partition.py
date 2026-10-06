@@ -215,7 +215,9 @@ class PartitionExecutor:
         target_count = plan.height * plan.width
         prefix = hidden_states[:, :-target_count]
         grid = hidden_states[:, -target_count:].reshape(hidden_states.shape[0], plan.height, plan.width, -1)
-        self._prepare_modules(grid)
+        from core.models.qwen_image_21.vae_alignment import map_global_grid
+        global_grid = map_global_grid(self.model, grid, kwargs.get("timestep"))
+        self._prepare_modules(global_grid)
         prediction = torch.empty_like(grid)
         def identity(tensor):
             if tensor is None:
@@ -246,7 +248,7 @@ class PartitionExecutor:
             for module, source in self.modules.values():
                 strength = self._strength(source)
                 if strength:
-                    value = module(grid, box) * strength
+                    value = module(global_grid, box) * strength
                     residual = value if residual is None else residual + value
             if residual is not None and prefix.shape[1]:
                 residual = torch.cat([residual.new_zeros(grid.shape[0], prefix.shape[1], residual.shape[-1]), residual], dim=1)

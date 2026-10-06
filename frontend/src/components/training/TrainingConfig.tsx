@@ -4384,7 +4384,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   )}
 
-                  {baseModelArch === "ming_image_01" && trainingMethod === "full_finetune"
+                  {(baseModelArch === "ming_image_01" || baseModelArch === "qwen_image_21") && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">

@@ -29,6 +29,27 @@ class QwenImage21ArchHandler(ArchHandler):
     # image tokens; the generic 24e-6 image seed under-predicts this architecture.
     activation_dispatch_seed_floor = 3.5e-3
 
+    def resolve_wiring(self, trainer):
+        from core.models.components.latent_adapter import NormalizedFrameVAE
+        vae = getattr(trainer, "vae", None)
+        if isinstance(vae, NormalizedFrameVAE):
+            self.pixel_align = vae.spatial_scale_factor * 2
+            return self.wiring.replace(latent_channels=vae.config.z_dim,
+                vae_scale_factor=vae.spatial_scale_factor, vae_norm="per_channel")
+        return self.wiring
+
+    def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
+        scale = facts.get("scale_factor")
+        if facts.get("ndim") not in (4, 5) or type(scale) is not int or scale < 1:
+            return False, "Qwen VAE swap requires an image codec with declared spatial compression"
+        if scale % 16 and 16 % scale:
+            return False, "Qwen VAE swap requires integer spatial scale relative to 16x"
+        return True, None
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager):
+        from core.models.qwen_image_21.vae_alignment import calibrate
+        calibrate(trainer, datasets)
+
     def dit_partition_adapter(self):
         from core.training.qwen_partition import QwenImage21PartitionAdapter
         return QwenImage21PartitionAdapter()

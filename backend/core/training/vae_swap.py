@@ -20,11 +20,11 @@ def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
     if mode == "auto":
-        return "paired_spatial" if arch == "ming_image_01" else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch != "ming_image_01":
-        raise ValueError("paired_spatial is currently wired for Ming; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21"):
+        raise ValueError("paired_spatial is currently wired for Ming and Qwen 2.1; select zero for this architecture")
     return mode
 
 
@@ -191,8 +191,8 @@ def preflight_vae_swap(
     check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
     mode = initialization_mode(config, arch)
-    if arch == "ming_image_01" and mode != "paired_spatial":
-        raise ValueError("Ming VAE swaps require paired_spatial initialization")
+    if arch in ("ming_image_01", "qwen_image_21") and mode != "paired_spatial":
+        raise ValueError(f"{arch} VAE swaps require paired_spatial initialization")
 
     try:
         form, value = parse_vae_source(source)

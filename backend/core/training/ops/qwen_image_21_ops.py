@@ -348,6 +348,12 @@ def load_components(trainer) -> None:
     trainer.tokenizer = trainer.processor.tokenizer
     trainer.tokenizer_2 = None
     trainer.t5_tokenizer = None
+    from core.models.qwen_image_21.vae_alignment import configure_swap
+    configure_swap(trainer, components)
+    if components.get("vae_identity") is not None:
+        trainer.vae_identity = components["vae_identity"]
+    trainer.wiring = trainer.arch.resolve_wiring(trainer)
+    trainer.vae_latent_channels = trainer.wiring.latent_channels
     trainer.qwen_image_21_pipeline = build_pipeline(components)
     # A resumed full checkpoint may itself name another checkpoint.  Preserve
     # the loader's terminal component source so retention cannot break the next
@@ -888,8 +894,11 @@ def train_step_partitioned_backward(
             torch.ones(states.shape[0], region.input.tokens // 4, dtype=torch.bool, device=trainer.device),
         ], dim=1)
         global_adapter = getattr(trainer.transformer, "qwen_partition_global_adapter", None)
-        residual = (global_adapter(noisy_grid if indices is None else noisy_grid[indices], region.input)
-                    if global_adapter is not None else None)
+        residual = None
+        if global_adapter is not None:
+            from core.models.qwen_image_21.vae_alignment import map_global_grid
+            global_grid = noisy_grid if indices is None else noisy_grid[indices]
+            residual = global_adapter(map_global_grid(trainer.transformer, global_grid, step_sigma), region.input)
         box = region.input
         key = (box.top, box.left, box.bottom, box.right)
         if key not in positions_by_box:

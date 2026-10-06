@@ -206,3 +206,20 @@ identical encoded latents. This caught and fixed Qwen2.1's Conv2d-weight
 storage being mistaken for a 4-D interface on restoration: its causal
 wrapper still consumes 5-D latents. No dataset images or fixed image-derived
 matrices are included in these probes or checkpoints.
+
+### Shared codec and Qwen wiring
+
+`components/latent_adapter.py` now owns the codec declaration, target-native
+plan, bidirectional calibration and normalized independent-frame facade.
+Qwen uses the shared bridge at image-token boundaries: reference blocks are
+clean, the target uses sigma, and epsilon-minus-clean output subtracts bias.
+Full checkpoints bundle the target codec and restore it with the bridge; TE
+still comes from the companion when it was not trained. Global adapter inputs
+are mapped to the internal domain, keeping coordinate columns during resize.
+
+`examples/vae_swap_qwen_bridge_probe.py` uses a small randomly initialized
+7-block Qwen model, synthetic tensors, two nested U-Net regions and BF16 GPU
+checkpointing. On RTX 6000 Ada, forward/backward produced finite loss
+0.129769, output `[1,99,8]`, nonzero bridge/extra-channel gradients and peak
+allocated 16.97 MiB. This verifies GPU execution, not real-model speed or
+quality. No dataset images or learned fixed calibration matrices are included.

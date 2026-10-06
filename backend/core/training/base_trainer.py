@@ -15003,10 +15003,10 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
-        if getattr(self, "is_ming_image_01", False):
+        if getattr(self, "is_ming_image_01", False) or getattr(self, "is_qwen_image_21", False):
             import math
-            from core.models.ming_image_01.residual_unet import spatial_alignment
-            h, w = spatial_alignment(self.transformer)
+            from core.models.components.latent_adapter import topology_alignment
+            h, w = topology_alignment(getattr(self.transformer, "_residual_unet_spec", None))
             alignment *= math.lcm(h, w)
         return alignment
 
@@ -19219,7 +19219,8 @@ class BaseTrainer(ABC):
                                 elif self.is_krea2 or self.is_qwen_image_21:
                                     # Krea 2: packed latent [1, (H//16)*(W//16), C*4];
                                     # C is 16 unless this run swapped its VAE.
-                                    expected_seq_len = (height // 16) * (width // 16)
+                                    latent_stride = (self.wiring.vae_scale_factor if self.is_qwen_image_21 else 16)
+                                    expected_seq_len = (height // latent_stride) * (width // latent_stride)
                                     expected_width = int(getattr(
                                         getattr(self, "wiring", None),
                                         "latent_channels", 0) or (64 if self.is_qwen_image_21 else 16))
@@ -20353,7 +20354,8 @@ class BaseTrainer(ABC):
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
                         if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
-                            batch_lens_latent_shape = (height // 16, width // 16)
+                            latent_stride = self.wiring.vae_scale_factor if self.is_qwen_image_21 else 16
+                            batch_lens_latent_shape = (height // latent_stride, width // latent_stride)
 
                         self._collect_concept_sample_loss = (
                             (self.is_qwen_image_21 or getattr(self, "is_ming_image_01", False))

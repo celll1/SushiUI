@@ -12,8 +12,8 @@ from PIL import Image, ImageFilter
 GRID_ALIGN = 32
 
 
-def _aligned(value: int) -> int:
-    return max(GRID_ALIGN, int(value) // GRID_ALIGN * GRID_ALIGN)
+def _aligned(value: int, alignment: int = GRID_ALIGN) -> int:
+    return max(alignment, int(value) // alignment * alignment)
 
 
 class QwenImage21Mixin:
@@ -169,13 +169,14 @@ class QwenImage21Mixin:
         self, params: Dict[str, Any], *, images=None, progress_callback=None, step_callback=None
     ):
         pipe = self._qwen_image_21_pipe()
+        vae_scale_factor = getattr(pipe, "vae_scale_factor", GRID_ALIGN // 2)
         seed = int(params.get("seed", -1))
         if seed < 0:
             seed = random.randint(0, 2**31 - 1)
         generator = torch.Generator(device="cpu").manual_seed(seed)
         steps = int(params.get("steps", 40) or 40)
-        width = _aligned(params.get("width", 1024) or 1024)
-        height = _aligned(params.get("height", 1024) or 1024)
+        width = _aligned(params.get("width", 1024) or 1024, vae_scale_factor * 2)
+        height = _aligned(params.get("height", 1024) or 1024, vae_scale_factor * 2)
         cfg_scale = float(params.get("cfg_scale", 1.0) or 1.0)
         negative_prompt = (params.get("negative_prompt") or "") if cfg_scale > 1 else None
 
@@ -210,7 +211,7 @@ class QwenImage21Mixin:
         ]
         from core.inference.qwen_image_21_partition import resolve_partition_plan
         try:
-            plan = resolve_partition_plan(params.get("qwen_image_21_partition"), height // 16, width // 16)
+            plan = resolve_partition_plan(params.get("qwen_image_21_partition"), height // vae_scale_factor, width // vae_scale_factor)
         except ValueError as exc:
             from api.error_handlers import ValidationError
             raise ValidationError(str(exc)) from exc
@@ -241,7 +242,7 @@ class QwenImage21Mixin:
                 if plan is not None or images or reference_guides or style_transfers:
                     raise ValidationError("Residual U-Net generation currently requires full-frame txt2img without references or styles")
                 try:
-                    preview_plan(topology, height // 16, width // 16)
+                    preview_plan(topology, height // vae_scale_factor, width // vae_scale_factor)
                 except ValueError as exc:
                     raise ValidationError(str(exc)) from exc
                 params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}

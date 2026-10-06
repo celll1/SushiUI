@@ -1215,6 +1215,7 @@ def test_qwen_auto_uses_measured_bounded_convrot_backward_cache():
 
 def test_qwen_transient_convrot_training_uses_same_artifact_contract():
     trainer = SimpleNamespace(
+        transformer=SimpleNamespace(),
         qwen_convrot_training_forward="transient_bf16",
         learning_rate=1e-4,
         unet_lr=None,
@@ -1640,6 +1641,7 @@ def test_lora_save_classify_and_rebuild_round_trip():
 
 def test_convrot_training_metadata_and_generation_base_gate():
     trainer = SimpleNamespace(
+        transformer=SimpleNamespace(),
         qwen_convrot_training_forward="cached_bf16",
         learning_rate=1e-4,
         unet_lr=None,
@@ -1713,6 +1715,7 @@ def test_generation_callback_uses_shared_progress_contract():
 
     class _Harness(QwenImage21Mixin):
         cancel_requested = False
+        qwen_image_21_components = {"transformer": SimpleNamespace()}
 
         def _qwen_image_21_pipe(self):
             return _Pipe()
@@ -1758,6 +1761,7 @@ def test_qwen_reference_controls_reach_pipeline_and_real_controlnet_refuses():
 
     class _Harness(QwenImage21Mixin):
         cancel_requested = False
+        qwen_image_21_components = {"transformer": SimpleNamespace()}
         _qwen21_lora_session_instance = _Session()
 
         def _qwen_image_21_pipe(self):

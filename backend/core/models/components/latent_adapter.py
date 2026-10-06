@@ -12,6 +12,16 @@ from .vae_alignment import SpatialLatentBridge, SpatialBridgeCalibrator
 from .vae_registry import normalize, denormalize
 
 
+def topology_alignment(spec):
+    factors, height, width = {}, 1, 1
+    for region in (spec or {}).get("regions", []):
+        ph, pw = factors.get(region["parent"], (1, 1))
+        h, w = region["down_factor"]
+        factors[region["id"]] = ph*h, pw*w
+        height, width = lcm(height, ph*h), lcm(width, pw*w)
+    return height, width
+
+
 @dataclass(frozen=True)
 class ImageCodecContract:
     latent_channels: int
@@ -60,6 +70,8 @@ def validate_declaration(value):
         raise ValueError("VAE alignment source identity is missing")
     if value.get("norm") not in ("shift_scale", "per_channel", "batchnorm", "identity"):
         raise ValueError("VAE alignment normalization is missing")
+    if value["norm_pack"] not in (1, 2) or (value["norm_pack"] != 1 and value["norm"] != "batchnorm"):
+        raise ValueError("Only BatchNorm codecs use the supported 2x2 normalization packing")
     return value
 
 

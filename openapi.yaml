@@ -29025,7 +29025,7 @@ components:
           type: 'string'
           enum: ['auto', 'zero', 'paired_spatial']
           default: 'auto'
-          description: Auto selects paired spatial calibration for Ming using the target VAE's token grid. Other architectures retain legacy zero initialization; explicit paired_spatial is currently Ming-only. RGB targets do not retain alpha. Existing aligned checkpoints restore their weights without recalibration.
+          description: Auto selects paired spatial calibration for Ming and Qwen-Image 2.1 using the target VAE's token grid. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing aligned checkpoints restore their weights without recalibration. Qwen initializes swaps from bf16 full checkpoints.
         vae_swap_calibration_samples:
           type: integer
           minimum: 2

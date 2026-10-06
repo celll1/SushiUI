@@ -48,6 +48,7 @@ and the DiT are both wanted at once.
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import os
+import math
 import random
 import time
 import weakref
@@ -97,6 +98,10 @@ def select_minimax_h3_decode_vae(
     it is absent. Any other ``latent_frames`` always decodes through the
     video VAE with ``used_fallback=False``.
     """
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+
+    if isinstance(components.get("vae"), NormalizedVideoVAE):
+        return components["vae"], "vae", False
     if latent_frames == 1:
         image_vae = components.get("image_vae")
         if image_vae is not None:
@@ -581,8 +586,11 @@ class MiniMaxH3Mixin:
         from core.inference.fbcache import fbcache_active
         fbcache_on = fbcache_active(params) and not params.get("spectrum_enable", False)
         residual_on = getattr(transformer, "_residual_unet_spec", None) is not None
-        if residual_on and (fbcache_on or params.get("spectrum_enable", False) or skip_blocks or probe_on):
-            raise ValueError("MiniMax-H3 residual generation refuses caches, debug skips and probes")
+        aligned_on = getattr(transformer, "_video_latent_alignment", None) is not None
+        if (residual_on or aligned_on) and (fbcache_on or params.get("spectrum_enable", False) or skip_blocks or probe_on):
+            raise ValueError("MiniMax-H3 residual/aligned generation refuses caches, debug skips and probes")
+        from core.models.minimax_h3.generation_codec import aligned_execution_wrapper
+        wrapper_factory = aligned_execution_wrapper if aligned_on else MiniMaxH3BlockLoopWrapper
         num_blocks = len(transformer.transformer_blocks)
         if skip_blocks:
             # Validated HERE, before the device move below: raising inside
@@ -599,8 +607,8 @@ class MiniMaxH3Mixin:
 
         if blocks_to_swap <= 0:
             self._minimax_h3_move("transformer", device)
-            if residual_on or fbcache_on or skip_blocks or probe_on:
-                wrapper = MiniMaxH3BlockLoopWrapper(transformer)
+            if residual_on or aligned_on or fbcache_on or skip_blocks or probe_on:
+                wrapper = wrapper_factory(transformer)
                 components["transformer"] = wrapper
                 if fbcache_on:
                     print("[FBCache] MiniMax-H3 wrapper armed (cache is opt-in)")
@@ -645,7 +653,7 @@ class MiniMaxH3Mixin:
         # ``warn_unoffloaded_branches``.
         self._minimax_h3_lora_session.warn_unoffloaded_branches("transformer")
 
-        wrapper = MiniMaxH3BlockLoopWrapper(transformer, block_offloader=offloader)
+        wrapper = wrapper_factory(transformer, block_offloader=offloader)
         components["transformer"] = wrapper
         print(f"[MiniMax-H3] Block Swap enabled: {blocks_to_swap} of {num_blocks} blocks "
               f"swapped (MiniMaxH3BlockLoopWrapper active)")
@@ -689,6 +697,9 @@ class MiniMaxH3Mixin:
         # the CPU already and this is a no-op for them; the resident blocks and
         # the auxiliary modules come back.
         self._minimax_h3_move("transformer", "cpu")
+        if raw is not None and getattr(raw, "_video_latent_alignment", None) is not None:
+            from core.models.minimax_h3.generation_codec import aligned_execution_wrapper
+            components["transformer"] = aligned_execution_wrapper(raw)
 
 
     @property
@@ -2733,10 +2744,18 @@ class MiniMaxH3Mixin:
         # `TemporalSpec` + the txt2vid route). Re-derive the geometry rather than
         # trusting a caller-supplied latent shape: the VAE's chunking is what
         # decides it.
-        latent_frames = minimax_h3_latent_frames(num_frames)
-        spatial = int(components.get("vae_scale_factor_spatial", 16))
-        latent_height = height // spatial
-        latent_width = width // spatial
+        from core.models.minimax_h3.generation_codec import generation_contract, target_grid
+
+        video_codec_contract = generation_contract(components)
+        if video_codec_contract is None:
+            latent_frames = minimax_h3_latent_frames(num_frames)
+            spatial = int(components.get("vae_scale_factor_spatial", 16))
+            latent_height = height // spatial
+            latent_width = width // spatial
+        else:
+            inner = getattr(components["transformer"], "transformer", components["transformer"])
+            latent_frames, latent_height, latent_width = target_grid(video_codec_contract, num_frames, height, width,
+                topology=getattr(inner, "_residual_unet_spec", None))
         num_audio_latents = ops.audio_latent_frames(num_frames, fps=float(components.get("fps", 24.0)))
 
         seed = params.get("seed", -1)
@@ -2774,6 +2793,9 @@ class MiniMaxH3Mixin:
                 fps=float(components.get("fps", 24.0)),
                 audio_sample_rate=int(components.get("audio_sample_rate", 32000)),
                 image_canvas=image_canvas,
+                **({} if video_codec_contract is None else {
+                    "video_codec_contract":video_codec_contract,
+                    "multiple":math.lcm(refs.CANVAS_MULTIPLE, 2*video_codec_contract.image.spatial_scale)}),
             )
 
         print(f"[MiniMax-H3] {label}: {width}x{height} num_frames={num_frames} "
@@ -3048,6 +3070,7 @@ class MiniMaxH3Mixin:
                 pin_target_audio=pinned_audio_rows is not None and not pinned_audio_latents,
                 pinned_audio_latents=tuple(pinned_audio_latents),
                 device=torch_device,
+                **({} if video_codec_contract is None else {"video_codec_contract": video_codec_contract}),
             )
         else:
             layout_kwargs = {
@@ -3068,6 +3091,8 @@ class MiniMaxH3Mixin:
                 layout_kwargs["pinned_video_row_indices"] = tuple(pinned_video_row_indices)
             if pinned_audio_latents:
                 layout_kwargs["pinned_audio_latents"] = pinned_audio_latents
+            if video_codec_contract is not None:
+                layout_kwargs["video_codec_contract"] = video_codec_contract
             layout = ops.build_packed_layout(
                 num_text_tokens, latent_frames, latent_height, latent_width, num_audio_latents,
                 **layout_kwargs,

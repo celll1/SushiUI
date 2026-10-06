@@ -1268,6 +1268,13 @@ def encode_visual_condition(
     """
     torch_device = torch.device(device)
     vae_dtype = next(vae.parameters()).dtype
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+
+    if isinstance(vae, NormalizedVideoVAE):
+        pixels = torch.from_numpy(np.ascontiguousarray(frames)).to(torch_device, torch.float32)
+        pixels = pixels.permute(3, 0, 1, 2)[None]/127.5 - 1.0
+        posterior = vae.encode(pixels.to(vae_dtype), return_dict=True).latent_dist
+        return posterior.sample(generator=torch.Generator().manual_seed(int(encode_seed))).float()
     pix_mean = torch.tensor(list(pixel_mean), device=torch_device).view(1, -1, 1, 1, 1)
     pix_std = torch.tensor(list(pixel_std), device=torch_device).view(1, -1, 1, 1, 1)
     mean = torch.tensor(list(latents_mean), device=torch_device).view(1, -1, 1, 1, 1)
@@ -1956,9 +1963,15 @@ def decode_video(
       little of the 2.2 s.
     """
     torch_device = torch.device(device)
-    mean = torch.tensor(list(latents_mean), device=torch_device).view(1, -1, 1, 1, 1)
-    std = torch.tensor(list(latents_std), device=torch_device).view(1, -1, 1, 1, 1)
-    latents = latents.to(torch_device, torch.float32) * std + mean
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+
+    if isinstance(vae, NormalizedVideoVAE):
+        latents = latents.to(torch_device, torch.float32)
+        pixel_mean, pixel_std = (0.5,)*3, (0.5,)*3
+    else:
+        mean = torch.tensor(list(latents_mean), device=torch_device).view(1, -1, 1, 1, 1)
+        std = torch.tensor(list(latents_std), device=torch_device).view(1, -1, 1, 1, 1)
+        latents = latents.to(torch_device, torch.float32) * std + mean
 
     vae_dtype = next(vae.parameters()).dtype
     frames = vae.decode(latents.to(vae_dtype), return_dict=False)[0]

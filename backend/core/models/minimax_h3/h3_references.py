@@ -83,6 +83,7 @@ VAE_LATENTS_PER_CHUNK = 5
 # block. Upstream's snap-down arithmetic silently produces a shorter clip than
 # it claims below this, so it is refused with the reason instead.
 MIN_REFERENCE_VIDEO_FRAMES = 22
+MIN_REFERENCE_CONDITION_FRAMES = 13
 
 
 @dataclass
@@ -214,13 +215,21 @@ def resolve_canvas_size(
             max(multiple, round(width / multiple) * multiple))
 
 
-def snap_reference_video_frames(num_frames: int) -> int:
+def snap_reference_video_frames(num_frames: int, video_codec_contract=None) -> int:
     """The largest ``17 * n + 5`` at or below ``num_frames``.
 
     The video VAE encodes a reference without padding only on its own grid, and
     upstream snaps DOWN rather than up so a reference is never invented past its
     own end.
     """
+    if video_codec_contract is not None and video_codec_contract.temporal_policy != "minimax_h3_chunks_v1":
+        video_codec_contract._positive(num_frames)
+        scale = video_codec_contract.temporal_scale
+        snapped = (num_frames-1)//scale*scale+1
+        if snapped < MIN_REFERENCE_CONDITION_FRAMES:
+            raise ValueError(f"H3 reference conditioner requires at least {MIN_REFERENCE_CONDITION_FRAMES} compatible pixel frames")
+        video_codec_contract.latent_frames(snapped)
+        return snapped
     if num_frames < MIN_REFERENCE_VIDEO_FRAMES:
         raise ValueError(
             f"A MiniMax-H3 reference video must run at least {MIN_REFERENCE_VIDEO_FRAMES} frames at "
@@ -300,6 +309,7 @@ def normalize_reference_video(
     short_edge: int = CANVAS_SHORT_EDGE,
     max_pixels: int = CANVAS_MAX_PIXELS,
     canvas: Optional[Tuple[int, int]] = None,
+    video_codec_contract=None,
 ) -> np.ndarray:
     """One video reference onto 24 fps, its own canvas and the generated length.
 
@@ -326,7 +336,9 @@ def normalize_reference_video(
             frames, np.diff(slots, append=math.floor(frames.shape[0] * scale + 0.5)), axis=0)
 
     frames = frames[:num_frames]
-    if frames.shape[0] < MIN_REFERENCE_VIDEO_FRAMES:
+    if video_codec_contract is not None:
+        frames = frames[:snap_reference_video_frames(int(frames.shape[0]), video_codec_contract)]
+    elif frames.shape[0] < MIN_REFERENCE_VIDEO_FRAMES:
         raise ValueError(
             f"A MiniMax-H3 reference video must run at least {MIN_REFERENCE_VIDEO_FRAMES} frames "
             f"once resampled to {target_fps:g} fps and truncated to the generated length, got "
@@ -497,6 +509,7 @@ def normalize_references(
     reference_image_short_edge: int = REFERENCE_IMAGE_SHORT_EDGE,
     image_canvas: Optional[Tuple[int, int]] = None,
     multiple: int = CANVAS_MULTIPLE,
+    video_codec_contract=None,
 ) -> List[MiniMaxH3Reference]:
     """Every reference onto MiniMax-H3's own rates and resolutions, IN ORDER.
 
@@ -528,7 +541,8 @@ def normalize_references(
         elif reference.kind == "video":
             frames = normalize_reference_video(
                 reference.frames, float(reference.fps or fps), num_frames,
-                target_fps=fps, multiple=multiple, canvas=reference.video_canvas)
+                target_fps=fps, multiple=multiple, canvas=reference.video_canvas,
+                **({} if video_codec_contract is None else {"video_codec_contract":video_codec_contract}))
             normalized.append(MiniMaxH3Reference(
                 kind="video", frames=frames, fps=fps, audio=waveform,
                 sample_rate=None if waveform is None else audio_sample_rate,
@@ -579,7 +593,9 @@ def encode_reference_visuals(
             pixels = np.asarray(reference.image, dtype=np.uint8)[None]
         elif reference.kind == "video":
             frames = reference.frames
-            pixels = frames[:snap_reference_video_frames(int(frames.shape[0]))]
+            from core.models.components.video_latent_adapter import NormalizedVideoVAE
+            contract = vae.contract if isinstance(vae, NormalizedVideoVAE) else None
+            pixels = frames[:snap_reference_video_frames(int(frames.shape[0]), contract)]
         else:
             continue
         latents.append(encode_visual_condition(

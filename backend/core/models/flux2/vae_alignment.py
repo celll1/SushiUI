@@ -9,6 +9,60 @@ from core.models.components.spatial_swap import map_packed_image
 _contexts = ContextVar("flux2_codec_context",default=())
 
 
+def apply_swap(trainer,resolved,*,handler,module=None):
+    from dataclasses import replace
+    from core.models.components.latent_io import resize_latent_io,ResizeReport
+    from core.models.components.wiring import FLUX2_LATENT_IO
+    from core.models.components.spatial_swap import initialize_image_swap
+    from core.training.vae_swap import initialization_mode
+    from .residual_unet import native_config,restore_topology
+    from core.rewiring.spec import build_spec
+    model=trainer.transformer
+    pair=getattr(model,"vae_latent_bridge",None)
+    if pair is not None:
+        if module is None and resolved.source!=pair.declaration["source"]:
+            raise ValueError("Changing an aligned Flux2 VAE requires a fresh base checkpoint")
+        trainer.vae_identity=replace(resolved,state_dict=None)
+        trainer.vae_latent_channels=pair.declaration["new_channels"]
+        trainer.wiring=handler.resolve_wiring(trainer)
+        bind_boundaries(model)
+        channels=model.x_embedder.in_features//4
+        return ResizeReport((),channels,channels,channels,0,0)
+    if module is not None:
+        report=resize_latent_io(model,FLUX2_LATENT_IO,resolved.latent_channels)
+        trainer.vae=module
+        trainer.vae_identity=resolved
+        trainer.vae_latent_channels=resolved.latent_channels
+        trainer.wiring=handler.wiring.replace(latent_channels=resolved.latent_channels,
+            vae_scale_factor=resolved.scale_factor,vae_norm=resolved.norm,vae_norm_pack=resolved.norm_pack)
+        return report
+    if initialization_mode(trainer.config,"flux2")=="zero":
+        if resolved.ndim!=4 or resolved.scale_factor!=8:
+            raise ValueError("Legacy zero Flux2 swaps require a 4D/8x VAE; use paired_spatial")
+        from core.training.arch.base_arch import ArchHandler
+        return ArchHandler.apply_vae_swap(handler,trainer,resolved)
+    from core.training.adapters.base_adapter import reject_quantized_base
+    reject_quantized_base(model,model_label="Flux2 VAE swap")
+    def resize(channels):
+        topology=getattr(model,"_residual_unet_spec",None)
+        report=resize_latent_io(model,FLUX2_LATENT_IO,channels)
+        if topology is not None:
+            streams=[{"name":"double","block_count":len(model.transformer_blocks)},
+                {"name":"single","block_count":len(model.single_transformer_blocks)}]
+            restore_topology(model,build_spec("flux2",streams,topology["regions"],native_config(model)))
+        return report
+    report=initialize_image_swap(trainer,resolved,handler=handler,model=model,
+        old_channels=model.x_embedder.in_features//4,source_wiring=handler.resolve_wiring(trainer),
+        patch_size=2,resize=resize,pending_key="_flux2_vae_calibration_source")
+    if getattr(model,"vae_latent_bridge",None) is not None:bind_boundaries(model)
+    return report
+
+
+def calibrate(trainer,datasets):
+    from core.models.components.spatial_swap import calibrate_images
+    calibrate_images(trainer,datasets,model=trainer.transformer,pending_key="_flux2_vae_calibration_source")
+
+
 @contextmanager
 def alignment_context(model,hidden_states,img_ids,timestep,*,num_ref_tokens=0,ref_fixed_timestep=0.):
     if getattr(model,"vae_latent_bridge",None) is None:

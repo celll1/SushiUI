@@ -1929,6 +1929,10 @@ class ModelLoader:
             # declaration raises rather than falling back to the FLUX.2 VAE.
             declared_vae = load_declared_latent_io(file_path, arch="flux2")
             transformer_state_dict, metadata = read_state_dict(file_path)
+            from core.models.components.spatial_swap import read_declaration,install,validate_loaded,restored_image_codec
+            alignment_declaration=read_declaration(metadata)
+            if alignment_declaration is not None and declared_vae is None:
+                raise ValueError("Aligned Flux2 checkpoint is missing its codec declaration")
             all_keys = list(transformer_state_dict.keys())
             print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
 
@@ -2112,12 +2116,17 @@ class ModelLoader:
             if declared_vae is not None:
                 # in_channels/out_channels are the PACKED width (C * 2 * 2): the
                 # 2x2 pack happens outside the transformer, patch_size is 1.
-                packed = declared_vae.latent_channels * 4
+                packed = (max(alignment_declaration["old_channels"],alignment_declaration["new_channels"])
+                    if alignment_declaration is not None else declared_vae.latent_channels)*4
                 print(f"[ModelLoader] FLUX.2 declares a non-native VAE "
                       f"({declared_vae.provenance}, {declared_vae.latent_channels}ch, "
                       f"{declared_vae.vae_class}); building at {packed} packed features")
-                transformer_config["in_channels"] = packed
-                transformer_config["out_channels"] = packed
+                if alignment_declaration is None:
+                    transformer_config["in_channels"] = packed
+                    transformer_config["out_channels"] = packed
+                elif (transformer_config.get("in_channels")!=packed or
+                        transformer_config.get("out_channels") not in (None,packed)):
+                    raise ValueError("Aligned Flux2 native config disagrees with its internal latent width")
                 saved = transformer_state_dict.get("x_embedder.weight")
                 if saved is not None and int(saved.shape[1]) != packed:
                     raise ValueError(
@@ -2129,6 +2138,7 @@ class ModelLoader:
                 validate_topology_identity(topology, transformer_config)
             print(f"[ModelLoader] Creating Flux2Transformer2DModel...")
             transformer = Flux2Transformer2DModel(**transformer_config)
+            install(transformer,alignment_declaration)
 
             if quant_report is not None:
                 # ORDER MATTERS. The dtype cast happens HERE, before the swap, and
@@ -2162,8 +2172,12 @@ class ModelLoader:
 
             # Load weights
             missing_keys, unexpected_keys = transformer.load_state_dict(transformer_state_dict, strict=False)
-            if topology is not None and (missing_keys or unexpected_keys):
+            if (topology is not None or alignment_declaration is not None) and (missing_keys or unexpected_keys):
                 raise ValueError("Rewired Flux2 checkpoint does not match its native transformer_config")
+            validate_loaded(transformer)
+            if alignment_declaration is not None:
+                from core.models.flux2.vae_alignment import bind_boundaries
+                bind_boundaries(transformer)
             if missing_keys:
                 print(f"[ModelLoader] WARNING: Missing keys: {missing_keys[:5]}..." if len(missing_keys) > 5 else f"[ModelLoader] WARNING: Missing keys: {missing_keys}")
             if unexpected_keys:
@@ -2183,6 +2197,8 @@ class ModelLoader:
                 # The declared VAE carries its own class and config; the store
                 # rebuild below only knows how to reattach AutoencoderKLFlux2.
                 vae = declared_vae.load_module(torch_dtype=torch.float32)
+                if alignment_declaration is not None:
+                    vae,declared_vae=restored_image_codec(vae,declared_vae,alignment_declaration)
                 vae.eval()
                 flux2_vae_source = declared_vae.provenance
                 flux2_vae_path = declared_vae.path if (

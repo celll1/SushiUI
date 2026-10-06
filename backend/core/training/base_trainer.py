@@ -15003,7 +15003,7 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
-        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2", "is_lens")):
+        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2", "is_lens", "is_flux2")):
             import math
             from core.models.components.latent_adapter import topology_alignment
             model = getattr(self, "transformer_original", None) if getattr(self, "is_zimage", False) else self.transformer
@@ -19217,6 +19217,12 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                                elif self.is_flux2:
+                                    stride=self.wiring.vae_scale_factor*2
+                                    expected=(1,self.wiring.latent_channels*4,height//stride,width//stride)
+                                    if tuple(latent.shape)!=expected:
+                                        print(f"{self.log_prefix} WARNING: Packed Flux2 latent shape mismatch; regenerating {item['image_path']}")
+                                        latent=self._regenerate_single_latent(item["image_path"],width,height,cache,latent_caches)
                                 elif self.is_krea2 or self.is_qwen_image_21 or self.is_lens:
                                     # These image paths cache packed tokens, not BCHW latents.
                                     latent_stride = self.wiring.vae_scale_factor * (1 if self.is_qwen_image_21 else 2)

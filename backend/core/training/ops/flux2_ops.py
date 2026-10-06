@@ -921,7 +921,7 @@ def generate_sample(
                 packed_reference_latents = None
                 ref_img_ids = None
 
-        vae_scale_factor = 8
+        vae_scale_factor = trainer.wiring.vae_scale_factor
         patch_size = 2
 
         # Ensure height/width divisible by vae_scale_factor * patch_size
@@ -929,7 +929,7 @@ def generate_sample(
         latent_width = 2 * (int(width) // (vae_scale_factor * patch_size))
 
         # FLUX.2 has 32 latent channels, but patchified to 128
-        num_channels_latents = trainer.transformer.config.in_channels // 4  # 32
+        num_channels_latents = trainer.wiring.latent_channels
 
         if seed == -1:
             seed = random.randint(0, 2**32 - 1)

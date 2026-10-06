@@ -1,6 +1,8 @@
 """Temporary SD codec boundaries using the sampler's actual noise state."""
 from contextlib import contextmanager
 from functools import wraps
+import copy
+import inspect
 
 import torch
 
@@ -10,6 +12,65 @@ _SCALED = frozenset({"EulerDiscreteScheduler", "EulerAncestralDiscreteScheduler"
 _VP_SIGMAS = frozenset({"DPMSolverMultistepScheduler", "DPMSolverSinglestepScheduler",
     "UniPCMultistepScheduler"})
 _DISCRETE = frozenset({"DDIMScheduler", "DDPMScheduler", "PNDMScheduler"})
+
+
+class SDNoiseTrajectory:
+    """Noise-only sampler history; callers supply the same explicit step RNG."""
+
+    def __init__(self,scheduler,noise_state):
+        name=type(scheduler).__name__
+        if name not in _SCALED|_VP_SIGMAS|_DISCRETE|{"FlowMatchEulerDiscreteScheduler"}:
+            raise ValueError(f"Gaussian noise tracking does not support scheduler {name}")
+        config=scheduler.config
+        self.prediction=("flow_prediction" if name=="FlowMatchEulerDiscreteScheduler"
+            else getattr(config,"prediction_type","epsilon"))
+        if self.prediction not in ("epsilon","v_prediction","sample","original_sample","flow_prediction"):
+            raise ValueError("Gaussian noise tracking requires a declared prediction type")
+        if name=="PNDMScheduler" and self.prediction=="v_prediction":
+            raise ValueError("PNDM v-prediction history does not preserve the Gaussian clean/noise split")
+        if getattr(config,"clip_sample",False) or getattr(config,"thresholding",False):
+            raise ValueError("Gaussian noise tracking requires an unclipped scheduler")
+        if getattr(config,"variance_type",None) in ("learned","learned_range"):
+            raise ValueError("Gaussian noise tracking does not support learned variance")
+        if getattr(config,"stochastic_sampling",False):
+            raise ValueError("Flow stochastic_sampling ignores the supplied step generator")
+        if noise_state.ndim!=4 or not torch.isfinite(noise_state).all():
+            raise ValueError("Gaussian noise tracking requires finite BCHW noise state")
+        self.scheduler=copy.deepcopy(scheduler)
+        self.state=noise_state.detach().clone()
+
+    def noise(self,timestep):
+        scaled=(self.state if type(self.scheduler).__name__=="FlowMatchEulerDiscreteScheduler"
+            else self.scheduler.scale_model_input(self.state,timestep))
+        _,sigma,_=coefficients(self.scheduler,timestep,scaled)
+        if torch.any(sigma<=0):
+            raise ValueError("Gaussian noise tracking requires a positive sampling noise coefficient")
+        return scaled/sigma
+
+    @staticmethod
+    def clone_generator(generator):
+        if isinstance(generator,list):
+            return [SDNoiseTrajectory.clone_generator(value) for value in generator]
+        if not isinstance(generator,torch.Generator):
+            raise ValueError("Gaussian stochastic tracking requires an explicit step generator")
+        cloned=torch.Generator(device=generator.device)
+        cloned.set_state(generator.get_state())
+        return cloned
+
+    @torch.no_grad()
+    def step(self,timestep,*,generator=None,**kwargs):
+        if kwargs.get("s_churn",0)!=0 or kwargs.get("per_token_timesteps") is not None:
+            raise ValueError("Gaussian noise tracking requires the validated scalar timestep path")
+        noise=self.noise(timestep)
+        alpha,_,_=coefficients(self.scheduler,timestep,noise)
+        output=(alpha*noise if self.prediction=="v_prediction" else
+            torch.zeros_like(noise) if self.prediction in ("sample","original_sample") else noise)
+        parameters=inspect.signature(self.scheduler.step).parameters
+        if "generator" in parameters:
+            kwargs["generator"]=self.clone_generator(generator)
+        result=self.scheduler.step(output,timestep,self.state,**kwargs)
+        self.state=result[0] if isinstance(result,tuple) else result.prev_sample
+        return self.state
 
 
 def coefficients(scheduler, timestep, reference):

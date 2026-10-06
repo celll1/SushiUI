@@ -11839,6 +11839,9 @@ paths:
         - `requested_segment_frames`: per-invocation span. `null` uses the
           architecture's own maximum. Snapped up to the model's frame grid,
           which is why `expected_final_frames` may overshoot `target_frames`.
+          With a currently loaded codec swap, an off-grid initial segment or
+          inconsistent continuation geometry is reported as a non-runnable
+          plan (`success: false`); choose a valid loaded-codec length and replan.
         - `segment_length_mode`: where the segment boundaries fall. It has no
           schema default: omitted, the planner resolves it from the canonical
           timeline, so a prompt whose shots parse (or a supplied
@@ -11944,6 +11947,13 @@ paths:
         the plan editor (typically after rewriting segment prompts or changing
         reference bindings) and recomputes its `plan_hash`. Loads no model and
         generates nothing.
+
+        When the same architecture is currently loaded with a calibrated codec
+        swap, also checks the manifest's FPS, frame spans and continuation
+        boundaries against that loaded codec. A saved plan that no longer fits
+        is returned with `valid: false`, segment-specific errors, and no new hash.
+        Replan rather than silently resnapping an existing manifest. Offline or
+        other-architecture validation retains its existing behavior.
 
         **Key parameters:**
         - `manifest`: the edited manifest, in the exact shape `/video-chain/plan`

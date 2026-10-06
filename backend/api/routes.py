@@ -22957,7 +22957,12 @@ def _video_chain_segment_from_wire(model: VideoChainSegmentModel) -> SegmentPlan
         if model.visual_context.anchor_local_frames is not None:
             frames = [int(f) for f in model.visual_context.anchor_local_frames]
             visual["anchor_local_frames"] = frames
-            visual["anchor_count"] = len(frames)
+            visual["anchor_count"] = (
+                len(frames) if model.visual_context.anchor_count is None
+                else int(model.visual_context.anchor_count)
+            )
+        elif model.visual_context.anchor_count is not None:
+            visual["anchor_count"] = int(model.visual_context.anchor_count)
     return SegmentPlan(
         index=model.index,
         anchor_global_frame=model.anchor_global_frame,
@@ -23479,6 +23484,76 @@ def _video_chain_binding_warnings(manifest: ChainManifest) -> Tuple[List[str], L
     return warnings, errors
 
 
+def _video_chain_loaded_geometry_errors(manifest: ChainManifest) -> List[Dict[str, Any]]:
+    """Refuse stale geometry without resnapping a frozen plan."""
+    if (pipeline_manager.current_model_info or {}).get("type") != manifest.architecture:
+        return []
+    from api.generation_utils import plan_video_continuation_context,plan_video_outpaint_placement
+    from core.models.components.video_latent_adapter import temporal_spec_for_codec
+    from core.models.components.wiring import temporal_spec_for_arch
+    try:
+        codec = loaded_video_codec_contract(pipeline_manager,manifest.architecture)
+    except CustomValidationError as exc:
+        return [_video_chain_issue("loaded_codec_invalid","error",exc.detail or str(exc))]
+    if codec is None:
+        return []
+    spec = temporal_spec_for_codec(temporal_spec_for_arch(manifest.architecture),codec)
+    grid = VideoGridSpec.from_video_constraints({
+        "frame_multiple":spec.frame_multiple,"frame_offset":spec.frame_offset,
+        "min_frames":spec.min_frames,"min_decodable_frames":spec.min_decodable_frames,"max_frames":spec.max_frames})
+    errors = []
+    if spec.fps_fixed is not None and abs(manifest.fps-spec.fps_fixed) > 1e-6:
+        errors.append(_video_chain_issue("loaded_codec_fps_mismatch","error",
+            f"The loaded model generates at {spec.fps_fixed} fps; replan this {manifest.fps} fps manifest."))
+    accumulated = 0
+    for index,segment in enumerate(manifest.segments):
+        def fail(message):
+            errors.append(_video_chain_issue("loaded_codec_segment_mismatch","error",message,index))
+        if segment.index != index or segment.owned_start_frame != accumulated:
+            fail("Segment order or preserved-prefix length changed; replan against the loaded codec.")
+        if index == 0:
+            if (not grid.is_on_grid(segment.generated_span_frames)
+                    or segment.anchor_global_frame is not None
+                    or segment.owned_end_frame != segment.generated_span_frames
+                    or segment.requested_total_frames != segment.generated_span_frames
+                    or segment.effective_overlap_frames != 0):
+                fail("The initial segment no longer matches a valid loaded-codec frame span; replan.")
+        else:
+            try:
+                continuation = plan_video_continuation_context(manifest.continuation_mode,
+                    segment.requested_overlap_frames,manifest.architecture,manifest.variant,
+                    segment.requested_anchor_count,video_codec_contract=codec)
+                overlap = continuation["overlap_frames"]
+                placement = plan_video_outpaint_placement(dict(total_frames=segment.requested_total_frames,input_offset_frames=0),
+                    manifest.architecture,head_frames=accumulated,overlap_frames=overlap,video_codec_contract=codec)
+                expected_span = (segment.requested_total_frames-accumulated+overlap if placement["placement"] == "free"
+                                 else placement["generated_frames"])
+                if (not grid.is_on_grid(segment.requested_total_frames if placement["placement"] == "free" else expected_span)
+                        or expected_span != segment.generated_span_frames
+                        or (segment.requested_total_frames if placement["placement"] == "free" else placement["total_frames"]) != segment.owned_end_frame
+                        or segment.anchor_global_frame != accumulated-overlap
+                        or segment.effective_overlap_frames != (0 if manifest.continuation_mode == "boundary_frame" else overlap)
+                        or segment.visual_context.get("shared_context_frames") != overlap
+                        or segment.visual_context.get("mode") != manifest.continuation_mode):
+                    fail("The stored segment span/overlap differs from loaded-codec generation; replan.")
+                if manifest.continuation_mode == "motion_preroll":
+                    count = segment.visual_context.get("anchor_count")
+                    if count is None:
+                        count = segment.requested_anchor_count
+                    queued = plan_video_continuation_context(manifest.continuation_mode,segment.effective_overlap_frames,
+                        manifest.architecture,manifest.variant,count,video_codec_contract=codec)
+                    if (tuple(segment.visual_context.get("anchor_local_frames") or ()) != queued["anchor_local_frames"]
+                            or queued["anchor_local_frames"] != continuation["anchor_local_frames"]):
+                        fail("The stored pre-roll anchors differ from generation; replan.")
+            except CustomValidationError as exc:
+                fail(exc.detail or str(exc))
+        accumulated = segment.owned_end_frame
+    if accumulated != manifest.expected_final_frames:
+        errors.append(_video_chain_issue("loaded_codec_final_length_mismatch","error",
+            "The stored final length differs from the segment timeline; replan."))
+    return errors
+
+
 def _video_chain_segment_previews(manifest: ChainManifest) -> List[Dict[str, Any]]:
     return [
         {
@@ -23724,6 +23799,7 @@ async def plan_video_chain_route(request: VideoChainPlanRequestModel):
     errors.extend(_video_chain_reference_token_errors(manifest, mode))
 
     warning_issues = _video_chain_warning_issues(manifest.warnings)
+    errors.extend(_video_chain_loaded_geometry_errors(manifest))
     wire_manifest = _video_chain_manifest_to_wire(
         manifest, request.chain_drift_tolerance_frames, warning_issues
     )
@@ -23778,6 +23854,7 @@ async def validate_video_chain_route(request: VideoChainValidateRequestModel):
     errors.extend(binding_errors)
     errors.extend(_video_chain_reference_token_errors(manifest, mode))
 
+    errors.extend(_video_chain_loaded_geometry_errors(manifest))
     valid = not errors
     plan_hash: Optional[str] = None
     wire_manifest: Optional[Dict[str, Any]] = None

@@ -28,7 +28,14 @@ OpenAPIのLoadedModelInfoと新規LoadedVideoConstraints、frontendの両ModelIn
 追加の未配線clock表示とOpenAPI field型/enum確認を含む5件も通過した。
 frontend pure-function/Syntax検証5件が通過。build/type-checkは所有者の実施待ちで、実UI/GPUの受け入れを
 意味しない。変更Pythonのcompile・CUDA無し実importも通過。合成データのみ使用しrun/サーバーは変更なし。
-編集済みchain manifestのcodec変更時検証、prompt/cache、LTX chunk時計、校正/Full owner、
+編集済みchain manifestも現在のloaded codecで再検証する。初期span、各segmentのprefix/anchor/overlap、
+実outpaint placement、pre-roll anchor位置と個数、FPS、最終長が一致しなければ新hashを返さず拒否する。
+wire復元で明示anchor_countを配列長で上書きせず、矛盾を検出できるようにした。
+通常/offlineモデルの従来検証は維持し、有効なH3/LTX計画はhashとseedを変更しない。
+確認dialogはcodec geometry変更後の再検証を必須とし、閉じた後や新planへの古い応答を捨てる。
+編集中のprompt/referenceはgeometry変更だけでは再planで置き換えない。
+HTTP経由のCPU回帰103件、frontend pure-function/Syntax確認6件、Python compile/実importが通過。
+prompt/cache、LTX chunk時計、校正/Full owner、
 公式全重みでの学習・画質・速度、実UI確認は引き続き未完。
 
 公開txt2vid/img2vid/ref2vid/inpaint-video/outpaint-videoの事前検証へloaded codec契約を接続した。

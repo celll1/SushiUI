@@ -651,8 +651,13 @@ def _layout_for(trainer, num_text_tokens: int, t_lat: int, lat_h: int, lat_w: in
     """
     from core.models.minimax_h3.h3_pipeline_ops import build_packed_layout
 
+    transformer = getattr(trainer,"transformer",None)
+    inner = getattr(transformer,"transformer",transformer)
+    codec = getattr(inner,"_video_codec_contract",None)
     key = (int(num_text_tokens), int(t_lat), int(lat_h), int(lat_w), int(n_aud),
            str(trainer.device))
+    if codec is not None:
+        key += (codec,)
     cache = getattr(trainer, "_minimax_h3_layout_cache", None)
     if cache is None:
         cache = {}
@@ -662,7 +667,7 @@ def _layout_for(trainer, num_text_tokens: int, t_lat: int, lat_h: int, lat_w: in
             cache.clear()
         cache[key] = build_packed_layout(
             int(num_text_tokens), int(t_lat), int(lat_h), int(lat_w), int(n_aud),
-            device=trainer.device,
+            device=trainer.device,video_codec_contract=codec,
         )
     return cache[key]
 
@@ -1014,6 +1019,11 @@ def _pixel_frames_for(trainer, t_lat: int) -> int:
     """
     if int(t_lat) <= 1:
         return 0
+    transformer = getattr(trainer,"transformer",None)
+    inner = getattr(transformer,"transformer",transformer)
+    codec = getattr(inner,"_video_codec_contract",None)
+    if codec is not None:
+        return codec.pixel_frames(int(t_lat))
     n = max(1, int(round((int(t_lat) - 2) / 5)))
     return 17 * n + 5
 

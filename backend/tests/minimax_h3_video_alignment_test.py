@@ -33,7 +33,7 @@ def oracle(bridge,rows,grid,alpha=None):
     return value.reshape(b,-1,4*bridge.target_channels)
 
 
-def setup(new,rewired,dtype):
+def setup(new,rewired,dtype,contract=None):
     from core.models.minimax_h3.vendor import MiniMaxH3Transformer3DModel
     from core.models.minimax_h3.residual_unet import native_config,restore_topology
     from core.rewiring.spec import build_spec,OPERATORS
@@ -52,13 +52,13 @@ def setup(new,rewired,dtype):
         graph = build_spec("minimax_h3",[{"name":"main","block_count":7}],[
             dict(id="outer",stream="main",parent=None,start_block=1,end_block=6,down_factor=[2,2],**OPERATORS)],native_config(model.config))
         restore_topology(model,graph)
-    image = ImageCodecContract(new,32,4,"shift_scale",1,3)
+    image = ImageCodecContract(new,32,4,"shift_scale",1,3) if contract is None else contract.image
     pair = SpatialAlignmentPair(image.declaration(source="synthetic",source_identity="old",target_identity="new",old_channels=2,old_scale=16))
     incoming,outgoing = SpatialLatentBridge(new,2),SpatialLatentBridge(2,new)
     incoming.initialize(torch.randn(9*new,2)*.1,torch.randn(2)*.1)
     outgoing.initialize(torch.randn(18,new)*.1,torch.randn(new)*.1)
     pair.initialize_from_pair(incoming,outgoing)
-    wrapper = install_video_alignment(model,pair,VideoCodecContract(image,1,"independent_frames_v1"))
+    wrapper = install_video_alignment(model,pair,VideoCodecContract(image,1,"independent_frames_v1") if contract is None else contract)
     layout = build_packed_layout(num_text_tokens=3,num_audio_latents=2,num_latent_frames=3,
         latent_height=8,latent_width=12,patch_size=(1,2,2),keyframe_anchors=("first",))
     count = layout["video_indices"].numel()

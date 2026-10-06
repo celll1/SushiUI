@@ -26,7 +26,7 @@ class Ltx2ArchHandler(ArchHandler):
         from dataclasses import replace
         from math import lcm
         from core.models.components.latent_adapter import topology_alignment
-        from core.models.components.video_latent_adapter import NormalizedVideoVAE
+        from core.models.components.video_latent_adapter import NormalizedVideoVAE, temporal_spec_for_codec
         vae = getattr(trainer, "vae", None)
         model = getattr(trainer, "transformer", None)
         if vae is None or model is None:
@@ -42,9 +42,14 @@ class Ltx2ArchHandler(ArchHandler):
         inner = getattr(model, "transformer", model)
         h,w = topology_alignment(getattr(inner, "_residual_unet_spec", None))
         self.pixel_align = spatial*lcm(h,w)
-        lengths = tuple(sorted({((n-1+temporal-1)//temporal)*temporal+1 for n in LTX2_TEMPORAL.default_clip_lengths}))
-        self.temporal = replace(LTX2_TEMPORAL, frame_multiple=temporal, pixel_align=self.pixel_align,
-            latent_frames=lambda n:(n-1)//temporal+1, default_clip_lengths=lengths, suggested_min_frames=temporal+1)
+        spec = temporal_spec_for_codec(LTX2_TEMPORAL, vae.contract) if normalized else replace(
+            LTX2_TEMPORAL, frame_multiple=temporal, latent_frames=lambda n:(n-1)//temporal+1)
+        minimum = max(spec.min_decodable_frames, spec.frame_multiple+spec.frame_offset)
+        lengths = tuple(sorted({max(minimum,
+            ((n-spec.frame_offset+spec.frame_multiple-1)//spec.frame_multiple)*spec.frame_multiple+spec.frame_offset)
+            for n in LTX2_TEMPORAL.default_clip_lengths}))
+        self.temporal = replace(spec, pixel_align=self.pixel_align,
+            default_clip_lengths=lengths, suggested_min_frames=minimum)
         return self.wiring.replace(latent_channels=channels, vae_scale_factor=spatial, vae_scale_temporal=temporal,
             vae_norm="identity" if normalized else self.wiring.vae_norm, vae_norm_pack=1)
 

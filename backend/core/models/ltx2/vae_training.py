@@ -15,6 +15,8 @@ def temporal_policy(rank, codec_class):
         return "independent_frames_v1"
     if rank == 5 and codec_class in ("AutoencoderKLLTX2Video", "AutoencoderKLQwenImage"):
         return "causal_first_frame_v1"
+    if rank == 5 and codec_class == "AutoencoderKLMiniMaxH3":
+        return "minimax_h3_chunks_v1"
     raise ValueError(f"LTX calibration needs an explicit temporal policy for {codec_class}")
 
 
@@ -115,7 +117,8 @@ def calibrate(trainer, datasets):
     fit = PairedVideoCalibration(alignment, ridge=1e-2)
     spatial = lcm(source.vae_scale_factor, target.spatial_compression_ratio)
     canvas = max(spatial, (side//spatial)*spatial)
-    frames = lcm(source.vae_scale_temporal, target.temporal_compression_ratio)+1
+    from .video_clock import calibration_clip_frames
+    frames = calibration_clip_frames(source.vae_scale_temporal, target.contract)
 
     def pixels(sample):
         video, path = sample

@@ -634,8 +634,8 @@ def train_step(
     # the audio branch grad-free. L_audio derived from clip duration.
     audio_in_channels = int(getattr(trainer, "ltx2_audio_in_channels", _DEFAULT_AUDIO_IN_CHANNELS))
     aud_lps = float(getattr(trainer, "ltx2_audio_latents_per_second", _DEFAULT_AUDIO_LATENTS_PER_SECOND))
-    temporal = int(getattr(trainer.vae, "temporal_compression_ratio", 8))
-    num_frames_pixel = (t_lat - 1) * temporal + 1
+    from core.models.ltx2.video_clock import video_pixel_frames, prepare_video_coords
+    num_frames_pixel = video_pixel_frames(trainer.vae, t_lat)
     # Per-sample audio length (clip duration * audio_latents_per_second). The
     # dummy audio tensor is a single [B, L_audio, C] block, so size it to the
     # MAX across the (possibly fps-mixed) batch; the audio branch is grad-free
@@ -652,17 +652,9 @@ def train_step(
 
     use_cross_timestep = bool(getattr(trainer, "ltx2_use_cross_timestep", True))
 
-    # Build the video RoPE coords ourselves so the temporal axis is scaled by the
-    # ACTUAL per-sample clip fps. The transformer's own path only accepts a scalar
-    # `fps` (one value for the whole batch); since a batch can mix fps, we compute
-    # coords with fps=1.0 (identity on the temporal division) and then divide the
-    # temporal axis [:, 0] by the per-sample fps [B, 1, 1]. This exactly reproduces
-    # the transformer's internal `pixel_coords[:, 0] / fps` for each sample. Passing
-    # video_coords= makes the forward skip its internal (scalar-fps) computation.
-    video_coords = trainer.transformer.rope.prepare_video_coords(
-        batch_size, t_lat, lat_h, lat_w, trainer.device, fps=1.0,
-    )  # [B, 3, N, 2]; axis 1 idx 0 == temporal (frames)
-    video_coords[:, 0, :, :] = video_coords[:, 0, :, :] / fps_ps.view(-1, 1, 1)
+    # Preserve codec frame spans and each clip's FPS, including nonuniform groups.
+    video_coords = prepare_video_coords(trainer.transformer.rope, getattr(trainer.vae,"contract",None),
+        batch_size, t_lat, lat_h, lat_w, trainer.device, fps=fps_ps)
 
     if profile_vram:
         print_vram_usage("[train_step_ltx2] Before DiT forward")

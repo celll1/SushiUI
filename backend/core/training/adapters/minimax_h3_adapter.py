@@ -22,8 +22,8 @@ Excluded from LoRA targets:
   * AdaLN: in the released ("pruned") variant the modulation is a frozen lookup
     TABLE plus a projection, not a target a LoRA can meaningfully wrap.
 
-The Full factory selects the experimental aligned adapter; quality and GPU
-optimizer-resume acceptance remain pending after one API update and save.
+The Full factory selects the experimental aligned adapter; Adafactor GPU
+continuation passed, while quality remains pending.
 
 LoRA save format: sd-scripts native — ``lora_unet_<flattened>.lora_down.weight`` /
 ``lora_up.weight`` / ``alpha``; metadata ``model_type="minimax_h3"``.

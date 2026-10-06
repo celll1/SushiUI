@@ -206,7 +206,7 @@ def test_owner_separates_rvq_config_from_decoder_topology_and_resume(tmp_path):
     with pytest.raises(NotImplementedError, match="bundled codec"):
         export_metadata(owner)
     path = tmp_path/"unbundled.safetensors"
-    with pytest.raises(NotImplementedError, match="bundled codec"):
+    with pytest.raises(ValueError, match="mismatched"):
         AceStepFullParameterAdapter(SimpleNamespace(transformer=owner)).write_checkpoint(1,1,path)
     assert not path.exists()
     owner.config.intermediate_size += 8

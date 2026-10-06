@@ -14,6 +14,7 @@ from core.rewiring.spec import checkpoint_metadata, validate_model_identity, pre
 
 GRID_POLICY_KEY = "sushi_residual_grid_policy"
 GRID_POLICY = "zero_token_tail_v1"
+AUDIO_CODEC_KEY = "sushi_audio_codec_contract"
 
 
 def native_config(config):
@@ -51,6 +52,19 @@ def native_config(config):
     if policy not in (GRID_POLICY, "require_divisible"):
         raise ValueError("Unsupported ACE-Step residual grid policy")
     resolved[GRID_POLICY_KEY] = policy
+    audio = getattr(config, AUDIO_CODEC_KEY, None)
+    if audio is not None:
+        from core.models.components.audio_latent_adapter import AudioCodecContract
+        from dataclasses import asdict
+        if not isinstance(audio, dict):
+            raise ValueError("ACE-Step target audio codec geometry is missing")
+        try:
+            contract = AudioCodecContract(**audio)
+        except TypeError as exc:
+            raise ValueError("ACE-Step target audio codec fields differ") from exc
+        if contract.latent_channels > resolved["audio_acoustic_hidden_dim"]:
+            raise ValueError("ACE-Step target audio width exceeds the decoder width")
+        resolved[AUDIO_CODEC_KEY] = asdict(contract)
     return resolved
 
 
@@ -67,6 +81,8 @@ def decoder_identity_config(model):
         if owner["audio_acoustic_hidden_dim"] != source or owner["in_channels"] != 3*source:
             raise ValueError("ACE-Step conditioning config disagrees with the source audio codec")
         owner["audio_acoustic_hidden_dim"], owner["in_channels"] = width, 3*width
+        from dataclasses import asdict
+        owner[AUDIO_CODEC_KEY] = asdict(alignment.target)
     if owner != resolved:
         raise ValueError("ACE-Step owner/decoder geometry disagrees")
     return resolved
@@ -92,8 +108,10 @@ def temporal_geometry(config, spec=None):
         graph = validate_topology_identity(spec, resolved)
         if graph["base_config_sha256"] != digest(resolved):
             policy = "require_divisible"
-    return dict(frame_rate=25, patch_size=resolved["patch_size"],
-                preview_frames=max(1, round(AUDIO_GEN_DEFAULTS["audio_duration"] * 25)),
+    audio = resolved.get(AUDIO_CODEC_KEY)
+    rate = audio["sample_rate"] / audio["hop_length"] if audio is not None else 25
+    return dict(frame_rate=rate, patch_size=resolved["patch_size"],
+                preview_frames=max(1, round(AUDIO_GEN_DEFAULTS["audio_duration"] * rate)),
                 grid_policy=policy)
 
 
@@ -103,6 +121,12 @@ def inspect_artifact(path):
     from .defaults import ACESTEP_DIT_CONFIG
     graph, embedded = preflight_checkpoint(path)
     raw = deepcopy(ACESTEP_DIT_CONFIG if embedded is None else embedded)
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        from .audio_artifact import DECODER_KEY
+        metadata = handle.metadata() or {}
+        if DECODER_KEY in metadata:
+            import json
+            raw = json.loads(metadata[DECODER_KEY])
     if embedded is not None and type(embedded.get("num_hidden_layers")) is not int:
         raise ValueError("ACE-Step inspection requires explicit native decoder depth")
     resolved = native_config(raw)
@@ -254,10 +278,14 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
     return restored[:, :native_count]
 
 
-def export_metadata(model):
+def export_metadata(model, *, audio_metadata=None):
     import json
     if getattr(getattr(model, "decoder", model), "_audio_latent_alignment", None) is not None:
-        raise NotImplementedError("ACE audio-aligned export requires the bundled codec artifact writer")
+        if audio_metadata is None:
+            raise NotImplementedError("ACE audio-aligned export requires the bundled codec artifact writer")
+        from .audio_artifact import read_record
+        if read_record(audio_metadata, model.config) is None:
+            raise ValueError("ACE audio export requires a codec declaration")
     metadata = model_topology_metadata(model)
     from .component_sources import export_sources
     metadata.update(export_sources(model))
@@ -265,12 +293,15 @@ def export_metadata(model):
     if config is not None and hasattr(config, "to_dict"):
         raw = config.to_dict()
         if getattr(model, "_residual_unet_spec", None) is not None:
-            graph = validate_topology_identity(model._residual_unet_spec, raw)
-            resolved = native_config(raw)
-            raw[GRID_POLICY_KEY] = GRID_POLICY if graph["base_config_sha256"] == digest(resolved) and resolved.get(GRID_POLICY_KEY) == GRID_POLICY else "require_divisible"
+            decoder_config = getattr(getattr(model, "decoder", model), "config", config)
+            graph = validate_topology_identity(model._residual_unet_spec, decoder_config)
+            resolved = native_config(decoder_config)
+            if audio_metadata is None:
+                raw[GRID_POLICY_KEY] = GRID_POLICY if graph["base_config_sha256"] == digest(resolved) and resolved.get(GRID_POLICY_KEY) == GRID_POLICY else "require_divisible"
         metadata["acestep_config"] = json.dumps(raw, allow_nan=False)
     elif metadata:
         raise ValueError("Rewired ACE-Step export requires native wrapper config")
+    metadata.update(audio_metadata or {})
     return metadata
 
 
@@ -283,18 +314,27 @@ def preflight_checkpoint(path):
     with safe_open(str(path), framework="pt", device="cpu") as handle:
         metadata = handle.metadata() or {}
         keys = list(handle.keys())
-    if any(key.startswith("net.") for key in keys) and not all(key.startswith("net.") for key in keys):
-        raise ValueError("ACE-Step checkpoint mixes native and net-prefixed weights")
     config = None
     if metadata.get("acestep_config"):
         config = json.loads(metadata["acestep_config"])
         if not isinstance(config, dict):
             raise ValueError("ACE-Step embedded config must be an object")
+    from .audio_artifact import read_record, DECODER_KEY, preflight_headers
+    record = read_record(metadata, config)
+    if record is None and any("_audio_latent_alignment." in key or key.startswith("vae.") for key in keys):
+        raise ValueError("ACE audio weights have no alignment declaration")
+    if any(key.startswith("net.") for key in keys) and not all(
+            key.startswith("net.") or (record is not None and key.startswith("vae.")) for key in keys):
+        raise ValueError("ACE-Step checkpoint mixes native and net-prefixed weights")
+    if record is not None:
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            preflight_headers(handle, record)
+    decoder_config = json.loads(metadata[DECODER_KEY]) if record is not None else config
     if graph is not None:
         if config is None or type(config.get("num_hidden_layers")) is not int:
             raise ValueError("Rewired ACE-Step requires embedded native config and explicit depth")
-        validate_topology_identity(graph, config)
-        if config.get(GRID_POLICY_KEY) == GRID_POLICY and graph["base_config_sha256"] != digest(native_config(config)):
+        validate_topology_identity(graph, decoder_config)
+        if decoder_config.get(GRID_POLICY_KEY) == GRID_POLICY and graph["base_config_sha256"] != digest(native_config(decoder_config)):
             raise ValueError("ACE-Step explicit grid policy disagrees with checkpoint topology")
         native_keys = [key.removeprefix("net.") for key in keys]
         blocks = {int(match.group(1)) for key in native_keys

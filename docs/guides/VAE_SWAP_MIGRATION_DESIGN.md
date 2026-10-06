@@ -54,6 +54,27 @@ trainingのinherit/configure/resume、generationのtopology確認・grid情報�
 成果物未作成を検証した。関連CPUテスト31件・26subtestとpy_compile・実importが通過した。
 交換codecとdecoder configのartifact保存復元・正式学習/生成・API/UI・実重み検証は引き続き未完。
 
+`acestep/audio_artifact.py`で単一Full safetensorsの同梱保存復元を追加した。
+`net.`は元owner・拡張decoder・校正境界、`vae.`はraw target Oobleckとし、target codecをDiTの
+registered childにしない。元owner configとdecoder config、source/target contract、source codecの
+config/weight hash/保存dtype、target codec config/hashを別々に保存する。対応形式は現時点では
+Oobleck同士・同sample rate/同waveform channels・aligned_hop_v1であり、音声形式の追加は残作業。
+header preflightでbridgeのshape・version/geometry tensor・校正flag・decoder IO shape・codec有無を
+検査し、weightロード後にtarget codec hashを照合する。元codecのidentity照合関数も追加した。
+Full writerはcodecの契約を先に検証し、失敗時には大型DiTのCPUコピーを始めない。
+保存時のsource codecまたは復元済みsource identityが必須。新規校正では、校正に使った実codec identityを
+保持する処理への接続がまだ必要である。
+`_build_dit`は元conditioning configでownerを作り、decoder boundaryを復元してからstrict loadする。
+非decoder・bridge・codecの全tensorが保存前と一致し、target encode/decodeも一致することを小型実モデルで
+確認した。forwardの比較はloaderが選ぶSDPAとfixture eagerのFP32丸め差を許容する。
+再保存・C増減・U-net併用、孤立bridge・codec欠損・未校正・geometry改変・codec weight改変の拒否を検証した。
+target音声contractをdecoderの構造identityに含め、同じ内部Cでもhop変更を区別する。
+構造inspectionはtarget sample_rate/hop_lengthのframe rateを返す。OpenAPI/フロント既存number型と
+integer preview frame計算を静的確認した。所有者によるfrontend build/type-checkは未実施。
+CPUテスト37件・26subtest、変更Pythonのpy_compile・CUDAを抑止した実importが通過した。
+共通component loaderはtarget/source codecのstagingが接続されるまでaligned artifactの生成/学習ロードを
+明示的に拒否する。DiT単体の保存復元が通っても、公開生成・学習・音質・公式全重みの受け入れ完了とはしない。
+
 LTX-2.3の動画target-native境界を追加し、Full fine-tuneの公開VAE swap設定をexperimentalとして配線した。
 unquantized DiT・train_unet=true・paired_spatial・bundled RGB codecを必須とし、LoRA系は拒否する。
 API preflightは新規交換の保存不能設定と、復元済み交換codecのbundling無効もモデルロード前に拒否する。

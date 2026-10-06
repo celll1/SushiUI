@@ -244,11 +244,18 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
     from .residual_unet import preflight_checkpoint, restore_topology
     topology, embedded_config = preflight_checkpoint(dit_path)
     config = AceStepConfig(**(ACESTEP_DIT_CONFIG if embedded_config is None else embedded_config))
+    from .audio_artifact import read_record, prepare_restore, restore_codec
+    with safe_open(dit_path, framework="pt", device="cpu") as handle:
+        record = read_record(handle.metadata() or {}, config)
     model = AceStepConditionGenerationModel(config)
+    if record is not None:
+        prepare_restore(model, record)
     model = model.to(dtype=torch_dtype)
 
     with safe_open(dit_path, framework="pt") as f:
         state_dict = {k: f.get_tensor(k) for k in f.keys()}
+    codec_state = {key.removeprefix("vae."): value for key, value in state_dict.items() if key.startswith("vae.")}
+    state_dict = {key: value for key, value in state_dict.items() if not key.startswith("vae.")}
     if any(key.startswith("net.") for key in state_dict):
         if not all(key.startswith("net.") for key in state_dict):
             raise ValueError("ACE-Step checkpoint mixes native and net-prefixed weights")
@@ -290,6 +297,8 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
                 f"unexpected={unexpected[:5]} ({len(unexpected)})"
             )
         restore_topology(model, topology)
+        if record is not None:
+            model.__dict__["_audio_restored_codec"] = restore_codec(record, codec_state, torch_dtype)
         model.eval()
         return model, config
 
@@ -303,6 +312,8 @@ def _build_dit(dit_path: str, torch_dtype: torch.dtype):
         )
 
     restore_topology(model, topology)
+    if record is not None:
+        model.__dict__["_audio_restored_codec"] = restore_codec(record, codec_state, torch_dtype)
     model.eval()
     return model, config
 
@@ -411,6 +422,8 @@ def load_acestep_from_path(
     print(f"[AceStepLoader] Text encoder: {te_path}")
 
     dit, dit_config = _build_dit(dit_path, torch_dtype)
+    if getattr(dit, "_audio_restored_codec", None) is not None:
+        raise NotImplementedError("ACE bundled audio swap requires target/source codec staging in the generation and training owners")
     vae = _build_vae(vae_path, torch_dtype)
     text_encoder, te_config = _build_text_encoder(te_path, torch_dtype)
 

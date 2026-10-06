@@ -48,7 +48,8 @@ def decoder_output(alignment, velocity):
 
 def install_decoder_alignment(model, alignment):
     """Install before optimizer creation; outer RVQ config is not rewritten."""
-    from .residual_unet import native_config, restore_topology, model_topology_metadata, decoder_identity_config
+    from .residual_unet import native_config, restore_topology, model_topology_metadata, decoder_identity_config, AUDIO_CODEC_KEY
+    from dataclasses import asdict
     from core.rewiring.spec import build_spec
 
     decoder = getattr(model, "decoder", model)
@@ -76,6 +77,7 @@ def install_decoder_alignment(model, alignment):
     width = alignment.backbone_channels
     target_config = deepcopy(decoder.config)
     target_config.in_channels, target_config.audio_acoustic_hidden_dim = 3*width, width
+    setattr(target_config, AUDIO_CODEC_KEY, asdict(alignment.target))
     graph = getattr(decoder, "_residual_unet_spec", None)
     if graph is not None:
         graph = build_spec("acestep", [{"name": "main", "block_count": config["num_hidden_layers"]}],

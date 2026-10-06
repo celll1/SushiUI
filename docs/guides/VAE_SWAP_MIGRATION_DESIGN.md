@@ -8,6 +8,22 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+LTX-2.3の動画target-native境界を内部部品として追加した。公開VAE swap設定はまだ解放していない。
+`video_latent_adapter.py`はRGBクリップの時間圧縮契約を明示し、causal first-frameと独立frameを区別する。
+5D codecはクリップ全体を一度にencode/decodeし、4D codecだけB×Tへ展開する。宣言したチャネル数、
+空間・時間の圧縮率と実codecの返却shapeが違えば拒否する。正規化はcodec内で一度だけ行う。
+校正時だけteacher格子を交換先へ補間し、causal first-frameは後続frameとは分けて保持する。
+この時間補間は校正近似であり、時間方向の画質回復を保証するものではない。
+LTXの内部wrapperはvideo入出力だけを3×3 bridgeへ通す。実token数は交換先の格子のまま保持し、
+audio branchのチャネル・RoPE・token数を変更しない。video stateのbias係数には実timestepを使い、
+prompt modulation用sigmaとは分離する。global/per-token timestepの双方を扱う。
+内部幅max(oldC,newC)、交換先RoPE縮小率、外部target Cを分離し、U-netのidentityを新しい内部configで再構成する。
+小型の実native AVモデルでチャネル増減、U-net併用、forwardの独立参照との一致、bridge/追加チャネルの勾配、
+optimizer更新をCPU検証した。既存native LTX経路は変更しない。
+残作業はcodec/bridge宣言のartifact同梱・ロード、companion rootとのgeometry照合、学習handlerの校正hook、
+動画bucket/cache/durationの交換先時間圧縮率への追従、公開API/UI配線と公式全重みの受入検証。
+既存LTX単体Full checkpoint readerは現在実装済みであり、§11 P6の「readerがない」という記述は当時の状態。
+
 Chimeraのlinear-state境界（v1、v2 direct velocity、v2 residual）の内部基盤を追加した。
 `x_t=alpha(t)*x0+sigma(t)*noise`では入側biasを`alpha(t)`、出側velocityのbiasを
 `alpha'(t)`で掛ける。v2 cubic scheduleでは固定±1のflow境界を流用しない。

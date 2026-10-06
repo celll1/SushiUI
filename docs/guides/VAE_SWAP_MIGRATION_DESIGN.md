@@ -36,6 +36,10 @@ noise policyはまだ本番へ配線せず、画像・校正行列はignored loc
 CPU回帰238件、変更Pythonのcompile・CUDA未初期化の実importが通過した。
 OpenAPIはparse済みでenum/defaultは不変。UIはlabelだけを変更し、型・空欄/default・
 保存時の値変換を静的確認した。owner専用build/type-checkは未実行。
+共通化後の本番Qwen Full trainerでも、公式全重み・24層block swap・2slotで
+上記40枚の校正hookをGPU実行した。元codecの実encodeは40回すべて256px、
+targetは40回すべて512px、校正済みbridgeの有限値と2段U-netの保持、returncode 0を確認。
+この追加試験は校正hookの検証で、学習更新や画質回復の受入は含まない。
 
 公式Qwen 2.1全DiT・Qwen3-VL TEからLTX-2.3の交換codecへ、合成図形2枚で
 paired_spatial校正・既定2段U-net・Full学習1step・保存・step2再開を公開APIで完走した。

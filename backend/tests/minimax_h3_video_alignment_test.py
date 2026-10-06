@@ -43,9 +43,12 @@ def setup(new,rewired,dtype,contract=None):
     torch.manual_seed(94)
     model = MiniMaxH3Transformer3DModel(num_attention_heads=2,attention_head_dim=16,hidden_size=16,
         num_layers=7,num_refiner_layers=1,ffn_dim=32,in_channels=2,audio_in_channels=6,patch_size=(1,2,2),
-        text_dim=10,freq_dim=8,time_embed_hidden_dim=16,time_embed_dim=8,rope_freq_dim=2,adaln_curve_grid=33).to(dtype).eval()
+        text_dim=10,freq_dim=8,time_embed_hidden_dim=16,time_embed_dim=8,rope_freq_dim=2,adaln_curve_grid=33).eval()
+    rope_frequencies = model.rope.inv_freq.clone()
+    model.to(dtype)
     for name,value in list(model.named_parameters())+list(model.named_buffers()):
         value.data = value.data.to(_dit_target_dtype(name,dtype,True))
+    model.rope.inv_freq = rope_frequencies
     with torch.no_grad(): model.adaln_t_table.copy_(torch.randn_like(model.adaln_t_table))
     before = {key:value.clone() for key,value in model.state_dict().items()}
     if rewired:

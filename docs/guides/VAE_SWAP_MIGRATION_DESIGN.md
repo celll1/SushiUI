@@ -8,6 +8,26 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3 native Full bundleの保存・復元を`minimax_h3/video_artifact.py`へ実装した。
+単一/sharded safetensorsはnative DiT（net.）、target codec（vae.）、bridge、元/交換後geometry、
+pixel_frame_v1の時計、U-net identityを同梱する。保存時に実codecのweight hash/config/classを照合し、
+header preflightでcanonical config、全native tensorのshape/dtype、shard metadata/ownership、
+codec宣言とgeometryを検査する。量子化Full base・未校正bridge・改変されたcodecは拒否する。
+読込時はcodec実weightのlatent hashを検査してからbackboneを確保し、各componentを一度だけ読む。
+共通ResolvedVAE.load_module(assign=True)はmetaで構築後にstateをassignし、初期weightの複製を避け、
+codecのtensor dtype/storageを保持する。backbone cast時も読込元tensorを順次解放する。
+小型実H3のFP32/BF16・追加/削減channel・単一/sharded bundleで、保存前後のweight/dtype完全一致、
+video/audioとcodec encode/decodeの数値一致、optimizerをdiskから復元した次step、再保存を確認した。
+テスト準備も公式loaderと同じFP32 RoPE（非persistent buffer）を保持するよう修正した。
+output/次stepの浮動小数点比較はrtol=1e-5, atol=1e-6、保存weightは許容誤差0とする。
+関連H3/U-net/LTX artifact・画像/音声source回帰124件・14subtestが通過し、storage共有/読込回数を
+追加したartifact検証、causal video codecの同梱・時間契約・encode/decode、dense復元を含む13件も通過した。
+誤ったdepth/curve設定はmodel構築前にheaderで拒否することを確認した。
+変更PythonのcompileとCUDAを抑止した実importを確認した。外部画像・動画・音声は使っていない。
+これはarchitecture moduleのnative bundle経路であり、公開H3 model loaderのcompanion探索、生成backendの
+target shape/codec staging、clip/cache、校正owner、Full adapter/offload・公開gateへの接続は残る。
+公式33B全重みの学習・再開・画質・速度の受け入れも未完である。
+
 H3のcodec clockとpacked segmentを既存sampler・train_stepへ接続した。
 時間座標はpixel_frame_v1で保存し、独立frame codecはj、causal codecはj*temporal_scale、
 H3 codecは既存の非均等chunk offsetを共通のpixel frame時間軸（5/3 rotary units/frame）へ写す。
@@ -23,7 +43,8 @@ training layout cacheは交換先codec契約で分離し、音声なしbatchの�
 変更PythonのcompileとCUDAを抑止した実importを確認した。外部画像・動画・音声は使っていない。
 検証は校正済みbridgeを小型DiTへ直接installした経路であり、公開model loader/Full training ownerの
 受け入れを代替しない。生成canvasからtarget shapeを選ぶbackend、clip encode/decodeとcache namespace、
-校正owner、Full adapter/offload、artifact復元・公開gate、公式33B全重みの学習/画質/速度検証は残る。
+校正owner、Full adapter/offload・公開gate、公式33B全重みの学習/画質/速度検証は残る。
+native artifact復元は上記の後続段階で確認した。
 
 H3のtarget-native video IO境界を`minimax_h3/video_alignment.py`へ実装した。
 公式のC-outerな1x2x2 patchをunpackし、各target/reference segment内だけで3x3 bridgeを適用して

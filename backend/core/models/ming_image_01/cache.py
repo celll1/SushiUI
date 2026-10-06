@@ -9,6 +9,7 @@ import tempfile
 from safetensors import safe_open, SafetensorError
 from safetensors.torch import save_file
 import torch
+from core.models.common.module_identity import module_fingerprint
 
 
 VERSION = 1
@@ -27,14 +28,6 @@ def _tensor_hash(value):
         raise ValueError("Ming cache hashes require plain CPU tensors")
     raw = value.detach().contiguous().reshape(-1).view(torch.uint8).numpy()
     return hashlib.sha256(memoryview(raw)).hexdigest()
-
-
-def module_fingerprint(module):
-    """Call before residency changes; content identity must include actual weights."""
-    digest = hashlib.sha256()
-    for name, value in sorted(module.state_dict().items()):
-        digest.update(json.dumps([name, list(value.shape), str(value.dtype), _tensor_hash(value)]).encode())
-    return digest.hexdigest()
 
 
 def latent_identity(*, pixels, vae_weights, vae_config, dtype, execution):

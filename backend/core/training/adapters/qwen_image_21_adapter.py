@@ -215,9 +215,32 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
             output_path = Path(str(output_path) + ".safetensors")
         config = dict(self.trainer.transformer.config)
         train_te = bool(getattr(self.trainer, "train_text_encoder", False))
+        aligned = getattr(self.trainer.transformer, "vae_latent_bridge", None)
+        bundle = train_te or aligned is not None
+        bundle_target_vae = False
+        if aligned is not None and not aligned.ready:
+            raise ValueError("Cannot save an uncalibrated Qwen VAE swap")
         metadata = artifact_metadata(
-            "training_bundle" if train_te else "transformer", config
+            "training_bundle" if bundle else "transformer", config
         )
+        if aligned is not None:
+            from api.param_defaults import resolve_bundle_vae
+            from core.models.common.single_file_format import build_component_metadata
+            inner = self.trainer.vae.inner
+            d = aligned.declaration
+            identity = getattr(self.trainer, "vae_identity", None)
+            bundle_target_vae = resolve_bundle_vae(getattr(self.trainer,"bundle_vae",None),"qwen_image_21",vae_swapped=True)
+            locator = getattr(identity,"locator",None)
+            if not bundle_target_vae and not locator:
+                raise ValueError("Qwen target VAE has no portable locator; bundle_vae must remain enabled")
+            metadata.update(build_component_metadata(vae_type="custom", vae_channels=d["new_channels"],
+                vae_embedded=bundle_target_vae, vae_prefix="vae." if bundle_target_vae else None,
+                vae_locator=None if bundle_target_vae else locator,
+                vae_class=type(inner).__name__, vae_config=dict(inner.config),
+                vae_scale_factor=d["new_scale"], vae_norm=d["norm"], vae_norm_pack=d["norm_pack"],
+                vae_struct_native=False, vae_identity_native=False,
+                vae_hash=getattr(identity,"content_hash",None) or d["target_identity"]))
+            metadata["train_text_encoder"] = "1" if train_te else "0"
         metadata.update(model_topology_metadata(self.trainer.transformer))
         companion_path = str(getattr(
             self.trainer, "qwen_image_21_companion_path", self.trainer.model_path
@@ -232,7 +255,7 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
         try:
             for key, tensor in self.trainer.transformer.state_dict().items():
                 writer.add(
-                    f"transformer.{key}" if train_te else key,
+                    f"transformer.{key}" if bundle else key,
                     tensor.detach().cpu().contiguous(),
                 )
             if train_te:
@@ -241,6 +264,9 @@ class QwenImage21FullParameterAdapter(BaseFullParameterAdapter):
                         f"text_encoder.{key}",
                         tensor.detach().to("cpu", copy=True).contiguous(),
                     )
+            if bundle_target_vae:
+                for key, tensor in self.trainer.vae.inner.state_dict().items():
+                    writer.add(f"vae.{key}", tensor.detach().to("cpu", copy=True).contiguous())
             result = writer.close()
         except BaseException:
             writer.abort()

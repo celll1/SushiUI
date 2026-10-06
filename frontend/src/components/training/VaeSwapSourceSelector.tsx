@@ -140,7 +140,7 @@ export default function VaeSwapSourceSelector({
       </select>
       <p className="text-xs text-gray-500 mt-1">
         Replaces the VAE and resizes the backbone&apos;s latent input/output
-        layers to the new channel count. Ming uses paired spatial calibration
+        layers to the new channel count. Ming and Qwen 2.1 use paired spatial calibration
         on the target grid; other models copy overlapping channels and zero
         the rest. The result is a checkpoint that only loads with
         this VAE; it is bundled into every save.

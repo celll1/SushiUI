@@ -1133,6 +1133,10 @@ class QwenImage21Transformer2DModel(
                 `tuple` whose first element is the denoised latents.
         """
 
+        alignment = getattr(self, "vae_latent_bridge", None)
+        if alignment is not None:
+            from ..vae_alignment import map_input
+            hidden_states = map_input(self, hidden_states, timestep, img_shapes)
         batch_size = hidden_states.shape[0]
         if kv_cache is not None and not self.config.causal_condition:
             raise ValueError(
@@ -1299,6 +1303,9 @@ class QwenImage21Transformer2DModel(
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
         output = self.proj_out(joint_hidden_states)
+        if alignment is not None:
+            from ..vae_alignment import map_output
+            output = map_output(self, output, img_shapes)
 
         if not return_dict:
             return (output,)

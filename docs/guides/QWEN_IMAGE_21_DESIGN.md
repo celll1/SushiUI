@@ -4,6 +4,14 @@ Status: **implemented first release; measured gates are listed in section 12**
 
 Architecture key: `qwen_image_21`
 
+VAE swap supports target-native paired spatial alignment from a bf16 full base.
+The full checkpoint carries both the learned bridge and the replacement codec
+(or its explicit portable locator). Training, reference encoding, generation,
+partition global inputs and residual U-Net composition use the declared latent
+geometry. See [the shared swap contract](VAE_SWAP_MIGRATION_DESIGN.md).
+CPU bundle restoration and small synthetic BF16 GPU backward are verified;
+official-weight swap training and quality recovery remain unmeasured.
+
 Upstream model: [`Qwen/Qwen-Image-2.1`](https://huggingface.co/Qwen/Qwen-Image-2.1)
 
 Upstream checkpoint revision: pin the exact `Qwen/Qwen-Image-2.1` revision used

@@ -199,7 +199,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
         )
         # The VAE compresses 16x spatially and the transformer consumes latents unpatched, so one token covers a 16x16
         # pixel tile.
-        self.vae_scale_factor = 16
+        self.vae_scale_factor = getattr(vae, "spatial_scale_factor", 16)
         self.latent_channels = self.vae.config.z_dim if getattr(self, "vae", None) else 64
         self.image_processor = VaeImageProcessor(
             vae_scale_factor=self.vae_scale_factor, vae_latent_channels=self.latent_channels
@@ -733,7 +733,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             )
 
         # 3. Prepare latents
-        num_channels_latents = self.transformer.config.in_channels
+        num_channels_latents = self.latent_channels
         latents, input_images_latents = self.prepare_latents(
             vae_images,
             batch_size * num_images_per_prompt,

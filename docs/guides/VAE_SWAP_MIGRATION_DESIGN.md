@@ -12,13 +12,18 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Mingのみpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在MingとQwen-Image 2.1でpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
 `ImageCodecContract`は親モデル名ではなくcodecのチャネル・縮小率・rank・正規化から
 宣言を作り、`SpatialSwapPlan`は外部チャネルとバックボーン内部幅を分離する。
 Mingは共有の双方向3×3 bridge・校正・独立frame codecを使用する。
+Qwenも同じ共有層を使用し、referenceはclean変換、targetはsigma付き変換を行う。
+full checkpointはbridgeをtransformer内、交換先VAEを`vae.`に保存し、TEを学習していない
+bundleでもcompanionのTEを復元する。明示的な`bundle_vae=false`には復元可能なlocatorが必要。
+Qwenのswap初期化はbf16バックボーンから行う。INT8のIOをそのまま拡張する経路は拒否する。
+global adapterの入力も同じ内部latent領域へ変換し、拡張時には座標列を保持する。
 posteriorの`mode`とgenerator付き`sample`を別々に保持し、RGB decoderには不透明alphaを補う。
 拡散状態のbiasはalpha係数、予測biasはepsilon/x0/VP-v/flowの宣言から補正する。
 共有化だけでは、他バックボーンの保存復元や生成接続が完了したことにはならない。
@@ -32,6 +37,8 @@ fp32/bf16 forward/backward、縮小token格子、追加チャネルの勾配を�
 `examples/vae_swap_coarse_probe.py`は保存済みU-net DiTを使うGPU probeである。
 この証拠は全バックボーンの併用完了や、optimizerを含む全run roundtripの
 実機検証を意味しない。
+QwenでもVAE swapと2段U-netのforward/backwardをCPUと小型合成モデルのGPUで検証した。
+公式全重みのswap学習・画質回復・全run再開のGPU受け入れは未検証。
 `backend/tests/latent_adapter_contract_test.py`は親モデル非依存のチャネル増減、
 格子縮小、双方向校正、保存復元、posterior抽選、各拡散予測のbiasを合成tensorで検証する。
 

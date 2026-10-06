@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、MiniT2Iでpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、MiniT2I、SenseNovaでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 SenseNovaにはtarget-native境界の基盤を追加した。generation ViT入力は`alpha=t`、
@@ -29,7 +29,16 @@ Full exportはalignment宣言とnative codecを同梱し、loaderは宣言に従
 bridgeの宣言・重み欠落、未校正の保存を拒否する。facadeの正規化を二重適用せず、native codecの状態だけを保存する。
 実AutoencoderKLと合成画像による校正→分割Full保存→厳密bridge復元→native codec読込の往復が通過した。
 既存Full保存・latent移行を含む93件は通過し、追加統合fixtureのresolver引数と再読込用modelを修正した1件も通過。
-この段階では公開autoは従来zeroのまま。モデル全体を構築する公開loader・生成の統合検証、API/UIへの配線は残る。
+SenseNovaの公開autoもpaired_spatialへ切り替えた。Full FTでgeneration fm_modulesを有効にする既存契約を維持する。
+7層の実NEOChatModelと実VAEで公開preflight→初期化→校正→単一/sharded保存→公開loader→生成を検証した。
+exportの固定42層censusだけをテストで7層へ縮め、model構築・全tensor読込・native forwardはmockしない。
+tokenizer companionだけを置き換え、cond prefix KVは実Qwen3 decoderで作成する。
+通常DiTには4-D AutoencoderKL、2段U-netには5-D Qwen codecを使い、復元前後の生成一致とbridge勾配を確認した。
+候補判定・校正設定のUI・OpenAPI・U-net editor inspectionも外部VAE幅と内部幅の分離へ接続した。
+関連CPU回帰122件が通過。frontendは静的確認で、owner build・画面操作は未了。
+追加のeditor inspectionを含む31件・12 subtestsも通過し、変更Pythonのpy_compile・実import・OpenAPI解析を確認した。
+API再起動後の`/training/vae-sources?arch=sensenova`で、Qwen系64ch/16x/5-D codecを互換候補として確認した。
+既存refinerの内部幅を拡張する移行はまだ拒否する。公式全重みとoptimizer付きrun再開は未検証。
 公式全重みによるSenseNova paired_spatialの学習・画質検証も未了。
 MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで
 入力を`alpha=t`、出力をx0として変換し、通常DiTとresidual U-netへ同じ境界を適用する。

@@ -4385,7 +4385,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   )}
 
-                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
+                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
@@ -4401,7 +4401,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <option value="">Default (paired spatial)</option>
                           <option value="auto">Auto (paired spatial)</option>
                           <option value="paired_spatial">Paired spatial</option>
-                          <option value="zero" disabled={pixelSpaceMiniT2I || !["zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i"].includes(baseModelArch || "")}>Legacy zero</option>
+                          <option value="zero" disabled={pixelSpaceMiniT2I || !["zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova"].includes(baseModelArch || "")}>Legacy zero</option>
                         </select>
                       </label>
                       <label className="block text-xs text-gray-400">

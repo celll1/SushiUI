@@ -119,7 +119,8 @@ def test_gaussian_training_maps_actual_noise_in_each_prediction_mode(arch,noise_
     assert all(value.grad is None for value in pair.noise_alignment.buffers())
 
 
-def test_gaussian_unet_artifact_preserves_frozen_coefficients_in_bf16(tmp_path):
+@pytest.mark.parametrize("gaussian",[False,True])
+def test_gaussian_unet_artifact_preserves_frozen_coefficients_in_bf16(tmp_path,gaussian):
     from diffusers import UNet2DConditionModel
     from core.models.components.gaussian_alignment import POLICY
     from core.models.components.sd_vae_alignment import checkpoint_metadata,split_unet_state,load_unet_artifact
@@ -128,7 +129,8 @@ def test_gaussian_unet_artifact_preserves_frozen_coefficients_in_bf16(tmp_path):
     model=UNet2DConditionModel(in_channels=8,out_channels=8,block_out_channels=(8,),
         norm_num_groups=4,layers_per_block=1,cross_attention_dim=8,
         down_block_types=("DownBlock2D",),up_block_types=("UpBlock2D",))
-    install(model,dict(declaration(4,8),noise_policy=POLICY))
+    saved_declaration=dict(declaration(4,8),noise_policy=POLICY) if gaussian else declaration(4,8)
+    install(model,saved_declaration)
     pair=model.vae_latent_bridge
     pair.initialize_from_pair(identity(SpatialLatentBridge(8,4),.2),identity(SpatialLatentBridge(4,8),.3))
     native,bridge=split_unet_state(model)
@@ -138,13 +140,17 @@ def test_gaussian_unet_artifact_preserves_frozen_coefficients_in_bf16(tmp_path):
     save_single_file_state(state,checkpoint_metadata(model),str(path))
     loaded=load_unet_artifact(path,dtype=torch.bfloat16)
     assert loaded.vae_latent_bridge.ready and loaded.vae_latent_bridge.declaration==pair.declaration
-    for key,value in pair.noise_alignment.state_dict().items():
-        assert torch.equal(value,loaded.vae_latent_bridge.noise_alignment.state_dict()[key])
+    if gaussian:
+        for key,value in pair.noise_alignment.state_dict().items():
+            assert torch.equal(value,loaded.vae_latent_bridge.noise_alignment.state_dict()[key])
+    else:
+        assert not hasattr(loaded.vae_latent_bridge,"noise_alignment")
 
 
 @pytest.mark.parametrize("arch",["sd15","sdxl"])
 @pytest.mark.parametrize("old,new",[(4,8),(8,4)])
-def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new):
+@pytest.mark.parametrize("scale",[8,16])
+def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new,scale):
     from types import SimpleNamespace
     import numpy as np
     from PIL import Image
@@ -161,8 +167,9 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     teacher=AutoencoderKL(latent_channels=old,block_out_channels=(4,)*4,norm_num_groups=4,
         down_block_types=("DownEncoderBlock2D",)*4,up_block_types=("UpDecoderBlock2D",)*4,
         scaling_factor=.18)
-    target=AutoencoderKL(latent_channels=new,block_out_channels=(4,)*5,norm_num_groups=4,
-        down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5,
+    depth=4 if scale==8 else 5
+    target=AutoencoderKL(latent_channels=new,block_out_channels=(4,)*depth,norm_num_groups=4,
+        down_block_types=("DownEncoderBlock2D",)*depth,up_block_types=("UpDecoderBlock2D",)*depth,
         scaling_factor=.7,shift_factor=.2)
     directory=tmp_path/"target"; target.save_pretrained(directory)
     resolved=resolve_vae_source(f"file:{directory}",arch=arch)
@@ -182,11 +189,13 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     trainer.move_vae_to_cpu=lambda:trainer.vae.to("cpu")
     trainer._check_stop_requested=lambda:None
     trainer.arch.apply_vae_swap(trainer,resolved)
+    from core.models.components.gaussian_alignment import POLICY
+    assert model.vae_latent_bridge.declaration.get("noise_policy")== (POLICY if scale>8 and new>=old else None)
     assert model.config.in_channels==model.config.out_channels==max(old,new)
-    assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==16
-    assert BaseTrainer._arch_pixel_align(trainer)==16
+    assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==scale
+    assert BaseTrainer._arch_pixel_align(trainer)==scale
     trainer.arch=get_arch_handler(trainer)
-    assert BaseTrainer._arch_pixel_align(trainer)==16
+    assert BaseTrainer._arch_pixel_align(trainer)==scale
     assert validate_latent_io(trainer)==[]
     images=[]
     for i in range(2):
@@ -196,7 +205,7 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     trainer.arch.calibrate_before_training(trainer,[SimpleNamespace(items=images)],None)
     assert model.vae_latent_bridge.ready
     with torch.no_grad():latent=vae_encode(trainer,torch.randn(2,3,128,192))
-    assert latent.shape==(2,new,8,12)
+    assert latent.shape==(2,new,128//scale,192//scale)
     assert trainer.vae.decode(latent).sample.shape==(2,3,128,192)
     loss,reported,_=train_step(trainer,latents=latent,text_embeddings=torch.randn(2,5,CROSS_DIM[arch]),
         pooled_embeddings=torch.randn(2,POOLED_DIM) if arch=="sdxl" else None)
@@ -252,7 +261,7 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
         torch.testing.assert_close(rebuilt.vae_latent_bridge.state_dict()[key],tensor,rtol=0,atol=0)
     declared=load_declared_latent_io(str(path),arch=arch)
     codec,_=restored_image_codec(declared.load_module(torch_dtype=torch.float32),declared,read_declaration(metadata))
-    assert codec.spatial_scale_factor==16 and codec.config.latent_channels==new
+    assert codec.spatial_scale_factor==scale and codec.config.latent_channels==new
     for key,tensor in trainer.vae.inner.state_dict().items():
         torch.testing.assert_close(codec.inner.state_dict()[key],tensor,rtol=0,atol=0)
     sharded=save_single_file_state(state,metadata,str(tmp_path/"sharded.safetensors"),max_shard_bytes=32768)
@@ -280,7 +289,7 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
             for key,tensor in original_te2.state_dict().items():
                 torch.testing.assert_close(pipeline.text_encoder_2.state_dict()[key],tensor,rtol=0,atol=0)
     assert pipeline.unet.vae_latent_bridge.ready
-    assert pipeline.vae.spatial_scale_factor==16
+    assert pipeline.vae.spatial_scale_factor==scale
     for key,tensor in model.state_dict().items():
         torch.testing.assert_close(pipeline.unet.state_dict()[key],tensor,rtol=0,atol=0)
     trainer.unet=pipeline.unet
@@ -289,7 +298,7 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     with patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
         apply_latent_space(trainer,declared)
     assert trainer.unet.config.in_channels==max(old,new)
-    assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==16
+    assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==scale
     from core.training.ops.sd_sdxl_ops import load_components
     trainer.model_path=str(sharded)
     trainer.dtype=torch.float32
@@ -300,7 +309,7 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
         load_components(trainer)
     assert trainer.is_sdxl==(arch=="sdxl")
     assert trainer.vae.config.latent_channels==trainer.vae_latent_channels==new
-    assert trainer.wiring.vae_scale_factor==16
+    assert trainer.wiring.vae_scale_factor==scale
     for key,tensor in model.state_dict().items():
         torch.testing.assert_close(trainer.unet.state_dict()[key],tensor,rtol=0,atol=0)
     from core.models.components.sd_vae_alignment import load_pipeline_artifact

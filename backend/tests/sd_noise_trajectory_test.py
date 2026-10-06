@@ -135,14 +135,36 @@ def test_wired_step_preserves_native_output_and_consumes_rng_once(explicit):
     torch.testing.assert_close(session.trajectory.state,(1-weight)*before+weight*anchor,rtol=0,atol=0)
 
 
-def test_gaussian_outpaint_refuses_keyword_and_positional_calls_before_sampling():
+@pytest.mark.parametrize("name",["EulerDiscreteScheduler","EulerAncestralDiscreteScheduler","DDIMScheduler","DDPMScheduler"])
+@pytest.mark.parametrize("explicit",[False,True])
+def test_outpaint_jump_uses_same_new_noise_and_preserves_native_rng(name,explicit):
     from types import SimpleNamespace
-    from core.inference.sd_codec_boundary import aligned_sampling
-    pipeline=SimpleNamespace(unet=SimpleNamespace(vae_latent_bridge=SimpleNamespace(noise_alignment=object())))
-    @aligned_sampling
-    def sample(pipeline,outpaint_noise_init=False):
-        raise AssertionError("must refuse before loading the VAE")
-    with pytest.raises(ValueError,match="outpaint noise tracking"):
-        sample(pipeline,outpaint_noise_init=True)
-    with pytest.raises(ValueError,match="outpaint noise tracking"):
-        sample(pipeline,True)
+    from core.inference.sd_codec_boundary import (SDNoiseSession,aligned_noise_jump,
+        rewind_tracked_noise,composite_reference_noise)
+    from core.inference.custom_sampling import _outpaint_resample_jump
+    cls=getattr(diffusers,name)
+    options={"clip_sample":False} if name in ("DDIMScheduler","DDPMScheduler") else {}
+    scheduler=cls(num_train_timesteps=100,**options);scheduler.set_timesteps(8)
+    noise=torch.randn(1,8,5,7);clean=torch.randn_like(noise)
+    lo,hi=3,1
+    state=scheduler.add_noise(clean,noise,scheduler.timesteps[lo:lo+1])
+    raw_noise=scheduler.add_noise(torch.zeros_like(clean),noise,scheduler.timesteps[lo:lo+1])
+    session=SDNoiseSession();session.initialize(scheduler,raw_noise,torch.Generator().manual_seed(19))
+    model=SimpleNamespace(_sushi_sd_noise_session=session)
+    generator=torch.Generator().manual_seed(23) if explicit else None
+    actual_rng=generator if explicit else session.generator
+    expected_rng=SDNoiseTrajectory.clone_generator(actual_rng)
+    expected=_outpaint_resample_jump(scheduler,state,scheduler.timesteps,hi,lo,expected_rng)
+    actual=aligned_noise_jump(model,scheduler,state,scheduler.timesteps,hi_index=hi,lo_index=lo,
+        generator=generator,fallback_generator=torch.Generator().manual_seed(53),jump=_outpaint_resample_jump)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    assert torch.equal(actual_rng.get_state(),expected_rng.get_state())
+    if name.startswith("Euler"):
+        scheduler._step_index=hi;rewind_tracked_noise(model,hi)
+    scaled=scheduler.scale_model_input(actual,scheduler.timesteps[hi])
+    alpha,sigma,_=coefficients(scheduler,scheduler.timesteps[hi],scaled)
+    exposure=session.exposure(scheduler.timesteps[hi],noise)
+    torch.testing.assert_close(scaled,alpha*clean+sigma*exposure,rtol=2e-5,atol=2e-6)
+    mask=torch.rand(1,1,5,7)
+    mixed=composite_reference_noise(model,scheduler.timesteps[hi],noise,mask)
+    torch.testing.assert_close(mixed,(1-mask)*noise+mask*exposure,rtol=0,atol=0)

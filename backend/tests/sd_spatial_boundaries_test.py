@@ -80,6 +80,69 @@ def test_prediction_coefficients_native_conditioning_and_gradients(xl,old,new,no
 
 
 @pytest.mark.parametrize("arch",["sd15","sdxl"])
+@pytest.mark.parametrize("noise_process",["ddpm","flow"])
+@pytest.mark.parametrize("target",["epsilon","velocity","sample"])
+@pytest.mark.parametrize("autocast",[False,True])
+def test_gaussian_training_maps_actual_noise_in_each_prediction_mode(arch,noise_process,target,autocast):
+    from core.models.components.gaussian_alignment import POLICY
+    from core.models.components.sd_vae_alignment import map_input,map_prediction
+    from core.training.ops.sd_sdxl_ops import train_step
+    from backend.tests.repa_sd_unet_tap_test import _tiny_unet,_train_step_trainer,CROSS_DIM,POOLED_DIM
+    from diffusers import UNet2DConditionModel
+    model=UNet2DConditionModel.from_config(_tiny_unet(arch).config,in_channels=8,out_channels=8)
+    install(model,dict(declaration(4,8),noise_policy=POLICY))
+    pair=model.vae_latent_bridge
+    pair.initialize_from_pair(identity(SpatialLatentBridge(8,4),.2),identity(SpatialLatentBridge(4,8),.3))
+    trainer=_train_step_trainer(arch,model,[])
+    trainer.repa_enable=False;trainer.noise_process=noise_process;trainer.prediction_target=target
+    trainer.mixed_precision=autocast;trainer.training_dtype=torch.bfloat16 if autocast else torch.float32
+    clean=torch.randn(2,8,8,12);noise=torch.randn_like(clean);trainer._active_mnt_noise=noise
+    timesteps=torch.tensor([17,681]) if noise_process=="ddpm" else torch.tensor([.2,.8])
+    captured=[]
+    original_input=map_input;original_prediction=map_prediction
+    def incoming(*args,**kwargs):
+        assert torch.equal(kwargs["noise"],noise.to(dtype=kwargs["noise"].dtype))
+        result=original_input(*args,**kwargs);captured.append((kwargs["alpha"],kwargs["sigma"]))
+        return result
+    def outgoing(*args,**kwargs):
+        assert torch.equal(kwargs["noise"],noise.to(dtype=kwargs["noise"].dtype))
+        assert kwargs["prediction_target"]==target and kwargs["noise_process"]==noise_process
+        return original_prediction(*args,**kwargs)
+    with patch("core.models.components.sd_vae_alignment.map_input",side_effect=incoming), \
+         patch("core.models.components.sd_vae_alignment.map_prediction",side_effect=outgoing):
+        loss,*_=train_step(trainer,latents=clean,text_embeddings=torch.randn(2,5,CROSS_DIM[arch]),
+            pooled_embeddings=torch.randn(2,POOLED_DIM) if arch=="sdxl" else None,timesteps=timesteps)
+    assert torch.isfinite(loss) and len(captured)==1
+    loss.backward()
+    assert pair.input.projection.weight.grad.abs().sum()>0
+    assert pair.output.projection.weight.grad.abs().sum()>0
+    assert all(value.grad is None for value in pair.noise_alignment.buffers())
+
+
+def test_gaussian_unet_artifact_preserves_frozen_coefficients_in_bf16(tmp_path):
+    from diffusers import UNet2DConditionModel
+    from core.models.components.gaussian_alignment import POLICY
+    from core.models.components.sd_vae_alignment import checkpoint_metadata,split_unet_state,load_unet_artifact
+    from core.training.adapters.state_dict_converter import convert_unet_state_dict_to_original
+    from core.models.common.single_file_format import save_single_file_state
+    model=UNet2DConditionModel(in_channels=8,out_channels=8,block_out_channels=(8,),
+        norm_num_groups=4,layers_per_block=1,cross_attention_dim=8,
+        down_block_types=("DownBlock2D",),up_block_types=("UpBlock2D",))
+    install(model,dict(declaration(4,8),noise_policy=POLICY))
+    pair=model.vae_latent_bridge
+    pair.initialize_from_pair(identity(SpatialLatentBridge(8,4),.2),identity(SpatialLatentBridge(4,8),.3))
+    native,bridge=split_unet_state(model)
+    original=convert_unet_state_dict_to_original(native)
+    state={"model.diffusion_model."+key:value for key,value in {**original,**bridge}.items()}
+    path=tmp_path/"gaussian.safetensors"
+    save_single_file_state(state,checkpoint_metadata(model),str(path))
+    loaded=load_unet_artifact(path,dtype=torch.bfloat16)
+    assert loaded.vae_latent_bridge.ready and loaded.vae_latent_bridge.declaration==pair.declaration
+    for key,value in pair.noise_alignment.state_dict().items():
+        assert torch.equal(value,loaded.vae_latent_bridge.noise_alignment.state_dict()[key])
+
+
+@pytest.mark.parametrize("arch",["sd15","sdxl"])
 @pytest.mark.parametrize("old,new",[(4,8),(8,4)])
 def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new):
     from types import SimpleNamespace

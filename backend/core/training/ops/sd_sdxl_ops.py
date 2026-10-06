@@ -818,7 +818,8 @@ def train_step(
             noise_process=noise_process,reference=noisy_latents,alphas_cumprod=alphas_cumprod_cached)
         if trainer.mixed_precision:
             with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-                unet_latents=map_input(trainer.unet,noisy_latents,alpha=alignment_alpha)
+                unet_latents=map_input(trainer.unet,noisy_latents,alpha=alignment_alpha,
+                    sigma=alignment_sigma,noise=noise)
                 if trainer.is_sdxl and added_cond_kwargs is not None:
                     model_pred = trainer.unet(
                         unet_latents,
@@ -833,7 +834,8 @@ def train_step(
                         text_embeddings
                     ).sample
         else:
-            unet_latents=map_input(trainer.unet,noisy_latents,alpha=alignment_alpha)
+            unet_latents=map_input(trainer.unet,noisy_latents,alpha=alignment_alpha,
+                sigma=alignment_sigma,noise=noise)
             if trainer.is_sdxl and added_cond_kwargs is not None:
                 model_pred = trainer.unet(
                     unet_latents,
@@ -856,7 +858,7 @@ def train_step(
 
     with torch.autocast(device_type=trainer.device.type,dtype=trainer.training_dtype,enabled=trainer.mixed_precision):
         model_pred=map_prediction(trainer.unet,model_pred,noise_process=noise_process,
-            prediction_target=prediction_target,sigma=alignment_sigma)
+            prediction_target=prediction_target,sigma=alignment_sigma,alpha=alignment_alpha,noise=noise)
 
     target = get_target_unified(
         noise_process=noise_process,

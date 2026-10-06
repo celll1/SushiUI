@@ -271,16 +271,16 @@ def training_coefficients(model,scheduler,timesteps,*,noise_process,reference,al
     return alpha_bar.sqrt().to(reference.dtype),(1-alpha_bar).sqrt().to(reference.dtype)
 
 
-def map_input(model,latent,*,alpha):
+def map_input(model,latent,*,alpha,sigma=None,noise=None):
     pair=getattr(model,"vae_latent_bridge",None)
     if pair is None:
         return latent
     if latent.ndim!=4 or alpha is None:
         raise ValueError("SD spatial alignment requires BCHW latents and an explicit clean coefficient")
-    return pair.input.diffusion_state(latent,alpha=alpha)
+    return pair.diffusion_state(latent,alpha=alpha,sigma=sigma,noise=noise)
 
 
-def map_prediction(model,value,*,noise_process,prediction_target,sigma):
+def map_prediction(model,value,*,noise_process,prediction_target,sigma,alpha=None,noise=None):
     pair=getattr(model,"vae_latent_bridge",None)
     if pair is None:
         return value
@@ -290,4 +290,4 @@ def map_prediction(model,value,*,noise_process,prediction_target,sigma):
         kind={"epsilon":"epsilon","sample":"x0"}.get(prediction_target)
     if kind is None or noise_process not in ("ddpm","flow"):
         raise ValueError("SD spatial alignment requires a declared prediction and noise process")
-    return pair.output.prediction(value,kind=kind,sigma=sigma)
+    return pair.prediction(value,kind=kind,sigma=sigma,alpha=alpha,noise=noise)

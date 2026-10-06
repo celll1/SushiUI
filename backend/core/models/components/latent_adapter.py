@@ -124,15 +124,39 @@ class SpatialAlignmentPair(nn.Module):
 
     def flow_state(self, value, sigma, *, noise=None):
         mapped = self.input.flow_state(value, sigma)
+        return self._correct_input_noise(mapped,value,sigma,noise)
+
+    def diffusion_state(self, value, *, alpha, sigma=None, noise=None):
+        mapped = self.input.diffusion_state(value,alpha=alpha)
+        return self._correct_input_noise(mapped,value,sigma,noise)
+
+    def _correct_input_noise(self, mapped, value, sigma, noise):
         correction = getattr(self, "noise_alignment", None)
         if correction is None:
             return mapped
+        if sigma is None:
+            raise ValueError("Gaussian alignment requires the actual diffusion noise coefficient")
         self._check_noise(value, noise)
         delta = correction.input_delta(noise)
         padded = torch.zeros_like(mapped, dtype=torch.float32)
         padded[:, :self.declaration["old_channels"]] = delta
         fraction = self.input._sigma(sigma, mapped).float()
         return (mapped.float() + fraction * padded).to(mapped.dtype)
+
+    def prediction(self, value, *, kind, sigma=None, alpha=None, noise=None):
+        mapped = self.output.prediction(value,kind=kind,sigma=sigma)
+        correction = getattr(self,"noise_alignment",None)
+        if correction is None or kind=="x0":
+            return mapped
+        self._check_noise(mapped,noise)
+        residual = correction.residual(noise)
+        if kind=="v":
+            if alpha is None:
+                raise ValueError("Gaussian VP v prediction requires the actual clean coefficient")
+            residual = self.output._sigma(alpha,mapped).float()*residual
+        elif kind=="x0_minus_eps":
+            residual = -residual
+        return (mapped.float()+residual).to(mapped.dtype)
 
     def flow_velocity(self, value, *, convention, noise=None):
         mapped = self.output.flow_velocity(value, convention=convention)

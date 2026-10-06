@@ -73,6 +73,44 @@ def test_checkpoint_buffers_and_fp32_noise_definition_survive_dtype_changes():
     with pytest.raises(RuntimeError):restored.load_state_dict(broken,strict=True)
 
 
+@pytest.mark.parametrize("rank",[4,5])
+@pytest.mark.parametrize("kind",["epsilon","v","x0","eps_minus_x0","x0_minus_eps"])
+def test_diffusion_coefficients_restore_noise_complement_without_clean_bias_leak(rank,kind):
+    value=pair();shape=(2,5,8,12) if rank==4 else (2,5,2,8,12)
+    clean=torch.randn(shape);noise=torch.randn(shape)
+    sigma=torch.tensor([.2,.8]);alpha=(1-sigma.square()).sqrt()
+    a=alpha.reshape(2,*([1]*(rank-1)));s=sigma.reshape(2,*([1]*(rank-1)))
+    states=a*clean+s*noise
+    actual=value.diffusion_state(states,alpha=alpha,sigma=sigma,noise=noise)
+    native_clean=value.input(clean)
+    delta=value.noise_alignment.input_delta(noise)
+    native_noise=value.input.epsilon(noise)
+    native_noise[:,:3]+=delta
+    torch.testing.assert_close(actual,a*native_clean+s*native_noise,atol=1e-6,rtol=1e-5)
+    # The original head predicts only source channels; expanded channels start at zero.
+    native_noise[:,3:]=0
+    native_clean[:,3:]=0
+    external_clean=value.output(native_clean)
+    if kind=="epsilon":native=native_noise;expected=noise
+    elif kind=="v":native=a*native_noise-s*native_clean;expected=a*noise-s*external_clean
+    elif kind=="x0":native=native_clean;expected=external_clean
+    elif kind=="eps_minus_x0":native=native_noise-native_clean;expected=noise-external_clean
+    else:native=native_clean-native_noise;expected=external_clean-noise
+    actual=value.prediction(native,kind=kind,alpha=alpha,sigma=sigma,noise=noise)
+    torch.testing.assert_close(actual,expected,atol=1e-6,rtol=1e-5)
+
+
+def test_gaussian_vp_boundary_requires_explicit_coefficients():
+    value=pair();noise=torch.randn(2,5,8,12)
+    with pytest.raises(ValueError,match="noise coefficient"):
+        value.diffusion_state(noise,alpha=.8,noise=noise)
+    with pytest.raises(ValueError,match="clean coefficient"):
+        value.prediction(noise,kind="v",sigma=.6,noise=noise)
+    with pytest.raises(ValueError,match="exposure"):
+        value.prediction(noise,kind="epsilon")
+    torch.testing.assert_close(value.prediction(noise,kind="x0"),value.output(noise))
+
+
 def test_noise_required_and_legacy_pair_remains_explicitly_uncorrected():
     value=pair();noise=torch.randn(2,5,8,8)
     with pytest.raises(ValueError,match='exposure'):value.flow_state(noise,.5)

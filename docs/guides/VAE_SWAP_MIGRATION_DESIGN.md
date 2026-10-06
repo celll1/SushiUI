@@ -42,7 +42,7 @@ outpaintのnoise-initはkeep/generate領域を同じ式で合成し、time-trave
 一回だけ消費して追跡stateも再加noiseする。Euler系はscheduler位置も巻き戻す。
 B3参照は初期noiseと現在の露出noiseをmaskで混合し、最終境界pinは追跡noiseも同じkeep重みで消す。
 通常の非Gaussian outpaintの算術/RNGは維持する。outpaintを含む初回回帰139件、追加の
-明示/既定generator・DDIM/DDPM生成確認16件が通過。新SD policyの公式Full学習・保存再開受入は残る。
+明示/既定generator・DDIM/DDPM生成確認16件が通過。公式重みでのoutpaint GPU検証は残る。
 PNDMのv-predictionは合成oracleで約0.014の分解誤差があり、この追跡方式では拒否する。
 clip/thresholding・learned variance・churn・per-token timestepも現段階では拒否する。
 Flowの`stochastic_sampling`は実装がgeneratorを無視するため拒否し、無条件に同じ乱数と見なさない。
@@ -67,6 +67,22 @@ SDXLはseed63で概形を保つ一方、seed64は全3prompt/両samplerで強い�
 `local/verification/sd15_gaussian_production_quality/`、`sdxl_gaussian_production_quality/`、
 `sdxl_gaussian_native_control/`にのみ置いた。DB run/dataset/galleryは作成せず、試験process終了と
 GPU解放を確認。APIのMing Layer選択・training inactive・generation idleも維持した。
+
+新規交換の既定policyも、公式SD1.5/SDXL全重みで公開API Full学習step1→保存→step2再開を検証した。
+合成図形2枚・256px・BF16・Adafactor stochastic roundingを使用し、実画像は使っていない。
+C4/8x→C64/16x宣言と交換codecを復元し、有効optimizer状態はSD1.5が689個、SDXLが1683個、
+全counterが1→2へ継続した。epsilonで使わないoutput bridge biasだけは状態を持たず、
+固定noise補正bufferはoptimizer対象外。5個のbufferは保存・再開でbit一致し、行直交係数はFP32を保持した。
+追加channelのnative入力/出力重みは両モデルで非ゼロへ更新され、SDXLではstep1→2の変化も確認した。
+保存checkpointの公開API読込・生成も両モデルで成功し、元のMing Layer選択へ戻した。
+step2 lossはSD1.5が0.06386、SDXLが0.03838。2stepの合成図形試験は機能検証であり、画質回復の受入ではない。
+診断記録はignored `local/verification/sd15_gaussian_full_api_results/`、
+`sdxl_gaussian_full_api_results/`に保持する。専用smokeのrun/datasetはDBから削除し、
+絶対パスを照合した自作dataset・checkpoint・生成出力もdiskから整理した。
+
+画質の受入は概形・主要配色が一定程度復元できることを目安とする。完全復元を要求しないが、
+変換行列・空間畳み込み・noise補正を省略する理由にはしない。色の塊へ崩れるH3→LTXや、
+seedによって強い縞が残るSDXLは未受入として改善を続ける。
 
 Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く、channel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。校正した3×3入力/出力kernelと、中心行列のSVD行直交射影を

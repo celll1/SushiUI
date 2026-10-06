@@ -196,7 +196,9 @@ def test_real_causal_source_codec_calibration_public_loader_and_resume(tmp_path)
     for name in ("text_encoder","vae"):
         folder=companion/name;folder.mkdir(parents=True,exist_ok=True)
         (folder/"config.json").write_text("{}",encoding="utf-8")
-    with patch.object(loader,"_load_scheduler",return_value=object()) as resolve_scheduler, \
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    scheduler=FlowMatchEulerDiscreteScheduler(base_shift=.73,max_shift=1.31,use_dynamic_shifting=True)
+    with patch.object(loader,"_load_scheduler",return_value=scheduler) as resolve_scheduler, \
          patch.object(loader,"_resolve_te_dir",wraps=loader._resolve_te_dir) as resolve_te, \
          patch.object(loader,"_resolve_vae_dir",wraps=loader._resolve_vae_dir) as resolve_vae:
         components=loader.load_krea2_components(str(path),torch_dtype=torch.float32,
@@ -225,6 +227,53 @@ def test_real_causal_source_codec_calibration_public_loader_and_resume(tmp_path)
     result=load_single_file(str(sharded),torch_dtype=torch.float32)
     assert result["transformer"].vae_latent_bridge.ready
     assert not torch.cuda.is_initialized()
+
+    tokenizer_dir=companion/"tokenizer";tokenizer_dir.mkdir()
+    (tokenizer_dir/"tokenizer_config.json").write_text("{}",encoding="utf-8")
+    references=components["companion_references"]
+    references["tokenizer"]={"kind":"local","path":str(tokenizer_dir)}
+    trainer.krea2_companion_references=references
+    persisted=tmp_path/"persisted.safetensors"
+    Krea2FullParameterAdapter(trainer).write_checkpoint(8,0,persisted)
+    import json
+    from core.models.common.single_file_format import read_metadata
+    assert json.loads(read_metadata(str(persisted))[loader.COMPANION_METADATA_KEY]) == references
+    for checkpoint in (persisted,tmp_path/"persisted_shards.safetensors.index.json"):
+        if checkpoint != persisted:
+            save_single_file(str(tmp_path/"persisted_shards.safetensors"),restored,False,
+                vae=trainer.vae.inner,extra_metadata={**metadata,
+                    loader.COMPANION_METADATA_KEY:json.dumps(references)},max_shard_bytes=32768)
+        with patch.object(loader,"_load_scheduler",side_effect=AssertionError("saved scheduler required")), \
+             patch.object(loader,"_resolve_te_dir",side_effect=AssertionError("saved TE required")), \
+             patch.object(loader,"_load_qwen3vl_text_encoder",return_value=trainer.text_encoder) as load_te, \
+             patch("transformers.AutoTokenizer.from_pretrained",return_value=object()) as load_tokenizer:
+            saved=loader.load_krea2_components(str(checkpoint),torch_dtype=torch.float32)
+        load_te.assert_called_once_with(str(companion/"text_encoder"),torch.float32)
+        load_tokenizer.assert_called_once_with(str(tokenizer_dir),trust_remote_code=True)
+        assert saved["companion_references"] == references
+        assert dict(saved["scheduler"].config) == dict(scheduler.config)
+        assert saved["transformer"].vae_latent_bridge.ready
+    (companion/"text_encoder"/"config.json").unlink()
+    with patch.object(loader,"load_single_file",side_effect=AssertionError("must preflight first")):
+        with pytest.raises(ValueError,match="Saved Krea companion is missing"):
+            loader.load_krea2_components(str(persisted))
+
+
+@pytest.mark.parametrize("references", [
+    {"version":2,"scheduler_config":{}},
+    {"version":1,"scheduler_config":{}},
+    {"version":1,"scheduler_config":{"base_shift":.5},"text_encoder":{"kind":"local","path":""}},
+])
+def test_invalid_companion_metadata_rejected_before_weights(tmp_path,references):
+    import json
+    from safetensors.torch import save_file
+    from core.models.krea2 import krea2_loader as loader
+    path=tmp_path/"invalid.safetensors"
+    save_file({"synthetic":torch.zeros(1)},str(path),
+        metadata={loader.COMPANION_METADATA_KEY:json.dumps(references)})
+    with patch.object(loader,"load_single_file",side_effect=AssertionError("must preflight first")):
+        with pytest.raises(ValueError,match="Invalid Krea"):
+            loader.load_krea2_components(str(path))
 
 
 @pytest.mark.parametrize("location", ["text_encoder", "tokenizer", None])

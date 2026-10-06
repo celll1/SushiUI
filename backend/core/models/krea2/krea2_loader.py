@@ -39,6 +39,37 @@ TE_SIBLING_NAMES = ("text_encoder", "Qwen3-VL-4B-Instruct", "qwen3-vl-4b", "qwen
 VAE_SIBLING_NAMES = ("vae", "qwen-image-vae", "qwen_image_vae", "Qwen-Image-VAE")
 TE_HUB_ID = "Qwen/Qwen3-VL-4B-Instruct"
 VAE_HUB_ID = "Qwen/Qwen-Image"
+COMPANION_METADATA_KEY = "krea2_companions"
+
+
+def _read_companions(model_path: str) -> Optional[dict]:
+    from core.models.common.single_file_format import read_metadata
+
+    raw = read_metadata(model_path).get(COMPANION_METADATA_KEY)
+    if raw is None:
+        return None
+    value = json.loads(raw)
+    if (not isinstance(value, dict) or value.get("version") != 1
+            or not isinstance(value.get("scheduler_config"), dict)
+            or not value["scheduler_config"]):
+        raise ValueError("Invalid Krea companion metadata")
+    for key in ("text_encoder", "tokenizer"):
+        ref = value.get(key)
+        if (not isinstance(ref, dict) or ref.get("kind") not in ("local", "hub")
+                or not isinstance(ref.get("path"), str) or not ref["path"]):
+            raise ValueError(f"Invalid Krea {key} companion reference")
+    return value
+
+
+def _companion_path(ref: dict, config_name: str) -> str:
+    path = ref["path"]
+    if ref["kind"] == "local" and not os.path.isfile(os.path.join(path, config_name)):
+        raise ValueError(f"Saved Krea companion is missing {config_name}: {path}")
+    return path
+
+
+def _source_reference(path: Optional[str], hub: str) -> dict:
+    return {"kind": "local", "path": os.path.abspath(path)} if path else {"kind": "hub", "path": hub}
 
 
 def _has_config(d: Optional[str]) -> bool:
@@ -160,12 +191,16 @@ def _load_qwen_image_vae(vae_dir: Optional[str], torch_dtype: torch.dtype):
     return vae
 
 
-def _load_tokenizer(te_dir: Optional[str]):
+def _tokenizer_source(te_dir: Optional[str]) -> str:
+    candidates = (te_dir, os.path.join(os.path.dirname(te_dir), "tokenizer")) if te_dir else ()
+    return next((folder for folder in candidates
+                 if os.path.isfile(os.path.join(folder, "tokenizer_config.json"))), TE_HUB_ID)
+
+
+def _load_tokenizer(te_dir: Optional[str], *, source: Optional[str] = None):
     from transformers import AutoTokenizer
 
-    candidates = (te_dir, os.path.join(os.path.dirname(te_dir), "tokenizer")) if te_dir else ()
-    src = next((folder for folder in candidates
-                if os.path.isfile(os.path.join(folder, "tokenizer_config.json"))), TE_HUB_ID)
+    src = source or _tokenizer_source(te_dir)
     print(f"[Krea2Loader] Loading tokenizer from: {src}")
     return AutoTokenizer.from_pretrained(src, trust_remote_code=True)
 
@@ -246,9 +281,14 @@ def load_krea2_components(
     # BEFORE the transformer is built (design §8.2, §9.1); an unresolvable
     # declaration raises rather than falling back to the Qwen-Image VAE.
     declared_vae = None
+    saved_companions = None
     if is_single_file:
         from core.models.common.vae_source import load_declared_latent_io
         declared_vae = load_declared_latent_io(model_path, arch="krea2")
+        saved_companions = _read_companions(model_path)
+        if saved_companions is not None and load_text_encoder:
+            _companion_path(saved_companions["text_encoder"], "config.json")
+            _companion_path(saved_companions["tokenizer"], "tokenizer_config.json")
 
     embedded_te_sd = None
     embedded_vae_sd = None
@@ -283,12 +323,21 @@ def load_krea2_components(
               f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
 
     companion_source = companion_path or model_path
-    scheduler = _load_scheduler(companion_source)
+    if saved_companions is None:
+        scheduler = _load_scheduler(companion_source)
+    else:
+        from diffusers import FlowMatchEulerDiscreteScheduler
+        scheduler = FlowMatchEulerDiscreteScheduler.from_config(saved_companions["scheduler_config"])
     if getattr(transformer,"vae_latent_bridge",None) is not None and declared_vae is None:
         raise ValueError("Aligned Krea checkpoint is missing its codec declaration")
 
-    resolved_te = _resolve_te_dir(companion_source, te_dir)
     resolved_vae = _resolve_vae_dir(companion_source, vae_dir)
+    if saved_companions is None:
+        resolved_te = _resolve_te_dir(companion_source, te_dir)
+        tokenizer_source = _tokenizer_source(resolved_te)
+    else:
+        resolved_te = saved_companions["text_encoder"]["path"]
+        tokenizer_source = saved_companions["tokenizer"]["path"]
 
     text_encoder = None
     tokenizer = None
@@ -309,7 +358,7 @@ def load_krea2_components(
             from transformers import AutoModel
             text_encoder = AutoModel.from_pretrained(TE_HUB_ID, torch_dtype=torch_dtype, trust_remote_code=True)
             text_encoder.to("cpu").eval()
-        tokenizer = _load_tokenizer(resolved_te)
+        tokenizer = _load_tokenizer(resolved_te, source=tokenizer_source)
 
     # Embedded (trained) VAE from a bundle_vae single-file overrides default
     # resolution; absent -> resolve companion/store VAE as before.
@@ -356,4 +405,12 @@ def load_krea2_components(
         "text_encoder_select_layers": list(select_layers),
         "patch_size": 2,
         "config": config,
+        "companion_references": {
+            "version": 1,
+            "text_encoder": (saved_companions["text_encoder"] if saved_companions is not None
+                             else _source_reference(resolved_te, TE_HUB_ID)),
+            "tokenizer": (saved_companions["tokenizer"] if saved_companions is not None
+                          else _source_reference(tokenizer_source if os.path.isdir(tokenizer_source) else None, TE_HUB_ID)),
+            "scheduler_config": dict(getattr(scheduler, "config", {})),
+        },
     }

@@ -57,8 +57,13 @@ fresh 0。固定補正の全bufferがbit一致し、codec宣言・U-net構造も
 lossは0.491757→1.175464。少数stepの機能確認で、収束や画質回復の受入ではない。
 詳細training DBも保持した。保存したsharded indexを生成APIへ読み込み、C64・2段/deep4を復元。
 256px・2steps・CFG1の生成はHTTP200で完了した。交換VAEのlive preview非対応警告は残る。
-この生成読込のTEは既存hub fallbackを使用した。保存時の元TE companion参照はまだなく、
-ネットワーク/cacheに依存する点は残作業。画質比較側は元公式TE由来conditioningを使用した。
+この生成読込のTEは既存hub fallbackを使用した。画質比較側は元公式TE由来conditioningを使用した。
+その後、Full保存へversion付き`krea2_companions`を追加した。loaderで解決したTE・tokenizerの
+local pathまたはhub IDとscheduler configを保持し、生成・再開とも保存宣言を優先する。
+local参照のconfig消失は重み読込前に拒否し、hubへ黙って切り替えない。参照は重みの同梱や
+hash検証ではなく、元packageの保持が必要。hub由来ならネットワーク/cache依存は残る。
+宣言のない旧checkpointは既存補完を維持する。単一/分割保存・再保存・schedulerの非標準設定・
+欠損/不正宣言の拒否をCPUで検証した。この参照追加後の公式全重みGPU再試験は未実施。
 専用run/datasetのDB・diskを整理し、選択モデルをMing Layerへ戻した。
 optimizer・診断・生成画像はignored `local/verification/krea_gaussian_api_full_results/`のみ。
 初回step1→2の機能試験は完走したが、dense loaderが固定FP32係数もBF16へ丸めていたため

@@ -1,5 +1,5 @@
 """Affine target-grid boundaries for Chimera's linear-state flow paths."""
-from .flow import FLOW_V1_PREDICTION,FLOW_V2_PREDICTION,FLOW_V2_VELOCITY_PREDICTION,FLOW_V3_PREDICTION
+from .flow import FLOW_V1_PREDICTION,FLOW_V2_PREDICTION,FLOW_V2_VELOCITY_PREDICTION,FLOW_V3_PREDICTION,FLOW_V4_PREDICTION
 
 PENDING_KEY = "_chimera_vae_calibration_source"
 
@@ -61,12 +61,12 @@ def initialize_swap(trainer, resolved, *, handler):
     from .artifact import prediction_contract
     from core.models.components.sd_vae_alignment import initialize_swap as sd_initialize
     prediction = trainer.chimera_prediction
-    if prediction["type"] not in (FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION):
-        raise ValueError("Chimera v4 VAE swaps require drift-aware loss and integration")
-    if prediction["type"] == FLOW_V3_PREDICTION:
+    if prediction["type"] not in (FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION, FLOW_V4_PREDICTION):
+        raise ValueError("Unsupported Chimera VAE swap prediction")
+    if prediction["type"] in (FLOW_V3_PREDICTION, FLOW_V4_PREDICTION):
         from .unet import ChimeraPolarRadialHead
         if not isinstance(getattr(trainer.unet, "chimera_polar_radial_head", None), ChimeraPolarRadialHead):
-            raise ValueError("Chimera v3 VAE swap requires its native radial head")
+            raise ValueError("Chimera polar VAE swap requires its native radial head")
     prediction = prediction_contract(prediction["type"],
         latent_mean=prediction.get("latent_mean"),
         latent_centered_second_moment=prediction.get("latent_centered_second_moment"),

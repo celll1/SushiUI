@@ -1384,6 +1384,9 @@ def _apply_chimera_training_contract(
         "v4" if artifact_is_v4 else "v3" if artifact_is_v3 else "v2" if artifact_is_v2 else "v1"
     )
     resolved_flow = artifact_flow if requested_flow == "auto" else requested_flow
+    aligned_vae = manifest.get("vae_alignment") is not None
+    if aligned_vae and resolved_flow != artifact_flow:
+        raise ValueError("A Chimera VAE-aligned checkpoint requires its saved prediction contract")
     if artifact_is_v2 and resolved_flow == "v1":
         raise ValueError("A Chimera v2 artifact cannot be trained with v1 velocity targets")
     if artifact_is_v3 and resolved_flow != "v3":
@@ -1400,7 +1403,17 @@ def _apply_chimera_training_contract(
             "Chimera v4 training requires a format-5 destruction-coordinate "
             "artifact; v3 tangent-head and optimizer state are not resume-compatible"
         )
-    if resolved_flow == "v2":
+    if resolved_flow == "v2" and aligned_vae:
+        expected = "direct_velocity" if artifact_prediction["type"] == FLOW_V2_VELOCITY_PREDICTION else "analytic_residual"
+        requested = str(train_config.get("chimera_v2_parameterization", "auto")).strip().lower()
+        if requested not in ("auto", expected):
+            raise ValueError("A Chimera VAE-aligned checkpoint requires its saved prediction contract")
+        train_config["chimera_v2_parameterization"] = expected
+        # Calibration fields describe a native base; aligned statistics belong to the artifact.
+        train_config["chimera_v2_latent_mean"] = None
+        train_config["chimera_v2_latent_centered_second_moment"] = None
+        train_config["chimera_v2_calibration"] = None
+    elif resolved_flow == "v2":
         requested_parameterization = str(
             train_config.get("chimera_v2_parameterization", "auto")
         ).strip().lower()
@@ -1538,8 +1551,8 @@ def _apply_chimera_training_contract(
             "Chimera REPA currently requires repa_target_source='pixel'; its "
             "bundled donor VAE has not been validated against latent-stem teachers"
         )
-    if train_config.get("vae_swap_source"):
-        raise ValueError("Chimera artifacts pin and bundle their donor VAE; VAE swap is unsupported")
+    if train_config.get("vae_swap_source") and stage == "bridge_align":
+        raise ValueError("Chimera VAE swaps require the unet or joint training stage")
     if stage == "bridge_align" or align_steps:
         for key in ("chimera_clip_hidden_weight", "chimera_clip_pooled_weight"):
             value = train_config.get(key)

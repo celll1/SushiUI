@@ -444,6 +444,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     is_polar = is_v3 or is_v4
     polar_target = None
     radial_prediction = None
+    tangent_drift = None
     if is_polar:
         latent_mean = prediction_contract["latent_mean"]
         latent_moment = prediction_contract["latent_centered_second_moment"]
@@ -542,10 +543,15 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                 added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
                 return_dict=False)
             if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
-                from core.models.sensenova_sdxl_chimera.polar_vae_alignment import polar_forward
-                radial_prediction, prediction, _, _ = polar_forward(
+                from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
+                polar_prediction = forward_prediction(
                     trainer.unet, noisy, timesteps,
                     prediction=prediction_contract, **polar_kwargs)
+                radial_prediction = polar_prediction.radial_velocity
+                prediction = (polar_prediction.tangent_per_coordinate if is_v4
+                              else polar_prediction.tangent_per_time)
+                if is_v4:
+                    tangent_drift = polar_prediction.drift_tangent_per_time
             else:
                 raw_tangent, radial_prediction = polar_unet_forward(
                     trainer.unet, model_input, timesteps, log_radius=log_radius, **polar_kwargs)
@@ -573,6 +579,9 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
             radial_prediction.float() - radial_target.float()
         ).square()
         prediction_loss_per_item = tangent_loss_per_item + radial_loss_per_item
+        if tangent_drift is not None:
+            drift_loss_per_item = tangent_drift.float().square().flatten(1).mean(1)
+            prediction_loss_per_item = prediction_loss_per_item + drift_loss_per_item
     else:
         radial_loss_per_item = None
         prediction_loss_per_item = tangent_loss_per_item
@@ -589,6 +598,8 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                     timesteps, noisy.detach()
                 )
                 tangent_velocity = coordinate_prime * tangent_velocity
+                if tangent_drift is not None:
+                    tangent_velocity = tangent_velocity + tangent_drift.detach()
             predicted_velocity = polar_compose_velocity(
                 noisy.detach(),
                 radial_prediction.detach(),
@@ -606,6 +617,7 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                     latent_mean=latent_mean,
                     latent_centered_second_moment=latent_moment,
                     radius_floor=prediction_contract["radius_floor"],
+                    tangent_drift=None if tangent_drift is None else tangent_drift.detach(),
                 )
             else:
                 predicted_clean = polar_recover_clean(
@@ -650,6 +662,9 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     if hasattr(trainer, "log_extra_metric"):
         if is_polar:
             metric_version = "v4" if is_v4 else "v3"
+            if tangent_drift is not None:
+                trainer.log_extra_metric("chimera_v4_boundary_drift_loss",
+                    float(drift_loss_per_item.detach().mean().cpu()))
             tangent_inner = (
                 polar_target.direction.float() * prediction.detach().float()
             ).flatten(1).mean(1).abs()

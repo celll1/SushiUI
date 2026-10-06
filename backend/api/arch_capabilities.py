@@ -1382,7 +1382,7 @@ _add_training_feature_advisory(
     "sensenova", "vae_swap", "experimental",
     "SenseNova defaults to paired_spatial on the replacement codec's native grid. It aggregates trained generation patch and PixelShuffle projections, retaining the decoder, understanding tower and reference path. Full fine-tuning with generation fm_modules enabled is required; learned bridges join that optimizer scope. The generation patch inherits the checkpoint (4 latent cells for a pixel base), so token width is patch*VAE scale. Shared calibration, native codec bundling, strict bridge restoration and U-net topology preservation are verified with synthetic small native models and 4-D/independent-frame 5-D codecs. Attached refiners preserve trained weights when expanding channels. Official full-weight paired training, quality and throughput acceptance remain pending. Legacy zero remains explicit; its earlier official-weight functional measurements are recorded in VAE_SWAP_MIGRATION_DESIGN.md 10.6",
     methods=["full_finetune"])
-for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4"):
+for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",
@@ -1438,9 +1438,11 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "yue2", "vae_swap",
     "YuE2 ABC-planner training never enters the acoustic latent path, so replacing the audio VAE has no defined training effect")
-_add_training_feature_unsupported(
+_add_training_feature_advisory(
     "sensenova_sdxl_chimera", "vae_swap",
-    "Chimera artifacts pin and bundle the donor VAE; replacing it would invalidate the artifact identity and latent-space contract")
+    "experimental",
+    "Chimera uses paired_spatial on the target codec grid and bundles its RGB codec, bridges and separate source/target flow statistics. Full fine-tuning in the unet or joint stage is required. Polar v4 retains both coordinate tangent and time drift. Calibration, generation, restoration and optimizer continuation are verified with small native models; official full-weight training and quality acceptance remain pending.",
+    methods=["full_finetune"])
 
 # --- Layer-wise LR decay ----------------------------------------------------
 # `lr_layer_decay` scales a param group by the depth of the block its

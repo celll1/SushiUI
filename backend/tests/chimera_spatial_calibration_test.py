@@ -6,7 +6,7 @@ import torch
 
 
 @pytest.mark.parametrize("channels", [2, 6])
-@pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow"])
+@pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow", "destruction_coordinate_polar_flow"])
 def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, channels, kind):
     import numpy as np
     from PIL import Image
@@ -36,7 +36,7 @@ def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, 
     native_prediction = dict(type=kind)
     if kind != "flow_velocity":
         native_prediction.update(latent_mean=[.1, -.2, .3, -.4], latent_centered_second_moment=.6)
-    if kind == "polar_tangent_flow":
+    if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
         from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
         from core.models.sensenova_sdxl_chimera.unet import install_polar_radial_head
         native_prediction = prediction_contract(kind, latent_mean=native_prediction["latent_mean"],
@@ -94,7 +94,7 @@ def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, 
     assert trainer.chimera_vae_calibration["positions_per_channel"] == 128
     encoded = trainer.vae.encode(torch.randn(1, 3, 128, 192)).latent_dist.mode()
     assert encoded.shape == (1, channels, 8, 12)
-    if kind == "polar_tangent_flow":
+    if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
         from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
         prediction = forward_prediction(unet, encoded, torch.tensor([.4]),
             prediction=trainer.chimera_prediction,
@@ -133,11 +133,11 @@ def test_streaming_statistics_weight_positions_and_are_numerically_stable():
     assert moments.images == 3 and moments.count == 20
 
 
-def test_v4_swap_refuses_before_loading_codec_or_mutating_unet():
+def test_polar_swap_requires_radial_head_before_loading_codec_or_mutating_unet():
     from core.training.arch.sensenova_sdxl_chimera import SenseNovaSDXLChimeraArchHandler
     trainer = SimpleNamespace(unet=torch.nn.Linear(2, 2), config={},
         chimera_prediction=dict(type="destruction_coordinate_polar_flow"))
     handler = SenseNovaSDXLChimeraArchHandler(trainer)
-    with pytest.raises(ValueError, match="drift-aware"):
+    with pytest.raises(ValueError, match="radial head"):
         handler.apply_vae_swap(trainer, object())
     assert not hasattr(trainer.unet, "vae_latent_bridge")

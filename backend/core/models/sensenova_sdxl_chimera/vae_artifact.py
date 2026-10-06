@@ -1,13 +1,16 @@
 """Strict target-codec and prediction identity for aligned Chimera artifacts."""
 import json
 
-from .flow import FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION
+from .flow import FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION, FLOW_V4_PREDICTION
+
+POLAR_DRIFT_CONTRACT = dict(version=1, tangent_drift_units="dt",
+    loss="coordinate_tangent_plus_time_drift_v1", integrator="mixed_dt_dd_drift_v1")
 
 
 def _contract(value, channels):
     from .artifact import prediction_contract
     if not isinstance(value, dict) or value.get("type") not in (
-            FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION):
+            FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION, FLOW_V4_PREDICTION):
         raise ValueError("Aligned Chimera artifact requires a supported prediction contract")
     result = prediction_contract(value["type"], latent_channels=channels,
         latent_mean=value.get("latent_mean"),
@@ -41,6 +44,9 @@ def validate_documents(manifest, runtime):
         raise ValueError("Chimera target prediction differs from its saved VAE alignment")
     if target["type"] != record["source_prediction"]["type"]:
         raise ValueError("Chimera VAE swap cannot reinterpret its source prediction type")
+    expected_boundary = POLAR_DRIFT_CONTRACT if target["type"] == FLOW_V4_PREDICTION else None
+    if record.get("polar_boundary") != expected_boundary:
+        raise ValueError("Chimera polar boundary drift contract is missing or incompatible")
     if runtime["unet"].get("in_channels") != width or runtime["unet"].get("out_channels") != width:
         raise ValueError("Chimera native UNet width disagrees with its spatial bridge")
     if manifest["vae"].get("latent_channels") != declaration["new_channels"] or manifest["vae"].get("scale_factor") != declaration["new_scale"]:
@@ -88,6 +94,8 @@ def prepare_export(manifest, runtime, unet, vae, *, metadata, prediction, calibr
         source_prediction=deepcopy(source), target_prediction=deepcopy(target),
         source_vae=deepcopy(prior.get("source_vae", manifest["vae"])),
         calibration=deepcopy(calibration or prior.get("calibration") or {}))
+    if target["type"] == FLOW_V4_PREDICTION:
+        manifest["vae_alignment"]["polar_boundary"] = dict(POLAR_DRIFT_CONTRACT)
     runtime["vae_alignment"] = deepcopy(manifest["vae_alignment"])
     runtime["unet"], runtime["vae"] = dict(unet.config), config
     manifest["unet"].update(config_hash=config_hash(runtime["unet"]),

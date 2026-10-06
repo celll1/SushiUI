@@ -3381,7 +3381,8 @@ Paths below are relative to `backend/core/training/`.
 - Architecture id: `sensenova_sdxl_chimera`.
 - Artifact: a directory containing `chimera.json`, `config.json`, and one or
   more safetensors shards. It pins an external SenseNova understanding source
-  by content hash and bundles the selected SDXL donor VAE.
+  by content hash and bundles the selected SDXL donor VAE, or its saved aligned
+  replacement codec after a VAE swap.
 - Prediction formats: format 2 is v1 direct flow velocity; format 3 records the
   v2 endpoint-observable residual or direct-velocity contract; format 4 is v3
   `polar_tangent_flow` and includes an artifact-owned scalar radial head,
@@ -3402,6 +3403,15 @@ Paths below are relative to `backend/core/training/`.
   v4 preserves that radial/CFG split, but uses mixed-coordinate polar Euler and
   makes cond/null identical at the noise endpoint without suppressing the
   context-free U-Net field.
+- VAE swap: experimental Full FT in the `unet`/`joint` stage, with RGB target
+  codec bundling and `paired_spatial` initialization. All v1–v4 flow boundaries
+  keep the target codec grid; native U-Net width is max(source,target channels).
+  Source/target statistics, bridges and codec identity are restored without
+  recalibration. Polar v4 adds a time-drift loss and integrates both `delta_t`
+  drift and `delta_d` tangent; its artifact pins that additional contract.
+  Small native CPU training, generation and optimizer continuation are verified;
+  official full-weight training/quality acceptance remains pending. See
+  `VAE_SWAP_MIGRATION_DESIGN.md` for the current boundary.
 - Source-image editing: img2img uses deterministic flow SDEdit. Inpaint uses
   RePaint-style latent pinning with white meaning generate and black meaning
   preserve, followed by pixel-space source compositing; spatial outpaint uses

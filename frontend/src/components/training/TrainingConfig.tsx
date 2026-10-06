@@ -153,7 +153,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // already been applied, so model changes apply the model's default exactly once
   // while user edits (which don't change baseModelPath) are never clobbered.
   const lastTimestepModelRef = useRef<string | null>(null);
-  // Same pattern for the per-arch default bundle_vae (sd15/sdxl -> true).
+  // Apply the server's bundle default once per selected model.
   const lastBundleVaeModelRef = useRef<string | null>(null);
   const lastSampleDefaultsModelRef = useRef<string | null>(null);
   const lastGuidanceLossModelRef = useRef<string | null>(null);
@@ -1507,11 +1507,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, timestepDefaultsByArch]);
 
-  // Apply the per-architecture default bundle_vae when the base model changes
-  // (sd15/sdxl -> true: their comfy-layout checkpoints are consumed by
-  // A1111/ComfyUI which require the first_stage_model.* VAE section; others ->
-  // false). Fetched from the backend (param_defaults SSOT); applied once per model
-  // so user edits persist; skipped during YAML/edit restore.
+  // Skip YAML/edit restoration so the server default does not replace explicit values.
   useEffect(() => {
     if (!baseModelPath) return;
     if (restoringFromYAMLRef.current) { lastBundleVaeModelRef.current = baseModelPath; return; }
@@ -4391,13 +4387,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <p className="text-xs text-amber-400">{vaeSwapAdvisory.reason}</p>
                   )}
 
-                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
+                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
                         Paired spatial calibration uses the target VAE token grid. First swap calibrates
                         from this run&apos;s dataset; resume restores the saved bridges. RGB VAEs discard alpha.
                       </p>
+                      {baseModelArch === "sensenova_sdxl_chimera" && (
+                        <p className="text-xs text-amber-400">
+                          Chimera requires the U-Net or Joint stage and a bundled RGB VAE.
+                          Source and target flow statistics are saved separately.
+                          {params.bundle_vae === false && " Enable Bundle VAE before saving this run."}
+                          {params.chimera_training_stage === "bridge_align"
+                            && " Select U-Net or Joint; Bridge Alignment does not train the latent bridges."}
+                        </p>
+                      )}
                       <label className="block text-xs text-gray-400">
                         Initialization
                         <select value={params.vae_swap_new_channel_init ?? ""}

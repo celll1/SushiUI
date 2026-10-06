@@ -8,7 +8,7 @@ import torch
 
 
 @pytest.mark.parametrize("channels", [2, 6])
-@pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow"])
+@pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow", "destruction_coordinate_polar_flow"])
 def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channels, kind):
     import numpy as np
     from PIL import Image
@@ -33,11 +33,12 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     target.save_pretrained(directory)
     resolved = resolve_vae_source(f"file:{directory}", arch="sensenova_sdxl_chimera")
     prediction = prediction_contract(kind, latent_mean=[.1, -.2, .3, -.4], latent_centered_second_moment=.6)
-    if kind == "polar_tangent_flow":
+    if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
         from core.models.sensenova_sdxl_chimera.unet import install_polar_radial_head
         head = install_polar_radial_head(native["unet"])
-        native["manifest"]["format_version"] = 4
-        native["config"]["format_version"] = 4
+        version = 4 if kind == "polar_tangent_flow" else 5
+        native["manifest"]["format_version"] = version
+        native["config"]["format_version"] = version
         native["config"]["polar_radial_head"] = dict(version=1,
             source="conditioned_mid_block", mid_channels=head.mid_channels)
     trainer = SimpleNamespace(
@@ -72,7 +73,7 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
         added_cond_kwargs=dict(text_embeds=torch.randn(1, 1280), time_ids=torch.ones(1, 6)))
     def step(model, contract, optimizer):
         optimizer.zero_grad()
-        if kind == "polar_tangent_flow":
+        if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
             from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
             output = forward_prediction(model, latent, timestep, prediction=contract, **kwargs).full_velocity
         else:

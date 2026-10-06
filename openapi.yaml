@@ -26671,7 +26671,8 @@ components:
           description: |
             Full-parameter training only: also embed the VAE weights into the saved
             single-file checkpoint. `null` (default) resolves to the per-architecture
-            default: `true` for sd15/sdxl (their comfy-layout checkpoints are
+            default: `true` for sd15/sdxl and sensenova_sdxl_chimera (Chimera
+            artifacts always bundle their declared codec; comfy-layout checkpoints are
             consumed by A1111/ComfyUI, which require the `first_stage_model.*` VAE
             section), `false` for all other architectures (their loaders fall back to
             the default VAE resolution when the section is absent). An explicit
@@ -29021,12 +29022,16 @@ components:
             share; only `training_method: full_finetune` accepts a swap.
             A `model:` source is refused together with `bundle_vae: false` — an
             extracted VAE has no reference a later load could resolve.
+            Chimera swaps require full fine-tuning in the unet or joint stage,
+            paired spatial calibration and a bundled RGB target codec. Source
+            and target flow statistics are saved separately. Polar v4 also
+            saves its time-drift loss and mixed-coordinate integrator contract.
           example: 'registry:flux1'
         vae_swap_new_channel_init:
           type: 'string'
           enum: ['auto', 'zero', 'paired_spatial']
           default: 'auto'
-          description: Auto selects paired spatial calibration for Ming, Qwen-Image 2.1, Z-Image, Krea 2, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova and Ideogram 4 using the target VAE's token grid. Ideogram requires unquantized dual DiTs, full_finetune and ideogram4_train_uncond=true; its independent input/output bridges preserve inner patch packing and U-net topology. RGB pixel bases in MiniT2I and SenseNova migrate trained patch projections and calibrate against RGB pixels, preserving the native Transformer body. SenseNova requires full fine-tuning with generation fm_modules enabled, accepts 4-D or independent-frame 5-D image codecs, and retains the requested generation patch and noise-scale policy. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing checkpoints restore their saved latent structure without recalibration. Qwen, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and MiniT2I initialize swaps from unquantized full checkpoints. Explicit legacy zero is retained for same-scale swaps on Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and latent MiniT2I; Anima zero requires a native-rank 5-D 8x codec, SD1.5, SDXL and MiniT2I zero require a 4-D 8x codec. SenseNova legacy zero requires a 4-D still-image codec. Legacy zero cannot migrate a MiniT2I pixel base.
+          description: Auto selects paired spatial calibration for Ming, Qwen-Image 2.1, Z-Image, Krea 2, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, SenseNova SDXL Chimera and Ideogram 4 using the target VAE's token grid. Chimera requires unquantized full_finetune in the unet or joint stage, paired_spatial and a bundled RGB codec; v1 through v4 flow contracts and their source/target statistics are retained. Ideogram requires unquantized dual DiTs, full_finetune and ideogram4_train_uncond=true; its independent input/output bridges preserve inner patch packing and U-net topology. RGB pixel bases in MiniT2I and SenseNova migrate trained patch projections and calibrate against RGB pixels, preserving the native Transformer body. SenseNova requires full fine-tuning with generation fm_modules enabled, accepts 4-D or independent-frame 5-D image codecs, and retains the requested generation patch and noise-scale policy. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing checkpoints restore their saved latent structure without recalibration. Qwen, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and MiniT2I initialize swaps from unquantized full checkpoints. Explicit legacy zero is retained for same-scale swaps on Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and latent MiniT2I; Anima zero requires a native-rank 5-D 8x codec, SD1.5, SDXL and MiniT2I zero require a 4-D 8x codec. SenseNova legacy zero requires a 4-D still-image codec. Legacy zero cannot migrate a MiniT2I pixel base.
         vae_swap_calibration_samples:
           type: integer
           minimum: 2

@@ -22,6 +22,18 @@ from core.models.common.single_file_format import build_component_metadata
 from core.models.common.vae_store import LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR
 
 
+def test_wrapped_video_conv_and_buffer_statistics_are_observed():
+    shapes = {"decoder.conv_in.conv.weight": (8, 4, 3, 3, 3),
+              "latents_mean": (4,), "latents_std": (1, 4, 1, 1, 1)}
+    facts = vs._resolve_facts(source="file:synthetic", family="custom", declared={}, shapes=shapes,
+        config={"_class_name": "AutoencoderKLLTX2Video", "latent_channels": 4,
+                "spatial_compression_ratio": 16, "temporal_compression_ratio": 4, "scaling_factor": 1.})
+    assert (facts["latent_channels"], facts["ndim"], facts["norm"]) == (4, 5, "per_channel")
+    assert (facts["scale_factor"], facts["scale_temporal"]) == (16, 4)
+    with pytest.raises(vs.VaeSourceError, match="statistics"):
+        vs.observe_vae({**shapes, "latents_std": (3,)})
+
+
 def test_qwen21_causal_conv2d_weights_retain_five_dimensional_interface():
     facts = vs._resolve_facts(source="file:synthetic",family="custom",declared={},
         shapes={"decoder.conv_in.weight":(8,64,3,3)},

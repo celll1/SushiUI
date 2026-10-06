@@ -95,6 +95,7 @@ class NormalizedVideoVAE(nn.Module):
         self.temporal_compression_ratio = contract.temporal_scale
         self.config = _Config(dict(module.config), in_channels=3, input_channels=3,
             latent_channels=image.latent_channels, scaling_factor=1.0, shift_factor=0.0,
+            timestep_conditioning=bool(module.config.get("timestep_conditioning", False)),
             latents_mean=[0.] * image.latent_channels, latents_std=[1.] * image.latent_channels)
         self.register_buffer("latents_mean", torch.zeros(image.latent_channels), persistent=False)
         self.register_buffer("latents_std", torch.ones(image.latent_channels), persistent=False)
@@ -123,6 +124,10 @@ class NormalizedVideoVAE(nn.Module):
         return SimpleNamespace(latent_dist=_VideoPosterior(posterior, self, expected, independent))
 
     def decode(self, latents, *args, return_dict=True, **kwargs):
+        if not self.config.timestep_conditioning:
+            if args and (len(args) != 1 or args[0] is not None):
+                raise ValueError("This video codec does not accept decode timesteps")
+            args = ()
         image = self.contract.image
         if latents.ndim != 5 or latents.shape[1] != image.latent_channels or any(n < 1 for n in latents.shape):
             raise ValueError("Video decoding requires nonempty declared BCTHW latents")
@@ -143,6 +148,12 @@ class NormalizedVideoVAE(nn.Module):
 
     def save_pretrained(self, path, **kwargs):
         return self.inner.save_pretrained(path, **kwargs)
+
+    def enable_tiling(self, *args, **kwargs):
+        return self.inner.enable_tiling(*args, **kwargs)
+
+    def disable_tiling(self):
+        return self.inner.disable_tiling()
 
 
 def map_video_tokens(bridge, tokens, *, grid, sigma=None, velocity=False):

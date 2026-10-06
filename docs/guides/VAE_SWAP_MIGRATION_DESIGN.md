@@ -8,6 +8,24 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+音声swapの共通基盤を`components/audio_latent_adapter.py`へ追加した。これはまだACE-Stepの
+公開swapを開放する変更ではない。音声codecはBCT、sample rate、waveform channels、hop length、
+frame-count policyを画像/video契約から分離する。Oobleckの偶数strideでhopの整数倍の入力だけを
+受け付け、異なるsample rate・mono/stereo間の暗黙変換、未知のframe規則を拒否する。
+3タップ時間境界のpaired calibrationはteacherだけをtarget系列長へ補間する。runtimeの系列長を
+維持し、内部幅max(oldC,newC)、追加channelのidentity初期値・勾配、flowのstate/velocity biasを保持する。
+geometry/versionと校正状態はtensorとしてsafetensorsへ保存でき、hopの異なる状態への復元は拒否する。
+合成潜在と小型の実OobleckによるCPUテスト6件、py_compileとCUDAを抑止した実importが通過した。
+これは音質・実重み学習・ACE sampler・U-netとの併用の受け入れ検証ではない。
+
+ACE-Stepの残配線は、(1) raw codec identity/resolver・保存bundle、(2) target codecでの無音と
+batch latent encode、(3) decoderのnoisy/source/chunk-mask入出力境界、(4) generationとtraining共通の
+conditioning境界、(5) U-netのgeometry再構成・optimizer resume・API/UIである。
+RVQ・timbre encoder・LM hintsは元のacoustic domain/time rateを使うため、decoder幅の拡張と同時に
+変更してはならない。既存のcover/reference条件は元codec側で生成し、conditioning側だけtarget gridへ
+移す設計を検証する。凍結RVQの再学習が必須とはまだ確定していない。無条件のchunk maskへaffine biasを
+加えてもならない。既存native経路の同値性と条件付き生成を確認するまで公開gateは維持する。
+
 LTX-2.3の動画target-native境界を追加し、Full fine-tuneの公開VAE swap設定をexperimentalとして配線した。
 unquantized DiT・train_unet=true・paired_spatial・bundled RGB codecを必須とし、LoRA系は拒否する。
 API preflightは新規交換の保存不能設定と、復元済み交換codecのbundling無効もモデルロード前に拒否する。

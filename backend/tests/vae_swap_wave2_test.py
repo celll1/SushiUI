@@ -432,6 +432,7 @@ def test_a_krea2_run_swaps_its_latent_space_through_the_arch_handler(tmp_path):
         transformer=_krea2(64), vae=_tiny_vae(16), vae_dtype=torch.float32,
         is_krea2=True, trains_base_weights=True, log_prefix="[test]")
 
+    trainer.config["vae_swap_new_channel_init"] = "zero"
     _apply_latent_space(trainer, None)
 
     assert trainer.transformer.img_in.in_features == 16

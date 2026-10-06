@@ -6,7 +6,7 @@ import torch
 
 from .latent_adapter import (
     SpatialAlignmentPair, NormalizedImageVAE, PairedSpatialCalibration,
-    validate_declaration,
+    ImageCodecContract, SpatialSwapPlan, validate_declaration,
 )
 from .vae_registry import normalize
 
@@ -63,6 +63,46 @@ def restored_image_codec(module, resolved, declaration):
             declaration["norm_pack"], declaration["ndim"]):
         raise ValueError("Saved image codec disagrees with its spatial alignment")
     return NormalizedImageVAE(module, declaration), replace(resolved, state_dict=None)
+
+
+def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
+                          source_wiring, patch_size, resize, pending_key):
+    """Install target-native bridges before optimizer construction; geometry stays arch-owned."""
+    from core.models.common.module_identity import module_fingerprint
+    from core.models.common.vae_source import normalization_config
+    from core.models.components.latent_io import ResizeReport
+    codec = ImageCodecContract.from_resolved(resolved)
+    old = trainer.vae
+    target = resolved.load_module(torch_dtype=trainer.vae_dtype).requires_grad_(False).eval()
+    identity = module_fingerprint(old)
+    if identity == module_fingerprint(target) and normalization_config(old.config) == normalization_config(target.config):
+        return ResizeReport((), old_channels, old_channels, old_channels, 0, 0)
+    declaration = codec.declaration(source=resolved.source, source_identity=identity,
+        target_identity=resolved.latent_hash, old_channels=old_channels, old_scale=source_wiring.vae_scale_factor)
+    plan = SpatialSwapPlan.build(declaration, patch_size=patch_size)
+    report = resize(plan.backbone_channels)
+    install(model, declaration)
+    getattr(model, NAME).to(dtype=trainer.weight_dtype)
+    setattr(trainer, pending_key, (old.to("cpu").requires_grad_(False).eval(), source_wiring))
+    trainer.vae = NormalizedImageVAE(target, declaration)
+    trainer.vae_identity = replace(resolved, state_dict=None)
+    trainer.vae_latent_channels = codec.latent_channels
+    trainer.wiring = handler.resolve_wiring(trainer)
+    return report
+
+
+def map_packed_image(pair, states, grid, *, sigma=None, output=False, patch_size=2):
+    """Outer-channel 2-D packing; the spatial bridge never changes token count."""
+    height, width = grid
+    batch, tokens, packed = states.shape
+    p = patch_size
+    if height < 1 or width < 1 or tokens != height*width or packed % (p*p):
+        raise ValueError("Packed image alignment requires a rectangular divisible grid")
+    image = states.reshape(batch,height,width,packed//(p*p),p,p).permute(0,3,1,4,2,5)
+    image = image.reshape(batch,packed//(p*p),height*p,width*p)
+    image = (pair.output.flow_velocity(image, convention="eps_minus_x0") if output
+             else pair.input.flow_state(image, sigma))
+    return image.reshape(batch,image.shape[1],height,p,width,p).permute(0,2,4,1,3,5).reshape(batch,tokens,-1)
 
 
 def calibrate_images(trainer, datasets, *, model, pending_key):

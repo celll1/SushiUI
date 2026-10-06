@@ -15003,7 +15003,7 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
-        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage")):
+        if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2")):
             import math
             from core.models.components.latent_adapter import topology_alignment
             model = getattr(self, "transformer_original", None) if getattr(self, "is_zimage", False) else self.transformer
@@ -19220,7 +19220,7 @@ class BaseTrainer(ABC):
                                 elif self.is_krea2 or self.is_qwen_image_21:
                                     # Krea 2: packed latent [1, (H//16)*(W//16), C*4];
                                     # C is 16 unless this run swapped its VAE.
-                                    latent_stride = (self.wiring.vae_scale_factor if self.is_qwen_image_21 else 16)
+                                    latent_stride = self.wiring.vae_scale_factor * (2 if self.is_krea2 else 1)
                                     expected_seq_len = (height // latent_stride) * (width // latent_stride)
                                     expected_width = int(getattr(
                                         getattr(self, "wiring", None),
@@ -20356,7 +20356,8 @@ class BaseTrainer(ABC):
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
                         if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
-                            latent_stride = self.wiring.vae_scale_factor if self.is_qwen_image_21 else 16
+                            latent_stride = (self.wiring.vae_scale_factor * (2 if self.is_krea2 else 1)
+                                             if self.is_qwen_image_21 or self.is_krea2 else 16)
                             batch_lens_latent_shape = (height // latent_stride, width // latent_stride)
 
                         self._collect_concept_sample_loss = (

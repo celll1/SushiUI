@@ -559,7 +559,9 @@ class Krea2Mixin:
             "grid_w": grid_w,
             "patch_size": patch_size,
             "is_distilled": is_distilled,
-            "num_channels_latents": int(self.krea2_components["transformer"].config["in_channels"]) // (patch_size ** 2),
+            "num_channels_latents": (self.krea2_components["vae"].config.latent_channels
+                if getattr(self.krea2_components["transformer"], "vae_latent_bridge", None) is not None else
+                int(self.krea2_components["transformer"].config["in_channels"]) // (patch_size ** 2)),
         }
 
     @torch.no_grad()

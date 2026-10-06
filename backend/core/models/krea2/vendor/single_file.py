@@ -381,6 +381,7 @@ def build_krea2_transformer(
     diffusers_sd: Dict[str, torch.Tensor],
     config: Dict,
     torch_dtype: torch.dtype = torch.bfloat16,
+    *, alignment_declaration=None,
 ) -> Krea2Transformer2DModel:
     """Instantiate a Krea2Transformer2DModel from config and load a diffusers-format
     state dict. Weight-only quantized checkpoints (per-row ``.weight_scale``) keep
@@ -400,6 +401,13 @@ def build_krea2_transformer(
     "is this floating point?", so an int8 weight is moved to the device with its
     dtype intact exactly as a float8 one is."""
     model = Krea2Transformer2DModel.from_config(config)
+    if alignment_declaration is not None:
+        from core.models.components.latent_adapter import validate_declaration
+        declaration = validate_declaration(alignment_declaration)
+        if max(declaration["old_channels"], declaration["new_channels"])*4 != model.img_in.in_features:
+            raise ValueError("Krea internal channels disagree with spatial alignment")
+        from core.models.components.spatial_swap import install
+        install(model, declaration)
 
     # The census is taken BEFORE the swap and checked against it afterwards. The
     # two detectors above require BOTH the scale sibling and the weight dtype,
@@ -451,6 +459,8 @@ def build_krea2_transformer(
         if missing:
             raise RuntimeError(f"[Krea2] missing transformer keys: {missing[:8]}")
 
+    from core.models.components.spatial_swap import validate_loaded
+    validate_loaded(model)
     model.eval()
     model.to("cpu")
     return model
@@ -487,7 +497,9 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16) -> di
     if not is_distilled and ("turbo" in path.lower() or "distill" in path.lower()):
         is_distilled = True
 
-    model = build_krea2_transformer(diffusers_sd, config, torch_dtype)
+    from core.models.components.spatial_swap import read_declaration
+    declaration = read_declaration(metadata)
+    model = build_krea2_transformer(diffusers_sd, config, torch_dtype, alignment_declaration=declaration)
     restore_topology(model, topology)
     return {
         "transformer": model,
@@ -532,8 +544,12 @@ def save_single_file(
                 yield f"{VAE_PREFIX}{k}", v
 
     from ..residual_unet import model_topology_metadata
+    from core.models.components.spatial_swap import artifact_metadata, read_declaration
     from core.rewiring.spec import read_checkpoint_metadata
     topology_metadata = model_topology_metadata(transformer)
+    alignment_metadata = artifact_metadata(transformer)
+    if extra_metadata and read_declaration(extra_metadata) is not None and read_declaration(extra_metadata) != read_declaration(alignment_metadata):
+        raise ValueError("Export metadata cannot override the model VAE alignment")
     if extra_metadata and any(key.startswith("sushi.rewire.") for key in extra_metadata):
         if read_checkpoint_metadata(extra_metadata) != read_checkpoint_metadata(topology_metadata):
             raise ValueError("Export metadata cannot override the model topology")
@@ -554,4 +570,5 @@ def save_single_file(
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
     metadata.update(topology_metadata)
+    metadata.update(alignment_metadata)
     save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)

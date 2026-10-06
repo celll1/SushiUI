@@ -51,10 +51,14 @@ def apply_swap(trainer,resolved,*,handler,module=None):
                 {"name":"single","block_count":len(model.single_transformer_blocks)}]
             restore_topology(model,build_spec("flux2",streams,topology["regions"],native_config(model)))
         return report
+    from core.models.components.gaussian_alignment import POLICY
+    source_wiring=handler.resolve_wiring(trainer)
+    noise_policy=(POLICY if resolved.scale_factor > source_wiring.vae_scale_factor
+                  and resolved.latent_channels >= model.x_embedder.in_features//4 else None)
     report=initialize_image_swap(trainer,resolved,handler=handler,model=model,
-        old_channels=model.x_embedder.in_features//4,source_wiring=handler.resolve_wiring(trainer),
+        old_channels=model.x_embedder.in_features//4,source_wiring=source_wiring,
         patch_size=2,resize=resize,pending_key="_flux2_vae_calibration_source",
-        topology_config=lambda:native_config(model))
+        topology_config=lambda:native_config(model),noise_policy=noise_policy)
     if getattr(model,"vae_latent_bridge",None) is not None:bind_boundaries(model)
     return report
 

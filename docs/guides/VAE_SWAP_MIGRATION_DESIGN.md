@@ -8,7 +8,11 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
-FLUX.2のGaussian補正は、共通投影境界・学習・定期sampleまでの部分配線段階。
+画質の受入は完全な復元ではなく、概形・主要色を一定水準で保持することを目安とする。
+これは変換行列・空間畳み込み・noise補正の改善を省く理由にはしない。
+H3→LTXの色block主体の未学習出力はこの水準を満たさず、画質未受入を維持する。
+
+FLUX.2のGaussian補正は、共通投影境界・学習・定期sample・生成backendへ配線した。
 native forward、block swapの直接投影、CFG/NAG、参照prefix/suffix、KV抽出/再利用で
 target tokenだけの実noiseを渡す。clean参照にはゼロnoiseを使い、非ゼロ参照時刻は
 参照noiseを受け取る契約がないため拒否する。contextは例外時も解除し、legacy演算は維持する。
@@ -21,8 +25,18 @@ text/single modulationを同じNAG順序へ展開した。Gaussian/legacy双方�
 U-net等を加えた実行では41件が通過し、追加の合成参照付きsample2条件、実学習opsの
 標準/混合精度×block swap4条件も通過した。backend compile/importはCUDA未初期化で通過。
 直接noise keyword・EMAコピーの独立性・KV失敗時context解除の追加2条件も通過した。
-生成backendのtxt2img/img2img/inpaint・style参照への配線は残るため、
-新規swapの既定Gaussian選択はまだ有効にしていない。公式全重みの学習・画質受入も未検証。
+生成backendのtxt2img/img2img/inpaintもtargetの固定露出noiseを渡す。
+Image-Edit参照はcleanのまま毎step追加し、single/multi style captureには各参照自身のnoiseを渡す。
+inpaintの保持領域は既存の次σへの再加noiseと最終clean復元を維持する。
+新規paired_spatial交換はtargetの空間縮小率が強くchannel数がsource以上なら
+Gaussianを既定選択する。既存checkpointのpolicyとchannel減少のlegacy演算は維持する。
+小型実DiTによる通常/CFGの生成3経路、style guidanceとsingle/multi style、
+学習・投影・校正・保存復元をまとめたCPU回帰46件が通過した。
+追加の参照あり/なし×通常/CFG×生成3経路とstyle4条件（計16件）も通過。
+single/sharded×FP32/BF16×channel増減の校正・保存復元8条件では、既定policyの選択と
+Gaussian固定bufferのbit一致、固定係数のFP32維持、channel減少時のlegacy維持を確認した。
+frontendの説明へFLUX.2を追加し、既存API型・default・編集復元/保存経路を静的確認した。
+owner frontend build/typecheckと公式全重みの学習・画質受入は未検証。
 実画像・GPU・API runは使わず、ignored `local/verification/flux2_gaussian_*`へ診断を保持する。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら

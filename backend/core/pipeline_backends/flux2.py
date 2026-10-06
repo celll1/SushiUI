@@ -27,6 +27,7 @@ from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.callback_utils import callback_requests
 from core.inference.schedule_utils import snapshot_schedule_scalars
+from core.models.flux2.vae_alignment import forward_with_noise as _aligned_forward, validate_noise_contract
 from core.models.components.vae_registry import (
     normalize as _vae_normalize,
     denormalize as _vae_denormalize,
@@ -932,6 +933,7 @@ class Flux2Mixin:
             text_encoder = self.flux2_components["text_encoder"]
             tokenizer = self.flux2_components["tokenizer"]
             scheduler = self.flux2_components["scheduler"]
+            validate_noise_contract(transformer, scheduler=scheduler)
             config = self.flux2_components.get("config", {})
 
             # Honor the selected attention backend for this run. FLUX.2 drives diffusers'
@@ -1090,6 +1092,8 @@ class Flux2Mixin:
 
             # Pack latents: (B, C, H, W) -> (B, H*W, C)
             latents = self._flux2_pack_latents(latents)
+            exposure_noise = (latents.clone() if getattr(getattr(transformer, "vae_latent_bridge", None),
+                "noise_alignment", None) is not None else None)
 
             print(f"[FLUX.2] Latents shape: {latents.shape}, Latent IDs shape: {latent_ids.shape}")
 
@@ -1435,6 +1439,7 @@ class Flux2Mixin:
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
+                                exposure_noise=exposure_noise,
                             )
                         else:
                             noise_pred = self._flux2_style_step(
@@ -1443,6 +1448,7 @@ class Flux2Mixin:
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
+                                exposure_noise=exposure_noise,
                             )
                     else:
                         latent_model_input = latents.to(transformer_input_dtype)
@@ -1474,7 +1480,7 @@ class Flux2Mixin:
                             with torch.no_grad():
                                 if transformer_has_fp8:
                                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                        noise_pred_combined = transformer_wrapper(
+                                        noise_pred_combined = _aligned_forward(transformer_wrapper, exposure_noise,
                                             hidden_states=latent_model_input_doubled,
                                             timestep=timestep_doubled / 1000,
                                             guidance=None,
@@ -1484,7 +1490,7 @@ class Flux2Mixin:
                                             return_dict=False,
                                         )[0]
                                 else:
-                                    noise_pred_combined = transformer_wrapper(
+                                    noise_pred_combined = _aligned_forward(transformer_wrapper, exposure_noise,
                                         hidden_states=latent_model_input_doubled,
                                         timestep=timestep_doubled / 1000,
                                         guidance=None,
@@ -1520,7 +1526,7 @@ class Flux2Mixin:
                             with torch.no_grad():
                                 if transformer_has_fp8:
                                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                        noise_pred = transformer_wrapper(
+                                        noise_pred = _aligned_forward(transformer_wrapper, exposure_noise,
                                             hidden_states=latent_model_input,
                                             timestep=timestep / 1000,
                                             guidance=guidance_vec,
@@ -1530,7 +1536,7 @@ class Flux2Mixin:
                                             return_dict=False,
                                         )[0]
                                 else:
-                                    noise_pred = transformer_wrapper(
+                                    noise_pred = _aligned_forward(transformer_wrapper, exposure_noise,
                                         hidden_states=latent_model_input,
                                         timestep=timestep / 1000,
                                         guidance=guidance_vec,
@@ -2115,6 +2121,7 @@ class Flux2Mixin:
         guidance_scale: float,
         guidance_vec,
         transformer_input_dtype,
+        exposure_noise: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """One style-active denoise step for FLUX.2: a REF capture forward (the style
         reference re-noised to this step's CURRENT sigma, using the TARGET's own
@@ -2150,7 +2157,7 @@ class Flux2Mixin:
         capture_ctx.img_end = text_seq_len + image_seq_len
         set_flux2_style_context(style_processors, capture_ctx)
         with torch.no_grad():
-            transformer_wrapper(
+            _aligned_forward(transformer_wrapper, style_eps_ref,
                 hidden_states=ref_t.to(transformer_input_dtype),
                 timestep=timestep,
                 guidance=guidance_vec,
@@ -2165,7 +2172,7 @@ class Flux2Mixin:
         inject_ctx.img_end = capture_ctx.img_end
         set_flux2_style_context(style_processors, inject_ctx)
         with torch.no_grad():
-            noise_pred_cond = transformer_wrapper(
+            noise_pred_cond = _aligned_forward(transformer_wrapper, exposure_noise,
                 hidden_states=latents.to(transformer_input_dtype),
                 timestep=timestep,
                 guidance=guidance_vec,
@@ -2219,7 +2226,7 @@ class Flux2Mixin:
         ):
             cond_s = noise_pred_cond
             with torch.no_grad():
-                cond_ns = transformer_wrapper(
+                cond_ns = _aligned_forward(transformer_wrapper, exposure_noise,
                     hidden_states=latents.to(transformer_input_dtype),
                     timestep=timestep,
                     guidance=guidance_vec,
@@ -2234,7 +2241,7 @@ class Flux2Mixin:
 
         if do_classifier_free_guidance:
             with torch.no_grad():
-                noise_pred_uncond = transformer_wrapper(
+                noise_pred_uncond = _aligned_forward(transformer_wrapper, exposure_noise,
                     hidden_states=latents.to(transformer_input_dtype),
                     timestep=timestep,
                     guidance=None,
@@ -2268,6 +2275,7 @@ class Flux2Mixin:
         guidance_scale: float,
         guidance_vec,
         transformer_input_dtype,
+        exposure_noise: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Multi-reference (N>1) generalization of ``_flux2_style_step``: one REF
         capture forward PER reference (each with ITS OWN ``StyleTransferConfig``
@@ -2304,7 +2312,7 @@ class Flux2Mixin:
             capture_ctx_i.img_end = text_seq_len + image_seq_len
             set_flux2_style_context(style_processors, capture_ctx_i)
             with torch.no_grad():
-                transformer_wrapper(
+                _aligned_forward(transformer_wrapper, eps_i,
                     hidden_states=ref_t.to(transformer_input_dtype),
                     timestep=timestep,
                     guidance=guidance_vec,
@@ -2331,7 +2339,7 @@ class Flux2Mixin:
             set_flux2_style_context(style_processors, None)
 
         with torch.no_grad():
-            noise_pred_cond = transformer_wrapper(
+            noise_pred_cond = _aligned_forward(transformer_wrapper, exposure_noise,
                 hidden_states=latents.to(transformer_input_dtype),
                 timestep=timestep,
                 guidance=guidance_vec,
@@ -2344,7 +2352,7 @@ class Flux2Mixin:
 
         if do_classifier_free_guidance:
             with torch.no_grad():
-                noise_pred_uncond = transformer_wrapper(
+                noise_pred_uncond = _aligned_forward(transformer_wrapper, exposure_noise,
                     hidden_states=latents.to(transformer_input_dtype),
                     timestep=timestep,
                     guidance=None,
@@ -2556,6 +2564,7 @@ class Flux2Mixin:
             text_encoder = self.flux2_components["text_encoder"]
             tokenizer = self.flux2_components["tokenizer"]
             scheduler = self.flux2_components["scheduler"]
+            validate_noise_contract(transformer, scheduler=scheduler)
             config = self.flux2_components.get("config", {})
 
             # Honor the selected attention backend for this run. FLUX.2 drives diffusers'
@@ -2735,6 +2744,7 @@ class Flux2Mixin:
             t_value = timestep_scalars[0] / 1000.0
             noise = torch.randn(init_latents.shape, generator=generator, device=init_latents.device, dtype=init_latents.dtype)
             latents = (1 - t_value) * init_latents + t_value * noise
+            exposure_noise = noise
 
             print(f"[FLUX.2] Denoising from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
 
@@ -3063,6 +3073,7 @@ class Flux2Mixin:
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
+                                exposure_noise=exposure_noise,
                             )
                         else:
                             noise_pred = self._flux2_style_step(
@@ -3071,6 +3082,7 @@ class Flux2Mixin:
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
+                                exposure_noise=exposure_noise,
                             )
                     else:
                         latent_model_input = latents.to(transformer_input_dtype)
@@ -3102,7 +3114,7 @@ class Flux2Mixin:
                             with torch.no_grad():
                                 if transformer_has_fp8:
                                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                        noise_pred_combined = transformer_wrapper(
+                                        noise_pred_combined = _aligned_forward(transformer_wrapper, exposure_noise,
                                             hidden_states=latent_model_input_doubled,
                                             timestep=timestep_doubled / 1000,
                                             guidance=None,
@@ -3112,7 +3124,7 @@ class Flux2Mixin:
                                             return_dict=False,
                                         )[0]
                                 else:
-                                    noise_pred_combined = transformer_wrapper(
+                                    noise_pred_combined = _aligned_forward(transformer_wrapper, exposure_noise,
                                         hidden_states=latent_model_input_doubled,
                                         timestep=timestep_doubled / 1000,
                                         guidance=None,
@@ -3148,7 +3160,7 @@ class Flux2Mixin:
                             with torch.no_grad():
                                 if transformer_has_fp8:
                                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                        noise_pred = transformer_wrapper(
+                                        noise_pred = _aligned_forward(transformer_wrapper, exposure_noise,
                                             hidden_states=latent_model_input,
                                             timestep=timestep / 1000,
                                             guidance=guidance_vec,
@@ -3158,7 +3170,7 @@ class Flux2Mixin:
                                             return_dict=False,
                                         )[0]
                                 else:
-                                    noise_pred = transformer_wrapper(
+                                    noise_pred = _aligned_forward(transformer_wrapper, exposure_noise,
                                         hidden_states=latent_model_input,
                                         timestep=timestep / 1000,
                                         guidance=guidance_vec,
@@ -3370,6 +3382,7 @@ class Flux2Mixin:
             text_encoder = self.flux2_components["text_encoder"]
             tokenizer = self.flux2_components["tokenizer"]
             scheduler = self.flux2_components["scheduler"]
+            validate_noise_contract(transformer, scheduler=scheduler)
             config = self.flux2_components.get("config", {})
 
             # Honor the selected attention backend for this run. FLUX.2 drives diffusers'
@@ -3576,6 +3589,7 @@ class Flux2Mixin:
             t_value = timestep_scalars[0] / 1000.0
             noise = torch.randn(init_latents_packed.shape, generator=generator, device=init_latents_packed.device, dtype=init_latents_packed.dtype)
             latents = (1 - t_value) * init_latents_packed + t_value * noise
+            exposure_noise = noise
 
             print(f"[FLUX.2] Inpainting from step {t_start} ({len(timesteps)} steps, t={t_value:.4f})")
 
@@ -3904,6 +3918,7 @@ class Flux2Mixin:
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
+                                exposure_noise=exposure_noise,
                             )
                         else:
                             noise_pred = self._flux2_style_step(
@@ -3912,6 +3927,7 @@ class Flux2Mixin:
                                 negative_prompt_embeds, negative_text_ids, latent_ids,
                                 do_classifier_free_guidance, current_guidance_scale, style_guidance_vec,
                                 transformer_input_dtype,
+                                exposure_noise=exposure_noise,
                             )
                     else:
                         latent_model_input = latents.to(transformer_input_dtype)
@@ -3943,7 +3959,7 @@ class Flux2Mixin:
                             with torch.no_grad():
                                 if transformer_has_fp8:
                                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                        noise_pred_combined = transformer_wrapper(
+                                        noise_pred_combined = _aligned_forward(transformer_wrapper, exposure_noise,
                                             hidden_states=latent_model_input_doubled,
                                             timestep=timestep_doubled / 1000,
                                             guidance=None,
@@ -3953,7 +3969,7 @@ class Flux2Mixin:
                                             return_dict=False,
                                         )[0]
                                 else:
-                                    noise_pred_combined = transformer_wrapper(
+                                    noise_pred_combined = _aligned_forward(transformer_wrapper, exposure_noise,
                                         hidden_states=latent_model_input_doubled,
                                         timestep=timestep_doubled / 1000,
                                         guidance=None,
@@ -3989,7 +4005,7 @@ class Flux2Mixin:
                             with torch.no_grad():
                                 if transformer_has_fp8:
                                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                                        noise_pred = transformer_wrapper(
+                                        noise_pred = _aligned_forward(transformer_wrapper, exposure_noise,
                                             hidden_states=latent_model_input,
                                             timestep=timestep / 1000,
                                             guidance=guidance_vec,
@@ -3999,7 +4015,7 @@ class Flux2Mixin:
                                             return_dict=False,
                                         )[0]
                                 else:
-                                    noise_pred = transformer_wrapper(
+                                    noise_pred = _aligned_forward(transformer_wrapper, exposure_noise,
                                         hidden_states=latent_model_input,
                                         timestep=timestep / 1000,
                                         guidance=guidance_vec,

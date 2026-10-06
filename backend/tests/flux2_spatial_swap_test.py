@@ -17,7 +17,8 @@ def no_cuda():
 
 @pytest.mark.parametrize("sharded",[False,True])
 @pytest.mark.parametrize("old_c,new_c",[(4,8),(8,4)])
-def test_native_calibration_public_loader_and_resume(tmp_path,sharded,old_c,new_c):
+@pytest.mark.parametrize("load_dtype", [torch.float32, torch.bfloat16])
+def test_native_calibration_public_loader_and_resume(tmp_path,sharded,old_c,new_c,load_dtype):
     from diffusers import AutoencoderKL,AutoencoderKLFlux2,Flux2Transformer2DModel
     from PIL import Image
     import numpy as np
@@ -86,7 +87,7 @@ def test_native_calibration_public_loader_and_resume(tmp_path,sharded,old_c,new_
         stack.enter_context(patch("transformers.Qwen3ForCausalLM.from_pretrained",return_value=torch.nn.Linear(2,2)))
         stack.enter_context(patch("transformers.Qwen2TokenizerFast.from_pretrained",return_value=object()))
         stack.enter_context(patch("diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained",return_value=object()))
-        components=ModelLoader.load_flux2_from_safetensors(str(path),device="cpu",torch_dtype=torch.float32,base_model_repo="synthetic-flux")
+        components=ModelLoader.load_flux2_from_safetensors(str(path),device="cpu",torch_dtype=load_dtype,base_model_repo="synthetic-flux")
     restored=components["transformer"]
     assert restored.vae_latent_bridge.ready and components["vae"].spatial_scale_factor==16
     assert components["vae"].inner.config.scaling_factor==.7
@@ -94,7 +95,16 @@ def test_native_calibration_public_loader_and_resume(tmp_path,sharded,old_c,new_
     trainer.vae=components["vae"]
     with patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
         apply_latent_space(trainer,components["declared_vae"])
-    torch.testing.assert_close(restored.vae_latent_bridge.input.projection.weight,value.vae_latent_bridge.input.projection.weight)
+    torch.testing.assert_close(restored.vae_latent_bridge.input.projection.weight,value.vae_latent_bridge.input.projection.weight.to(load_dtype))
+    original_noise=getattr(value.vae_latent_bridge,"noise_alignment",None)
+    restored_noise=getattr(restored.vae_latent_bridge,"noise_alignment",None)
+    assert (original_noise is not None)==(new_c>=old_c)
+    if original_noise is not None:
+        assert restored_noise is not None
+        for name, buffer in original_noise.named_buffers():
+            assert torch.equal(buffer, dict(restored_noise.named_buffers())[name])
+            if name in ("incoming", "outgoing", "white"):
+                assert dict(restored_noise.named_buffers())[name].dtype==torch.float32
     assert restored.x_embedder.in_features==max(old_c,new_c)*4
     from core.models.common.single_file_format import read_state_dict
     from safetensors.torch import save_file

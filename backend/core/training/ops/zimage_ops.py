@@ -22,6 +22,15 @@ def _apply_latent_space(trainer, declared) -> None:
     apply_latent_space(trainer, declared)
 
 
+def bind_components(trainer, components) -> None:
+    trainer.transformer_original = components["transformer"]
+    for name in ("vae", "text_encoder", "tokenizer", "scheduler"):
+        setattr(trainer, name, components[name])
+    trainer._zimage_base_component_directory = components.get("base_component_directory")
+    trainer.text_encoder_2 = trainer.tokenizer_2 = trainer.unet = None
+    trainer.noise_scheduler = trainer.scheduler
+
+
 def load_components(trainer) -> None:
     """Load Z-Image model components."""
     print(f"{trainer.log_prefix} Detected Z-Image model")
@@ -34,17 +43,7 @@ def load_components(trainer) -> None:
         torch_dtype=trainer.weight_dtype
     )
 
-    trainer.transformer_original = components["transformer"]
-    trainer.vae = components["vae"]
-    trainer.text_encoder = components["text_encoder"]
-    trainer.tokenizer = components["tokenizer"]
-    trainer.scheduler = components["scheduler"]
-
-    # Z-Image specific: no text_encoder_2, no unet
-    trainer.text_encoder_2 = None
-    trainer.tokenizer_2 = None
-    trainer.unet = None
-    trainer.noise_scheduler = trainer.scheduler
+    bind_components(trainer, components)
 
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
 

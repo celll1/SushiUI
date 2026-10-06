@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+公式非蒸留[Z-Image](https://huggingface.co/Tongyi-MAI/Z-Image)全成分18ファイルを
+`local/verification/zimage_base_weights/`へ取得した。revisionは
+`04cc4abb7c5069926f75c9bfde9ef43d49423021`、総20,538,488,559 bytes。
+DiT/TE/VAEの全6重みファイルは公式LFS SHA-256と照合済み。
+CUDA未初期化で全成分をCPU読込し、DiT 6,154,908,736、TE 4,022,468,096、
+VAE 83,819,683 parameters、30 main層・caption幅2560・scheduler shift=6を確認。
+未実装だった公式Diffusersディレクトリ読込を既存SushiUI transformerへ接続した。
+shardを厳密に読み、VAE channel/caption幅の不一致と未対応SigLIP条件を拒否する。
+新しいpackage由来Full saveは`zimage_base_directory`を保存し、同じ成分を復元する。
+参照した公式packageの保持が必要で、消失時は拒否する。旧checkpointのhub補完は維持する。
+GPU初回Full試験でQ/KだけFP32へ昇格しVとdtypeが違う不具合を修正し、Q/KをVのdtypeへ揃えた。
+合成2枚、Qwen VAE C16/8x→C64/16x・paired_spatial・既定2段/deep4でstep1保存→step2学習が完走。
+525 optimizer状態が復元されたが、再保存で元成分ディレクトリを落としたため、この試験は未受入。
+初回/再開の成分代入を共通化し、元公式重みから再試験中。未修正checkpointは補修していない。
+CPU回帰19件、compile・CUDA未初期化の実importが通過。frontendのsource type/path送信を静的確認し、
+APIパラメータ追加はない。生成・画質受入と再試験後のsmoke整理はまだ未了。
+
 公式Krea全DiT・公式Qwen3-VL TEで、Qwen 2.1 VAEへの交換生成を比較した。
 現在のgeneral ratingを再確認した40枚で本番Full trainerの校正hookを実行し、
 teacherのencode入力40回がB×3×1×256×256であること、target crop512、ready bridgeを確認。

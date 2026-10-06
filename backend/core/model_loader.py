@@ -1453,7 +1453,6 @@ class ModelLoader:
         _topology, declared_transformer_config = preflight_artifact(file_path)
 
         print(f"[ModelLoader] Loading Z-Image from Comfy safetensors: {file_path}")
-        print(f"[ModelLoader] Base components will be downloaded from: {base_model_repo}")
 
         # Use SushiUI's internal Z-Image implementation (standalone)
         try:
@@ -1497,16 +1496,21 @@ class ModelLoader:
             FlowMatchEulerDiscreteScheduler = scheduler_module.FlowMatchEulerDiscreteScheduler
             print(f"[ModelLoader] Loaded SushiUI Z-Image Scheduler (standalone)")
 
-            # Step 1: Download base components from HuggingFace
-            print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
-            from huggingface_hub import snapshot_download
-            cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
-            base_model_path = snapshot_download(
-                base_model_repo,
-                cache_dir=cache_dir,
-                allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json"]
-            )
-            print(f"[ModelLoader] Base components downloaded to: {base_model_path}")
+            # Saved package provenance takes precedence over legacy hub completion.
+            from core.models.common.single_file_format import read_metadata
+            component_directory = read_metadata(file_path).get("zimage_base_directory")
+            if component_directory is not None:
+                from core.models.zimage_directory import validate_component_directory
+                base_model_path = str(validate_component_directory(component_directory))
+            else:
+                print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
+                from huggingface_hub import snapshot_download
+                cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+                base_model_path = snapshot_download(
+                    base_model_repo,
+                    cache_dir=cache_dir,
+                    allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json"]
+                )
 
             # Step 2: Load transformer config from base model
             transformer_config_path = os.path.join(base_model_path, "transformer", "config.json")
@@ -1772,7 +1776,7 @@ class ModelLoader:
             print("[ModelLoader] Z-Image Comfy format loaded successfully")
             print(f"  - Transformer: {actual_n_layers} layers, in_channels={actual_in_channels}")
             print(f"  - VAE: {vae_type.upper()} (latent_channels={vae.config.latent_channels})")
-            print(f"  - Text Encoder, Tokenizer, Scheduler: Loaded from {base_model_repo}")
+            print(f"  - Text Encoder, Tokenizer, Scheduler: Loaded from {component_directory or base_model_repo}")
 
             return {
                 "transformer": transformer,
@@ -1782,6 +1786,7 @@ class ModelLoader:
                 "text_encoder": text_encoder,
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
+                "base_component_directory": component_directory,
                 "vae_type": vae_type,  # "sdxl" or "flux" - for TAESD preview selection
                 # None for a native checkpoint; the resolved component.vae.* block
                 # otherwise, for the trainer's swap fold and the pipeline's report.
@@ -2794,12 +2799,9 @@ class ModelLoader:
             )
             return components
         else:
-            # Diffusers format directory
-            raise NotImplementedError(
-                f"Z-Image diffusers format directory loading is not yet implemented.\n"
-                f"Please use Comfy format (.safetensors) instead.\n"
-                f"Convert your model using ComfyUI's 'Save Model' feature."
-            )
+            from core.models.zimage_directory import load_directory
+            return load_directory(model_path, device=device, torch_dtype=torch_dtype,
+                build_transformer=ModelLoader._build_zimage_transformer_from_state)
 
     @staticmethod
     def load_from_diffusers(

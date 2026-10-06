@@ -28,11 +28,20 @@ tokenは1024、denoise観測28.328〜29.172秒。画像等はignored
 CUDA未初期化の実importが通過。frontend説明の対象と既存型/APIを静的確認し、公開parameter追加はない。
 共通packed変更に対するFlux2/Lens/Ideogramの既存CPU回帰も42件通過。
 IdeogramのCUDA専用5件はこのCPU実行ではskipし、GPU受入の代わりにはしていない。
-新policyの公式Full学習・保存再開は専用合成2枚で検証中。
+新policyの公式Full学習・保存再開は専用合成2枚・2段/deep4 U-netで検証した。
+修正後の元公式重みからのstep1→2がexit0で完走し、434 optimizer状態がすべてcounter1→2、
+fresh 0。固定補正の全bufferがbit一致し、codec宣言・U-net構造も維持された。
+lossは0.491757→1.175464。少数stepの機能確認で、収束や画質回復の受入ではない。
+詳細training DBも保持した。保存したsharded indexを生成APIへ読み込み、C64・2段/deep4を復元。
+256px・2steps・CFG1の生成はHTTP200で完了した。交換VAEのlive preview非対応警告は残る。
+この生成読込のTEは既存hub fallbackを使用した。保存時の元TE companion参照はまだなく、
+ネットワーク/cacheに依存する点は残作業。画質比較側は元公式TE由来conditioningを使用した。
+専用run/datasetのDB・diskを整理し、選択モデルをMing Layerへ戻した。
+optimizer・診断・生成画像はignored `local/verification/krea_gaussian_api_full_results/`のみ。
 初回step1→2の機能試験は完走したが、dense loaderが固定FP32係数もBF16へ丸めていたため
 buffer一致を満たさず不合格とした。dense/quantized双方の読込後に元stateから係数を厳密復元し、
 BF16 loaderのbit一致をCPU回帰へ追加。初回診断をignored localへ残し、専用DB/diskを整理して
-元公式重みから再試験する。全architectureの受入済みとは扱わない。
+元公式重みから再試験して上記の一致を確認した。全architectureの受入済みとは扱わない。
 
 公式全成分・合成2枚・C16/8x→C64/16x・2段/deep4の公開API Full試験は
 step1保存→step2再開がexit0。525 optimizer状態がcounter1→2、fresh 0で、補正係数は

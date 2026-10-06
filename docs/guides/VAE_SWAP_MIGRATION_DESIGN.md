@@ -99,6 +99,14 @@ trainerをrootとする既存SD IO specでも、U-Net内のbridgeを検出して
 両モデルの実train_step/backwardと校正完了後のteacher解放を確認した。
 境界・初期化・共通swap/resume回帰72件、変更Pythonのpy_compile・実importが通過した。
 公開初期化設定・保存復元・生成schedulerへの接続と公式全重み検証は引き続き未了。
+SD1.5/SDXL full exportはbridge重みをCompVis変換の対象から分離し、
+`model.diffusion_model.vae_latent_bridge.`、alignment宣言、native `unet_config`を保存する。
+交換先VAEはfacade内のnative重みを保存し、codec宣言のないaligned保存を拒否する。
+aligned保存は共通shard writerを使い、native/legacy保存は従来の単一ファイル形式を維持する。
+共有restorerは内部幅・native configを照合してbridgeをstrict復元する。
+両モデル/チャネル増減で単一・分割artifactのbridge全重み一致、codec全重み一致と欠損拒否を
+合成CPU検証した。境界/保存/REPA回帰92件、最終保存形式変更後のswap/resume回帰72件が通過した。
+変更Pythonのpy_compile・実importも通過。公開ModelLoaderでの全U-Net復元・run再開への接続はまだ未了。
 
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。

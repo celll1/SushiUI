@@ -122,6 +122,44 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     assert model.vae_latent_bridge.input.projection.weight.grad.abs().sum()>0
     assert model.vae_latent_bridge.output.projection.weight.grad.abs().sum()>0
     assert not hasattr(trainer,"_sd_vae_calibration_source")
+    from core.training.adapters.sd15_adapter import SD15FullParameterAdapter
+    from core.training.adapters.sdxl_adapter import SDXLFullParameterAdapter
+    from core.models.components.sd_vae_alignment import restore_alignment
+    from core.models.components.spatial_swap import read_declaration,restored_image_codec
+    from core.models.common.single_file_format import read_state_dict,save_single_file_state
+    from core.models.common.vae_source import load_declared_latent_io
+    trainer.train_unet=True
+    trainer.train_text_encoder=trainer.train_text_encoder_1=trainer.train_text_encoder_2=False
+    trainer.bundle_vae=True
+    trainer.config["vae_swap_source"]=resolved.source
+    adapter=SDXLFullParameterAdapter(trainer) if arch=="sdxl" else SD15FullParameterAdapter(trainer)
+    path=adapter.write_checkpoint(7,0,tmp_path/"aligned.safetensors")
+    state,metadata=read_state_dict(str(path))
+    assert metadata["modelspec.prediction_type"]=="epsilon"
+    assert "component.vae.alignment" in metadata and "unet_config" in metadata
+    assert not any(key.startswith("vae.inner.") for key in state)
+    rebuilt=UNet2DConditionModel.from_config(model.config)
+    rebuilt.load_state_dict({key:tensor for key,tensor in model.state_dict().items()
+        if not key.startswith("vae_latent_bridge.")},strict=True)
+    restore_alignment(rebuilt,metadata,state)
+    assert rebuilt.vae_latent_bridge.ready
+    for key,tensor in model.vae_latent_bridge.state_dict().items():
+        torch.testing.assert_close(rebuilt.vae_latent_bridge.state_dict()[key],tensor,rtol=0,atol=0)
+    declared=load_declared_latent_io(str(path),arch=arch)
+    codec,_=restored_image_codec(declared.load_module(torch_dtype=torch.float32),declared,read_declaration(metadata))
+    assert codec.spatial_scale_factor==16 and codec.config.latent_channels==new
+    for key,tensor in trainer.vae.inner.state_dict().items():
+        torch.testing.assert_close(codec.inner.state_dict()[key],tensor,rtol=0,atol=0)
+    sharded=save_single_file_state(state,metadata,str(tmp_path/"sharded.safetensors"),max_shard_bytes=32768)
+    shard_state,shard_md=read_state_dict(str(sharded))
+    restore_alignment(rebuilt,shard_md,shard_state)
+    assert rebuilt.vae_latent_bridge.ready
+    del shard_state["model.diffusion_model.vae_latent_bridge.input.projection.weight"]
+    with pytest.raises(RuntimeError,match="Missing key"):
+        restore_alignment(rebuilt,shard_md,shard_state)
+    with patch("core.training.vae_swap.swap_metadata",return_value=(None,False,{})), \
+         pytest.raises(ValueError,match="codec declaration"):
+        adapter.write_checkpoint(8,0,tmp_path/"no_codec.safetensors")
     assert not torch.cuda.is_initialized()
 
 

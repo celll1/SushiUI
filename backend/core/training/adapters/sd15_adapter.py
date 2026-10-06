@@ -259,16 +259,23 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
 
         if trainer.train_unet and trainer.unet is not None:
             print(f"[SD15FullParameterAdapter] Collecting U-Net weights (diffusers -> CompVis)...")
-            unet_state = trainer.unet.state_dict()
+            from core.models.components.sd_vae_alignment import split_unet_state
+            unet_state,bridge_state = split_unet_state(trainer.unet)
             converted_unet = convert_unet_state_dict_to_original(unet_state)
             for key, value in converted_unet.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
+            for key,value in bridge_state.items():
+                combined_state_dict[f"model.diffusion_model.{key}"]=value.detach().cpu()
 
         # Save VAE weights: convert diffusers -> CompVis/LDM format (gated on
         # bundle_vae; per-arch default sd15=True for A1111/ComfyUI compatibility).
         from api.param_defaults import resolve_bundle_vae
         from core.training.vae_swap import swap_metadata
         swapped, swap_bundled, swap_md = swap_metadata(trainer)
+        from core.models.components.sd_vae_alignment import checkpoint_metadata
+        alignment_md=checkpoint_metadata(trainer.unet) if trainer.unet is not None else {}
+        if alignment_md and (swapped is None or not trainer.train_unet):
+            raise ValueError("Aligned SD export requires its trained U-Net and codec declaration")
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sd15")
         vae_embedded = bundle_vae and trainer.vae is not None and swapped is None
         if swapped is not None:
@@ -277,7 +284,9 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             if swap_bundled and trainer.vae is not None:
                 print(f"[SD15FullParameterAdapter] Bundling swapped VAE "
                       f"({swapped.provenance}) under 'vae.' ...")
-                for key, value in trainer.vae.state_dict().items():
+                from core.models.components.latent_adapter import NormalizedImageVAE
+                codec=trainer.vae.inner if isinstance(trainer.vae,NormalizedImageVAE) else trainer.vae
+                for key, value in codec.state_dict().items():
                     combined_state_dict[f"vae.{key}"] = value.detach().cpu()
             else:
                 print(f"[SD15FullParameterAdapter] Swapped VAE ({swapped.provenance}) "
@@ -305,10 +314,15 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             **sd15_modelspec_metadata(trainer),
             # Last: the swap block owns every component.vae.* key it writes.
             **swap_md,
+            **alignment_md,
         }
 
         print(f"[SD15FullParameterAdapter] Saving to {output_path}...")
-        save_file(combined_state_dict, output_path, metadata=metadata)
+        if alignment_md:
+            from core.models.common.single_file_format import save_single_file_state
+            output_path=Path(save_single_file_state(combined_state_dict,metadata,str(output_path)))
+        else:
+            save_file(combined_state_dict,output_path,metadata=metadata)
 
         total_params = sum(p.numel() for p in combined_state_dict.values())
         print(f"[SD15FullParameterAdapter] Saved {len(combined_state_dict)} tensors ({total_params:,} params) to {output_path}")

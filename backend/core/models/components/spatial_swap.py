@@ -14,6 +14,14 @@ NAME = "vae_latent_bridge"
 META_KEY = "component.vae.alignment"
 
 
+def image_token_stride(vae, architecture, patch_size):
+    from core.models.component_registry import _WIRING_BY_ARCH
+    scale = getattr(vae, "spatial_scale_factor", _WIRING_BY_ARCH[architecture].vae_scale_factor)
+    if type(scale) is not int or scale < 1 or type(patch_size) is not int or patch_size < 1:
+        raise ValueError("Image token stride requires positive codec and patch scales")
+    return scale * patch_size
+
+
 def encode_image(module, pixels, *, generator=None):
     """Preserve legacy unclamped sampling; normalized facades own their posterior."""
     if isinstance(module, NormalizedImageVAE):

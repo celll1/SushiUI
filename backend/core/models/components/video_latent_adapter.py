@@ -5,6 +5,7 @@ from math import lcm
 from types import SimpleNamespace
 
 import torch
+from diffusers.utils.accelerate_utils import apply_forward_hook
 from torch import nn
 
 from .latent_adapter import ImageCodecContract, _Config, PairedSpatialCalibration, calibration_grid
@@ -181,6 +182,7 @@ class NormalizedVideoVAE(nn.Module):
     def dtype(self):
         return next(self.inner.parameters()).dtype
 
+    @apply_forward_hook
     def encode(self, pixels, **kwargs):
         image = self.contract.image
         if pixels.ndim != 5 or pixels.shape[1] != 3 or any(n < 1 for n in pixels.shape):
@@ -199,6 +201,7 @@ class NormalizedVideoVAE(nn.Module):
         posterior = self.inner.encode(pixels, **kwargs).latent_dist
         return SimpleNamespace(latent_dist=_VideoPosterior(posterior, self, expected, independent))
 
+    @apply_forward_hook
     def decode(self, latents, *args, return_dict=True, **kwargs):
         if not self.config.timestep_conditioning:
             if args and (len(args) != 1 or args[0] is not None):

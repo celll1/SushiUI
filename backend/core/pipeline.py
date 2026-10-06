@@ -24,6 +24,7 @@ from config.settings import settings
 from extensions.base_extension import BaseExtension
 from core.model_loader import ModelLoader, ModelSource
 from core.models.ming_image_01.results import MingGenerationOutput
+from core.models.components.spatial_swap import image_token_stride
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
@@ -751,7 +752,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "source": source,
                     "type": "anima",
                     "dit_rewiring_spec": getattr(self.anima_components["transformer"], "_residual_unet_spec", None),
-                    "dit_rewiring_token_stride": self.anima_components["transformer"].patch_spatial * 8,
+                    "dit_rewiring_token_stride": image_token_stride(model_result.get("vae"), "anima",
+                        self.anima_components["transformer"].patch_spatial),
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                 }
@@ -806,7 +808,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,
                     "model_hash": model_hash,
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
-                    "dit_rewiring_token_stride": 16,
+                    "dit_rewiring_token_stride": image_token_stride(model_result.get("vae"), "lens", 2),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "lens"))
@@ -855,8 +857,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "is_v_prediction": False,  # flow matching
                     "model_hash": model_hash,
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
-                    "dit_rewiring_token_stride": 16,
+                    "dit_rewiring_token_stride": image_token_stride(model_result.get("vae"), "ideogram4", 2),
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "ideogram4"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Ideogram 4 model loaded successfully")
                 return
@@ -953,7 +957,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "model_hash": model_hash,
                     "is_distilled": self.krea2_components.get("is_distilled", False),
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
-                    "dit_rewiring_token_stride": 16,
+                    "dit_rewiring_token_stride": image_token_stride(model_result.get("vae"), "krea2", 2),
                 }
                 self.current_model_info.update(
                     self._fold_component_latent_identity(model_result, "krea2"))
@@ -989,8 +993,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "transformer_variant": model_result.get("transformer_variant", "bf16"),
                     "text_encoder_variant": model_result.get("text_encoder_variant", "bf16"),
                     "dit_rewiring_spec": getattr(model_result["transformer"], "_residual_unet_spec", None),
-                    "dit_rewiring_token_stride": 16,
+                    "dit_rewiring_token_stride": model_result["vae_scale_factor"],
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "qwen_image_21"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Qwen-Image 2.1 model loaded successfully")
                 return
@@ -4013,6 +4019,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if spec is None:
                 return {}
             identity = getattr(pipeline, "_sushi_vae_identity", None) or {}
+            from core.models.common.vae_source import ResolvedVAE
+            if isinstance(identity, ResolvedVAE):
+                identity = identity.facts()
             declared = getattr(pipeline, "_sushi_arch", None) or {}
             swap_vae_type = identity.get("family") or declared.get("vae_type")
             latent_channels = int(identity.get("latent_channels")

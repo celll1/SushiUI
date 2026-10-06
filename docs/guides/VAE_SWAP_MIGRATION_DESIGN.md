@@ -8,6 +8,22 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+公式Qwen 2.1全DiT・Qwen3-VL TEからLTX-2.3の交換codecへ、合成図形2枚で
+paired_spatial校正・既定2段U-net・Full学習1step・保存・step2再開を公開APIで完走した。
+301 optimizer tensorを復元（fresh 0）、有限GradNorm、4shard保存を確認した。
+外部C64→128・空間/16→/32で、同じ解像度のtoken数は1/4となる。
+保存済みbundleを生成APIで読み込み、256px・2stepsの生成とVAE decodeも通過した。
+この短い合成データ試験は機能検証であり、画質回復の受入ではない。
+
+Qwenのcomponent読込時にはtrainerのarchが未作成であるため、読込用handlerから
+交換後wiringを解決する。画像・動画の正規化VAE wrapperのencode/decodeには
+Diffusers標準の配置hookを適用し、CPU offload時のCPU decoder／CUDA latent不一致を防ぐ。
+生成の構造表示は交換後のcodec scaleとpatchサイズからtoken strideを算出し、
+Qwen・Ideogramにもcodec identityを反映する。CPU回帰159件と変更Pythonのcompile・
+CUDA未初期化の実importを確認した。frontendは既存ModelInfo契約と構造表示経路を
+静的確認済み。ownerのbuild・型チェックは未実行。使用済み専用run/datasetはDB・diskから整理し、
+診断ログはignored localに保存する。検証前のMing Layerモデル選択へ戻した。
+
 明示したU-net specとVAE swapを併用する場合、入出力チャネル変更前に元構造のhashを
 検証し、変更後のnative configに対して同じ層区間・skip・pool operatorを再識別する。
 画像bridgeの宣言には元config hashを保存する。LTX/H3は保存済みsource config、ACEは

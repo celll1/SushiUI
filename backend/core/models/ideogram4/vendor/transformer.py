@@ -552,6 +552,12 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
     ):
         r"""Predict the flow-matching velocity for the image-token positions of the packed sequence."""
         batch_size, seq_len, in_channels = hidden_states.shape
+        pair = getattr(self, "vae_latent_bridge", None)
+        if pair is not None:
+            from ..vae_alignment import image_grid, map_image_suffix
+            prefix, grid = image_grid(position_ids, indicator)
+            hidden_states = map_image_suffix(pair, hidden_states, grid, prefix=prefix, timestep=timestep)
+            in_channels = hidden_states.shape[-1]
         if in_channels != self.in_channels:
             raise ValueError(f"Expected last dim {self.in_channels}, got {in_channels}.")
 
@@ -631,6 +637,8 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                         offloader.submit_move_blocks_forward(block_idx)
 
         output = self.final_layer(hidden_states, conditioning=adaln_input)
+        if pair is not None:
+            output = map_image_suffix(pair, output, grid, prefix=prefix, output=True)
 
         if not return_dict:
             return (output,)

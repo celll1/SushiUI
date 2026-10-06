@@ -91,18 +91,26 @@ def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
     return report
 
 
-def map_packed_image(pair, states, grid, *, sigma=None, output=False, patch_size=2):
-    """Outer-channel 2-D packing; the spatial bridge never changes token count."""
+def map_packed_image(pair, states, grid, *, sigma=None, output=False, patch_size=2,
+                     channel_order="outer", convention="eps_minus_x0"):
+    """The spatial bridge changes neither grid size nor packing order."""
     height, width = grid
     batch, tokens, packed = states.shape
     p = patch_size
     if height < 1 or width < 1 or tokens != height*width or packed % (p*p):
         raise ValueError("Packed image alignment requires a rectangular divisible grid")
+    if channel_order not in ("outer", "inner"):
+        raise ValueError("Packed image alignment requires an explicit channel order")
+    if channel_order == "inner":
+        states = states.reshape(batch,tokens,p,p,-1).permute(0,1,4,2,3).reshape(batch,tokens,packed)
     image = states.reshape(batch,height,width,packed//(p*p),p,p).permute(0,3,1,4,2,5)
     image = image.reshape(batch,packed//(p*p),height*p,width*p)
-    image = (pair.output.flow_velocity(image, convention="eps_minus_x0") if output
+    image = (pair.output.flow_velocity(image, convention=convention) if output
              else pair.input.flow_state(image, sigma))
-    return image.reshape(batch,image.shape[1],height,p,width,p).permute(0,2,4,1,3,5).reshape(batch,tokens,-1)
+    states = image.reshape(batch,image.shape[1],height,p,width,p).permute(0,2,4,1,3,5)
+    if channel_order == "inner":
+        states = states.permute(0,1,2,4,5,3)
+    return states.reshape(batch,tokens,-1)
 
 
 def calibrate_images(trainer, datasets, *, model, pending_key):

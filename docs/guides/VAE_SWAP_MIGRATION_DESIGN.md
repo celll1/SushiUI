@@ -8,6 +8,30 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+画質受入は完全一致ではなく、主要被写体・概形・配置を認識できることを基準とする。
+codec間の差だけを理由に校正やnoise整合の検討を省略しない。Animaのnoise残差候補は
+1promptでこの水準に到達したが、H3およびAnimaのU-net併用は未受入。
+
+Krea2のroot transformer形式を共通model判定へ追加した。loaderが対応済みでも
+APIのU-net preflightがSD1.5と誤認する不具合を解消した。frontendの選択metadataも
+同じ判定を使う。保存先へmodel_pathを切り替えるFull resumeでは、元モデルの参照を
+保持して凍結TE・tokenizer・schedulerを解決する。交換codecの宣言・同梱重みの優先順位は維持する。
+公式全DiT、Qwen3-VL TE、Qwen 2.1交換VAE、2段U-netで、合成画像2枚を使った
+公開API Full学習1stepと3shard保存を完走した。有限GradNorm 35.3301、C16→64、
+空間/8→/16の宣言とbridge/U-net/codec同梱を確認した。step1から再開し434個の
+optimizer stateを復元（fresh 0）、step2を保存。dense checkpointの初期化をmeta＋
+直接重み割当に変更し、step2からstep3の再開・保存も完走した。従来loaderで観測した
+Python RSS 58.9GiBに対し、新経路の1秒間隔監視で観測した最大は35.76GiB。
+保存重みは完全一致、CPU forwardはstorage alignmentによる数ULP差を許容する。
+これは学習・復元・メモリの検証で、画質の受入ではない。
+専用smoke run/datasetは小さな診断ログ・optimizer/stateを保持した後、DB・diskから整理済み。
+
+noise写像を校正時点で凍結する`SpatialFlowNoiseSnapshot`を共通部に追加した。
+bufferだけでinput/output kernelを保持し、bridge学習で変化せず、optimizerへ入らない。
+RNGを消費しないcapture、weights-only保存復元、codec identity相違の拒否を検証した。
+まだ本番のnoise補正policyやartifact exportには配線していない。
+関連CPU回帰91件、compile・CUDA未初期化の実importを確認した。
+
 Animaの画質切り分けを追加した。dataset 30の既存manifestから40枚を選び、各itemの
 現在のtagsにgeneralがありsensitive/questionable/explicitがないこととpath一致をAPIで
 確認してから開いた。公式全DiTで512pxのpaired_spatial校正を行い、更新ゼロのartifactを

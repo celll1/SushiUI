@@ -123,7 +123,9 @@ class KreaRuntimeContracts(unittest.TestCase):
                 with torch.no_grad():
                     actual = restored(self.image, self.text, torch.tensor([0.5]),
                                       self.positions, self.mask, return_dict=False)[0]
-                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                # Assigning safetensor storage can change CPU SIMD alignment by a few ULPs.
+                torch.testing.assert_close(actual, expected, rtol=1e-6, atol=1e-6)
+                self.assertFalse(any(p.is_meta for p in restored.parameters()))
                 with self.assertRaisesRegex(ValueError, "override"):
                     single_file.save_single_file(str(Path(directory)/"bad.safetensors"),
                         self.model, False, extra_metadata=checkpoint_metadata(

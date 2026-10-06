@@ -4780,6 +4780,9 @@ class BaseTrainer(ABC):
             # the transformer, resolves the Qwen3-VL TE / Qwen-Image VAE, sets the
             # scheduler, enables gradient checkpointing, and moves to device.
             print(f"{self.log_prefix} Loading Krea 2 checkpoint as base model: {checkpoint_path}")
+            # Frozen companion weights remain at the original model, not the save directory.
+            self.krea2_companion_path = (getattr(self, "krea2_companion_path", None)
+                                        or str(self.model_path))
             self.model_path = checkpoint_path
             from core.training.ops import krea2_ops
             krea2_ops.load_components(self)

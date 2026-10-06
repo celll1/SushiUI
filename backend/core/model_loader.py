@@ -797,11 +797,12 @@ class ModelLoader:
                         return "krea2"
                 except Exception:
                     pass
-            if os.path.exists(transformer_config_path):
+            for config_path in (transformer_config_path, os.path.join(model_path, "config.json")):
+                if not os.path.isfile(config_path):
+                    continue
                 try:
-                    with open(transformer_config_path, "r") as f:
+                    with open(config_path, encoding="utf-8") as f:
                         tcfg = json.load(f)
-                    # Krea2 single-stream MMDiT: unique config keys (text fusion + 3-axis rope).
                     if tcfg.get("_class_name") == "Krea2Transformer2DModel" or (
                         "Krea2Transformer2DModel" in tcfg.get("architectures", [])
                     ) or ("num_layerwise_text_blocks" in tcfg and "axes_dims_rope" in tcfg):

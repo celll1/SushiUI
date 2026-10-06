@@ -7,7 +7,7 @@ from torch import nn
 
 from core.models.components.latent_adapter import (
     ImageCodecContract, SpatialSwapPlan, SpatialAlignmentPair, NormalizedFrameVAE,
-    PairedSpatialCalibration, calibration_grid,
+    PairedSpatialCalibration, SpatialFlowNoiseSnapshot, calibration_grid,
 )
 from core.models.components.vae_alignment import SpatialLatentBridge
 
@@ -95,6 +95,45 @@ def test_flow_noise_complement_refuses_unfitted_or_wrong_geometry():
     identity(pair.input); identity(pair.output)
     with pytest.raises(ValueError,match="declared channels"):
         pair.untrained_flow_noise_residual(torch.randn(1,4,3,5),convention="eps_minus_x0")
+
+
+@pytest.mark.parametrize("old,new,rank", [(4,8,4),(8,4,5)])
+def test_noise_snapshot_survives_bridge_training_and_checkpoint_restore(old,new,rank):
+    import io
+    pair=SpatialAlignmentPair(declaration(old,new,rank=rank))
+    pair.initialize_from_pair(identity(SpatialLatentBridge(new,old)),
+                              identity(SpatialLatentBridge(old,new)))
+    noise=torch.randn((2,new,5,7) if rank==4 else (2,new,3,5,7),requires_grad=True)
+    rng=torch.get_rng_state().clone()
+    snapshot=SpatialFlowNoiseSnapshot.capture(pair)
+    assert torch.equal(torch.get_rng_state(),rng)
+    assert list(snapshot.parameters())==[]
+    expected=pair.untrained_flow_noise_residual(noise,convention="eps_minus_x0")
+    torch.testing.assert_close(snapshot.velocity_residual(noise,convention="eps_minus_x0"),expected)
+    with torch.no_grad():
+        pair.input.projection.weight.add_(.1)
+        pair.output.projection.weight.mul_(2)
+    stream=io.BytesIO();torch.save(snapshot.state_dict(),stream);stream.seek(0)
+    restored=SpatialFlowNoiseSnapshot(snapshot.declaration)
+    restored.load_state_dict(torch.load(stream,weights_only=True))
+    actual=restored.velocity_residual(noise,convention="eps_minus_x0")
+    torch.testing.assert_close(actual,expected)
+    torch.testing.assert_close(restored.velocity_residual(noise,convention="x0_minus_eps"),-expected)
+    assert not actual.requires_grad
+
+
+def test_noise_snapshot_rejects_other_codec_and_unfitted_state():
+    pair=SpatialAlignmentPair(declaration())
+    with pytest.raises(ValueError,match="calibration"):
+        SpatialFlowNoiseSnapshot.capture(pair)
+    identity(pair.input);identity(pair.output)
+    snapshot=SpatialFlowNoiseSnapshot.capture(pair)
+    other=SpatialFlowNoiseSnapshot(dict(pair.declaration,source="registry:other"))
+    with pytest.raises(ValueError,match="identity"):
+        other.load_state_dict(snapshot.state_dict())
+    blank=SpatialFlowNoiseSnapshot(pair.declaration)
+    with pytest.raises(RuntimeError,match="calibration"):
+        blank.velocity_residual(torch.randn(1,8,3,5),convention="eps_minus_x0")
 
 
 class ToyCodec(nn.Module):

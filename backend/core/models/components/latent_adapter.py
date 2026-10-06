@@ -1,6 +1,8 @@
 """Codec-independent spatial alignment on the replacement codec's native grid."""
 
 from dataclasses import dataclass
+import hashlib
+import json
 from math import lcm
 from types import SimpleNamespace
 
@@ -139,6 +141,60 @@ class SpatialAlignmentPair(nn.Module):
             iw[c, c, 1, 1] = ow[c, c, 1, 1] = 1
         self.input.initialize(iw.flatten(1).T, ib)
         self.output.initialize(ow.flatten(1).T, outgoing.projection.bias)
+
+
+class SpatialFlowNoiseSnapshot(nn.Module):
+    """Frozen calibration noise projection; buffers cannot join the training optimizer."""
+    def __init__(self, declaration):
+        super().__init__()
+        self.declaration = dict(validate_declaration(declaration))
+        old, new = self.declaration["old_channels"], self.declaration["new_channels"]
+        self.register_buffer("input_weight", torch.zeros(old,new,3,3))
+        self.register_buffer("output_weight", torch.zeros(new,old,3,3))
+        digest = hashlib.sha256(json.dumps(self.declaration,sort_keys=True,
+            separators=(",",":"),allow_nan=False).encode()).digest()
+        self._expected_identity = torch.tensor(list(digest),dtype=torch.uint8)
+        self.register_buffer("snapshot_identity", self._expected_identity.clone())
+        self.register_buffer("calibrated", torch.tensor(False))
+        self._ready = False
+        self.register_load_state_dict_post_hook(self._restore_ready)
+
+    def _restore_ready(self, module, incompatible_keys):
+        if not torch.equal(self.snapshot_identity.cpu(),self._expected_identity):
+            raise ValueError("Flow noise snapshot codec identity differs")
+        self._ready = bool(self.calibrated)
+
+    @classmethod
+    @torch.no_grad()
+    def capture(cls, pair):
+        if not pair.ready:
+            raise ValueError("Flow noise snapshot requires paired calibration")
+        old = pair.declaration["old_channels"]
+        result = cls(pair.declaration).to(pair.input.projection.weight)
+        result.input_weight.copy_(pair.input.projection.weight[:old])
+        result.output_weight.copy_(pair.output.projection.weight[:,:old])
+        result.calibrated.fill_(True)
+        result._ready = True
+        return result
+
+    @torch.no_grad()
+    def velocity_residual(self, noise, *, convention):
+        if convention not in ("eps_minus_x0","x0_minus_eps"):
+            raise ValueError("Noise snapshot requires an explicit flow velocity convention")
+        if not self._ready:
+            raise RuntimeError("Flow noise snapshot has no paired calibration")
+        if noise.ndim not in (4,5) or noise.shape[1]!=self.declaration["new_channels"]:
+            raise ValueError("Flow noise snapshot requires the declared external grid")
+        value = noise
+        if noise.ndim==5:
+            b,c,frames,h,w = noise.shape
+            value = noise.permute(0,2,1,3,4).reshape(b*frames,c,h,w)
+        incoming = F.conv2d(value.to(self.input_weight),self.input_weight,padding=1)
+        projected = F.conv2d(incoming,self.output_weight,padding=1)
+        residual = value.float()-projected.to(device=value.device,dtype=torch.float32)
+        if noise.ndim==5:
+            residual = residual.reshape(b,frames,c,h,w).permute(0,2,1,3,4)
+        return residual if convention=="eps_minus_x0" else -residual
 
 
 def calibration_grid(latent, shape):

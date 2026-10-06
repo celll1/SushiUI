@@ -42,6 +42,11 @@ The architecture setup refuses mutable swap without checkpointing. Optimizer
 setup separately refuses combinations that would update CPU parameters or retain
 all gradients.
 
+Dense Full training on LTX and the staged H3 path leaves swappable blocks on CPU
+at initial load through `training/model_staging.py`; only resident blocks and
+non-block weights move to the training device before adapter construction.
+The conductor still captures ownership after adapters set trainability.
+
 ## Ordering invariants
 
 - CPU masters are persistent and never alias another block.

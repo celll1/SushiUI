@@ -273,7 +273,13 @@ def load_components(trainer, *, resuming=False) -> None:
         print(f"{trainer.log_prefix} Block Swap requested ({trainer.blocks_to_swap} blocks); "
               f"deferred until adapter setup completes")
     print(f"{trainer.log_prefix} Moving MiniMax-H3 DiT to {trainer.device}")
-    trainer.transformer.to(trainer.device)
+    from .training_method import trains_denoiser_weights
+    if trains_denoiser_weights(trainer) and trainer.blocks_to_swap > 0:
+        from core.training.model_staging import stage_dense_block_model
+        stage_dense_block_model(trainer.transformer, trainer.transformer.transformer_blocks,
+                                trainer.blocks_to_swap, trainer.device)
+    else:
+        trainer.transformer.to(trainer.device)
 
     print(f"{trainer.log_prefix} MiniMax-H3 model loaded successfully "
           f"(latent_channels={trainer.vae_latent_channels}, fps={trainer.minimax_h3_fps}, "

@@ -686,6 +686,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     archCapabilities, trainingSampleArch, "sample_schedule_type");
   const sampleAdvancedCfgSupported = trainingSampleParameterSupported(
     archCapabilities, trainingSampleArch, "sample_cfg_schedule_type");
+  const sampleNagSupported = trainingSampleParameterSupported(
+    archCapabilities, trainingSampleArch, "sample_nag_enable");
   const sensenovaTimestepShiftSupported = trainingSampleParameterSupported(
     archCapabilities, trainingSampleArch, "sensenova_sample_timestep_shift");
   const sensenovaImgCfgSupported = trainingSampleParameterSupported(
@@ -8500,7 +8502,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
           {sampleAdvancedCfgSupported && (
             <details className="border border-gray-700 rounded p-3">
-              <summary className="text-sm text-gray-300 cursor-pointer">Advanced CFG, Dynamic Threshold &amp; NAG</summary>
+              <summary className="text-sm text-gray-300 cursor-pointer">Advanced sampling guidance</summary>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
                 <label className="text-xs text-gray-400">CFG schedule
                   <select value={sampleCfgScheduleType} onChange={(e) => updateParam("sample_cfg_schedule_type", e.target.value)} className="mt-1 w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm">
@@ -8514,7 +8516,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   ['sample_cfg_rescale_snr_alpha', 'SNR rescale alpha'],
                   ['sample_dynamic_threshold_percentile', 'Dynamic threshold %'],
                   ['sample_dynamic_threshold_mimic_scale', 'Mimic scale'],
-                ] as const).map(([key, label]) => (
+                ] as const).filter(([key]) => trainingSampleParameterSupported(archCapabilities, trainingSampleArch, key)).map(([key, label]) => (
                   <label key={key} className="text-xs text-gray-400">{label}
                     <input type="number" step="any" value={params[key] ?? ''}
                       onChange={(e) => updateParam(key, e.target.value === '' ? (key === 'sample_cfg_schedule_max' ? null : undefined as any) : parseFloat(e.target.value))}
@@ -8522,11 +8524,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   </label>
                 ))}
               </div>
-              <label className="flex items-center gap-2 mt-4 text-sm text-gray-300">
+              {sampleNagSupported && <label className="flex items-center gap-2 mt-4 text-sm text-gray-300">
                 <input type="checkbox" checked={Boolean(params.sample_nag_enable)} onChange={(e) => updateParam("sample_nag_enable", e.target.checked)} />
                 Enable NAG
-              </label>
-              {params.sample_nag_enable && <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
+              </label>}
+              {sampleNagSupported && params.sample_nag_enable && <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mt-3">
                 {([
                   ['sample_nag_scale', 'NAG scale'], ['sample_nag_tau', 'NAG tau'],
                   ['sample_nag_alpha', 'NAG alpha'], ['sample_nag_sigma_end', 'NAG sigma end'],

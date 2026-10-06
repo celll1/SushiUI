@@ -418,6 +418,11 @@ TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova"] = [
     "sensenova_sample_img_cfg_scale",
     "sensenova_sample_cfg_norm",
 ]
+TRAINING_SAMPLE_SUPPORTED_PARAMS["ideogram4"] = [
+    "sample_cfg_schedule_type", "sample_cfg_schedule_min", "sample_cfg_schedule_max",
+    "sample_cfg_schedule_power", "sample_cfg_rescale_snr_alpha",
+    "sample_dynamic_threshold_percentile", "sample_dynamic_threshold_mimic_scale",
+]
 TRAINING_SAMPLE_SUPPORTED_PARAMS["sensenova_sdxl_chimera"] = [
     "sample_cfg_schedule_type",
     "sample_cfg_schedule_min",
@@ -477,6 +482,7 @@ def training_sample_key_supported(arch: Optional[str], key: str) -> bool:
 # Supported sample paths whose output contract is narrower than the image
 # preview section suggests.
 TRAINING_SAMPLE_NOTES: Dict[str, str] = {
+    "ideogram4": "Native resolution-aware logit-normal Euler sampling with separate conditional/unconditional DiTs. Negative prompts, NAG and reference/condition images are refused. Supports plain and weight-only FP8/NF4 components, including mixed-dtype LoRA. Small native GPU tests cover VAE swap, U-net and mutable block swap; official full-weight quality and throughput acceptance remain pending.",
     "ltx2": (
         "LTX-2.3 generates a fixed 9-frame validation clip, saves only its "
         "first frame as PNG, and discards the jointly generated audio."
@@ -1339,9 +1345,9 @@ _add_training_required_value(
     methods=["lora", "relora", "controlnet"])
 
 # --- Sample generation during training --------------------------------------
-_add_training_feature_unsupported(
-    "ideogram4", "training_samples",
-    "plain dual-DiT native text sampling is verified internally on small models with paired VAE, U-net and mutable block swap; public sampling remains gated pending quantized residency and official-weight acceptance")
+_add_training_feature_advisory(
+    "ideogram4", "training_samples", "experimental",
+    "Native dual-DiT text sampling, device restoration and training continuation are verified on small plain/FP8/NF4 models. Encoding and decoding park both DiTs, optimizer state and mutable transfer slots. Negative/reference conditioning and NAG remain refused. Official full-weight acceptance is pending.")
 _add_training_feature_unsupported(
     "minimax_h3", "training_samples",
     "step-0 and periodic sampling are not implemented for MiniMax-H3; its training sample handler warns and returns None")

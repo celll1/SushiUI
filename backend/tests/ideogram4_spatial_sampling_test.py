@@ -192,3 +192,63 @@ def test_dual_mutable_sample_parks_slots_and_preserves_master_ownership(monkeypa
             for handle in updates:handle.remove()
     finally:
         for conductor in conductors:conductor.cleanup()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason="CUDA required")
+@pytest.mark.parametrize("quantization",["fp8","nf4"])
+@pytest.mark.parametrize("block_swap",[False,True])
+def test_quantized_mixed_dtype_lora_sample_restores_hidden_state(monkeypatch,quantization,block_swap):
+    from core.adapters import LoRALinearLayer
+    from core.memory_management.quantized_residency import quant_state_devices
+    from core.models.ideogram4.vendor.fp8_linear import Fp8Linear,quantize_weight_to_fp8
+    from core.training.arch.base_arch import SampleContext
+    owner=_owner(monkeypatch,torch.bfloat16)
+    owner.device=torch.device("cuda")
+    models=(owner.transformer,owner.transformer_uncond)
+    for model in models:
+        original=model.layers[1].feed_forward.w1
+        if quantization=="nf4":
+            import bitsandbytes as bnb
+            quant=bnb.nn.Linear4bit(original.in_features,original.out_features,bias=False,
+                compute_dtype=torch.bfloat16,quant_type="nf4",compress_statistics=True)
+            quant.weight=bnb.nn.Params4bit(original.weight.detach().clone(),requires_grad=False,
+                quant_type="nf4",compress_statistics=True,module=quant).to(owner.device)
+        else:
+            quant=Fp8Linear(original.in_features,original.out_features,False,torch.bfloat16)
+            weight,scale=quantize_weight_to_fp8(original.weight)
+            quant.weight.copy_(weight);quant.weight_scale.copy_(scale)
+        model.layers[1].feed_forward.w1=LoRALinearLayer(quant,rank=2,alpha=2,lora_name="synthetic",lora_dtype=torch.float32)
+        with torch.no_grad():model.layers[1].feed_forward.w1.lora_up.weight.fill_(.01)
+        model.to(owner.device)
+    conductors=[]
+    if block_swap:
+        from core.memory_management.layer_offload_conductor import LayerOffloadConductor
+        for model in models:
+            conductor=LayerOffloadConductor(model.layers,blocks_to_swap=1,device=owner.device,ring_size=1)
+            conductor.register_hooks()
+            model._layer_offload_conductor=conductor
+            conductors.append(conductor)
+    states=quant_state_devices(models)
+    assert bool(states)==(quantization=="nf4")
+    originals=[(state,name,getattr(state,name).cpu().clone(),device) for state,name,device in states]
+    decode=owner.vae.decode
+    def isolated_decode(*args,**kwargs):
+        assert all(parameter.device.type=="cpu" for model in models for parameter in model.parameters())
+        assert all(getattr(state,name).device.type=="cpu" for state,name,device in states)
+        return decode(*args,**kwargs)
+    monkeypatch.setattr(owner.vae,"decode",isolated_decode)
+    ctx=SampleContext(prompt="synthetic",width=256,height=256,num_inference_steps=2,guidance_scale=2.,seed=17)
+    result=owner.arch.sample(owner,ctx)
+    for state,name,tensor,device in originals:
+        assert getattr(state,name).device==device
+        torch.testing.assert_close(getattr(state,name).cpu(),tensor,atol=0,rtol=0)
+    second=owner.arch.sample(owner,ctx)
+    assert np.array_equal(np.asarray(result),np.asarray(second))
+    calls=[]
+    def stop():
+        calls.append(1)
+        if len(calls)==3:raise RuntimeError("synthetic stop")
+    owner._check_stop_requested=stop
+    with pytest.raises(RuntimeError,match="synthetic stop"):owner.arch.sample(owner,ctx)
+    for state,name,tensor,device in originals:assert getattr(state,name).device==device
+    for conductor in conductors:conductor.cleanup()

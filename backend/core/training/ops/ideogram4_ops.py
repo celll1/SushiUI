@@ -30,6 +30,7 @@ from core.attention import to_diffusers_backend
 def _sample_components(trainer):
     from core.training.optimizer_residency import park_optimizer_state
     from core.training.base_trainer import all_optimizers
+    from core.memory_management.quantized_residency import quant_state_devices,move_quant_states,restore_quant_states
     modules = tuple(dict.fromkeys((trainer.transformer,trainer.transformer_uncond,trainer.text_encoder,trainer.vae)))
     if any(module is None for module in modules):
         raise ValueError("Ideogram samples require both DiTs, text encoder and VAE")
@@ -39,12 +40,14 @@ def _sample_components(trainer):
         conductor.flush()
     rings_parked = {conductor:conductor.engine.slots_parked for conductor in conductors.values()}
     managed = {module:conductor.managed_tensor_ids() for module,conductor in conductors.items()}
+    quant_placements = quant_state_devices(modules)
     def move(module,device):
         if module in conductors:
             conductors[module].park_device_slots()
             module._apply(lambda tensor:tensor if id(tensor) in managed[module] else tensor.to(device))
         else:
             module.to(device)
+        move_quant_states(module,device)
     placements = [{name:value.device for name,value in (*module.named_parameters(),*module.named_buffers())}
         for module in modules]
     modes = [module.training for module in modules]
@@ -78,6 +81,7 @@ def _sample_components(trainer):
                         if current[name].device != device:
                             current[name].data = current[name].data.to(device)
                     module.train(mode)
+                restore_quant_states(quant_placements)
                 for conductor,was_parked in rings_parked.items():
                     if not was_parked:
                         conductor.resume_device_slots()
@@ -116,12 +120,15 @@ def generate_sample(trainer,sample_ctx):
                 return progress(index,total,*args,**kwargs)
         callback.wants_predicted_x0 = lambda *args:False
         callback.wants_cfg_metrics = lambda *args:False
-        latents = ops.denoise_loop(trainer.transformer,trainer.transformer_uncond,deepcopy(trainer.scheduler),
-            latents,cond,sample_ctx.guidance_scale,sample_ctx.num_inference_steps,gh,gw,height,width,
-            mu=IDEOGRAM4_INFERENCE_DEFAULTS["mu"],std=IDEOGRAM4_INFERENCE_DEFAULTS["std"],progress_callback=callback,
-            advanced_cfg={key:getattr(sample_ctx,key) for key in (
-                "cfg_schedule_type","cfg_schedule_min","cfg_schedule_max","cfg_schedule_power",
-                "cfg_rescale_snr_alpha","dynamic_threshold_percentile","dynamic_threshold_mimic_scale")})
+        dtype = trainer.transformer.dtype
+        with torch.autocast(device_type=trainer.device.type,dtype=dtype,
+                            enabled=dtype in (torch.float16,torch.bfloat16)):
+            latents = ops.denoise_loop(trainer.transformer,trainer.transformer_uncond,deepcopy(trainer.scheduler),
+                latents,cond,sample_ctx.guidance_scale,sample_ctx.num_inference_steps,gh,gw,height,width,
+                mu=IDEOGRAM4_INFERENCE_DEFAULTS["mu"],std=IDEOGRAM4_INFERENCE_DEFAULTS["std"],progress_callback=callback,
+                advanced_cfg={key:getattr(sample_ctx,key) for key in (
+                    "cfg_schedule_type","cfg_schedule_min","cfg_schedule_max","cfg_schedule_power",
+                    "cfg_rescale_snr_alpha","dynamic_threshold_percentile","dynamic_threshold_mimic_scale")})
         stage(trainer.vae)
         return ops.vae_decode(trainer.vae,latents,gh,gw)
 

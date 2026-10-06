@@ -27496,7 +27496,7 @@ components:
           default:
             - positive: ''
               negative: ''
-          description: Positive and negative prompt pairs used for in-training previews.
+          description: Positive and negative prompt pairs used for in-training previews. Ideogram 4 experimental native dual-DiT samples require an empty negative prompt and do not accept NAG or reference/condition images; architecture-specific controls and acceptance limits come from /schema/arch-capabilities.
           items:
             type: 'object'
             additionalProperties: true

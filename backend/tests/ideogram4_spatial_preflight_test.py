@@ -8,6 +8,8 @@ def test_public_full_method_and_swap_match_the_native_adapter():
     assert "full_finetune" not in TRAINING_UNSUPPORTED.get("ideogram4",{})
     assert training_feature_unsupported_reason("ideogram4","vae_swap","full_finetune") is None
     assert training_feature_advisories("ideogram4","full_finetune")["vae_swap"]["level"]=="experimental"
+    assert training_feature_unsupported_reason("ideogram4","training_samples","full_finetune") is None
+    assert training_feature_advisories("ideogram4","lora")["training_samples"]["level"]=="experimental"
     config={"vae_swap_source":"registry:qwen_image","ideogram4_train_uncond":True}
     assert initialization_mode(config,"ideogram4")=="paired_spatial"
     assert preflight_vae_swap(config,arch="ideogram4",method="full_finetune",bundle_vae_explicit_false=False)==config["vae_swap_source"]
@@ -28,3 +30,11 @@ def test_full_config_preserves_dual_branch_and_calibration_choices():
     train=_build_train_section(config,total_steps=None,epochs=5,train_unet=True,train_text_encoder=False,arch="ideogram4")
     for key,value in config.items():
         if key!="training_method":assert train[key]==value
+
+
+def test_native_sample_config_exposes_only_consumed_guidance_controls():
+    from core.training.training_config import _build_sample_section
+    config=_build_sample_section({"sample_cfg_rescale_snr_alpha":.3,
+        "sample_dynamic_threshold_percentile":.9,"sample_nag_enable":True},None,"ideogram4")
+    assert config["cfg_rescale_snr_alpha"]==.3 and config["dynamic_threshold_percentile"]==.9
+    assert "nag_enable" not in config and "sampler" not in config and "schedule_type" not in config

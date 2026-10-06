@@ -36,7 +36,9 @@ text encoding→dual-DiT→VAE decodeの順に配置し、optimizerと勾配をC
 mutable block swap付きの両DiTサンプルも小型nativeモデル・BF16でGPU検証した。
 転送スロットはencoding/decode時に解放し、denoiseで再確保する。CPU masterのviewと
 学習hookを保ち、常駐経路と同一画像、停止後の状態復元、以降の逆伝搬・更新が通過した。
-公開周期サンプル・量子化モデルのsampling residency・公式全重みの受け入れはまだ未了。
+周期サンプルはexperimentalとして公開した。FP8/NF4とFP32 LoRA混在も小型native GPUで
+生成・seed再現・停止復元を確認した。NF4の登録外quant_stateを含め、元のdeviceへ復元する。
+公式全重みの学習・画質・throughput受け入れはまだ未了。
 内部sample経路はNAG、negative/reference/condition promptを明示拒否する。
 
 本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の

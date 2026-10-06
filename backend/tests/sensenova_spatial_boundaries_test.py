@@ -67,15 +67,47 @@ def test_trained_pixel_io_keeps_constant_fields_and_block_averaged_head(dtype, p
     assert model.noise_scale == 1.0
 
 
-def test_invalid_patch_ratio_fails_before_io_replacement():
+def test_invalid_patch_fails_before_io_replacement():
     model = _PixelTree()
     incoming = model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding
     outgoing = model.fm_modules["fm_head"].conv2
-    with pytest.raises(ValueError, match="integer patch ratios"):
-        migrate_generation_io(model, channels=7, patch=12, scale=16)
+    with pytest.raises(ValueError, match="multiple of 4"):
+        migrate_generation_io(model, channels=7, patch=10, scale=16)
     assert model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding is incoming
     assert model.fm_modules["fm_head"].conv2 is outgoing
     assert gen_geometry(model).patch == 32
+
+
+@pytest.mark.parametrize("old,size", [(16,6), (6,16), (8,3), (3,8)])
+def test_fractional_patch_resampling_preserves_integral_and_constant_fields(old,size):
+    from core.models.sensenova.vae_alignment import _spatial_weights
+    torch.manual_seed(29)
+    value = torch.randn(2,3,old,old)
+    averaged = _spatial_weights(value,size)
+    torch.testing.assert_close(averaged.mean((-1,-2)),value.mean((-1,-2)))
+    summed = _spatial_weights(value,size,sum_preserving=True)
+    torch.testing.assert_close(summed.sum((-1,-2)),value.sum((-1,-2)),atol=1e-5,rtol=1e-5)
+    torch.testing.assert_close(_spatial_weights(torch.ones_like(value),size),torch.ones(2,3,size,size))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32,torch.bfloat16])
+def test_fractional_patch_migration_preserves_input_response_and_per_token_output_mean(dtype):
+    torch.manual_seed(30)
+    model = _PixelTree().to(dtype=dtype)
+    head = model.fm_modules["fm_head"]
+    hidden = torch.randn(1,64,2,3).to(dtype)
+    old_output = head(hidden).float().reshape(1,3,2,32,3,32).mean((3,5))
+    old_response = model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding(
+        torch.ones(1,3,16,16).to(dtype))
+    migrate_generation_io(model,channels=7,patch=12,scale=16)
+    image = torch.cat((torch.ones(1,3,6,6),torch.randn(1,4,6,6)),1).to(dtype)
+    new_response = model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding(image)
+    new_output = head(hidden).float().reshape(1,7,2,12,3,12)
+    tolerance = .05 if dtype == torch.bfloat16 else 2e-5
+    torch.testing.assert_close(new_response,old_response,atol=tolerance,rtol=tolerance)
+    torch.testing.assert_close(new_output[:,:3].mean((3,5)),old_output,atol=tolerance,rtol=tolerance)
+    assert torch.count_nonzero(new_output[:,3:]) == 0
+    assert gen_geometry(model).patch == 12
 
 
 @pytest.mark.parametrize("external,refiner", [(4, False), (24, False), (4, True)])
@@ -257,8 +289,10 @@ def test_shared_calibration_and_native_codec_full_export_round_trip(tmp_path):
         install_sensenova_state_dict(incomplete, broken, {}, torch.float32, require_complete=True)
 
 
-@pytest.mark.parametrize("rewired,refiner", [(False,False), (True,False), (False,True), (True,True)])
-def test_actual_composite_model_public_loader_training_and_sampling(tmp_path, monkeypatch, rewired, refiner):
+@pytest.mark.parametrize("rewired,refiner,patch", [
+    (False,False,4), (True,False,4), (False,True,4), (True,True,4),
+    (False,False,12), (True,False,12)])
+def test_actual_composite_model_public_loader_training_and_sampling(tmp_path, monkeypatch, rewired, refiner, patch):
     import numpy as np
     from PIL import Image
     from diffusers import AutoencoderKL, AutoencoderKLQwenImage
@@ -312,6 +346,7 @@ def test_actual_composite_model_public_loader_training_and_sampling(tmp_path, mo
     resolved = resolve_vae_source(f"file:{tmp_path / 'target'}", arch="sensenova")
     trainer = SimpleNamespace(transformer=model, vae=old_vae, is_sensenova=True, config={"training_method":"full_finetune",
         "vae_swap_source":f"file:{tmp_path / 'target'}",
+        "sensenova_gen_patch":patch,
         "vae_swap_calibration_samples":2, "vae_swap_calibration_resolution":128},
         sensenova_train_fm_modules=True, device=torch.device("cpu"), weight_dtype=torch.float32,
         training_dtype=torch.float32, vae_dtype=torch.float32, gradient_checkpointing=False,
@@ -344,7 +379,7 @@ def test_actual_composite_model_public_loader_training_and_sampling(tmp_path, mo
     monkeypatch.setattr("core.models.sensenova.loader._load_sensenova_tokenizer", lambda directory: object())
     components = load_sensenova_from_path(path, torch_dtype=torch.float32)
     inspected, topology, stride = inspect_artifact(path)
-    assert inspected["gen_in_channels"] == max(3,channels) and stride == 64
+    assert inspected["gen_in_channels"] == max(3,channels) and stride == patch * 16
     assert topology == getattr(model, "_residual_unet_spec", None)
     restored = components["transformer"]
     assert restored.vae_latent_bridge.ready
@@ -370,20 +405,20 @@ def test_actual_composite_model_public_loader_training_and_sampling(tmp_path, mo
     def sample(owner):
         cache = prefix_cache(owner, generation=True)
         prefix = SenseNovaPrefix(device=torch.device("cpu"), dtype=torch.float32, batch_size=1,
-            token_h=4, token_w=4, grid_h=8, grid_w=8, merge_size=2, image_size=(256,256),
-            gen_size=(16,16), cond_past_key_values=cache,
+            token_h=4, token_w=4, grid_h=8, grid_w=8, merge_size=2, image_size=(patch*64,patch*64),
+            gen_size=(patch*4,patch*4), cond_past_key_values=cache,
             cond_indexes_image=owner._build_t2i_image_indexes(4,4,4,device="cpu"),
             cond_attention_mask={"full_attention":None})
         result = denoise_loop(owner, prefix, cfg_scale=1., timestep_shift=1., num_inference_steps=2, seed=25)
         assert prefix.consumed
-        assert result.shape == (1,channels,16,16) and torch.isfinite(result).all()
+        assert result.shape == (1,channels,patch*4,patch*4) and torch.isfinite(result).all()
         return result
 
     torch.testing.assert_close(sample(model), sample(restored))
     restored.requires_grad_(True)
     owner = SimpleNamespace(transformer=restored, device=torch.device("cpu"),
         training_dtype=torch.float32, gradient_checkpointing=False, defer_extra_metric=lambda *args:None)
-    loss, _, _ = train_step(owner, images=torch.randn(1,channels,16,16),
+    loss, _, _ = train_step(owner, images=torch.randn(1,channels,patch*4,patch*4),
         prefix=SenseNovaTrainingPrefix(prefix_cache(restored), text_length=4), timesteps=torch.tensor([.25]))
     loss.backward()
     assert torch.isfinite(loss)

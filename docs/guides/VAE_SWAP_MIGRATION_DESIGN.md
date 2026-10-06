@@ -41,6 +41,10 @@ API再起動後の`/training/vae-sources?arch=sensenova`で、Qwen系64ch/16x/5-
 既存refinerの内部幅拡張も対応した。stemのhead/noisy入力を別々に移し、既存チャネルの出力と学習済みgate・bodyを保持する。
 追加stem入力と追加出力はゼロ残差で開始し、両方に勾配が届く。FP32/BF16の合成テスト、
 refiner付きnativeモデルの校正→full保存→公開loader復元→推論・逆伝搬、U-net併用を含む36件が通過した。
+生成パッチ32→12などの非整数比も対応した。fractional binの重なりを重みとして再配置し、
+入力の一定場応答と出力の平均を保持する。従来の整数比移行は同じ計算を維持する。
+非整数比の拡大・縮小、FP32/BF16、無効パッチ拒否の7件と、12セルパッチを含むnative統合6件が通過した。
+生成パッチは従来どおり正の4の倍数で、U-net併用時はregion倍率を含む格子整合が必要。
 公式全重みとoptimizer付きrun再開は未検証。
 公式全重みによるSenseNova paired_spatialの学習・画質検証も未了。
 MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで

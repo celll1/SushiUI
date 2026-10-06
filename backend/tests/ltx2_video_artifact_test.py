@@ -41,7 +41,7 @@ def fixture(tmp_path, new, codec_kind='image'):
             scaling_factor=2.,shift_factor=.25)
     else:
         raw = AutoencoderKLLTX2Video(in_channels=3,out_channels=3,latent_channels=new,
-            block_out_channels=(16,),down_block_types=('LTX2VideoDownBlock3D',),layers_per_block=(1,1),
+            block_out_channels=(8,),down_block_types=('LTX2VideoDownBlock3D',),layers_per_block=(1,1),
             decoder_block_out_channels=(16,),decoder_layers_per_block=(1,1),
             spatio_temporal_scaling=(True,),decoder_spatio_temporal_scaling=(True,),
             downsample_type=('spatiotemporal',),upsample_type=('spatiotemporal',),

@@ -8,6 +8,31 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3生成backendへtarget-native codecを接続した。pixel frame数・空間scaleからtargetの
+latent gridを決め、条件encode前にcodec/backbone/clock/外部channelとU-netのgrid整合性を検査する。
+plain/ref2vaのpacked builderへ同じcodec契約を渡し、noise draw・sampler・preview・unpatchifyは
+その小さい格子を使用する。元格子へのruntime upsampleはしない。
+NormalizedVideoVAEへの条件画像/動画は[-1,1] RGBで渡し、正規化済みposterior sampleを使用する。
+target codecにはH3固有のfp16 round-tripを追加しない。seed付きposterior sampleは維持する。
+最終decodeもfacadeが正規化を所有し、H3のmean/stdを二重適用しない。
+交換後はT=1でもsource用community image VAEへ切り替えず、必ずtarget codecでdecodeする。
+参照canvasのmultipleは32とtarget scale*2の最小公倍数、参照動画のsnapはtargetの時間契約で決める。
+因果/独立codecでもconditionerが必要とする最低13 pixel framesを残す。
+stagingはaligned wrapperを選び、block swapのresident childrenにもbridgeを含める。
+teardown後も外部channelを持つaligned wrapperへ戻して連続生成の境界を保つ。
+dense aligned経路でもcache/Spectrum/debug skip/probeは事前に拒否する。
+合成データの実小型H3 DiT・画像/LTX causal codecを使用し、dense/U-net、追加/削減channel、
+text/keyframe/ref2va image、preview・最終RGB・連続生成をCPUで検証した。
+scale32の実2D codecでも格子が縮み、source scale16に比べspatial token数が1/4になることを確認した。
+text encoder/presentationとVRAM計測はCPU検証用の代替を使用するため、公式TEやGPU offloader、
+公式全重みの速度・画質を立証するものではない。従来H3の条件sample/丸めとdecode RGBは独立oracleで完全一致した。
+1-channelでもencoderのgroup_sizeが成立するようLTX小型fixtureを修正した。
+関連H3/LTXのCPU回帰294件・14 subtestが通過、GPU依存1件はskipした。
+U-net格子の早期拒否assertionを追加した1件も通過し、変更Pythonのcompile・CUDA無し実importを確認した。
+外部画像・動画・音声は使っておらず、frontend/APIの変更・学習runの変更はない。
+公開loader dispatch、routeのtarget frame制約、inpaint/outpaintのchunk依存planner、clip/cache、
+校正owner、Full adapter/offloadの接続は未完で、公開swap gateは解除していない。
+
 H3の選択済みcompanion参照を`minimax_h3/component_sources.py`へ追加した。
 通常loaderが実際に選択したsource video VAE、audio VAE、text encoder、外部projection、
 任意のimage VAE、official config treeとvariantをinner modelへ保持する。

@@ -12,6 +12,7 @@ from .vendor.transformer_minimax_h3 import MINIMAX_H3_MODALITY_NUM
 
 GRID_POLICY_KEY = 'sushi_residual_video_grid_policy'
 GRID_POLICY = 'packed_target_spatial_frames_v1'
+VIDEO_CODEC_KEY = 'sushi_video_codec_contract'
 
 
 def native_config(config):
@@ -35,6 +36,20 @@ def native_config(config):
     if config.get(GRID_POLICY_KEY, GRID_POLICY) != GRID_POLICY:
         raise ValueError('Unsupported MiniMax-H3 residual video grid policy')
     resolved[GRID_POLICY_KEY] = GRID_POLICY
+    codec = config.get(VIDEO_CODEC_KEY)
+    if codec is not None:
+        from dataclasses import asdict
+        from core.models.components.latent_adapter import ImageCodecContract
+        from core.models.components.video_latent_adapter import VideoCodecContract
+        if not isinstance(codec, dict) or set(codec) != {'image', 'temporal_scale', 'temporal_policy'}:
+            raise ValueError('H3 video codec identity is missing')
+        try:
+            contract = VideoCodecContract(ImageCodecContract(**codec['image']), codec['temporal_scale'], codec['temporal_policy'])
+        except (TypeError, AttributeError) as exc:
+            raise ValueError('H3 video codec identity is malformed') from exc
+        if contract.image.latent_channels > resolved['in_channels']:
+            raise ValueError('H3 target codec width exceeds the internal backbone')
+        resolved[VIDEO_CODEC_KEY] = asdict(contract)
     return resolved
 
 

@@ -1,6 +1,7 @@
 """Target-native video codec geometry and spatial flow boundaries."""
 
 from dataclasses import dataclass
+from math import lcm
 from types import SimpleNamespace
 
 import torch
@@ -65,10 +66,38 @@ class VideoCodecContract:
             return (latent_frames-2)//5*17+5
         return (latent_frames - 1) * self.temporal_scale + 1
 
+    def frame_spans(self, latent_frames):
+        total = self.pixel_frames(latent_frames)
+        spans, cursor = [], 0
+        for index in range(latent_frames):
+            if self.temporal_policy == "minimax_h3_chunks_v1":
+                width = (1,4,4,4,4)[index % 5]
+            else:
+                width = 1 if index == 0 else self.temporal_scale
+            spans.append((cursor,cursor+width))
+            cursor += width
+        if cursor != total:
+            raise ValueError("Video codec frame spans disagree with decoded length")
+        return spans
+
     @staticmethod
     def _positive(value):
         if type(value) is not int or value < 1:
             raise ValueError("Frame count must be a positive integer")
+
+
+def temporal_spec_for_codec(spec, contract):
+    """Keep the model's generation envelope while replacing codec geometry."""
+    from dataclasses import replace
+    if spec is None or contract is None:
+        return spec
+    if contract.temporal_policy == "minimax_h3_chunks_v1":
+        multiple,offset,floor = 17,5,22
+    else:
+        multiple,offset,floor = contract.temporal_scale,1,1
+    return replace(spec,frame_multiple=multiple,frame_offset=offset,min_decodable_frames=floor,
+        latent_frames=contract.latent_frames,
+        pixel_align=lcm(spec.pixel_align,2*contract.image.spatial_scale))
 
 
 class _VideoPosterior:

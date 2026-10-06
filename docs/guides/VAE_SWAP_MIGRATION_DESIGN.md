@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+video codecの共通frame_spansを追加した。独立frameは幅1、causalは先頭1+以降temporal scale、
+H3 chunkは既存の1,4,4,4,4の繰返しとし、全区間の和がdecode frame数と一致することを検査する。
+共通temporal_spec_for_codecはモデルのproduction floor/ceiling、FPS、placementを保持し、
+codecのframe lattice・latent数・pixel alignmentだけを交換する。
+inpaint range、outpaint生成span、pinned-tail overlapのplannerは内部引数でcodec契約を受け取る。
+H3 backendの時間pinとspatial maskのframe spanへ同じ契約を渡す。production floorが新しい
+lattice上にない場合も、floor未満へtrimする誤った案内を出さず、必要な有効frame数を示す。
+U-netのspatial poolingはclean/noisy AdaLN labelを混在させられないため、部分cellのspatial pinは
+条件encode前に拒否する。pooling cell全体のpinとtemporal pinは実codec/実samplerで保持を検査する。
+公開routeのloaded-checkpoint contract解決、chain preset/cache、校正/Full owner、公開native loader、
+公式全重みでの学習・画質・速度はまだ未完。内部plannerの接続で公開swap gateを解除しない。
+APIのrequest/response/defaultやfrontendは変更していない。
+共通時間span/既存editing planner/実H3生成/codecのCPU回帰228件が通過した。
+独立・causal・強空間圧縮codec×dense/U-net×追加/削減channelの時間/空間pinを実samplerで検査し、
+保持対象rowの完全一致、preview/最終RGBの形状、連続生成の一致を確認した。
+変更Pythonのcompile・CUDA無し実importも通過。合成データのみ使用し、学習runは変更していない。
+
 H3生成backendへtarget-native codecを接続した。pixel frame数・空間scaleからtargetの
 latent gridを決め、条件encode前にcodec/backbone/clock/外部channelとU-netのgrid整合性を検査する。
 plain/ref2vaのpacked builderへ同じcodec契約を渡し、noise draw・sampler・preview・unpatchifyは

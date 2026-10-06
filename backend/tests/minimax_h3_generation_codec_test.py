@@ -21,7 +21,7 @@ def components(trainer):
 
 
 def test_codec_geometry_and_double_normalization_are_rejected(tmp_path):
-    from core.models.minimax_h3.generation_codec import generation_contract,target_grid
+    from core.models.minimax_h3.generation_codec import generation_contract,target_grid,validate_spatial_pin_groups
     trainer = fixture(tmp_path,4)
     value = components(trainer)
     contract = generation_contract(value)
@@ -36,6 +36,9 @@ def test_codec_geometry_and_double_normalization_are_rejected(tmp_path):
     with pytest.raises(ValueError):
         generation_contract(dict(vae=trainer.vae,transformer=SimpleNamespace()))
     assert generation_contract(dict(vae=object(),transformer=SimpleNamespace())) is None
+    validate_spatial_pin_groups(trainer.transformer,(0,1,6,7),(3,8,12))
+    with pytest.raises(ValueError,match="whole U-net"):
+        validate_spatial_pin_groups(trainer.transformer,(0,4),(3,8,12))
 
 
 @pytest.mark.parametrize("new",[1,4])
@@ -55,7 +58,7 @@ def test_real_codec_condition_seed_and_decode_match_single_facade_normalization(
     np.testing.assert_array_equal(decode_video(vae,actual,**poison),oracle)
 
 
-@pytest.mark.parametrize("workflow",["text","keyframe","reference"])
+@pytest.mark.parametrize("workflow",["text","keyframe","reference","temporal_pin","spatial_pin"])
 @pytest.mark.parametrize("rewired",[False,True])
 @pytest.mark.parametrize("new",[1,4])
 @pytest.mark.parametrize("kind",["image","causal","strong_spatial"])
@@ -94,7 +97,11 @@ def test_real_backend_target_grid_conditions_sampler_preview_and_decode(tmp_path
     original = ops.denoise
     def denoise(*args,**kwargs):
         layouts.append(kwargs["layout"])
-        return original(*args,**kwargs)
+        count = kwargs["layout"]["num_condition_video_rows"]
+        held = kwargs["video_rows"][:count].clone()
+        result = original(*args,**kwargs)
+        torch.testing.assert_close(result[0][:count],held,rtol=0,atol=0)
+        return result
     monkeypatch.setattr(ops,"denoise",denoise)
 
     class Runner(MiniMaxH3Mixin):
@@ -130,6 +137,11 @@ def test_real_backend_target_grid_conditions_sampler_preview_and_decode(tmp_path
     image = Image.fromarray(np.zeros((height,width,3),dtype=np.uint8))
     extra = dict(keyframes=(("last",image),)) if workflow == "keyframe" else (
         dict(references=(refs.MiniMaxH3Reference(kind="image",image=image),)) if workflow == "reference" else {})
+    if workflow.endswith("_pin"):
+        extra.update(pinned_video_source=np.zeros((pixel_frames,height,width,3),dtype=np.uint8),label="vid_inpaint")
+        row_width = grid[1]//2
+        extra.update(dict(pinned_video_frames=(0,)) if workflow == "temporal_pin" else
+            dict(pinned_video_row_indices=(0,1,row_width,row_width+1)))
     result = Runner()._generate_minimax_h3(params,**extra,
         step_callback=lambda *args:previews.append(args[2].shape))
     frames,audio,rate,seed = result
@@ -139,7 +151,7 @@ def test_real_backend_target_grid_conditions_sampler_preview_and_decode(tmp_path
     assert layouts[0]["video_codec_contract"]["temporal_policy"] == trainer.vae.contract.temporal_policy
     assert layouts[0]["video_position_policy"] == "pixel_frame_v1"
     if kind == "strong_spatial":
-        assert ops.packed_row_counts(layouts[0])["target_video"] == 3*4*8//4
+        assert ops.packed_row_counts(layouts[0])["target_video"] + layouts[0].get("num_pinned_video_rows",0) == 3*4*8//4
     assert events[-3:] == [("transformer","unstage"),("vae","cpu"),("vae","cpu")]
     assert value["transformer"].config.in_channels == new
     again = Runner()._generate_minimax_h3(dict(params),**extra)

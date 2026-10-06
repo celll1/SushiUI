@@ -53,3 +53,24 @@ def aligned_execution_wrapper(inner, **kwargs):
     wrapper = AlignedMiniMaxH3BlockLoopWrapper(inner, **kwargs)
     wrapper.config = _Config(dict(inner.config),in_channels=inner._video_codec_contract.image.latent_channels)
     return wrapper
+
+
+def validate_spatial_pin_groups(model, rows, grid):
+    inner = getattr(model,"transformer",model)
+    graph = getattr(inner,"_residual_unet_spec",None)
+    if not rows or graph is None:
+        return
+    import torch
+    from core.rewiring.spec import preview_plan
+    frames,height,width = grid
+    height,width = height//2,width//2
+    if any(type(row) is not int or row < 0 or row >= frames*height*width for row in rows):
+        raise ValueError("H3 spatial pins are outside the target patch grid")
+    pins = torch.zeros(frames*height*width,dtype=torch.bool)
+    pins[list(rows)] = True
+    for level in preview_plan(graph,height,width)["levels"]:
+        h,w = level["height"],level["width"]
+        cells = pins.reshape(frames,h,height//h,w,width//w).permute(0,1,3,2,4)
+        first = cells[...,0,0]
+        if not torch.equal(cells,first[...,None,None].expand_as(cells)):
+            raise ValueError("H3 spatial pins must cover whole U-net pooling cells; mixed clean/noisy labels are unsupported")

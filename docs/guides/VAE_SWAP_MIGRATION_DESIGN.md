@@ -8,6 +8,26 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
+`gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、
+CFG/NAGのbatch展開、single/multi style各参照の個別noiseを入力/velocity出力へ渡す。
+定期sampleは同じ生成loopを使う。既存checkpointは保存policyを維持する。
+Lensの学習時刻をσへ修正した。元の実装はσ×1000を渡していたが、native timestep embeddingが
+内部で1000倍するため生成と1000倍異なっていた。空間bridgeもσを再び1000で割らず、そのまま使う。
+Gaussian経路では未追跡のflow stochastic samplingを拒否し、legacyの選択肢は維持する。
+Spectrum設定省略時のNone処理と、cancel/例外時のNAG/NegPip/cache解除も修正した。
+inpaintのkeep領域はscheduler.step後の次σで再加noiseし、最終stepではclean参照に戻す。
+以前は現在σで合成していたため、次forwardのbridgeが受け取るσとkeep領域の状態がずれていた。
+実小型Lensのdense/2段U-net・FP32/BF16、学習・生成・CFG/NAG/style・cancel等57件が通過。
+追加のsingle/sharded×FP32/BF16保存復元4条件も通過し、Gaussian固定bufferはbit一致した。
+keep領域の各forwardσと最終clean復元を確認するoracle追加後、新規Lens回帰17件も通過した。
+policyの縮小率/channel増減境界とstyle guidanceの追加forwardを7条件で追加確認した。
+変更backendのcompile/importはCUDA未初期化で通過。実画像・GPU・既存runは使っていない。
+frontendの説明対象へLensを追加し、既存API型・default/保存経路を静的確認した。owner build/typecheckは未実施。
+[公式README](https://github.com/dxqb/Lens)が案内する`microsoft/Lens`は、現在の環境からHub APIが
+404を返し、公式重みを取得できていない。公開/権限のどちらが原因かは断定しない。
+公式全重みのswap学習・再開・画質受入は未検証として残す。
+
 SD1.5/SDXLのGaussian補正は、共通pairのVP入力・prediction演算と学習・通常生成境界まで実装した。
 入力は`alpha*A(x0)+alpha*b+sigma*Q(noise)`、epsilon出力は固定noise補空間残差、
 VP v出力は`alpha`倍の残差、x0出力は通常のaffine写像。flow vは既存の符号規約を維持する。

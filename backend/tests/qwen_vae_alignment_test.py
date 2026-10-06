@@ -32,6 +32,16 @@ def declaration():
         old_scale=16,new_scale=2,input_channels=3,ndim=4,norm="shift_scale",norm_pack=1)
 
 
+def test_qwen_native_codec_is_registered_for_the_vae_source_api():
+    from core.models.component_registry import _WIRING_BY_ARCH
+    from core.models.common.vae_source import arch_native_vae
+    from api.generation_overrides import VAE_CLASS_BY_ARCH
+    assert "qwen_image_21" in _WIRING_BY_ARCH
+    facts = arch_native_vae("qwen_image_21")
+    assert (facts["latent_channels"],facts["scale_factor"],facts["ndim"],facts["scale_temporal"]) == (64,16,5,8)
+    assert VAE_CLASS_BY_ARCH["qwen_image_21"] == "AutoencoderKLQwenImage21"
+
+
 def initialize(m):
     install(m,declaration())
     identity(m.vae_latent_bridge.input)

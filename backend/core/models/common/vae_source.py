@@ -1012,6 +1012,9 @@ _PIXEL_SPACE_EXEMPT = ("sensenova",)
 def check_vae_compatibility(facts: Dict[str, Any],
                             arch: Optional[str]) -> Tuple[bool, Optional[str]]:
     """§7.4's hard gate, server-side, over already-resolved facts."""
+    if arch == "acestep":
+        from core.training.arch.acestep import AceStepArchHandler
+        return AceStepArchHandler(None).check_vae_compatibility(facts)
     native = arch_native_vae(arch)
     if native is None:
         return True, None

@@ -7497,7 +7497,7 @@ export interface TrainingRunCreateRequest {
   // "file:<path>" | "model:<path>"; "" keeps the base model's own VAE.
   // Candidates come from GET /training/vae-sources; full_finetune only.
   vae_swap_source?: string;
-  vae_swap_new_channel_init?: "auto" | "zero" | "paired_spatial";
+  vae_swap_new_channel_init?: "auto" | "zero" | "paired_spatial" | "paired_temporal";
   vae_swap_calibration_samples?: number;
   vae_swap_calibration_resolution?: 128 | 256 | 512;
   // SenseNova only: the generation patch in LATENT cells. 0 (the default)

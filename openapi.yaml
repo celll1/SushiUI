@@ -29037,23 +29037,27 @@ components:
             compression. The replacement codec owns spatial and temporal token
             geometry; the audio codec is retained. Official full-weight quality
             and throughput acceptance is pending.
+            ACE-Step swaps require unquantized full fine-tuning, train_unet=true,
+            paired temporal calibration and a bundled 48kHz stereo Oobleck codec.
+            Target hop owns the decoder time grid; RVQ and reference conditioning
+            retain the original codec. Calibration uses bounded audio windows.
           example: 'registry:flux1'
         vae_swap_new_channel_init:
           type: 'string'
-          enum: ['auto', 'zero', 'paired_spatial']
+          enum: ['auto', 'zero', 'paired_spatial', 'paired_temporal']
           default: 'auto'
-          description: Auto selects paired spatial calibration for Ming, Qwen-Image 2.1, Z-Image, Krea 2, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, SenseNova SDXL Chimera, Ideogram 4 and LTX-2.3 using the target VAE's token grid. Chimera requires unquantized full_finetune in the unet or joint stage, paired_spatial and a bundled RGB codec; v1 through v4 flow contracts and their source/target statistics are retained. Ideogram requires unquantized dual DiTs, full_finetune and ideogram4_train_uncond=true; its independent input/output bridges preserve inner patch packing and U-net topology. RGB pixel bases in MiniT2I and SenseNova migrate trained patch projections and calibrate against RGB pixels, preserving the native Transformer body. SenseNova requires full fine-tuning with generation fm_modules enabled, accepts 4-D or independent-frame 5-D image codecs, and retains the requested generation patch and noise-scale policy. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing checkpoints restore their saved latent structure without recalibration. Qwen, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and MiniT2I initialize swaps from unquantized full checkpoints. Explicit legacy zero is retained for same-scale swaps on Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and latent MiniT2I; Anima zero requires a native-rank 5-D 8x codec, SD1.5, SDXL and MiniT2I zero require a 4-D 8x codec. SenseNova legacy zero requires a 4-D still-image codec. Legacy zero cannot migrate a MiniT2I pixel base.
+          description: Auto selects paired spatial calibration for Ming, Qwen-Image 2.1, Z-Image, Krea 2, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, SenseNova SDXL Chimera, Ideogram 4 and LTX-2.3 using the target VAE's token grid. Chimera requires unquantized full_finetune in the unet or joint stage, paired_spatial and a bundled RGB codec; v1 through v4 flow contracts and their source/target statistics are retained. Ideogram requires unquantized dual DiTs, full_finetune and ideogram4_train_uncond=true; its independent input/output bridges preserve inner patch packing and U-net topology. RGB pixel bases in MiniT2I and SenseNova migrate trained patch projections and calibrate against RGB pixels, preserving the native Transformer body. SenseNova requires full fine-tuning with generation fm_modules enabled, accepts 4-D or independent-frame 5-D image codecs, and retains the requested generation patch and noise-scale policy. ACE-Step auto selects paired_temporal (three taps); explicit paired_temporal is accepted only for ACE-Step. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing checkpoints restore their saved latent structure without recalibration. Qwen, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and MiniT2I initialize swaps from unquantized full checkpoints. Explicit legacy zero is retained for same-scale swaps on Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL and latent MiniT2I; Anima zero requires a native-rank 5-D 8x codec, SD1.5, SDXL and MiniT2I zero require a 4-D 8x codec. SenseNova legacy zero requires a 4-D still-image codec. Legacy zero cannot migrate a MiniT2I pixel base.
         vae_swap_calibration_samples:
           type: integer
           minimum: 2
           maximum: 256
           default: 32
-          description: Dataset samples used for first-swap paired spatial calibration (images or clips for LTX). Calibration media are not embedded in checkpoints; resume does not recalibrate.
+          description: Dataset samples used for first-swap paired calibration (images or clips for LTX; audio clips for ACE-Step). ACE auto selects paired_temporal with three taps on the target codec grid and keeps RVQ conditioning on the original codec. ACE requires unquantized full_finetune, train_unet=true and a bundled 48kHz stereo Oobleck codec; explicit zero and paired_spatial are refused. Calibration audio uses the native timbre window and is read only up to that duration. Calibration media are not embedded in checkpoints; resume does not recalibrate. Official full-weight quality and throughput acceptance remains pending.
         vae_swap_calibration_resolution:
           type: integer
           enum: [128, 256, 512]
           default: 256
-          description: Calibration crop size. The target VAE grid owns the token count; old clean latents are resampled to this grid before fitting.
+          description: Image/video calibration crop size; unused for ACE-Step audio calibration. The target VAE grid owns the token count; old clean latents are resampled to this grid before fitting.
         sensenova_gen_patch:
           type: 'integer'
           minimum: 0

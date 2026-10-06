@@ -15981,7 +15981,7 @@ class TrainingRunCreateRequest(BaseModel):
     # VAE swap (arch-independent; full fine-tune only). sdxl_vae_type below is a
     # read-only alias kept so an existing run's config still loads.
     vae_swap_source: str = TRAINING_DEFAULTS["vae_swap_source"]
-    vae_swap_new_channel_init: Literal["auto", "zero", "paired_spatial"] = TRAINING_DEFAULTS[
+    vae_swap_new_channel_init: Literal["auto", "zero", "paired_spatial", "paired_temporal"] = TRAINING_DEFAULTS[
         "vae_swap_new_channel_init"
     ]
     vae_swap_calibration_samples: int = Field(TRAINING_DEFAULTS["vae_swap_calibration_samples"], ge=2, le=256)
@@ -16581,6 +16581,20 @@ def list_vae_sources(arch: str, base_model_path: Optional[str] = None,
         if _key(os.path.dirname(path)) in accepted_dirs:
             return
         try:
+            if os.path.isdir(path) and os.path.isfile(os.path.join(path, "config.json")):
+                with open(os.path.join(path, "config.json"), encoding="utf-8") as handle:
+                    codec_class = json.load(handle).get("_class_name")
+                if codec_class == "AutoencoderOobleck":
+                    standalone.append(_describe(f"file:{path}", _friendly_component_name(path)))
+                    accepted_dirs.add(_key(path))
+                    return
+            if os.path.isfile(path) and path.endswith(".safetensors"):
+                from safetensors import safe_open
+                with safe_open(path, framework="pt", device="cpu") as handle:
+                    audio_bundle = "acestep.audio_alignment" in (handle.metadata() or {})
+                if audio_bundle:
+                    extractable.append(_describe(f"model:{path}", _friendly_component_name(path)))
+                    return
             if os.path.isdir(path) and os.path.isfile(os.path.join(path, "manifest.json")):
                 with open(os.path.join(path, "manifest.json"), encoding="utf-8") as handle:
                     package_type = json.load(handle).get("model_type")

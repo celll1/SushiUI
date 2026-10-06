@@ -8,6 +8,20 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+ACEの新規VAE swapをexperimentalなFull FT機能として公開した。API/YAML preflightは
+auto/paired_temporal、train_unet=true、target codec同梱、校正件数2〜256を要求し、handlerは
+48kHz stereo Oobleck・identity正規化・aligned hopだけを許可する。量子化backboneは学習ownerで拒否する。
+autoのSSOTは変更せず、音声だけ3タップpaired_temporalへ解決する。画像/videoで明示temporalは拒否する。
+source一覧はOobleck directoryとACE同梱artifactをheader/configだけで抽出し、画像codecはACE候補として
+拒否する。UIは音声校正件数・同梱/DiT要件・temporal選択を表示し、画像用crop解像度は表示しない。
+既存API保存・YAML生成のfield経路を保持し、初回のdataset校正と復元済みbridgeの再利用へ接続した。
+compile・CUDAを抑止した実import、公開候補一覧・preflight・実codec校正と画像swap回帰70件が通過した。
+frontendは型・値保持・architecture切替・候補fetchの取消/失敗を静的確認し、owner buildは未実施。
+公式全重みの学習/optimizer再開・音質・GPU速度は未検証であり、experimental advisoryに明示する。
+API経由restart後のhealth・実OpenAPI enum・Full限定advisory/LoRA系拒否を確認した。
+現在の実scanはregistry 5・standalone 8・抽出25候補で、ACEへ互換な交換先codecは0件だった。
+既存Ming Layerモデルはrestart後も同じsourceで復元され、run設定は変更していない。
+
 校正済みACE artifactの正式generation loaderを接続した。保存時のdtypeで元codec identityを
 照合し、無音/reference用source codecとdecode用target codecを別componentとしてCPUで保持する。
 共通latent identityにはtarget C・hop・identity正規化を渡し、ModelInfoの既存VAE表示へ接続した。

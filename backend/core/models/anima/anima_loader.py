@@ -212,15 +212,18 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     from accelerate import init_empty_weights
 
     from .residual_unet import preflight_artifact, restore_topology
+    from core.models.components.spatial_swap import install,validate_loaded
+    alignment=None
     # In-memory callers may supply weights without a backing artifact.
     if state_dict is not None and not Path(dit_path).exists() and not Path(str(dit_path)+".index.json").is_file():
         topology, config = None, dict(ANIMA_DIT_CONFIG)
         if latent_channels:
             config["in_channels"] = config["out_channels"] = int(latent_channels)
     else:
-        topology, config = preflight_artifact(dit_path, latent_channels)
+        topology, config, alignment = preflight_artifact(dit_path, latent_channels,include_alignment=True)
     with init_empty_weights():
         model = Anima(**config)
+        install(model,alignment)
         model.to(dtype)
 
     if state_dict is not None:
@@ -228,6 +231,7 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     else:
         from core.models.common.single_file_format import read_state_dict
         sd, _md = read_state_dict(dit_path)
+    sd={key:value for key,value in sd.items() if not key.startswith(("vae.","first_stage_model."))}
     # Strip net. prefix if present
     if any(k.startswith("net.") for k in sd.keys()):
         sd = {(k[len("net."):] if k.startswith("net.") else k): v for k, v in sd.items()}
@@ -287,6 +291,10 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).
     expected_missing_substrings = ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq")
     real_missing = [k for k in missing if not any(s in k for s in expected_missing_substrings)]
+    if alignment is not None and (real_missing or unexpected):
+        raise ValueError(f"Aligned Anima checkpoint does not match its native transformer and bridge: "
+            f"missing={real_missing[:5]}, unexpected={unexpected[:5]}")
+    validate_loaded(model)
     if real_missing:
         # Don't hard-fail; some derivative checkpoints may legitimately omit keys.
         # Surface a warning so the user can investigate.
@@ -512,6 +520,10 @@ def load_anima_components(
     from .residual_unet import preflight_artifact
     preflight_artifact(discovered["dit"], declared_vae.latent_channels if declared_vae is not None else None)
     raw_dit_sd, _dit_md = read_state_dict(discovered["dit"])
+    from core.models.components.spatial_swap import read_declaration,restored_image_codec
+    alignment=read_declaration(_dit_md)
+    if alignment is not None and declared_vae is None:
+        raise ValueError("Aligned Anima checkpoint is missing its codec declaration")
     _VAE_PREFIXES = ("first_stage_model.", "vae.")
     embedded_vae_sd = {
         k[len(p):]: v for k, v in raw_dit_sd.items()
@@ -561,6 +573,8 @@ def load_anima_components(
         # The declared VAE carries its own class and config; the Qwen-Image
         # rebuild below only knows how to reattach Qwen-Image weights.
         vae = declared_vae.load_module(torch_dtype=vae_dtype)
+        if alignment is not None:
+            vae,declared_vae=restored_image_codec(vae,declared_vae,alignment)
         vae.to("cpu").eval().requires_grad_(False)
         vae_source = declared_vae.provenance
         vae_path = declared_vae.path if (
@@ -607,7 +621,7 @@ def load_anima_components(
         "vae_source": vae_source,
         "vae_path": vae_path,
         "scheduler": scheduler,
-        "vae_scale_factor": 8,
+        "vae_scale_factor": (declared_vae.scale_factor if declared_vae is not None else 8),
         "latent_channels": latent_channels,
         "declared_vae": declared_vae,
         "vae_identity": (None if declared_vae is None else declared_vae.facts()),

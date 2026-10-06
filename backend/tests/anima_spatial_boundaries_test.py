@@ -122,4 +122,48 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     output.square().mean().backward()
     assert value.vae_latent_bridge.input.projection.weight.grad.abs().sum()>0
     assert not hasattr(trainer,"_anima_vae_calibration_source")
+    from core.training.adapters.anima_adapter import AnimaFullParameterAdapter
+    from core.models.anima import anima_loader
+    trainer.bundle_vae=True
+    trainer.config["vae_swap_source"]=resolved.source
+    path=AnimaFullParameterAdapter(trainer).write_checkpoint(7,0,tmp_path/"full.safetensors")
+    restored=anima_loader.load_anima_dit(str(path),dtype=torch.float32,latent_channels=new_c)
+    assert restored.vae_latent_bridge.ready
+    assert restored.in_channels==max(old_c,new_c)
+    assert restored._residual_unet_spec==value._residual_unet_spec
+    for key,tensor in value.state_dict().items():
+        torch.testing.assert_close(restored.state_dict()[key],tensor,rtol=0,atol=0)
+    assert restored(latent.unsqueeze(2),torch.tensor([.6]),torch.randn(1,5,32),
+        padding_mask=torch.zeros(1,1,8,12)).shape==output.shape
+    from core.models.common.single_file_format import read_state_dict,save_single_file_state
+    state,metadata=read_state_dict(str(path))
+    sharded=save_single_file_state(state,metadata,str(tmp_path/"sharded.safetensors"),max_shard_bytes=32768)
+    restored_shards=anima_loader.load_anima_dit(str(sharded),dtype=torch.float32,latent_channels=new_c)
+    assert restored_shards.vae_latent_bridge.ready
+    torch.testing.assert_close(restored_shards.vae_latent_bridge.input.projection.weight,
+        value.vae_latent_bridge.input.projection.weight)
+    with patch.object(anima_loader,"discover_anima_components",return_value={"dit":str(path),"vae":None,"text_encoder":"stub"}), \
+         patch.object(anima_loader,"load_qwen3_text_encoder",return_value=(torch.nn.Linear(2,2),object())), \
+         patch.object(anima_loader,"load_t5_tokenizer",return_value=object()):
+        components=anima_loader.load_anima_components(str(path),dit_dtype=torch.float32,vae_dtype=torch.float32)
+    assert components["vae_scale_factor"]==16 and components["latent_channels"]==new_c
+    assert components["vae"].spatial_scale_factor==16
+    for key,tensor in trainer.vae.inner.state_dict().items():
+        torch.testing.assert_close(components["vae"].inner.state_dict()[key],tensor,rtol=0,atol=0)
+    trainer.transformer=components["transformer"]
+    trainer.vae=components["vae"]
+    from core.training.vae_swap import apply_latent_space
+    with patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
+        apply_latent_space(trainer,components["declared_vae"])
+    assert trainer.wiring.latent_channels==new_c and trainer.wiring.vae_scale_factor==16
+    assert not hasattr(trainer,"_anima_vae_calibration_source")
+    del state["net.vae_latent_bridge.input.projection.weight"]
+    invalid=save_single_file_state(state,metadata,str(tmp_path/"missing_bridge.safetensors"))
+    with pytest.raises(ValueError,match="does not match"):
+        anima_loader.load_anima_dit(str(invalid),dtype=torch.float32,latent_channels=new_c)
+    absent=tmp_path/"no_codec.safetensors"
+    with patch("core.training.vae_swap.swap_metadata",return_value=(None,False,{})), \
+         pytest.raises(ValueError,match="codec declaration"):
+        AnimaFullParameterAdapter(trainer).write_checkpoint(8,0,absent)
+    assert not absent.exists()
     assert not torch.cuda.is_initialized()

@@ -338,8 +338,6 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         return groups
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):
-        from safetensors.torch import save_file
-
         trainer = self.trainer
         if trainer.transformer is None:
             print("[AnimaFullParameterAdapter] WARNING: no transformer to save")
@@ -363,6 +361,8 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         from api.param_defaults import resolve_bundle_vae
         from core.training.vae_swap import swap_metadata
         swapped, swap_bundled, swap_md = swap_metadata(trainer)
+        if getattr(trainer.transformer,"vae_latent_bridge",None) is not None and swapped is None:
+            raise ValueError("Aligned Anima export requires its codec declaration")
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "anima")
         vae_embedded = (bundle_vae and getattr(trainer, "vae", None) is not None
                         and swapped is None)
@@ -372,7 +372,9 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             if swap_bundled and getattr(trainer, "vae", None) is not None:
                 print(f"[AnimaFullParameterAdapter] Bundling swapped VAE "
                       f"({swapped.provenance}) under 'vae.' ...")
-                for k, v in trainer.vae.state_dict().items():
+                from core.models.components.latent_adapter import NormalizedImageVAE
+                codec=trainer.vae.inner if isinstance(trainer.vae,NormalizedImageVAE) else trainer.vae
+                for k, v in codec.state_dict().items():
                     combined[f"vae.{k}"] = v.detach().to("cpu").contiguous()
             else:
                 print(f"[AnimaFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
@@ -389,6 +391,8 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             "modelspec.architecture": "anima",
             "format": "pt",
         }
+        from core.models.components.spatial_swap import artifact_metadata
+        metadata.update(artifact_metadata(trainer.transformer))
 
         # Transformer config JSON (declarative) + component hints. The TE is never
         # embedded (resolved out-of-band by anima_loader); the VAE is embedded only
@@ -406,10 +410,13 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             # The swap's own block replaces every component.vae.* key above.
             metadata.update(swap_md)
         except Exception as _e:
+            if getattr(trainer.transformer,"vae_latent_bridge",None) is not None:
+                raise
             print(f"[AnimaFullParameterAdapter] component metadata skipped: {_e}")
 
         print(f"[AnimaFullParameterAdapter] Saving to {output_path}...")
-        save_file(combined, str(output_path), metadata=metadata)
+        from core.models.common.single_file_format import save_single_file_state
+        output_path=Path(save_single_file_state(combined,metadata,str(output_path)))
         total_params = sum(t.numel() for t in combined.values())
         print(f"[AnimaFullParameterAdapter] Saved {len(combined)} tensors "
               f"({total_params:,} params) -> {output_path}")

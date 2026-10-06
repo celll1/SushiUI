@@ -70,7 +70,7 @@ def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
     return output.reshape(batch, 1, height, width, channels)
 
 
-def preflight_artifact(path, latent_channels=None):
+def preflight_artifact(path, latent_channels=None, *, include_alignment=False):
     import json
     from pathlib import Path
     from safetensors import safe_open
@@ -96,11 +96,22 @@ def preflight_artifact(path, latent_channels=None):
         config.update(declared)
     elif topology is not None:
         raise ValueError("Rewired Anima artifact requires native config metadata")
-    if latent_channels:
+    from core.models.components.spatial_swap import read_declaration
+    alignment=read_declaration(metadata)
+    if alignment is not None:
+        if not declaration:
+            raise ValueError("Aligned Anima requires native config metadata")
+        if latent_channels and int(latent_channels)!=alignment["new_channels"]:
+            raise ValueError("Anima codec declaration disagrees with spatial alignment")
+        width=max(alignment["old_channels"],alignment["new_channels"])
+        if config["in_channels"]!=width or config["out_channels"]!=width:
+            raise ValueError("Aligned Anima native config disagrees with internal latent width")
+    elif latent_channels:
         config["in_channels"] = config["out_channels"] = int(latent_channels)
     if topology is not None:
         topology = validate_topology_identity(topology, config)
-    return topology, native_config(config)
+    result=(topology,native_config(config))
+    return (*result,alignment) if include_alignment else result
 
 
 def configure_training_topology(model, config, *, resuming=False, pending_adapter_resume=False,

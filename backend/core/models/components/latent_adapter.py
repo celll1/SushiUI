@@ -63,6 +63,9 @@ def validate_declaration(value):
         raise ValueError("Unsupported VAE alignment declaration")
     if value.get("token_policy") != "target_native":
         raise ValueError("VAE alignment must use the target VAE token grid")
+    from .gaussian_alignment import POLICY
+    if value.get("noise_policy") not in (None, POLICY):
+        raise ValueError("Unsupported spatial VAE noise policy")
     for key in ("old_channels", "new_channels", "old_scale", "new_scale", "input_channels", "norm_pack"):
         if type(value.get(key)) is not int or value[key] < 1:
             raise ValueError(f"Invalid VAE alignment {key}")
@@ -110,10 +113,40 @@ class SpatialAlignmentPair(nn.Module):
         width = max(old, new)
         self.input = SpatialLatentBridge(new, width)
         self.output = SpatialLatentBridge(width, new)
+        if declaration.get("noise_policy") is not None:
+            from .gaussian_alignment import GaussianNoiseAlignment
+            self.noise_alignment = GaussianNoiseAlignment(self.declaration)
 
     @property
     def ready(self):
-        return self.input._ready and self.output._ready
+        noise = getattr(self, "noise_alignment", None)
+        return self.input._ready and self.output._ready and (noise is None or noise._ready)
+
+    def flow_state(self, value, sigma, *, noise=None):
+        mapped = self.input.flow_state(value, sigma)
+        correction = getattr(self, "noise_alignment", None)
+        if correction is None:
+            return mapped
+        self._check_noise(value, noise)
+        delta = correction.input_delta(noise)
+        padded = torch.zeros_like(mapped, dtype=torch.float32)
+        padded[:, :self.declaration["old_channels"]] = delta
+        fraction = self.input._sigma(sigma, mapped).float()
+        return (mapped.float() + fraction * padded).to(mapped.dtype)
+
+    def flow_velocity(self, value, *, convention, noise=None):
+        mapped = self.output.flow_velocity(value, convention=convention)
+        correction = getattr(self, "noise_alignment", None)
+        if correction is None:
+            return mapped
+        self._check_noise(mapped, noise)
+        residual = correction.residual(noise)
+        sign = 1 if convention == "eps_minus_x0" else -1
+        return (mapped.float() + sign * residual).to(mapped.dtype)
+
+    def _check_noise(self, value, noise):
+        if noise is None or noise.ndim != value.ndim or noise.shape[0] != value.shape[0] or noise.shape[2:] != value.shape[2:]:
+            raise ValueError("Aligned flow requires this exposure's noise on the same external grid")
 
     @torch.no_grad()
     def untrained_flow_noise_residual(self, noise, *, convention):
@@ -147,6 +180,9 @@ class SpatialAlignmentPair(nn.Module):
             iw[c, c, 1, 1] = ow[c, c, 1, 1] = 1
         self.input.initialize(iw.flatten(1).T, ib)
         self.output.initialize(ow.flatten(1).T, outgoing.projection.bias)
+        noise = getattr(self, "noise_alignment", None)
+        if noise is not None:
+            noise.capture(self.input, self.output)
 
 
 class SpatialFlowNoiseSnapshot(nn.Module):

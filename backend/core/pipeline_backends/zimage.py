@@ -1280,6 +1280,7 @@ class ZImageMixin:
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
                 generator, progress_callback, step_callback,
                 init_latents=noised_latents,
+                init_noise=noise,
                 timesteps_override=timesteps_img2img,
                 spectrum_params=params,
                 nag_negative_embeds_list=nag_negative_embeds_list,
@@ -1667,6 +1668,7 @@ class ZImageMixin:
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
                 generator, progress_callback, step_callback,
                 init_latents=noised_latents,
+                init_noise=noise,
                 timesteps_override=timesteps_inpaint,
                 mask_latent=mask_latent,
                 original_latents=original_latents,
@@ -2062,6 +2064,7 @@ class ZImageMixin:
         apply_cfg: bool, guidance_scale: float, has_fp8_weights: bool,
         step_idx: int, num_inference_steps: int,
         style_refs=None, style_combine_mode: str = "stack",
+        alignment_noise=None,
     ):
         """One style-active denoise step for Z-Image: bypasses the batched
         ``[negative; positive(; nag_negative)]`` CFG fast path entirely for this step (mirrors
@@ -2100,12 +2103,15 @@ class ZImageMixin:
 
         latents_list = list(latents.to(input_dtype).unsqueeze(2).unbind(dim=0))
 
-        def _forward(x_list, cap_list):
+        def _forward(x_list, cap_list, exposure_noise=None):
+            from core.models.zimage_vae_alignment import noise_kwargs
+            kwargs = noise_kwargs(transformer, alignment_noise if exposure_noise is None else exposure_noise,
+                                  len(x_list))
             with torch.no_grad():
                 if has_fp8_weights:
                     with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                        return transformer(x_list, timestep, cap_list)[0]
-                return transformer(x_list, timestep, cap_list)[0]
+                        return transformer(x_list, timestep, cap_list, **kwargs)[0]
+                return transformer(x_list, timestep, cap_list, **kwargs)[0]
 
         try:
             if style_refs is not None and len(style_refs) > 1:
@@ -2129,7 +2135,7 @@ class ZImageMixin:
 
                     capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
                     transformer._style_ctx = capture_ctx_i
-                    _forward(ref_list_i, prompt_embeds_list)
+                    _forward(ref_list_i, prompt_embeds_list, eps_i)
                     active_refs.append((capture_ctx_i.store, cfg_i))
 
                 if active_refs:
@@ -2155,7 +2161,7 @@ class ZImageMixin:
 
                 capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
                 transformer._style_ctx = capture_ctx
-                _forward(ref_list, prompt_embeds_list)
+                _forward(ref_list, prompt_embeds_list, style_eps_ref)
 
                 inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
                 transformer._style_ctx = inject_ctx
@@ -2238,6 +2244,7 @@ class ZImageMixin:
         timesteps_override: Optional[torch.Tensor] = None,
         mask_latent: Optional[torch.Tensor] = None,
         original_latents: Optional[torch.Tensor] = None,
+        init_noise: Optional[torch.Tensor] = None,
         spectrum_params: Optional[Dict[str, Any]] = None,
         nag_negative_embeds_list: Optional[List[torch.Tensor]] = None,
         nag_params: Optional[Dict[str, Any]] = None,
@@ -2307,6 +2314,9 @@ class ZImageMixin:
         else:
             latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
             print(f"[Z-Image] Starting from random latents (txt2img)")
+        exposure_noise = latents.detach().clone() if init_latents is None else init_noise
+        from core.models.zimage_vae_alignment import noise_kwargs
+        noise_kwargs(transformer, exposure_noise, batch_size)
 
         image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
 
@@ -2568,6 +2578,7 @@ class ZImageMixin:
                     apply_cfg, current_guidance_scale, has_fp8_weights,
                     normalized_step, num_inference_steps,
                     style_refs=style_refs, style_combine_mode=style_combine_mode,
+                    alignment_noise=exposure_noise,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)
@@ -2672,6 +2683,7 @@ class ZImageMixin:
                                     latent_model_input_list,
                                     timestep_model_input,
                                     prompt_embeds_model_input,
+                                    **noise_kwargs(transformer, exposure_noise, len(latent_model_input_list)),
                                 )[0]
                         else:
                             # Normal: no autocast needed
@@ -2679,6 +2691,7 @@ class ZImageMixin:
                                 latent_model_input_list,
                                 timestep_model_input,
                                 prompt_embeds_model_input,
+                                **noise_kwargs(transformer, exposure_noise, len(latent_model_input_list)),
                             )[0]
                 finally:
                     if nag_this_step:
@@ -2766,6 +2779,8 @@ class ZImageMixin:
 
                 # Blend: mask * denoised + (1 - mask) * noised_original
                 latents = mask_latent_device * latents + (1.0 - mask_latent_device) * noised_original
+                if exposure_noise is not None and i < len(timesteps) - 1:
+                    exposure_noise = mask_latent_device * exposure_noise + (1.0 - mask_latent_device) * noise_for_original
 
             if normalized_step % 5 == 0 or normalized_step == num_inference_steps - 1:
                 print(f"[Z-Image] Step {normalized_step+1}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")

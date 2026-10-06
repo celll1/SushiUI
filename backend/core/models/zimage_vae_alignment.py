@@ -49,11 +49,25 @@ def apply_swap(trainer, resolved, module=None, *, handler):
             restore_topology(model, build_spec("zimage", [{"name": "main", "block_count":len(model.layers)}],
                 topology["regions"], native_config(model)))
         return report
+    from core.models.components.gaussian_alignment import POLICY
+    noise_policy = (POLICY if resolved.scale_factor > source_spec.vae_scale_factor
+                    and resolved.latent_channels >= model.in_channels else None)
     return initialize_image_swap(trainer, resolved, handler=handler, model=model, old_channels=model.in_channels,
         source_wiring=source_spec, patch_size=2, resize=resize, pending_key="_zimage_vae_calibration_source",
-        topology_config=lambda:native_config(model))
+        topology_config=lambda:native_config(model), noise_policy=noise_policy)
 
 
 def calibrate(trainer, datasets):
     calibrate_images(trainer, datasets, model=trainer.transformer_original,
                      pending_key="_zimage_vae_calibration_source")
+
+
+def noise_kwargs(model, noise, batch_size, *, as_list=True):
+    pair = getattr(model, "vae_latent_bridge", None)
+    if getattr(pair, "noise_alignment", None) is None:
+        return {}
+    if noise is None or noise.ndim not in (4, 5) or batch_size % noise.shape[0]:
+        raise ValueError("Z-Image aligned flow requires its actual exposure noise")
+    value = noise.unsqueeze(2) if noise.ndim == 4 else noise
+    value = value.repeat(batch_size // value.shape[0], 1, 1, 1, 1)
+    return {"alignment_noise": list(value.unbind(0)) if as_list else value}

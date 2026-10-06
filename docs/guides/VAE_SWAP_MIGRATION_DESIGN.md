@@ -8,6 +8,28 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く、channel数がsource以上なら
+`gaussian_row_orthogonal_v1`を選ぶ。校正した3×3入力/出力kernelと、中心行列のSVD行直交射影を
+固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが
+表せないnoise残差を補う。学習・定期sample・txt2img/img2img/inpaint・CFG/NAG/style参照へ配線した。
+bufferはoptimizer対象外。既存checkpointは宣言されたpolicyを維持し、再校正や自動変更をしない。
+他architectureのnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+
+公式全成分・合成2枚・C16/8x→C64/16x・2段/deep4の公開API Full試験は
+step1保存→step2再開がexit0。525 optimizer状態がcounter1→2、fresh 0で、補正係数は
+全bufferがbit一致し、宣言・元成分参照・U-net構造も再保存で維持された。
+lossは1.060921→1.495516。少数stepの機能確認で、画質回復の証拠ではない。
+詳細training DBも保持して検証した。保存したsharded indexの生成API読込・256px/2steps/CFG1は
+HTTP200で完了。専用run/datasetをDB・diskから整理し、選択モデルをMing Layerへ戻した。
+診断結果はignored `local/verification/zimage_gaussian_api_full_results/`のみ。
+
+Z-Image学習wrapperの時刻も修正した。training argumentはnoise fraction σで、native modelが
+受け取る時刻は1−σ。推論と同じ向きへ揃えた。CPU回帰44件、compileとCUDA未初期化の
+実importが通過。frontendの説明・型/API送信・既存初期化selectorを静的確認した。
+新しい公開parameter/defaultはなく、ownerのfrontend build/type-checkは未実施。
+既存general40校正で、画質比較時の行直交化＋残差補正と本番補正をCPU比較し、
+σ=0/0.1/0.5/1で入力/出力がbit一致した。本番経路での多prompt画質再検証は未了。
+
 公式非蒸留[Z-Image](https://huggingface.co/Tongyi-MAI/Z-Image)全成分18ファイルを
 `local/verification/zimage_base_weights/`へ取得した。revisionは
 `04cc4abb7c5069926f75c9bfde9ef43d49423021`、総20,538,488,559 bytes。
@@ -55,8 +77,8 @@ seed64でも通常pairedは3promptとも紫のノイズ状に崩れた。両補�
 seed64の反復逆写像は狐の姿勢・本の開き方を変え、局所的な輪郭は改善したが、
 3prompt/2seedを通じた明確な鮮明さの優位までは確認できない。
 既定2段/deep4 U-netはseed64でも顔・耳・本・手に強い重複輪郭が残り、併用画質は未受入。
-U-netなしの3prompt/2seedに限る概形回復を確認した。本番noise policyは変更せず、
-学習時・保存復元・生成時を通じた補正候補の本番配線は未了。追加学習の画質回復も未検証。
+U-netなしの3prompt/2seedに限る概形回復を確認した。この比較は本番配線前の候補試験で、
+後続のZ-Image本番補正は上記のとおり数値一致を確認した。追加学習の画質回復は未検証。
 専用DB run/datasetは作成せず、画像・kernel・conditioning・比較scriptは
 ignored `local/verification/zimage_official_quality/`等にのみ保持する。
 

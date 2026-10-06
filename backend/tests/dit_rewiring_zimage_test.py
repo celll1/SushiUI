@@ -347,7 +347,7 @@ class ZImageRuntimeContracts(unittest.TestCase):
         for index, value in enumerate(self.captions):
             captions[index, :len(value)] = value.detach(); mask[index, :len(value)] = True
         captions.requires_grad_()
-        expected = self.forward()
+        expected = torch.stack(self.model(list(self.images.unbind()), 1-self.times, self.captions)[0])
         with patch.object(wrapper, "batched_patchify", side_effect=AssertionError("Dense optimized path forbidden")):
             actual, _ = wrapper(self.images, self.times, captions, mask)
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)

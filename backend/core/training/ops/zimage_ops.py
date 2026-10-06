@@ -351,6 +351,8 @@ def train_step(
     # attention_mask is bool type, does not need gradients
 
     noisy_latents_4d = noisy_latents.unsqueeze(2)
+    from core.models.zimage_vae_alignment import noise_kwargs
+    alignment_kwargs = noise_kwargs(trainer.transformer_original, noise, batch_size, as_list=False)
 
     # Predict velocity using Z-Image Transformer
     if trainer.mixed_precision:
@@ -360,6 +362,7 @@ def train_step(
                 t=timesteps,
                 cap_feats=prompt_embeds,
                 cap_mask=attention_mask,
+                **alignment_kwargs,
             )
     else:
         model_pred, _ = trainer.transformer(
@@ -367,6 +370,7 @@ def train_step(
             t=timesteps,
             cap_feats=prompt_embeds,
             cap_mask=attention_mask,
+            **alignment_kwargs,
         )
 
     model_pred = model_pred.squeeze(2)
@@ -791,6 +795,8 @@ def _run_zimage_denoising_loop(
     # anima/lens fix (a3db4a1); VAE decode stays outside in _decode_zimage_latents.
     compute_dtype = next(trainer.transformer_original.parameters()).dtype
     total_steps = len(scheduler.timesteps)
+    from core.models.zimage_vae_alignment import noise_kwargs
+    exposure_noise = latents.detach().clone()
     with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=compute_dtype):
         for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
             stop_flag_file = trainer.output_dir / ".stop_training"
@@ -848,6 +854,7 @@ def _run_zimage_denoising_loop(
                 latent_input_list,
                 timestep,
                 embeds_input_list,
+                **noise_kwargs(trainer.transformer_original, exposure_noise, latent_input.shape[0]),
             )[0]
 
             # Apply CFG if enabled (same as stable lora_trainer.py:2474-2492)

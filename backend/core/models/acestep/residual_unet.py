@@ -54,6 +54,24 @@ def native_config(config):
     return resolved
 
 
+def decoder_identity_config(model):
+    """RVQ keeps its source width; residual identity belongs to the decoder."""
+    decoder = getattr(model, "decoder", model)
+    resolved = native_config(decoder.config)
+    if model is decoder:
+        return resolved
+    owner = native_config(model.config)
+    alignment = getattr(decoder, "_audio_latent_alignment", None)
+    if alignment is not None:
+        source, width = alignment.source.latent_channels, alignment.backbone_channels
+        if owner["audio_acoustic_hidden_dim"] != source or owner["in_channels"] != 3*source:
+            raise ValueError("ACE-Step conditioning config disagrees with the source audio codec")
+        owner["audio_acoustic_hidden_dim"], owner["in_channels"] = width, 3*width
+    if owner != resolved:
+        raise ValueError("ACE-Step owner/decoder geometry disagrees")
+    return resolved
+
+
 def default_topology(config):
     from api.param_defaults import DIT_REWIRING_PRESETS
     from core.rewiring.spec import OPERATORS, build_spec
@@ -145,8 +163,7 @@ def restore_topology(model, spec):
             module.__dict__.pop("_residual_unet_spec", None)
         return
     graph = validate_topology_identity(spec, decoder.config)
-    if model is not decoder and native_config(model.config) != native_config(decoder.config):
-        raise ValueError("ACE-Step owner and decoder configs disagree")
+    decoder_identity_config(model)
     if len(decoder.layers) != native_config(decoder.config)["num_hidden_layers"]:
         raise ValueError("ACE-Step actual decoder depth disagrees with native config")
     for module in (model, decoder):
@@ -160,9 +177,8 @@ def model_topology_metadata(model):
         raise ValueError("ACE-Step owner and decoder residual topologies disagree")
     if spec is None:
         return {}
-    config = native_config(decoder.config)
-    if len(decoder.layers) != config["num_hidden_layers"] or (
-            model is not decoder and native_config(model.config) != config):
+    config = decoder_identity_config(model)
+    if len(decoder.layers) != config["num_hidden_layers"]:
         raise ValueError("ACE-Step export owner/decoder geometry disagrees")
     return checkpoint_metadata(validate_topology_identity(spec, decoder.config))
 
@@ -240,6 +256,8 @@ def run_rewired_decoder(model, hidden, positions, timestep_proj, encoder_hidden,
 
 def export_metadata(model):
     import json
+    if getattr(getattr(model, "decoder", model), "_audio_latent_alignment", None) is not None:
+        raise NotImplementedError("ACE audio-aligned export requires the bundled codec artifact writer")
     metadata = model_topology_metadata(model)
     from .component_sources import export_sources
     metadata.update(export_sources(model))
@@ -299,7 +317,7 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     declared = config.get("dit_rewiring_spec", TRAINING_DEFAULTS["dit_rewiring_spec"])
     needs_identity = config.get("dit_rewiring_mode") == "configure" or existing is not None or declared is not None or (
         resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
-    native = native_config(model.config) if needs_identity else {}
+    native = decoder_identity_config(model) if needs_identity else {}
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     resolved = resolve_training_topology(view, dict(config), "acestep", validate_topology_identity,
         lambda owner, spec: None, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
@@ -326,7 +344,7 @@ def resolve_generation_topology(model, files):
     model_topology_metadata(model)
     existing = getattr(model, "_residual_unet_spec", None)
     needs_identity = existing is not None or any(read_checkpoint_metadata(file.metadata) is not None for file in files)
-    native = native_config(model.config) if needs_identity else {}
+    native = decoder_identity_config(model) if needs_identity else {}
     view = SimpleNamespace(config=native, _residual_unet_spec=existing)
     required = resolve_adapter_topology(view, files, validate_topology_identity)
     if required is not None:
@@ -345,9 +363,10 @@ def generation_metadata(model, length):
         return None
     if type(length) is not int or length < 1:
         raise ValueError("ACE-Step residual audio length must be a positive native frame count")
-    patch = native_config(model.config)["patch_size"]
+    decoder = getattr(model, "decoder", model)
+    patch = decoder_identity_config(model)["patch_size"]
     tokens = (length + patch - 1) // patch
-    padded, policy = temporal_grid(topology, model.config, tokens)
+    padded, policy = temporal_grid(topology, decoder.config, tokens)
     return dict(spec=topology, spec_sha256=digest(topology), kv_cache=False,
                 input_frames=length, native_token_grid=[tokens, 1], token_grid=[padded, 1],
                 transport_padding_tokens=padded - tokens, grid_policy=policy)

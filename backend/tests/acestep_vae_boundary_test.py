@@ -160,3 +160,55 @@ def test_installer_rejects_inconsistent_patch_before_mutation():
     assert not hasattr(model, "_audio_latent_alignment")
     for key, value in model.state_dict().items():
         torch.testing.assert_close(value, before[key], rtol=0, atol=0)
+
+
+def small_owner():
+    from core.models.acestep.vendor import AceStepConditionGenerationModel
+    config = deepcopy(small_decoder().config)
+    for key, value in dict(num_lyric_encoder_hidden_layers=1, num_timbre_encoder_hidden_layers=1,
+            num_attention_pooler_hidden_layers=1, num_audio_decoder_hidden_layers=1,
+            text_hidden_dim=8, timbre_hidden_dim=2, fsq_dim=16, fsq_input_levels=[2,2],
+            pool_window_size=2).items():
+        setattr(config, key, value)
+    return AceStepConditionGenerationModel(config)
+
+
+def test_owner_separates_rvq_config_from_decoder_topology_and_resume(tmp_path):
+    from types import SimpleNamespace
+    from core.models.acestep.vae_boundary import install_decoder_alignment
+    from core.models.acestep.residual_unet import (native_config, restore_topology,
+        decoder_identity_config, configure_training_topology, resolve_generation_topology,
+        generation_metadata, model_topology_metadata, export_metadata)
+    from core.rewiring.spec import OPERATORS, build_spec, read_checkpoint_metadata
+    from core.training.adapters.acestep_adapter import AceStepFullParameterAdapter
+    owner = small_owner()
+    source_config = deepcopy(owner.config.to_dict())
+    source_state = {k: v.clone() for k, v in owner.state_dict().items() if not k.startswith("decoder.")}
+    graph = build_spec("acestep", [{"name":"main", "block_count":7}], [
+        dict(id="outer",stream="main",parent=None,start_block=1,end_block=6,down_factor=[2,1],**OPERATORS)], native_config(owner.config))
+    restore_topology(owner, graph)
+    install_decoder_alignment(owner, alignment(4))
+    assert owner.config.to_dict() == source_config
+    for k, v in source_state.items():
+        torch.testing.assert_close(owner.state_dict()[k], v, rtol=0, atol=0)
+    actual = owner._residual_unet_spec
+    assert actual == owner.decoder._residual_unet_spec
+    assert actual["base_config_sha256"] != graph["base_config_sha256"]
+    assert decoder_identity_config(owner)["audio_acoustic_hidden_dim"] == 4
+    assert read_checkpoint_metadata(model_topology_metadata(owner)) == actual
+    config = {}
+    assert configure_training_topology(owner, config) == actual
+    assert configure_training_topology(owner, {}, resuming=True, resume_spec=actual, install=False) == actual
+    assert resolve_generation_topology(owner, []) == actual
+    assert generation_metadata(owner, 24)["native_token_grid"] == [12,1]
+    with pytest.raises(ValueError, match="identity|config|topology"):
+        configure_training_topology(owner, {}, resuming=True, resume_spec=graph, install=False)
+    with pytest.raises(NotImplementedError, match="bundled codec"):
+        export_metadata(owner)
+    path = tmp_path/"unbundled.safetensors"
+    with pytest.raises(NotImplementedError, match="bundled codec"):
+        AceStepFullParameterAdapter(SimpleNamespace(transformer=owner)).write_checkpoint(1,1,path)
+    assert not path.exists()
+    owner.config.intermediate_size += 8
+    with pytest.raises(ValueError, match="owner/decoder"):
+        model_topology_metadata(owner)

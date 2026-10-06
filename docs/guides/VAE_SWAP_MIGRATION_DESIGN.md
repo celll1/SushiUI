@@ -41,6 +41,19 @@ outer ownerの元acoustic configと拡張decoder configの保存・U-net identit
 trainingのnative条件長とtarget batch長の分離、samplerの各mask長、API/UIは残作業である。
 boundaryがない既存forwardには変換を追加しない。公開swap gateもまだ解除していない。
 
+owner/decoderのidentity分離を接続した。`decoder_identity_config`は通常のモデルでは同一configを
+要求し、audio alignmentがある場合だけ元ownerのacoustic widthとdecoderのmax widthの差を許す。
+他のdepth/attention/patch属性の差は拒否する。installerはownerも受け取り、元RVQ/encoder/configの
+重みを維持しながらowner/decoder双方のU-net topologyを同じ新identityへ更新する。
+trainingのinherit/configure/resume、generationのtopology確認・grid情報はdecoder identityを参照する。
+内部幅が変わる場合は旧source幅のtopologyで再開する要求を拒否し、新identityでは受け付ける。
+内部幅が変わらない交換の識別には、別途codec identityをartifact/resume契約へ接続する必要がある。
+現在の既存writer/loaderは元owner config一つしか扱えないため、alignedモデルのexportはcodec bundle
+形式が接続されるまで明示的に拒否する。これを最終的な対応範囲の制限にはしない。
+小型の実ACE ownerで非decoder重み・元configの完全保持、U-netの更新、再開判定、保存拒否時の
+成果物未作成を検証した。関連CPUテスト31件・26subtestとpy_compile・実importが通過した。
+交換codecとdecoder configのartifact保存復元・正式学習/生成・API/UI・実重み検証は引き続き未完。
+
 LTX-2.3の動画target-native境界を追加し、Full fine-tuneの公開VAE swap設定をexperimentalとして配線した。
 unquantized DiT・train_unet=true・paired_spatial・bundled RGB codecを必須とし、LoRA系は拒否する。
 API preflightは新規交換の保存不能設定と、復元済み交換codecのbundling無効もモデルロード前に拒否する。

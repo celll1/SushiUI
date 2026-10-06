@@ -125,6 +125,32 @@ def blend_tracked_noise(model,noise_state,weight):
         session.trajectory.state=(1-weight)*session.trajectory.state+weight*noise_state
 
 
+def aligned_noise_jump(model,scheduler,latents,timesteps,*,hi_index,lo_index,
+                       generator,fallback_generator,jump):
+    session=getattr(model,"_sushi_sd_noise_session",None)
+    if session is None:
+        generator=generator if generator is not None else fallback_generator
+    else:
+        generator=generator if generator is not None else session.generator
+        session.trajectory.state=jump(scheduler,session.trajectory.state,timesteps,
+            hi_index=hi_index,lo_index=lo_index,generator=SDNoiseTrajectory.clone_generator(generator))
+    return jump(scheduler,latents,timesteps,hi_index=hi_index,lo_index=lo_index,generator=generator)
+
+
+def rewind_tracked_noise(model,index):
+    session=getattr(model,"_sushi_sd_noise_session",None)
+    if session is not None:
+        session.trajectory.scheduler._step_index=index
+
+
+def composite_reference_noise(model,timestep,initial_noise,mask):
+    session=getattr(model,"_sushi_sd_noise_session",None)
+    if session is None:
+        return None
+    current=session.exposure(timestep,initial_noise)
+    return (1-mask)*initial_noise+mask*current
+
+
 def coefficients(scheduler, timestep, reference):
     name=type(scheduler).__name__
     if name in _SCALED or name in _VP_SIGMAS or name=="FlowMatchEulerDiscreteScheduler":
@@ -221,11 +247,6 @@ def aligned_sampling(function):
     @wraps(function)
     def run(*args,**kwargs):
         pipeline=args[0] if args else kwargs["pipeline"]
-        pair=getattr(pipeline.unet,"vae_latent_bridge",None)
-        if getattr(pair,"noise_alignment",None) is not None:
-            supplied=inspect.signature(function).bind_partial(*args,**kwargs).arguments
-            if supplied.get("outpaint_noise_init",False):
-                raise ValueError("Gaussian SD outpaint noise tracking is not yet wired")
         with sampling_boundary(pipeline.unet,pipeline.scheduler):
             return function(*args,**kwargs)
     return run

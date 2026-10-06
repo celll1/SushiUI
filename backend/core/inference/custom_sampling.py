@@ -13,7 +13,7 @@ import torch
 from core.inference.callback_utils import callback_requests
 from core.inference.schedule_utils import snapshot_schedule_scalars
 from core.inference.sd_codec_boundary import (aligned_sampling,initialize_noise_tracking,aligned_scheduler_step,
-    reference_noise_kwargs,blend_tracked_noise)
+    reference_noise_kwargs,blend_tracked_noise,aligned_noise_jump,rewind_tracked_noise,composite_reference_noise)
 
 # Infer normalization from the codec, including native BatchNorm and identity facades.
 from core.models.components.vae_registry import (
@@ -4825,8 +4825,10 @@ def custom_inpaint_sampling_loop(
         latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
 
     if getattr(unet,"_sushi_sd_noise_session",None) is not None:
-        initialize_noise_tracking(unet,scheduler,
-            scheduler.add_noise(torch.zeros_like(init_latents),noise,timesteps[0:1]),generator)
+        start_noise=scheduler.add_noise(torch.zeros_like(init_latents),noise,timesteps[0:1])
+        if outpaint_noise_init:
+            start_noise=compose_outpaint_start(start_noise,noise*scheduler.init_noise_sigma,mask_latent)
+        initialize_noise_tracking(unet,scheduler,start_noise,generator)
 
     # OUTPAINT B1: precompute the low-frequency boundary color proximal's
     # STATIC inputs once (mask_latent/image_latents never change across
@@ -5340,9 +5342,9 @@ def custom_inpaint_sampling_loop(
         # outpaint_jump_length, where the previous visit just landed) back UP
         # to the level at index i. Never true off the resample path.
         if is_forward_jump:
-            latents = _outpaint_resample_jump(
-                scheduler, latents, timesteps, hi_index=i, lo_index=i + outpaint_jump_length,
-                generator=step_generator if step_generator is not None else generator,
+            latents = aligned_noise_jump(
+                unet,scheduler,latents,timesteps,hi_index=i,lo_index=i+outpaint_jump_length,
+                generator=step_generator,fallback_generator=generator,jump=_outpaint_resample_jump,
             )
 
         # OUTPAINT B2: EulerDiscreteScheduler/EulerAncestralDiscreteScheduler
@@ -5364,6 +5366,7 @@ def custom_inpaint_sampling_loop(
         # `_step_index` semantics for B1 alone -- untouched here).
         if _outpaint_resample_active and type(scheduler).__name__ in _OUTPAINT_RESAMPLE_SIGMA_SCHEDULERS:
             scheduler._step_index = i
+            rewind_tracked_noise(unet,i)
 
         # Check for cancellation (only in inference context, not training)
         try:
@@ -5865,6 +5868,8 @@ def custom_inpaint_sampling_loop(
                     progress = _outpaint_reference_cfg.step_progress(i, num_inference_steps)
 
                     ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    ref_unet_kwargs = reference_noise_kwargs(unet,ref_unet_kwargs,
+                        composite_reference_noise(unet,t,noise,mask_latent))
                     if cond_added_cond_kwargs is not None:
                         ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
 
@@ -6495,6 +6500,9 @@ def custom_inpaint_sampling_loop(
                     if _bdr_state is not None and boundary_relax_paste == "feather" and "strip" in _bdr_state:
                         _fv_mask = torch.maximum(mask_latent, _bdr_state["strip"])
                     latents = _pin_relax(_fv_mask, latents)
+                    if getattr(unet,"_sushi_sd_noise_session",None) is not None:
+                        pin_weight=(1-_fv_mask) if _pin_corner_w_latent is None else (1-_fv_mask)*_pin_corner_w_latent
+                        blend_tracked_noise(unet,torch.zeros_like(latents),pin_weight)
                 if pred_original_sample is not None:
                     pred_original_sample = _pin_relax(mask_latent, pred_original_sample)
             else:

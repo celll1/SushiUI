@@ -236,10 +236,14 @@ def initialize_swap(trainer,resolved,*,handler):
     if isinstance(original,SDXLVAEWrapper):
         trainer.vae=original.vae
     try:
+        from .gaussian_alignment import POLICY
+        source_wiring=handler.resolve_wiring(trainer)
+        noise_policy=(POLICY if resolved.scale_factor>source_wiring.vae_scale_factor
+            and resolved.latent_channels>=model.config.in_channels else None)
         report=initialize_image_swap(trainer,resolved,handler=handler,model=model,
-            old_channels=model.config.in_channels,source_wiring=handler.resolve_wiring(trainer),
+            old_channels=model.config.in_channels,source_wiring=source_wiring,
             patch_size=1,resize=lambda width:resize_latent_io(trainer,handler.wiring.latent_io,width),
-            pending_key="_sd_vae_calibration_source")
+            pending_key="_sd_vae_calibration_source",noise_policy=noise_policy)
         if isinstance(original,SDXLVAEWrapper) and trainer.vae is original.vae:
             trainer.vae=original
         return report

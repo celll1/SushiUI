@@ -4435,7 +4435,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <option value="zero" disabled={pixelSpaceMiniT2I || !["zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova"].includes(baseModelArch || "")}>Legacy zero</option>
                         </select>
                       </label>
-                      {["zimage", "krea2", "anima", "qwen_image_21"].includes(baseModelArch || "") && (
+                      {["zimage", "krea2", "anima", "qwen_image_21", "sd15", "sdxl"].includes(baseModelArch || "") && (
                         <p className="text-xs text-gray-400">
                           Fresh paired swaps to a stronger compression with at least as many latent channels
                           preserve calibrated Gaussian noise. Saved checkpoints keep their own noise policy.

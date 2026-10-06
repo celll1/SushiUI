@@ -153,8 +153,9 @@ def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,
     vae=AutoencoderKL(latent_channels=new,block_out_channels=(4,)*5,norm_num_groups=4,
         down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5)
     codec=NormalizedImageVAE(vae,decl)
+    scheduler_options={"clip_sample":False} if sampler in ("DDIMScheduler","DDPMScheduler") else {}
     pipeline=SimpleNamespace(unet=model,vae=codec,vae_scale_factor=8,
-        scheduler=getattr(diffusers,sampler)(num_train_timesteps=100),
+        scheduler=getattr(diffusers,sampler)(num_train_timesteps=100,**scheduler_options),
         text_encoder_2=object() if arch=="sdxl" else None)
     observed=[]
     def progress(step,total,latents,**kwargs):observed.append(tuple(latents.shape))
@@ -182,6 +183,9 @@ def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,
         kwargs.update(nag_enable=True,nag_negative_prompt_embeds=torch.randn_like(kwargs["prompt_embeds"]))
     elif feature=="guide":
         kwargs["ref_guide_configs"]=[dict(image=Image.new("RGB",(192,128),"blue"),strength=.3)]
+    elif feature=="outpaint":
+        kwargs.update(outpaint_noise_init=True,num_inference_steps=4,outpaint_resample_count=2,
+            outpaint_jump_length=1,outpaint_reference_strength=.5)
     function={"txt2img":sampling.custom_sampling_loop,"img2img":sampling.custom_img2img_sampling_loop,
         "inpaint":sampling.custom_inpaint_sampling_loop}[mode]
     with patch("core.vram_optimization.move_vae_to_gpu"), \
@@ -215,3 +219,10 @@ def test_public_sampling_loops_use_external_channels_and_native_codec_grid(arch,
 def test_gaussian_public_advanced_paths(arch,mode,feature):
     test_public_sampling_loops_use_external_channels_and_native_codec_grid(
         arch,mode,True,"EulerAncestralDiscreteScheduler",feature)
+
+
+@pytest.mark.parametrize("arch",["sd15","sdxl"])
+@pytest.mark.parametrize("sampler",["EulerDiscreteScheduler","EulerAncestralDiscreteScheduler","DDIMScheduler","DDPMScheduler"])
+def test_gaussian_public_outpaint_with_time_travel_and_reference(arch,sampler):
+    test_public_sampling_loops_use_external_channels_and_native_codec_grid(
+        arch,"inpaint",True,sampler,"outpaint")

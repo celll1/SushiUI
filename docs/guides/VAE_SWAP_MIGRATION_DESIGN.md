@@ -12,7 +12,14 @@ SD1.5/SDXLのGaussian補正は、共通pairのVP入力・prediction演算と学�
 入力は`alpha*A(x0)+alpha*b+sigma*Q(noise)`、epsilon出力は固定noise補空間残差、
 VP v出力は`alpha`倍の残差、x0出力は通常のaffine写像。flow vは既存の符号規約を維持する。
 学習は実露出noise・実schedulerのalpha/sigmaを渡し、標準/混合精度、epsilon/v/sampleで検証する。
-SDの新規交換へpolicyを既定選択する変更はまだ行っていない。生成側では初期noise、
+SDの新規paired_spatial交換はtargetの空間縮小率が強く、channel数がsource以上なら
+`gaussian_row_orthogonal_v1`を既定選択する。同縮小率・channel減少と既存checkpointは旧policyを維持する。
+選択変更後の学習/演算回帰93件、縮小率8/16×channel増減×SD1.5/SDXLの実校正・
+single/sharded保存復元8条件が通過。既存の強圧縮legacy宣言もBF16ロードで保持し、
+Gaussian固定係数はbit一致する2条件が通過した。変更backendのcompile/importも通過。
+frontendの既存説明文をSDにも表示し、API型・初期化選択・保存経路を静的確認した。
+公開parameter/default値は変更していない。owner frontend build/typecheckは未実施。
+生成側では初期noise、
 ancestral更新、CFG/NAGのbatch展開、style別noise、guide/inpaint混合を追跡する。
 単に最初のnoiseを全stepで使うだけでは、追加されたstochastic noiseとの整合性を満たさない。
 この段階のCPU演算・学習回帰を、SDのGaussian生成・公式全重みGPU受入の代わりにはしない。
@@ -31,8 +38,11 @@ ancestral generatorが指定されない場合は初期noise生成後のgenerato
 生成session専用に使う。global RNGを巻き戻さず、本体stepと追跡へ同じ乱数を渡す。
 小型実U-Net/VAEによる生成・cancel回帰76件、追跡/参照noise/RNG/混合等37件が通過。
 後者にはhook cleanupの回帰1件を含む。変更backendのcompile/importも通過し、CUDA未初期化。
-outpaint noise-init/time-travel/B3参照は未接続で、Gaussian宣言checkpointでは明示拒否する。
-通常の非Gaussian outpaintは変更しない。新SD policyの公式Full学習・保存再開受入は残る。
+outpaintのnoise-initはkeep/generate領域を同じ式で合成し、time-travel jumpには本体と同じ新noiseを
+一回だけ消費して追跡stateも再加noiseする。Euler系はscheduler位置も巻き戻す。
+B3参照は初期noiseと現在の露出noiseをmaskで混合し、最終境界pinは追跡noiseも同じkeep重みで消す。
+通常の非Gaussian outpaintの算術/RNGは維持する。outpaintを含む初回回帰139件、追加の
+明示/既定generator・DDIM/DDPM生成確認16件が通過。新SD policyの公式Full学習・保存再開受入は残る。
 PNDMのv-predictionは合成oracleで約0.014の分解誤差があり、この追跡方式では拒否する。
 clip/thresholding・learned variance・churn・per-token timestepも現段階では拒否する。
 Flowの`stochastic_sampling`は実装がgeneratorを無視するため拒否し、無条件に同じ乱数と見なさない。
@@ -40,7 +50,7 @@ Flowの`stochastic_sampling`は実装がgeneratorを無視するため拒否し�
 
 新SD Gaussian生成経路は、公式SD1.5/SDXL全U-Net・CLIPとQwen公式VAEでGPU検証した。
 既存general40枚のnative-teacher-grid校正係数を再利用し、現在のrating/pathをAPIで再確認した。
-実画像の追加読込はない。未選択の新policyを試験モデルへ宣言し、保存係数から固定noise補正を
+実画像の追加読込はない。このGPU検証時点では未選択だった新policyを試験モデルへ宣言し、保存係数から固定noise補正を
 captureした。入力/出力の数値monkeypatchは使わず、実`custom_sampling_loop`を通した。
 C4/8x→C64/16x、1024px・24steps・CFG6、Euler/Euler ancestral、3prompt×seed63/64の各12枚。
 latent gridは64×64（4096 cells）。SDのnative U-Netを使い、追加DiT U-net化は適用していない。

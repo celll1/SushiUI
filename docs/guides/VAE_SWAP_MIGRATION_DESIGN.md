@@ -6,6 +6,26 @@ Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §1
 LoRA 系での拒否は他 arch と同様に残る。
 フェーズごとの到達点は §11 の表を参照。
 
+### 2026-10-06: 現在の対応範囲
+
+本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の
+契約であり、全モデルに共通する最終的な制約ではない。
+Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
+独立frameの正規化wrapper、保存復元が追加されている。
+`auto`は現在Mingのみpaired_spatial、それ以外は既存zeroへ解決する。
+実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
+他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
+親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
+既存機能の完了宣言とは区別して扱う。
+
+MingのVAE swapとresidual U-net化は併用可能。IO変更時に同じregion宣言から
+新native configのtopology identityを再構成する。
+`backend/tests/ming_image_01_vae_alignment_test.py`は、U-net有/無の両方で
+fp32/bf16 forward/backward、縮小token格子、追加チャネルの勾配を検証する。
+`examples/vae_swap_coarse_probe.py`は保存済みU-net DiTを使うGPU probeである。
+この証拠は全バックボーンの併用完了や、optimizerを含む全run roundtripの
+実機検証を意味しない。
+
 本書は §11 のフェーズ単位で実装・検証・コミットする
 前提で書かれており、各フェーズの受け入れ条件を持つ。既存挙動の記述は全て
 `file:line` を付す。引用のない記述は設計上の決定であり、「要検証」と付したものは

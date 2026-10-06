@@ -22,6 +22,33 @@ from api import generation_utils as gu
 from core.models.components.vae_registry import preview_decoder_for
 
 
+@pytest.mark.parametrize("architecture,patch", [("anima",2),("lens",2),("ideogram4",2),("krea2",2),("qwen_image_21",1)])
+def test_token_display_uses_replacement_scale_and_native_registry(architecture,patch):
+    from core.models.components.spatial_swap import image_token_stride
+    from core.models.component_registry import _WIRING_BY_ARCH
+    assert image_token_stride(None,architecture,patch)==_WIRING_BY_ARCH[architecture].vae_scale_factor*patch
+    assert image_token_stride(SimpleNamespace(spatial_scale_factor=32),architecture,patch)==32*patch
+
+
+def test_component_info_accepts_resolved_codec_identity():
+    from core.pipeline import DiffusionPipelineManager
+    from core.models.common.vae_source import ResolvedVAE
+    from core.models.components.latent_adapter import NormalizedFrameVAE
+    identity = ResolvedVAE(source="file:synthetic",form="file",family="custom",
+        latent_channels=128,scale_factor=32,scale_temporal=8,ndim=5,norm="per_channel",norm_pack=1,
+        vae_class="AutoencoderKLLTX2Video",config={},content_hash="synthetic",provenance="synthetic",
+        locator=None,struct_native=False,identity_native=False,scaling_factor=1.,shift_factor=0.)
+    module=torch.nn.Linear(1,1);module.config={}
+    codec=NormalizedFrameVAE(module,dict(version=1,method="paired_spatial",token_policy="target_native",
+        source="file:synthetic",old_channels=64,new_channels=128,old_scale=16,new_scale=32,
+        input_channels=3,ndim=5,norm="per_channel",norm_pack=1))
+    manager=DiffusionPipelineManager.__new__(DiffusionPipelineManager)
+    manager._sushi_load_warnings=[]
+    fields=manager._fold_component_latent_identity(dict(vae=codec,vae_identity=identity),"qwen_image_21")
+    assert fields["latent_channels"]==128 and fields["vae_hash"]==identity.latent_hash
+    assert manager._sushi_wiring.vae_scale_factor==32 and manager._sushi_wiring.vae_norm=="identity"
+
+
 def _manager(info=None, **attrs):
     return SimpleNamespace(current_model_info=info, minit2i_components=None, **attrs)
 

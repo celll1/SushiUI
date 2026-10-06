@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import torch
 from torch import nn
 from torch.nn import functional as F
+from diffusers.utils.accelerate_utils import apply_forward_hook
 
 from .vae_alignment import SpatialLatentBridge, SpatialBridgeCalibrator
 from .vae_registry import normalize, denormalize
@@ -296,6 +297,7 @@ class NormalizedFrameVAE(nn.Module):
     def dtype(self):
         return next(self.inner.parameters()).dtype
 
+    @apply_forward_hook
     def encode(self, pixels, **kwargs):
         if pixels.ndim != 5 or pixels.shape[1] != 4 or pixels.shape[2] < 1:
             raise ValueError("Aligned image VAE requires independent RGBA frames")
@@ -308,6 +310,7 @@ class NormalizedFrameVAE(nn.Module):
             distributions.append(self.inner.encode(frame, **kwargs).latent_dist)
         return SimpleNamespace(latent_dist=_FramePosterior(distributions, self))
 
+    @apply_forward_hook
     def decode(self, latents, return_dict=True, **kwargs):
         if latents.ndim != 5 or latents.shape[1] != self.declaration["new_channels"] or latents.shape[2] < 1:
             raise ValueError("Aligned image decode requires declared independent-frame latents")

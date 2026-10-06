@@ -352,7 +352,8 @@ def load_components(trainer) -> None:
     configure_swap(trainer, components)
     if components.get("vae_identity") is not None:
         trainer.vae_identity = components["vae_identity"]
-    trainer.wiring = trainer.arch.resolve_wiring(trainer)
+    from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
+    trainer.wiring = QwenImage21ArchHandler(trainer).resolve_wiring(trainer)
     trainer.vae_latent_channels = trainer.wiring.latent_channels
     trainer.qwen_image_21_pipeline = build_pipeline(components)
     # A resumed full checkpoint may itself name another checkpoint.  Preserve

@@ -42,6 +42,30 @@ def test_qwen_native_codec_is_registered_for_the_vae_source_api():
     assert VAE_CLASS_BY_ARCH["qwen_image_21"] == "AutoencoderKLQwenImage21"
 
 
+def test_component_load_resolves_swapped_wiring_before_arch_handler_exists(monkeypatch):
+    from diffusers import AutoencoderKL
+    from core.training.ops.qwen_image_21_ops import load_components
+    import core.models.qwen_image_21.loader as loader
+    m = initialize(model())
+    codec = AutoencoderKL(in_channels=3, out_channels=3, latent_channels=3,
+        block_out_channels=(8, 8), down_block_types=("DownEncoderBlock2D",) * 2,
+        up_block_types=("UpDecoderBlock2D",) * 2, norm_num_groups=4)
+    wrapped = NormalizedFrameVAE(codec, declaration())
+    components = dict(transformer=m, vae=wrapped, text_encoder=torch.nn.Linear(2, 2),
+        processor=SimpleNamespace(tokenizer=object()), scheduler=object(),
+        transformer_variant="bf16", text_encoder_variant="bf16")
+    monkeypatch.setattr(loader, "load_qwen_image_21_components", lambda *a, **kw: components)
+    monkeypatch.setattr(loader, "build_pipeline", lambda *a, **kw: object())
+    trainer = SimpleNamespace(config={}, model_path="synthetic", weight_dtype=torch.float32,
+        vae_dtype=torch.float32, training_dtype=torch.bfloat16, gradient_checkpointing=False,
+        device=torch.device("cpu"), log_prefix="[CPU]", attention_backend="native",
+        _resolve_training_backend=lambda value: value)
+    load_components(trainer)
+    assert not hasattr(trainer, "arch")
+    assert trainer.wiring.latent_channels == 3 and trainer.wiring.vae_scale_factor == 2
+    assert trainer.vae_latent_channels == 3
+
+
 def initialize(m):
     install(m,declaration())
     identity(m.vae_latent_bridge.input)

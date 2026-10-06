@@ -193,24 +193,7 @@ def ideogram4_export_metadata(config: dict) -> Dict[str, str]:
 
 
 def ltx2_export_metadata(config: dict) -> Dict[str, str]:
-    """Metadata block for an exported LTX-2.3 DiT (``LTX2VideoTransformer3DModel``).
-
-    LTX-2.3 is diffusers-DIRECTORY only -- ``model_loader.detect_model_type``
-    recognises it by ``model_index.json``'s ``_class_name == "LTX2Pipeline"`` and
-    there is no single-file variant -- so the export is a component directory
-    inside a pipeline root, not a standalone file, and the layout's ``siblings``
-    entry carries ``model_index.json`` and the transformer's own ``config.json``
-    across (see ``link_siblings``, which copies file entries).
-
-    ``transformer_config`` is written as a SECOND source for that geometry, and
-    ``ltx2/loader.py`` falls back to it when the component directory has no
-    ``config.json``: the quantized branch builds ``LTX2VideoTransformer3DModel``
-    from a config before it can swap anything in, so an artifact that carries no
-    geometry at all is one the loader cannot read. Keys beginning with ``_``
-    (``_class_name``, ``_diffusers_version``, ``_name_or_path``) are dropped --
-    ``from_config`` does not need them and the last is a path on someone else's
-    machine.
-    """
+    """Geometry fallback for LTX component exports without a config.json."""
     config = {k: v for k, v in dict(config or {}).items() if not str(k).startswith("_")}
     return {
         "modelspec.architecture": "ltx2",
@@ -221,29 +204,10 @@ def ltx2_export_metadata(config: dict) -> Dict[str, str]:
 
 
 def _ltx2_unwrap(module: nn.Module) -> nn.Module:
-    """The INNER ``LTX2VideoTransformer3DModel`` behind an ``Ltx2BlockLoopWrapper``.
-
-    ``pipeline_backends/ltx2.py`` replaces ``ltx2_components["transformer"]`` with
-    that wrapper whenever block swap / FBCache / Spectrum / style transfer is
-    active, and leaves it there after the generation; the export job reads the
-    same dict. Stated precisely, because the obvious motivation is NOT the true
-    one: the wrapper today DELEGATES ``state_dict()`` to the inner transformer
-    (`ltx2_block_loop_wrapper.py`), so the exported KEYS would be right even
-    without this hook -- verified, 144/144 identical on a synthetic build with
-    zero ``transformer.``-prefixed keys.
-
-    What the hook actually buys is that the export writes the object whose key
-    layout IS the loader's contract, instead of depending on a passthrough that
-    exists for LoRA save/load and could reasonably be narrowed. It also aligns
-    ``combined_linear_inventory``'s per-path ``formats`` map, which walks
-    ``named_modules()`` -- NOT delegated, so through the wrapper every audit row
-    would be named ``transformer.<path>`` while the file's keys are ``<path>``.
-    Identity for every other architecture and for an unwrapped LTX-2.3
-    transformer.
-    """
-    inner = getattr(module, "transformer", None)
-    if inner is not None and type(module).__name__ == "Ltx2BlockLoopWrapper":
-        return inner
+    """Keep inventory paths consistent with saved inner keys, including subclasses."""
+    from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+    if isinstance(module, Ltx2BlockLoopWrapper):
+        return module.transformer
     return module
 
 
@@ -1183,6 +1147,7 @@ def export_quantized_transformer(
     max_shard_bytes: int = DEFAULT_EXPORT_SHARD_BYTES,
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
     overwrite: bool = False,
+    latent_codec: Optional[nn.Module] = None,
 ) -> Dict[str, object]:
     """Write ``model`` (a live, weight-only quantized transformer) to a file.
 
@@ -1230,6 +1195,24 @@ def export_quantized_transformer(
                     f"enable overwrite")
 
     metadata: Dict[str, str] = dict(layout["metadata"](config or {}))
+    codec_state = None
+    if arch == "ltx2":
+        from core.models.ltx2.residual_unet import export_metadata
+        transformer = resolved[0][2]
+        metadata.update(export_metadata(transformer))
+        if getattr(transformer, "_video_latent_alignment", None) is not None:
+            from types import SimpleNamespace
+            from core.training.vae_swap import swap_metadata
+            from core.models.ltx2.video_artifact import export_record
+            identity = getattr(transformer, "_ltx2_vae_identity", None)
+            if latent_codec is None or identity is None:
+                raise ValueError("Aligned LTX export requires its restored codec and identity")
+            trainer = SimpleNamespace(vae=latent_codec, vae_identity=identity,
+                                      bundle_vae=True, arch=SimpleNamespace(name="ltx2"))
+            _, _, codec_metadata = swap_metadata(trainer)
+            metadata.update(codec_metadata)
+            metadata.update(export_record(transformer, latent_codec, metadata))
+            codec_state = latent_codec.inner.state_dict()
     metadata["quantized_linears"] = str(inventory["int8"] + inventory["e4m3"])
     metadata["quantized_int8_linears"] = str(inventory["int8"])
     metadata["quantized_e4m3_linears"] = str(inventory["e4m3"])
@@ -1248,8 +1231,11 @@ def export_quantized_transformer(
         metadata["quant_audit_note"] = str(audit_note)
 
     states = [(prefix, mod.state_dict()) for _name, prefix, mod in resolved]
-    metadata["exported_components"] = json.dumps(
-        [{"component": n, "prefix": p} for n, p, _m in resolved])
+    exported_components = [{"component": n, "prefix": p} for n, p, _m in resolved]
+    if codec_state is not None:
+        states.append(("vae.", codec_state))
+        exported_components.append({"component": "vae", "prefix": "vae."})
+    metadata["exported_components"] = json.dumps(exported_components)
     total = sum(len(s) for _p, s in states)
     writer = ShardWriter(output_path, metadata, max_shard_bytes)
     t0 = time.perf_counter()
@@ -1318,7 +1304,7 @@ def export_quantized_transformer(
           f"({writer.total_bytes / 2**30:.2f} GB, {written_keys} tensors) in {elapsed:.1f}s")
     return {
         "arch": arch,
-        "components": [{"component": n, "prefix": p} for n, p, _m in resolved],
+        "components": exported_components,
         "output_path": written,
         "requested_path": output_path,
         "tensors": written_keys,

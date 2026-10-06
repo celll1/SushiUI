@@ -1115,6 +1115,8 @@ class LTX2Mixin:
             raise RuntimeError("LTX-2.3 pipeline reference missing from components")
 
         from core.models.ltx2 import LTX2ImageToVideoPipeline
+        from core.models.ltx2.codec_pipelines.geometry import pipeline_class
+        LTX2ImageToVideoPipeline = pipeline_class(LTX2ImageToVideoPipeline,self.ltx2_components.get("vae"))
 
         i2v = LTX2ImageToVideoPipeline(
             scheduler=self.ltx2_components.get("scheduler"),
@@ -1388,6 +1390,8 @@ class LTX2Mixin:
             raise RuntimeError("LTX-2.3 pipeline reference missing from components")
 
         from core.models.ltx2 import LTX2ConditionPipeline
+        from core.models.ltx2.codec_pipelines.geometry import pipeline_class
+        LTX2ConditionPipeline = pipeline_class(LTX2ConditionPipeline,self.ltx2_components.get("vae"))
 
         cond_pipeline = LTX2ConditionPipeline(
             scheduler=self.ltx2_components.get("scheduler"),

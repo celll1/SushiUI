@@ -22,12 +22,13 @@ with the library name ``"ltx2"``, which diffusers' component resolver routes to
 the ``diffusers.pipelines.ltx2`` submodule (``is_pipeline_module``), where the
 lazy ``_import_structure`` exposes them. So no namespace shim is required either.
 
-Therefore this package deliberately does NOT vendor diffusers source: doing so
+Standard models therefore use the installed diffusers source: copying it would
 would duplicate weight-compatible code already shipping in the venv (the only
 0.38->0.39 delta in the core stack is a functionally-equivalent refactor of
 ``LTX2TextConnectors``' register-replacement loop; vocoder / pipeline_output /
 utils / latent_upsampler are byte-identical). It only provides a single canonical
-import site for later phases.
+import site for later phases. Target-codec models use the narrowly derived
+methods in codec_pipelines; see VAE_SWAP_MIGRATION_DESIGN.md for source tracking.
 """
 
 from diffusers import (

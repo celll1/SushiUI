@@ -29,8 +29,16 @@ runtime dtype変更後もfrozen codecを保持した再保存、config既定値�
 外部2/6チャネル、内部max幅、128×192→8×12格子、SDXL time IDsの実pixel寸法を確認した。
 編集backendのmaskも実encode結果の格子を使う。native UNetのdownsample段数を含むpixel alignmentを検証し、
 3軸RoPEのhead幅を8の倍数へ厳密化した（軸幅は1/2,1/4,1/4で、それぞれ偶数が必要）。
-この段階ではChimeraの公開VAE交換ゲートは維持する。polar経路と校正、
-公開API/UIの配線、公式全重みの検証は未了。
+v3 polarも物理stateから入側mapを適用し、source direction/radiusでnative headを評価する共通境界へ接続した。
+sourceのmean drift・radial・tangentを出側map後にtarget radial/tangentへ分解する。
+校正はsourceのpolar設定を保持し、target mean/momentだけ更新する。target-native格子のまま学習・CFG生成し、
+radial headをbridgeより先に復元してoptimizerのparameter順も保存前とそろえる。
+小型実UNet/VAEのチャネル増減、BF16境界、保存復元・optimizer継続をCPUで検証した。
+v4境界は時間方向のdriftとdestruction-coordinate方向のtangentを別々に保持する。
+`d'(t)=0`の端点でdriftを`d'(t)`で割る変換は禁止する。Cartesian velocityとの一致は独立したFP64式で検証した。
+境界・校正・artifact・既存学習およびv2/v3/v4回帰の一括検証は134件通過した。
+v4のdrift対応loss/integratorと公開API/UIの配線、公式全重みの検証は未了。
+この段階ではChimeraの公開VAE交換ゲートは維持する。
 v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
 direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に
 target tangent/radialへ分解する必要がある。v4のdestruction-coordinate微分も変換に含める。

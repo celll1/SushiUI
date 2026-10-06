@@ -104,15 +104,15 @@ def load_chimera_artifact(
 
     unet = UNet2DConditionModel.from_config(config["unet"])
     declaration = preflight["vae_alignment"]
-    if declaration is not None:
-        from core.models.components.spatial_swap import install
-        install(unet, declaration)
-        unet._chimera_source_prediction = manifest["vae_alignment"]["source_prediction"]
     if prediction["type"] in {FLOW_V3_PREDICTION, FLOW_V4_PREDICTION}:
         radial_config = config["polar_radial_head"]
         install_polar_radial_head(
             unet, mid_channels=int(radial_config["mid_channels"])
         )
+    if declaration is not None:
+        from core.models.components.spatial_swap import install
+        install(unet, declaration)
+        unet._chimera_source_prediction = manifest["vae_alignment"]["source_prediction"]
     count = sum(parameter.numel() for parameter in unet.parameters())
     if count != int(manifest["unet"]["parameter_count"]):
         raise ChimeraArtifactError(

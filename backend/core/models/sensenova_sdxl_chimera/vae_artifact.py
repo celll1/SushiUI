@@ -1,17 +1,20 @@
 """Strict target-codec and prediction identity for aligned Chimera artifacts."""
 import json
 
-from .flow import FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION
+from .flow import FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION
 
 
 def _contract(value, channels):
     from .artifact import prediction_contract
     if not isinstance(value, dict) or value.get("type") not in (
-            FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION):
-        raise ValueError("Aligned Chimera artifact requires a linear-state prediction contract")
+            FLOW_V1_PREDICTION, FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION, FLOW_V3_PREDICTION):
+        raise ValueError("Aligned Chimera artifact requires a supported prediction contract")
     result = prediction_contract(value["type"], latent_channels=channels,
         latent_mean=value.get("latent_mean"),
-        latent_centered_second_moment=value.get("latent_centered_second_moment"))
+        latent_centered_second_moment=value.get("latent_centered_second_moment"),
+        **{key: value[key] for key in (
+            "angular_schedule", "angular_endpoint_slope", "radius_floor",
+            "angular_singularity_threshold", "angular_step_limit") if key in value})
     if result != value:
         raise ValueError("Aligned Chimera prediction fields differ from their canonical contract")
     return result

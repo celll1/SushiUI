@@ -7,7 +7,6 @@ import sys
 import gc
 import random
 from pathlib import Path
-from api.param_defaults import IDEOGRAM4_INFERENCE_DEFAULTS
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionImg2ImgPipeline,
@@ -535,6 +534,7 @@ class Ideogram4Mixin:
         if (width, height) != (req_width, req_height):
             print(f"[Ideogram4] Resolution aligned: {req_width}x{req_height} -> {width}x{height}")
         grid_h, grid_w = latent_grid(width, height,align=stride)
+        from api.param_defaults import IDEOGRAM4_INFERENCE_DEFAULTS
 
         return {
             "seed": seed,

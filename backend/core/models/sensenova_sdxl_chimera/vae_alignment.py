@@ -41,3 +41,22 @@ def map_residual(unet,source_sample,source_residual,target_sample,timestep,*,sou
         latent_mean=target_prediction["latent_mean"],
         latent_centered_second_moment=target_prediction["latent_centered_second_moment"])
     return mapped-analytic
+
+
+def unet_forward(unet, sample, timestep, *, prediction, **kwargs):
+    """One boundary shared by training and CFG inference branches."""
+    internal = map_state(unet, sample, timestep, prediction=prediction)
+    pair = getattr(unet, "vae_latent_bridge", None)
+    source_prediction = getattr(unet, "_chimera_source_prediction", None)
+    if pair is not None and prediction["type"] == FLOW_V2_PREDICTION and source_prediction is None:
+        raise ValueError("Aligned Chimera residual prediction requires its saved source contract")
+    kwargs["return_dict"] = False
+    raw = unet(internal, timestep, **kwargs)[0]
+    if pair is None:
+        return raw
+    if prediction["type"] == FLOW_V2_PREDICTION:
+        return map_residual(
+            unet, internal, raw, sample, timestep,
+            source_prediction=source_prediction, target_prediction=prediction,
+        )
+    return map_velocity(unet, raw, timestep, prediction=prediction)

@@ -542,14 +542,17 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
                 raw_tangent, polar_target.direction
             )
         else:
-            prediction = trainer.unet(
+            from core.models.sensenova_sdxl_chimera.vae_alignment import unet_forward
+            prediction = unet_forward(
+                trainer.unet,
                 model_input,
                 timesteps,
+                prediction=prediction_contract,
                 encoder_hidden_states=conditioning,
                 encoder_attention_mask=context_mask,
                 added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
                 return_dict=False,
-            )[0]
+            )
     finally:
         if repa_handle is not None:
             repa_handle.remove()

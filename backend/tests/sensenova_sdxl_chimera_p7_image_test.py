@@ -134,6 +134,7 @@ def test_repaint_pins_preserve_cells_to_clean_source_at_final_time():
 
 
 def _manager_for_dispatch(method_name, method):
+    from core.pipeline import DiffusionPipelineManager
     values = {
         name: False
         for name in (
@@ -141,6 +142,7 @@ def _manager_for_dispatch(method_name, method):
             "is_ideogram4_model", "is_minit2i_model", "is_krea2_model", "is_ltx2_model",
             "is_sensenova_model", "is_minimax_h3_model", "is_minimax_music3_model",
             "is_acestep_model", "is_yue2_model",
+            "is_ming_image_01_model", "is_qwen_image_21_model",
         )
     }
     values.update(
@@ -148,7 +150,9 @@ def _manager_for_dispatch(method_name, method):
         extensions=[],
         **{method_name: method},
     )
-    return SimpleNamespace(**values)
+    manager = DiffusionPipelineManager.__new__(DiffusionPipelineManager)
+    manager.__dict__.update(values)
+    return manager
 
 
 def test_img2img_dispatches_to_chimera_backend():
@@ -186,7 +190,7 @@ def test_outpaint_delegates_to_inpaint_and_restores_placed_pixels_exactly():
         seen.update(params=dict(params), canvas=canvas.copy(), mask=mask.copy())
         return Image.new("RGB", canvas.size, (200, 100, 50)), 73, 0
 
-    manager = SimpleNamespace(generate_inpaint=inpaint)
+    manager = _manager_for_dispatch("generate_inpaint", inpaint)
     params = {
         "canvas_width": 48,
         "canvas_height": 32,

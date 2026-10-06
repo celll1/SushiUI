@@ -169,6 +169,9 @@ class Flux2BlockSwapWrapper(nn.Module):
         double_stream_mod_img = transformer.double_stream_modulation_img(temb)
         double_stream_mod_txt = transformer.double_stream_modulation_txt(temb)
         single_stream_mod = transformer.single_stream_modulation(temb)
+        if do_nag:
+            double_stream_mod_txt = _expand(double_stream_mod_txt, img_b, txt_b)
+            single_stream_mod = _expand(single_stream_mod, img_b, txt_b)
 
         # 2. Input projection for image and text
         hidden_states = transformer.x_embedder(hidden_states)

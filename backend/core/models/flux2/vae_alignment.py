@@ -65,14 +65,55 @@ def calibrate(trainer,datasets):
 
 
 @contextmanager
-def alignment_context(model,hidden_states,img_ids,timestep,*,num_ref_tokens=0,ref_fixed_timestep=0.):
+def alignment_context(model,hidden_states,img_ids,timestep,*,num_ref_tokens=0,ref_fixed_timestep=0.,noise=None):
     if getattr(model,"vae_latent_bridge",None) is None:
         yield
         return
     bind_boundaries(model)
-    token=_contexts.set(_contexts.get()+((model,img_ids,timestep,num_ref_tokens,ref_fixed_timestep),))
+    if noise is None:
+        noise=_inherited_noise(model)
+    token=_contexts.set(_contexts.get()+((model,img_ids,timestep,num_ref_tokens,ref_fixed_timestep,noise),))
     try: yield
     finally: _contexts.reset(token)
+
+
+def _inherited_noise(model):
+    for context in reversed(_contexts.get()):
+        if context[0] is model:
+            return context[-1]
+    return None
+
+
+def forward_with_noise(driver, noise, **kwargs):
+    model=getattr(driver,"transformer",driver)
+    if getattr(getattr(model,"vae_latent_bridge",None),"noise_alignment",None) is None:
+        return driver(**kwargs)
+    if noise is None or noise.ndim != 3 or noise.shape[0] < 1:
+        raise ValueError("Aligned Flux2 requires actual packed target exposure noise")
+    with alignment_context(model,kwargs["hidden_states"],kwargs["img_ids"],kwargs["timestep"],
+            num_ref_tokens=kwargs.get("num_ref_tokens",0) if kwargs.get("kv_cache_mode")=="extract" else 0,
+            ref_fixed_timestep=kwargs.get("ref_fixed_timestep",0.),noise=noise):
+        return driver(**kwargs)
+
+
+def validate_noise_contract(model, *, noise_process="flow", prediction_target="velocity", scheduler=None):
+    if getattr(getattr(model,"vae_latent_bridge",None),"noise_alignment",None) is None:
+        return
+    if (noise_process,prediction_target) != ("flow","velocity"):
+        raise ValueError("Gaussian Flux2 alignment requires flow velocity prediction")
+    if scheduler is not None and getattr(scheduler.config,"stochastic_sampling",False):
+        raise ValueError("Gaussian Flux2 alignment requires deterministic flow sampling")
+
+
+def _expand_noise(noise, batch):
+    if noise.shape[0] == batch:
+        return noise
+    if batch % noise.shape[0] == 0:
+        return noise.repeat(batch//noise.shape[0],1,1)
+    if noise.shape[0] % 2 == 0 and batch*2 == noise.shape[0]*3:
+        from core.inference.nag_flux2 import _expand
+        return _expand(noise,noise.shape[0],batch)
+    raise ValueError("Flux2 noise does not match its conditioning batch")
 
 
 def _layout(ids,batch,count):
@@ -106,24 +147,42 @@ def _map(model,states,*,output):
     for context in reversed(_contexts.get()):
         if context[0] is model:break
     else:raise ValueError("Flux2 spatial bridge has no forward geometry context")
-    _,ids,sigma,num_ref_tokens,ref_sigma=context
+    _,ids,sigma,num_ref_tokens,ref_sigma,noise=context
     if output and num_ref_tokens:
         ids=ids[...,num_ref_tokens:,:]
     segments=_layout(ids,states.shape[0],states.shape[1])
     pair=model.vae_latent_bridge
-    return torch.cat([map_packed_image(pair,states[:,start:end],(h,w),
-        sigma=(ref_sigma if reference else sigma),output=output)
-        for start,end,h,w,reference in segments],dim=1)
+    gaussian=getattr(pair,"noise_alignment",None) is not None
+    if gaussian:
+        count=sum(end-start for start,end,h,w,reference in segments if not reference)
+        if noise is None or noise.ndim != 3 or noise.shape[0] < 1 or noise.shape[1:] != (count,pair.declaration["new_channels"]*4):
+            raise ValueError("Aligned Flux2 noise must match only the target image tokens")
+        noise=_expand_noise(noise,states.shape[0])
+        if ref_sigma != 0 and any(region[-1] for region in segments):
+            raise ValueError("Gaussian Flux2 references must be clean; no reference noise was supplied")
+    mapped=[];offset=0
+    for start,end,h,w,reference in segments:
+        segment_noise=None
+        if gaussian:
+            segment_noise=(noise.new_zeros(noise.shape[0],end-start,noise.shape[-1]) if reference
+                           else noise[:,offset:offset+end-start])
+            if not reference:offset+=end-start
+        mapped.append(map_packed_image(pair,states[:,start:end],(h,w),
+            sigma=(ref_sigma if reference else sigma),output=output,noise=segment_noise))
+    return torch.cat(mapped,dim=1)
 
 
 def _enter(module,args,kwargs):
     _bind_projections(module)
     names=("hidden_states","encoder_hidden_states","timestep","img_ids")
     values=dict(zip(names,args)); values.update(kwargs)
+    noise=kwargs.pop("alignment_noise",None)
+    if noise is None:noise=_inherited_noise(module)
     context=(module,values.get("img_ids"),values.get("timestep"),
         values.get("num_ref_tokens",0) if values.get("kv_cache_mode")=="extract" else 0,
-        values.get("ref_fixed_timestep",0.))
+        values.get("ref_fixed_timestep",0.),noise)
     _contexts.set(_contexts.get()+(context,))
+    return args,kwargs
 
 
 def _leave(module,args,kwargs,output):

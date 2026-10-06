@@ -8,7 +8,7 @@ import torch
 
 
 @pytest.mark.parametrize("channels", [2, 6])
-@pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual"])
+@pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow"])
 def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channels, kind):
     import numpy as np
     from PIL import Image
@@ -33,6 +33,13 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     target.save_pretrained(directory)
     resolved = resolve_vae_source(f"file:{directory}", arch="sensenova_sdxl_chimera")
     prediction = prediction_contract(kind, latent_mean=[.1, -.2, .3, -.4], latent_centered_second_moment=.6)
+    if kind == "polar_tangent_flow":
+        from core.models.sensenova_sdxl_chimera.unet import install_polar_radial_head
+        head = install_polar_radial_head(native["unet"])
+        native["manifest"]["format_version"] = 4
+        native["config"]["format_version"] = 4
+        native["config"]["polar_radial_head"] = dict(version=1,
+            source="conditioned_mid_block", mid_channels=head.mid_channels)
     trainer = SimpleNamespace(
         unet=native["unet"], vae=native["vae"], condition_bridge=native["condition_bridge"],
         chimera_manifest=native["manifest"], chimera_runtime_config=native["config"],
@@ -65,7 +72,11 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
         added_cond_kwargs=dict(text_embeds=torch.randn(1, 1280), time_ids=torch.ones(1, 6)))
     def step(model, contract, optimizer):
         optimizer.zero_grad()
-        output = unet_forward(model, latent, timestep, prediction=contract, **kwargs)
+        if kind == "polar_tangent_flow":
+            from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
+            output = forward_prediction(model, latent, timestep, prediction=contract, **kwargs).full_velocity
+        else:
+            output = unet_forward(model, latent, timestep, prediction=contract, **kwargs)
         (output - 1).square().mean().backward()
         optimizer.step()
         return output
@@ -175,7 +186,7 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     # Source/target contract drift is rejected before tensor loading.
     config_path = saved/"config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    config["vae_alignment"]["source_prediction"]["type"] = "polar_tangent_flow"
+    config["vae_alignment"]["source_prediction"]["type"] = "invalid"
     config_path.write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(ValueError, match="documents disagree"):
         preflight_chimera_artifact(str(saved))

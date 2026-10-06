@@ -43,7 +43,6 @@ from .flow import (
     polar_tangent_projection,
 )
 from .prefix import encode_chimera_conditioning
-from .unet import polar_unet_forward
 
 
 @dataclass(frozen=True)
@@ -236,12 +235,6 @@ def _unet_polar(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     device = sample.device
     dtype = sample.dtype
-    _centered, radius, direction = polar_state(
-        sample,
-        timestep,
-        latent_mean=prediction["latent_mean"],
-        radius_floor=prediction["radius_floor"],
-    )
     is_v4 = prediction.get("type") == FLOW_V4_PREDICTION
     encoder_hidden_states = conditioning.encoder_hidden_states.to(
         device=device, dtype=dtype
@@ -271,11 +264,12 @@ def _unet_polar(
     )
     set_chimera_attention_context(unet, context)
     expanded_timestep = timestep.to(device=device).expand(sample.shape[0])
-    raw_tangent, radial = polar_unet_forward(
+    from .polar_vae_alignment import polar_forward
+    radial, tangent, direction, radius = polar_forward(
         unet,
-        direction.to(dtype=dtype),
+        sample,
         expanded_timestep,
-        log_radius=radius.clamp_min(prediction["radius_floor"]).log(),
+        prediction=prediction,
         encoder_hidden_states=encoder_hidden_states,
         encoder_attention_mask=conditioning.attention_mask.to(device=device),
         added_cond_kwargs={
@@ -284,7 +278,6 @@ def _unet_polar(
         },
         return_dict=False,
     )
-    tangent = polar_tangent_projection(raw_tangent, direction)
     return radial, tangent, direction, radius
 
 

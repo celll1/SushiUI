@@ -537,19 +537,19 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         repa_handle = arm_spatial_tap(trainer._repa_tap_module, site)
     try:
         if is_polar:
-            raw_tangent, radial_prediction = polar_unet_forward(
-                trainer.unet,
-                model_input,
-                timesteps,
-                log_radius=log_radius,
-                encoder_hidden_states=conditioning,
+            polar_kwargs = dict(encoder_hidden_states=conditioning,
                 encoder_attention_mask=context_mask,
                 added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
-                return_dict=False,
-            )
-            prediction = polar_tangent_projection(
-                raw_tangent, polar_target.direction
-            )
+                return_dict=False)
+            if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
+                from core.models.sensenova_sdxl_chimera.polar_vae_alignment import polar_forward
+                radial_prediction, prediction, _, _ = polar_forward(
+                    trainer.unet, noisy, timesteps,
+                    prediction=prediction_contract, **polar_kwargs)
+            else:
+                raw_tangent, radial_prediction = polar_unet_forward(
+                    trainer.unet, model_input, timesteps, log_radius=log_radius, **polar_kwargs)
+                prediction = polar_tangent_projection(raw_tangent, polar_target.direction)
         else:
             from core.models.sensenova_sdxl_chimera.vae_alignment import unet_forward
             prediction = unet_forward(

@@ -68,13 +68,12 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     from PIL import Image
     from diffusers import AutoencoderKL,AutoencoderKLQwenImage
     from core.models.anima.anima_models import Anima
-    from core.models.anima.vae_alignment import initialize_swap
     from core.models.anima.residual_unet import native_config,restore_topology
     from core.models.common.vae_source import resolve_vae_source
     from core.models.components.wiring import ANIMA_WIRING
     from core.training.arch.anima import AnimaArchHandler
     from core.training.ops.anima_ops import vae_encode
-    from core.training.vae_swap import validate_latent_io
+    from core.training.vae_swap import validate_latent_io,apply_latent_space,preflight_vae_swap,initialization_mode
     from core.training.base_trainer import BaseTrainer
     from core.rewiring.spec import build_spec,OPERATORS
     teacher=AutoencoderKLQwenImage(base_dim=4,z_dim=old_c,dim_mult=[1,1,1,1],num_res_blocks=1,
@@ -92,7 +91,7 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
             down_factor=[2,2],**OPERATORS)],native_config(value)))
     trainer=SimpleNamespace(transformer=value,vae=teacher,
         config={"training_method":"full_finetune","vae_swap_calibration_samples":2,
-            "vae_swap_calibration_resolution":128},device="cpu",weight_dtype=torch.float32,
+            "vae_swap_calibration_resolution":128,"vae_swap_source":resolved.source},device="cpu",weight_dtype=torch.float32,
         vae_dtype=torch.float32,wiring=ANIMA_WIRING.replace(latent_channels=old_c),
         text_encoder=None,text_encoder_2=None,log_prefix="[SyntheticAnima]",is_anima=True,
         _check_stop_requested=lambda:None)
@@ -101,7 +100,9 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     trainer.move_main_model_to_cpu=lambda:value.to("cpu")
     trainer.move_main_model_to_gpu=lambda:value.to("cpu")
     trainer.move_vae_to_cpu=lambda:trainer.vae.to("cpu")
-    initialize_swap(trainer,resolved,handler=trainer.arch)
+    assert initialization_mode(trainer.config,"anima")=="paired_spatial"
+    preflight_vae_swap(trainer.config,arch="anima",method="full_finetune",bundle_vae_explicit_false=False)
+    apply_latent_space(trainer,None)
     assert trainer.wiring.vae_scale_factor==16 and trainer.wiring.latent_channels==new_c
     assert BaseTrainer._arch_pixel_align(trainer)==64
     assert value._residual_unet_spec["regions"][0]["id"]=="s"

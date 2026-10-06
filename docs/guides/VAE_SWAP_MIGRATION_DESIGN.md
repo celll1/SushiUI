@@ -8,6 +8,33 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+公式Krea全DiT・公式Qwen3-VL TEで、Qwen 2.1 VAEへの交換生成を比較した。
+現在のgeneral ratingを再確認した40枚で本番Full trainerの校正hookを実行し、
+teacherのencode入力40回がB×3×1×256×256であること、target crop512、ready bridgeを確認。
+C16/8x→C64/16x、生成は1024px・24steps・CFG4・seed63で狐/青い本、赤いリンゴ/黄色い洋梨、
+青い車/黒い車輪の3promptを使った。元codecの3条件と交換codecの11条件がdecodeまで完走。
+通常paired変換は単色へ崩れた。中心行列をSVD行直交化したGaussianとvelocity residualを
+合わせる候補、および出力3×3 kernelの64反復逆写像（ridge=1e-5）を併用する候補では、
+3promptで主要な対象・色・配置を認識できた。ぼけ・格子状の細部・局所的な色異常は残る。
+反復逆写像は狐の色異常を一部減らしたが、3条件を通じた鮮明さの明確な優位は確認していない。
+同じ狐で既定2段U-netを併用するとavg/RMS双方で顔・手・本の形が大きく崩れ、併用画質は未受入。
+U-netなしの3prompt/1seedの候補比較に限る結果であり、本番noise policyは切り替えない。
+学習更新・checkpoint保存復元は既存の公開API step1→2→3の機能受入であり、今回の比較は追加学習しない。
+画像tokenは4096→1024。今回のdenoise観測は元codec約93.4〜97.5秒、交換・U-netなし約28.9〜30.4秒、
+狐のU-net併用約18.9秒。読込・校正・decodeを含む時間や汎用throughputの受入ではない。
+画像・校正kernel・条件embeddings・比較scriptはignored localのみ。専用DB run/datasetは作成していない。
+
+次のSDXL実重み検証のため、[Stability AI公式ベース](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0)の
+`sd_xl_base_1.0.safetensors`を検証用D: `local/verification/sdxl_base_weights/`へ取得した。
+revisionは`462165984030d82259a11f4367a4eed129e94a7b`、サイズ6,938,078,334 bytes、
+SHA-256は`31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`でLFS hashと一致。
+共通model判定がsdxl、2515 tensor、label embeddingが1280×2816であることを
+CUDA未初期化で確認した。取得とheader確認であり、SDXL交換VAEの学習・画質受入ではない。
+
+現在のKrea全3shardも、公式`krea/Krea-2-Raw`の配布metadataと全SHA-256を再照合した。
+revision `6b0ece7fffb640c5e3bcbe0a7f10f66b8e60a603`の各transformer shardと完全一致。
+provenanceと検証logはignored localへ保持し、元M:の重みは変更していない。
+
 動画校正の時間補間にもsource/targetの`VideoCodecContract`を渡すよう、H3/LTXを配線した。
 単なるlatent番号の補間ではなく、各codecのpixel-frame範囲の中心でteacherを線形補間する。
 両clockのpixel clip長の不一致、片側だけのclock、宣言とclockのchannel/stride不一致を拒否する。

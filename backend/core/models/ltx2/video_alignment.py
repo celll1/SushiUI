@@ -56,7 +56,8 @@ def install_video_alignment(model, alignment, contract):
             contract.image.pixel_channels != declaration["input_channels"]):
         raise ValueError("LTX target codec disagrees with the paired alignment")
     graph = getattr(inner, "_residual_unet_spec", None)
-    resize_latent_io(inner, LTX2_WIRING.latent_io, max(declaration["old_channels"], declaration["new_channels"]))
+    inner._video_resize_report = resize_latent_io(inner, LTX2_WIRING.latent_io,
+        max(declaration["old_channels"], declaration["new_channels"]))
     scales = [contract.temporal_scale, contract.image.spatial_scale, contract.image.spatial_scale]
     inner.register_to_config(vae_scale_factors=scales)
     inner.rope.scale_factors = tuple(scales)

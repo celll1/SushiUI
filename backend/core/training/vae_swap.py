@@ -16,15 +16,31 @@ from typing import Any, Dict, Optional, Tuple
 _LEGACY_NEUTRAL = ("", "none", "sdxl")
 
 
+def latent_alignment_pair(root):
+    """Find the registered boundary through backbone wrappers."""
+    pending, seen = [root], set()
+    while pending:
+        module = pending.pop()
+        if module is None or id(module) in seen:
+            continue
+        seen.add(id(module))
+        for name in ("vae_latent_bridge", "_video_latent_alignment"):
+            pair = getattr(module, name, None)
+            if pair is not None:
+                return pair
+        pending.extend(getattr(module, name, None) for name in ("unet", "transformer"))
+    return None
+
+
 def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera") else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera"):
-        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, Chimera and Ideogram; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2"):
+        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, Chimera, Ideogram and LTX; select zero for this architecture")
     return mode
 
 
@@ -165,7 +181,7 @@ def apply_latent_space(trainer, declared) -> None:
     if swap_source:
         handler = get_arch_handler(trainer)
         root = getattr(trainer, handler.latent_io_root_attr, None) if handler.latent_io_root_attr else trainer
-        pair = getattr(root, "vae_latent_bridge", None) or getattr(getattr(root,"unet",None),"vae_latent_bridge",None)
+        pair = latent_alignment_pair(root)
         if pair is not None and swap_source == pair.declaration["source"]:
             return
         apply_configured_vae_swap(trainer, swap_source)
@@ -389,7 +405,7 @@ def validate_latent_io(trainer) -> list:
     root = (trainer if handler.latent_io_root_attr is None
             else getattr(trainer, handler.latent_io_root_attr, None))
     if spec is not None and root is not None and wiring.latent_channels:
-        pair = getattr(root, "vae_latent_bridge", None) or getattr(getattr(root,"unet",None),"vae_latent_bridge",None)
+        pair = latent_alignment_pair(root)
         channels = (max(pair.declaration["old_channels"], pair.declaration["new_channels"])
                     if pair is not None else wiring.latent_channels)
         problems.extend(verify_latent_io(root, spec, channels))

@@ -51,6 +51,20 @@ class AnimaArchHandler(ArchHandler):
         from core.models.anima.vae_alignment import calibrate
         calibrate(trainer,datasets)
 
+    def apply_vae_swap(self,trainer,resolved,module=None):
+        pair=getattr(trainer.transformer,"vae_latent_bridge",None)
+        if pair is None:
+            return super().apply_vae_swap(trainer,resolved,module=module)
+        if module is None and resolved.source!=pair.declaration["source"]:
+            raise ValueError("Changing an aligned Anima VAE requires a fresh base checkpoint")
+        from dataclasses import replace
+        from core.models.components.latent_io import ResizeReport
+        trainer.vae_identity=replace(resolved,state_dict=None)
+        trainer.vae_latent_channels=pair.declaration["new_channels"]
+        trainer.wiring=self.resolve_wiring(trainer)
+        width=trainer.transformer.in_channels
+        return ResizeReport((),width,width,width,0,0)
+
     def lora_adapter_class(self):
         from core.training.adapters import AnimaLoRAAdapter
         return AnimaLoRAAdapter

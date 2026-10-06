@@ -4445,7 +4445,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1" />
                       </label>
                       {baseModelArch !== "acestep" && <label className="block text-xs text-gray-400">
-                        Calibration resolution
+                        Target calibration resolution
                         <select value={params.vae_swap_calibration_resolution ?? ""}
                           onChange={(e) => updateParam("vae_swap_calibration_resolution",
                             e.target.value === "" ? undefined : Number(e.target.value) as 128 | 256 | 512)}

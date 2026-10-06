@@ -202,6 +202,18 @@ class SpatialFlowNoiseSnapshot(nn.Module):
         return residual if convention=="eps_minus_x0" else -residual
 
 
+def calibration_source_side(side, declaration):
+    if type(side) is not int or side < 1:
+        raise ValueError("Calibration image side must be a positive integer")
+    old, new = declaration["old_scale"], declaration["new_scale"]
+    if any(type(scale) is not int or scale < 1 for scale in (old, new)):
+        raise ValueError("Calibration requires positive codec scales")
+    # Encode a smaller teacher image instead of pooling nonlinear VAE features.
+    if 1 < old < new and side % new == 0:
+        return side // new * old
+    return side
+
+
 def calibration_grid(latent, shape):
     """Resample the teacher only; runtime never reconstructs its larger grid."""
     if latent.ndim not in (4, 5) or len(shape) != 2 or any(n < 1 for n in shape):

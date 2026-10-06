@@ -29144,7 +29144,7 @@ components:
           type: integer
           enum: [128, 256, 512]
           default: 256
-          description: Image/video calibration crop size; unused for ACE-Step audio calibration. The target VAE grid owns the token count; old clean latents are resampled to this grid before fitting.
+          description: Target image/video calibration crop size; unused for ACE-Step audio calibration. The target VAE grid owns the token count. Image VAE teachers with stronger target spatial compression encode a smaller image at target crop size multiplied by source scale divided by target scale, preserving their native latent grid instead of pooling encoded features. Equal-scale, expanded-grid, RGB pixel and video teacher paths retain latent resampling as needed. Saved calibrated bridges restore without recalibration.
         sensenova_gen_patch:
           type: 'integer'
           minimum: 0

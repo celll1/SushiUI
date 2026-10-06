@@ -130,7 +130,7 @@ def calibrate(trainer,datasets):
     from api.param_defaults import TRAINING_DEFAULTS
     from PIL import Image, ImageOps
     import numpy as np
-    from core.models.components.latent_adapter import PairedSpatialCalibration
+    from core.models.components.latent_adapter import PairedSpatialCalibration, calibration_source_side
     from core.models.components.vae_registry import normalize
     from core.training.optimizer_residency import encoder_refill_residency
     from core.training.optimizer_residency import park_optimizer_state
@@ -144,12 +144,14 @@ def calibrate(trainer,datasets):
         raise ValueError("Qwen VAE calibration requires training images")
     paths = [paths[i] for i in torch.linspace(0,len(paths)-1,min(count,len(paths))).long().tolist()]
     pair = getattr(trainer.transformer,NAME)
+    source_side = calibration_source_side(side, pair.declaration)
     fit = PairedSpatialCalibration(pair,ridge=1e-2)
     text_device = next(trainer.text_encoder.parameters()).device
     callback = getattr(trainer,"_vae_alignment_progress_callback",None)
     def encode(module,path,*,native):
         with Image.open(path) as image:
-            image = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGBA"),(side,side))
+            image_side = source_side if native else side
+            image = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGBA"),(image_side,image_side))
             pixels = torch.from_numpy(np.array(image).copy()).permute(2,0,1).float()/127.5-1
         pixels = pixels[None,:,None].to(device=trainer.device,dtype=trainer.vae_dtype)
         z = module.encode(pixels).latent_dist.mode()

@@ -151,6 +151,8 @@ def calibrate_images(trainer, datasets, *, model, pending_key,
     paths = [paths[i] for i in torch.linspace(0, len(paths)-1, min(count, len(paths))).long().tolist()]
     old, source_spec = pending
     pair = getattr(model, NAME)
+    from .latent_adapter import calibration_source_side
+    source_side = calibration_source_side(side, pair.declaration)
     fit = PairedSpatialCalibration(pair, ridge=1e-2)
     if getattr(trainer,"is_lens",False):
         # Lens's mxfp4 allocations are released only by discarding the encoder.
@@ -166,7 +168,8 @@ def calibrate_images(trainer, datasets, *, model, pending_key,
 
     def encode(module, path, source=False):
         with Image.open(path) as image:
-            pixels = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGB"), (side, side))
+            image_side = source_side if source else side
+            pixels = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGB"), (image_side, image_side))
             pixels = torch.from_numpy(np.array(pixels).copy()).permute(2, 0, 1).float()/127.5-1
         pixels = pixels[None].to(device=trainer.device, dtype=trainer.vae_dtype)
         if source and source_spec.latent_ndim == 5:

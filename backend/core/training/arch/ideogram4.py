@@ -1,10 +1,4 @@
-"""
-Ideogram4ArchHandler — P0/P1 stub handler for arch "ideogram4".
-
-Empty subclass: name + wiring spec are real; every canonical method raises
-NotImplementedError. Bodies are moved from base_trainer.py in phases P3-P7.
-Nothing calls these until a later phase flips the corresponding dispatcher.
-"""
+"""Ideogram dual-DiT training, calibration and latent-grid ownership."""
 
 from __future__ import annotations
 
@@ -37,6 +31,31 @@ class Ideogram4ArchHandler(ArchHandler):
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
     supplies_predicted_latent = True
+
+    def resolve_wiring(self,trainer):
+        from core.models.components.latent_adapter import NormalizedImageVAE
+        vae = getattr(trainer,"vae",None)
+        if isinstance(vae,NormalizedImageVAE):
+            self.pixel_align = vae.spatial_scale_factor*2
+            return self.wiring.replace(latent_channels=vae.config.latent_channels,
+                vae_scale_factor=vae.spatial_scale_factor,vae_norm="identity",vae_norm_pack=1)
+        return getattr(trainer,"wiring",None) or self.wiring
+
+    def calibrate_before_training(self,trainer,datasets,bucket_manager):
+        from core.models.ideogram4.vae_alignment import calibrate
+        calibrate(trainer,datasets)
+
+    def apply_vae_swap(self,trainer,resolved,module=None):
+        from core.models.ideogram4.vae_alignment import apply_swap
+        return apply_swap(trainer,resolved,handler=self,module=module)
+
+    def check_vae_compatibility(self,facts,*,trainer=None,base_model_path=None):
+        scale = facts.get("scale_factor")
+        if facts.get("ndim") not in (4,5) or type(scale) is not int or scale < 1:
+            return False,"Ideogram requires an image codec with declared spatial compression"
+        if scale%8 and 8%scale:
+            return False,"Ideogram requires integer spatial compression relative to 8x"
+        return True,None
 
     def lora_adapter_class(self):
         from core.training.adapters import Ideogram4LoRAAdapter

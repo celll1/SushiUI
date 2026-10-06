@@ -71,6 +71,8 @@ def load_components(trainer) -> None:
     trainer.noise_scheduler = trainer.scheduler
 
     trainer.vae = trainer.vae.to(dtype=trainer.vae_dtype)
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer,components.get("declared_vae"))
 
     # A training process is DEQUANT-ONLY. ``SUSHI_FP8_SCALED_MM`` is inherited
     # from the backend (training_process.py does os.environ.copy()), and the
@@ -392,13 +394,12 @@ def train_step(
     from core.training.ops.crop_decode_loss import (
         compute_crop_decode_loss, crop_decode_or_x0_capture_needed)
     if crop_decode_or_x0_capture_needed(trainer):
-        from core.models.lens.lens_pipeline_ops import _unpatchify
         from core.training.arch.ideogram4 import Ideogram4ArchHandler
 
         # Unpatchify packed sequence [B, N, C_packed] -> 2D [B, C, H*2, W*2]
         def _to_2d(seq_t: torch.Tensor) -> torch.Tensor:
-            x_4d = seq_t.reshape(B, latent_h, latent_w, -1).permute(0, 3, 1, 2).contiguous()
-            return _unpatchify(x_4d)
+            return seq_t.reshape(B,latent_h,latent_w,2,2,-1).permute(0,5,1,3,2,4).reshape(
+                B,-1,latent_h*2,latent_w*2)
 
         latents_2d = _to_2d(latents)
         noisy_2d = _to_2d(noisy)

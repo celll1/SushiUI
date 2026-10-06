@@ -2,6 +2,84 @@
 import torch
 
 
+def pair_metadata(transformer, unconditional_transformer):
+    from core.models.components.spatial_swap import artifact_metadata
+    first = artifact_metadata(transformer)
+    second = artifact_metadata(unconditional_transformer) if unconditional_transformer is not None else {}
+    if first != second:
+        raise ValueError("Ideogram conditional and unconditional alignment declarations disagree")
+    return first
+
+
+def apply_swap(trainer,resolved,*,handler,module=None):
+    from dataclasses import replace
+    from core.models.components.latent_io import ResizeReport
+    model,twin = trainer.transformer,trainer.transformer_uncond
+    pair = getattr(model,"vae_latent_bridge",None)
+    if pair is not None:
+        pair_metadata(model,twin)
+        if module is None and resolved.source != pair.declaration["source"]:
+            raise ValueError("Changing an aligned Ideogram VAE requires a fresh base checkpoint")
+        trainer.vae_identity = replace(resolved,state_dict=None)
+        trainer.vae_latent_channels = pair.declaration["new_channels"]
+        trainer.wiring = handler.resolve_wiring(trainer)
+        width = model.in_channels//4
+        return ResizeReport((),width,width,width,0,0)
+    if module is not None:
+        raise ValueError("Restoring an Ideogram swapped codec requires its saved paired alignment")
+    from api.param_defaults import TRAINING_DEFAULTS
+    mode = trainer.config.get("vae_swap_new_channel_init",TRAINING_DEFAULTS["vae_swap_new_channel_init"])
+    if mode not in ("auto","paired_spatial"):
+        raise ValueError("Ideogram spatial swaps require paired_spatial initialization")
+    return initialize_swap(trainer,resolved,handler=handler)
+
+
+def initialize_swap(trainer,resolved,*,handler):
+    from copy import deepcopy
+    from core.models.components.spatial_swap import initialize_image_swap
+    from core.training.ops.training_method import is_full_finetune
+    if not is_full_finetune(trainer) or not getattr(trainer,"ideogram4_train_uncond",False):
+        raise ValueError("Ideogram spatial swaps require full_finetune with both DiTs trained")
+    model, twin = trainer.transformer, trainer.transformer_uncond
+    report = initialize_image_swap(trainer,resolved,handler=handler,model=model,
+        old_channels=model.in_channels//4,source_wiring=handler.resolve_wiring(trainer),patch_size=2,
+        resize=lambda channels:resize_pair(model,twin,channels),pending_key="_ideogram_vae_calibration_source")
+    if hasattr(model,"vae_latent_bridge"):
+        twin.add_module("vae_latent_bridge",deepcopy(model.vae_latent_bridge))
+    return report
+
+
+def calibrate(trainer,datasets):
+    from core.models.components.spatial_swap import calibrate_images
+    if not hasattr(trainer,"_ideogram_vae_calibration_source"):
+        return
+    from core.training.optimizer_residency import park_optimizer_state
+    from core.training.base_trainer import all_optimizers
+    twin = trainer.transformer_uncond
+    devices = {name:tensor.device for name,tensor in (*twin.named_parameters(),*twin.named_buffers())}
+    with park_optimizer_state(all_optimizers(trainer),tuple(twin.parameters())):
+        try:
+            twin.to("cpu")
+            calibrate_images(trainer,datasets,model=trainer.transformer,pending_key="_ideogram_vae_calibration_source")
+            twin.vae_latent_bridge.load_state_dict(trainer.transformer.vae_latent_bridge.state_dict(),strict=True)
+        finally:
+            current = dict((*twin.named_parameters(),*twin.named_buffers()))
+            for name,device in devices.items():
+                tensor = current[name]
+                if tensor.device != device:
+                    tensor.data = tensor.data.to(device)
+
+
+def restore_model_alignment(model,declaration):
+    from core.models.components.spatial_swap import install
+    if declaration is None:
+        return
+    channels = max(declaration["old_channels"],declaration["new_channels"])
+    if model.in_channels != channels*4 or model.final_layer.linear.out_features != channels*4:
+        raise ValueError("Ideogram native IO disagrees with the saved internal latent width")
+    install(model,declaration)
+
+
 def resize_pair(transformer, unconditional_transformer, channels):
     from torch import nn
     from core.models.components.latent_io import resize_latent_io, ResizeReport

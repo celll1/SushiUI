@@ -437,21 +437,22 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
     img_np = np.array(image).astype(np.float32) / 127.5 - 1.0
     img_tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=vae.dtype)
 
-    grid_h = height // GRID_ALIGN
-    grid_w = width // GRID_ALIGN
     patch = PATCH_SIZE
 
     # (1, 32, grid_h*2, grid_w*2)
     raw = vae.encode(img_tensor).latent_dist.mode()
     ae_channels = raw.shape[1]
+    grid_h,grid_w = raw.shape[-2]//patch,raw.shape[-1]//patch
 
     # Patchify (inverse of the decode unpatchify): -> (1, grid_h*grid_w, 128)
     z = raw.view(1, ae_channels, grid_h, patch, grid_w, patch)
     z = z.permute(0, 2, 4, 3, 5, 1).contiguous()
     z = z.view(1, grid_h * grid_w, ae_channels * patch * patch)
 
-    mean, std = _bn_stats(vae, z.device, z.dtype)
-    z = (z - mean) / std
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if not isinstance(vae,NormalizedImageVAE):
+        mean, std = _bn_stats(vae, z.device, z.dtype)
+        z = (z - mean) / std
     return z.to(dtype)
 
 
@@ -460,8 +461,10 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
 def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int, color_flatten_strength: int = 0) -> Image.Image:
     """Decode packed latents (1, grid_h*grid_w, 128) -> PIL Image."""
     z = latents.to(vae.dtype)
-    mean, std = _bn_stats(vae, z.device, z.dtype)
-    z = z * std + mean
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if not isinstance(vae,NormalizedImageVAE):
+        mean, std = _bn_stats(vae, z.device, z.dtype)
+        z = z * std + mean
 
     patch = PATCH_SIZE
     ae_channels = z.shape[-1] // (patch * patch)

@@ -206,11 +206,13 @@ def preflight_directory(path, *, load_unconditional=True):
     return cond, configs
 
 
-def save_checkpoint(transformer, unconditional_transformer, path, *, metadata=None, max_shard_bytes=None):
+def save_checkpoint(transformer, unconditional_transformer, path, *, metadata=None, max_shard_bytes=None, vae=None):
     import json
     from core.models.common.single_file_format import dedup_tensors, save_single_file_state, DEFAULT_MAX_SHARD_BYTES
     from core.rewiring.spec import META_VERSION, META_SPEC, META_HASH
     topology_metadata = pair_topology_metadata(transformer,unconditional_transformer)
+    from .vae_alignment import pair_metadata
+    alignment_metadata = pair_metadata(transformer,unconditional_transformer)
     if topology_metadata and unconditional_transformer is None:
         raise ValueError("Rewired Ideogram 4 inference export requires both transformers")
     declarations = {"transformer":native_config(transformer)}
@@ -221,12 +223,18 @@ def save_checkpoint(transformer, unconditional_transformer, path, *, metadata=No
     saved.update(model_type="ideogram4",format="pt")
     saved.update({key+"_config":json.dumps(config) for key,config in declarations.items()})
     saved.update(topology_metadata)
+    saved.update(alignment_metadata)
     named = (("transformer."+key,value) for key,value in transformer.state_dict().items())
     if unconditional_transformer is not None:
         from itertools import chain
         named = chain(named,(("unconditional_transformer."+key,value)
                             for key,value in unconditional_transformer.state_dict().items()))
     named = list(named)
+    if vae is not None:
+        from core.models.components.latent_adapter import NormalizedImageVAE
+        if isinstance(vae,NormalizedImageVAE):
+            vae = vae.inner
+        named.extend(("vae."+key,value) for key,value in vae.state_dict().items())
     state,dropped = dedup_tensors(named)
     # Both backbones need complete keys even when a caller shares storage.
     for key,value in named:

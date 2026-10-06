@@ -1,10 +1,4 @@
-"""
-SDXLArchHandler — P0/P1 stub handler for arch "sdxl".
-
-Empty subclass: name + wiring spec are real; every canonical method raises
-NotImplementedError. Bodies are moved from base_trainer.py in phases P3-P7.
-Nothing calls these until a later phase flips the corresponding dispatcher.
-"""
+"""SDXL training and image-codec contracts."""
 
 from __future__ import annotations
 
@@ -38,6 +32,14 @@ class SDXLArchHandler(ArchHandler):
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
     supplies_predicted_latent = True
+
+    def resolve_wiring(self,trainer):
+        from core.models.components.sd_vae_alignment import resolve_wiring
+        return resolve_wiring(self,trainer)
+
+    def calibrate_before_training(self,trainer,datasets,bucket_manager):
+        from core.models.components.sd_vae_alignment import calibrate
+        calibrate(trainer,datasets)
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # Same dual convention as SD15ArchHandler -- see that docstring; the

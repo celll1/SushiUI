@@ -165,7 +165,7 @@ def apply_latent_space(trainer, declared) -> None:
     if swap_source:
         handler = get_arch_handler(trainer)
         root = getattr(trainer, handler.latent_io_root_attr, None) if handler.latent_io_root_attr else trainer
-        pair = getattr(root, "vae_latent_bridge", None)
+        pair = getattr(root, "vae_latent_bridge", None) or getattr(getattr(root,"unet",None),"vae_latent_bridge",None)
         if pair is not None and swap_source == pair.declaration["source"]:
             return
         apply_configured_vae_swap(trainer, swap_source)
@@ -368,7 +368,7 @@ def validate_latent_io(trainer) -> list:
     root = (trainer if handler.latent_io_root_attr is None
             else getattr(trainer, handler.latent_io_root_attr, None))
     if spec is not None and root is not None and wiring.latent_channels:
-        pair = getattr(root, "vae_latent_bridge", None)
+        pair = getattr(root, "vae_latent_bridge", None) or getattr(getattr(root,"unet",None),"vae_latent_bridge",None)
         channels = (max(pair.declaration["old_channels"], pair.declaration["new_channels"])
                     if pair is not None else wiring.latent_channels)
         problems.extend(verify_latent_io(root, spec, channels))

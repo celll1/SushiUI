@@ -62,6 +62,70 @@ def test_prediction_coefficients_native_conditioning_and_gradients(xl,old,new,no
 
 
 @pytest.mark.parametrize("arch",["sd15","sdxl"])
+@pytest.mark.parametrize("old,new",[(4,8),(8,4)])
+def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new):
+    from types import SimpleNamespace
+    import numpy as np
+    from PIL import Image
+    from diffusers import AutoencoderKL,UNet2DConditionModel
+    from core.models.components.sd_vae_alignment import initialize_swap
+    from core.models.components.vae_wrapper import SDXLVAEWrapper
+    from core.models.common.vae_source import resolve_vae_source
+    from core.training.arch import get_arch_handler
+    from core.training.ops.sd_sdxl_ops import vae_encode,train_step
+    from core.training.vae_swap import validate_latent_io
+    from core.training.base_trainer import BaseTrainer
+    from backend.tests.repa_sd_unet_tap_test import _tiny_unet,_train_step_trainer,CROSS_DIM,POOLED_DIM
+    model=UNet2DConditionModel.from_config(_tiny_unet(arch).config,in_channels=old,out_channels=old)
+    teacher=AutoencoderKL(latent_channels=old,block_out_channels=(4,)*4,norm_num_groups=4,
+        down_block_types=("DownEncoderBlock2D",)*4,up_block_types=("UpDecoderBlock2D",)*4,
+        scaling_factor=.18)
+    target=AutoencoderKL(latent_channels=new,block_out_channels=(4,)*5,norm_num_groups=4,
+        down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5,
+        scaling_factor=.7,shift_factor=.2)
+    directory=tmp_path/"target"; target.save_pretrained(directory)
+    resolved=resolve_vae_source(f"file:{directory}",arch=arch)
+    trainer=_train_step_trainer(arch,model,[])
+    if arch=="sdxl":
+        with patch.object(AutoencoderKL,"from_pretrained",return_value=teacher):
+            trainer.vae=SDXLVAEWrapper(device="cpu",dtype=torch.float32)
+    else:trainer.vae=teacher
+    trainer.vae_dtype=trainer.weight_dtype=torch.float32
+    trainer.text_encoder=trainer.text_encoder_2=None
+    trainer.config.update(vae_swap_calibration_samples=2,vae_swap_calibration_resolution=128)
+    trainer.arch=get_arch_handler(trainer)
+    trainer.wiring=trainer.arch.wiring.replace(latent_channels=old)
+    trainer._main_model_module=lambda:model
+    trainer.move_main_model_to_cpu=lambda:model.to("cpu")
+    trainer.move_main_model_to_gpu=lambda:model.to("cpu")
+    trainer.move_vae_to_cpu=lambda:trainer.vae.to("cpu")
+    trainer._check_stop_requested=lambda:None
+    initialize_swap(trainer,resolved,handler=trainer.arch)
+    assert model.config.in_channels==model.config.out_channels==max(old,new)
+    assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==16
+    assert BaseTrainer._arch_pixel_align(trainer)==16
+    assert validate_latent_io(trainer)==[]
+    images=[]
+    for i in range(2):
+        path=tmp_path/f"synthetic{i}.png"
+        Image.fromarray(np.random.default_rng(i).integers(0,256,(128,128,3),dtype=np.uint8)).save(path)
+        images.append({"image_path":str(path)})
+    trainer.arch.calibrate_before_training(trainer,[SimpleNamespace(items=images)],None)
+    assert model.vae_latent_bridge.ready
+    with torch.no_grad():latent=vae_encode(trainer,torch.randn(2,3,128,192))
+    assert latent.shape==(2,new,8,12)
+    assert trainer.vae.decode(latent).sample.shape==(2,3,128,192)
+    loss,reported,_=train_step(trainer,latents=latent,text_embeddings=torch.randn(2,5,CROSS_DIM[arch]),
+        pooled_embeddings=torch.randn(2,POOLED_DIM) if arch=="sdxl" else None)
+    assert torch.isfinite(loss) and reported>=0
+    loss.backward()
+    assert model.vae_latent_bridge.input.projection.weight.grad.abs().sum()>0
+    assert model.vae_latent_bridge.output.projection.weight.grad.abs().sum()>0
+    assert not hasattr(trainer,"_sd_vae_calibration_source")
+    assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("arch",["sd15","sdxl"])
 @pytest.mark.parametrize("mixed",[False,True])
 @pytest.mark.parametrize("process",["ddpm","flow"])
 def test_real_train_step_preserves_external_loss_space_and_autocast(arch,mixed,process):
@@ -83,3 +147,29 @@ def test_real_train_step_preserves_external_loss_space_and_autocast(arch,mixed,p
         assert torch.isfinite(bridge.projection.weight.grad).all()
         assert bridge.projection.weight.grad.abs().sum()>0
     assert not torch.cuda.is_initialized()
+
+
+def test_identical_sdxl_codec_keeps_existing_wrapper(tmp_path):
+    from types import SimpleNamespace
+    from diffusers import AutoencoderKL
+    from core.models.components.sd_vae_alignment import initialize_swap
+    from core.models.components.vae_wrapper import SDXLVAEWrapper
+    from core.models.common.vae_source import resolve_vae_source
+    from core.training.arch.sdxl import SDXLArchHandler
+    from backend.tests.repa_sd_unet_tap_test import _tiny_unet
+    native=AutoencoderKL(latent_channels=4,block_out_channels=(4,)*4,norm_num_groups=4,
+        down_block_types=("DownEncoderBlock2D",)*4,up_block_types=("UpDecoderBlock2D",)*4)
+    directory=tmp_path/"same"; native.save_pretrained(directory)
+    resolved=resolve_vae_source(f"file:{directory}",arch="sdxl")
+    with patch.object(AutoencoderKL,"from_pretrained",return_value=native):
+        wrapper=SDXLVAEWrapper(device="cpu",dtype=torch.float32)
+    trainer=SimpleNamespace(unet=_tiny_unet("sdxl"),vae=wrapper,vae_dtype=torch.float32,
+        weight_dtype=torch.float32,config={})
+    trainer.arch=SDXLArchHandler(trainer)
+    trainer.wiring=trainer.arch.wiring
+    conv=trainer.unet.conv_in
+    report=initialize_swap(trainer,resolved,handler=trainer.arch)
+    assert report.replaced==() and trainer.unet.conv_in is conv
+    assert trainer.vae is wrapper
+    assert not hasattr(trainer.unet,"vae_latent_bridge")
+    assert not hasattr(trainer,"_sd_vae_calibration_source")

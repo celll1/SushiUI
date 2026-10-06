@@ -4690,17 +4690,8 @@ class BaseTrainer(ABC):
                         f"Checkpoint: {checkpoint_path}"
                     )
 
-            self.transformer_original = components["transformer"]
-            self.vae = components["vae"]
-            self.text_encoder = components["text_encoder"]
-            self.tokenizer = components["tokenizer"]
-            self.scheduler = components["scheduler"]
-
-            # Z-Image specific: no text_encoder_2, no unet
-            self.text_encoder_2 = None
-            self.tokenizer_2 = None
-            self.unet = None
-            self.noise_scheduler = self.scheduler
+            from core.training.ops import zimage_ops as _zimage_ops
+            _zimage_ops.bind_components(self, components)
 
             self.original_scheduler = self.scheduler
 
@@ -4715,7 +4706,6 @@ class BaseTrainer(ABC):
             # Same latent-identity reinstatement as the SD/SDXL resume below: a
             # resume that leaves vae_identity unset writes a degraded declaration
             # over a correct one on the next save.
-            from core.training.ops import zimage_ops as _zimage_ops
             _zimage_ops._apply_latent_space(self, components.get("declared_vae"))
 
             # Setup attention backend if non-native (Z-Image checkpoint resume)

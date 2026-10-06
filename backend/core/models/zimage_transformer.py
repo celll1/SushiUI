@@ -225,7 +225,8 @@ class ZImageAttention(nn.Module):
                             pad = attention_mask.new_ones(attention_mask.shape[0], ref_len)
                             attention_mask = torch.cat([attention_mask, pad], dim=-1)
 
-        dtype = query.dtype
+        # FP32 norm weights may promote Q/K under mixed precision; V owns the matmul dtype.
+        dtype = value.dtype
         query, key = query.to(dtype), key.to(dtype)
 
         # Dispatch attention (using local implementation from zimage_utils)

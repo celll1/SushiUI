@@ -335,6 +335,8 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             "model_type": "zimage",
             "format": "pt",
         }
+        if getattr(trainer, "_zimage_base_component_directory", None):
+            metadata["zimage_base_directory"] = trainer._zimage_base_component_directory
         if trainer.train_unet and trainer.transformer is not None:
             import json
             from core.models.zimage_residual_unet import native_config, model_topology_metadata

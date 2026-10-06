@@ -380,6 +380,9 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         alignment_md=checkpoint_metadata(trainer.unet) if trainer.unet is not None else {}
         if alignment_md and (swapped is None or not trainer.train_unet):
             raise ValueError("Aligned SD export requires its trained U-Net and codec declaration")
+        if alignment_md:
+            from core.models.components.sd_vae_alignment import pipeline_metadata
+            alignment_md.update(pipeline_metadata(trainer,arch="sdxl"))
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sdxl")
         # A custom-arch checkpoint RESUMED as a base rebuilds sdxl_vae_type without
         # a resolved identity; its VAE must stay out of the 4ch LDM converter too.
@@ -412,17 +415,16 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             print(f"[SDXLFullParameterAdapter] Custom VAE ({trainer.sdxl_vae_type}) not embedded "
                   f"(referenced by metadata sushi.vae_type, reloaded on load).")
 
-        # Save Text Encoder 1/2 weights (CLIP) — skipped when a custom TE is swapped in
-        # (CLIP is unused dead weight in that checkpoint; the custom TE is saved instead).
+        # Aligned artifacts also need native CLIP for pipeline reconstruction.
         _custom_te_save = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
-        if trainer.train_text_encoder and not _custom_te_save and trainer.text_encoder is not None:
+        if (alignment_md or (trainer.train_text_encoder and not _custom_te_save)) and trainer.text_encoder is not None:
             print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 1 weights...")
             te1_state = trainer.text_encoder.state_dict()
             converted_te1 = convert_openai_text_enc_to_original(te1_state)
             for key, value in converted_te1.items():
                 combined_state_dict[f"conditioner.embedders.0.transformer.{key}"] = value.cpu()
 
-        if trainer.train_text_encoder and not _custom_te_save and trainer.text_encoder_2 is not None:
+        if (alignment_md or (trainer.train_text_encoder and not _custom_te_save)) and trainer.text_encoder_2 is not None:
             print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 2 weights (HF -> OpenCLIP)...")
             te2_state = trainer.text_encoder_2.state_dict()
             converted_te2 = convert_openclip_text_enc_to_original(te2_state)

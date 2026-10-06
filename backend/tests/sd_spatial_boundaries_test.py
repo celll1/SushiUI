@@ -131,6 +131,23 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     trainer.train_unet=True
     trainer.trains_base_weights=True
     trainer.train_text_encoder=trainer.train_text_encoder_1=trainer.train_text_encoder_2=False
+    import json
+    from transformers import CLIPTextConfig,CLIPTextModel,CLIPTextModelWithProjection,CLIPTokenizer
+    tokenizer_dir=tmp_path/"tokenizer";tokenizer_dir.mkdir()
+    (tokenizer_dir/"vocab.json").write_text(json.dumps({"!":0,"<|startoftext|>":1,"<|endoftext|>":2,"a</w>":3}),encoding="utf-8")
+    (tokenizer_dir/"merges.txt").write_text("#version: 0.2\n",encoding="utf-8")
+    trainer.tokenizer=CLIPTokenizer.from_pretrained(str(tokenizer_dir),pad_token="!",model_max_length=77)
+    def clip_config(width):
+        return CLIPTextConfig(vocab_size=4,hidden_size=width,intermediate_size=16,
+            num_hidden_layers=1,num_attention_heads=1,projection_dim=POOLED_DIM,
+            bos_token_id=1,eos_token_id=2,pad_token_id=0)
+    trainer.text_encoder=CLIPTextModel(clip_config(CROSS_DIM[arch]-(POOLED_DIM if arch=="sdxl" else 0)))
+    trainer.text_encoder_2=CLIPTextModelWithProjection(clip_config(POOLED_DIM)) if arch=="sdxl" else None
+    trainer.tokenizer_2=trainer.tokenizer if arch=="sdxl" else None
+    original_te=trainer.text_encoder
+    original_te2=trainer.text_encoder_2
+    original_te.eval()
+    if original_te2 is not None:original_te2.eval()
     trainer.bundle_vae=True
     trainer.config["vae_swap_source"]=resolved.source
     adapter=SDXLFullParameterAdapter(trainer) if arch=="sdxl" else SD15FullParameterAdapter(trainer)
@@ -139,6 +156,7 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     assert metadata["modelspec.prediction_type"]=="epsilon"
     assert "component.vae.alignment" in metadata and "unet_config" in metadata
     assert not any(key.startswith("vae.inner.") for key in state)
+    assert "text_encoder_config" in metadata and "scheduler_config" in metadata
     rebuilt=UNet2DConditionModel.from_config(model.config)
     rebuilt.load_state_dict({key:tensor for key,tensor in model.state_dict().items()
         if not key.startswith("vae_latent_bridge.")},strict=True)
@@ -162,12 +180,22 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     restore_alignment(rebuilt,shard_md,shard_state)
     assert rebuilt.vae_latent_bridge.ready
     from core.model_loader import ModelLoader
-    pipeline_class="StableDiffusionXLPipeline" if arch=="sdxl" else "StableDiffusionPipeline"
-    def components_only(source,**kwargs):
-        assert "num_in_channels" not in kwargs
-        return SimpleNamespace(unet=kwargs["unet"],vae=kwargs["vae"])
-    with patch(f"core.model_loader.{pipeline_class}.from_single_file",side_effect=components_only):
-        pipeline=ModelLoader.reconstruct_sd_sdxl_pipeline(str(path),arch,torch.float32,"cpu")
+    for artifact in (path,sharded,str(sharded).removesuffix(".index.json")):
+        with patch("core.model_loader.StableDiffusionXLPipeline.from_single_file",side_effect=AssertionError("no partial shard load")), \
+             patch("core.model_loader.StableDiffusionPipeline.from_single_file",side_effect=AssertionError("no partial shard load")):
+            pipeline=ModelLoader.reconstruct_sd_sdxl_pipeline(str(artifact),arch,torch.float32,"cpu")
+        for key,tensor in original_te.state_dict().items():
+            torch.testing.assert_close(pipeline.text_encoder.state_dict()[key],tensor,rtol=0,atol=0)
+        assert pipeline.tokenizer.special_tokens_map==trainer.tokenizer.special_tokens_map
+        assert pipeline.tokenizer.padding_side==trainer.tokenizer.padding_side
+        tokens=pipeline.tokenizer("a",padding="max_length",max_length=77,return_tensors="pt").input_ids
+        torch.testing.assert_close(pipeline.text_encoder(tokens).last_hidden_state,
+            original_te(tokens).last_hidden_state,rtol=1e-5,atol=2e-6)
+        pipeline.encode_prompt("a",device="cpu",num_images_per_prompt=1,do_classifier_free_guidance=True,
+            negative_prompt="")
+        if arch=="sdxl":
+            for key,tensor in original_te2.state_dict().items():
+                torch.testing.assert_close(pipeline.text_encoder_2.state_dict()[key],tensor,rtol=0,atol=0)
     assert pipeline.unet.vae_latent_bridge.ready
     assert pipeline.vae.spatial_scale_factor==16
     for key,tensor in model.state_dict().items():
@@ -180,20 +208,11 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     assert trainer.unet.config.in_channels==max(old,new)
     assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==16
     from core.training.ops.sd_sdxl_ops import load_components
-    trainer.model_path=str(path)
+    trainer.model_path=str(sharded)
     trainer.dtype=torch.float32
     trainer.use_flash_attention=trainer.gradient_checkpointing=trainer.debug_vram=False
-    def training_components(source,**kwargs):
-        parts=components_only(source,**kwargs)
-        parts.text_encoder=torch.nn.Linear(2,2)
-        parts.tokenizer=None
-        parts.text_encoder_2=torch.nn.Linear(2,2) if arch=="sdxl" else None
-        parts.tokenizer_2=None
-        parts.scheduler=trainer.noise_scheduler
-        return parts
-    xl_load=training_components if arch=="sdxl" else ValueError("not SDXL")
-    with patch("core.training.ops.sd_sdxl_ops.StableDiffusionXLPipeline.from_single_file",side_effect=xl_load), \
-         patch("core.training.ops.sd_sdxl_ops.StableDiffusionPipeline.from_single_file",side_effect=training_components), \
+    with patch("core.training.ops.sd_sdxl_ops.StableDiffusionXLPipeline.from_single_file",side_effect=AssertionError("no partial shard load")), \
+         patch("core.training.ops.sd_sdxl_ops.StableDiffusionPipeline.from_single_file",side_effect=AssertionError("no partial shard load")), \
          patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
         load_components(trainer)
     assert trainer.is_sdxl==(arch=="sdxl")
@@ -201,6 +220,14 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     assert trainer.wiring.vae_scale_factor==16
     for key,tensor in model.state_dict().items():
         torch.testing.assert_close(trainer.unet.state_dict()[key],tensor,rtol=0,atol=0)
+    from core.models.components.sd_vae_alignment import load_pipeline_artifact
+    no_te=dict(state)
+    te_prefix="conditioner.embedders.0.transformer." if arch=="sdxl" else "cond_stage_model.transformer."
+    embedding_key=next(key for key in original_te.state_dict() if key.endswith("embeddings.token_embedding.weight"))
+    del no_te[te_prefix+embedding_key]
+    incomplete_te=save_single_file_state(no_te,metadata,str(tmp_path/"incomplete_te.safetensors"),max_shard_bytes=32768)
+    with pytest.raises(RuntimeError,match="Missing key"):
+        load_pipeline_artifact(str(incomplete_te),arch=arch,dtype=torch.float32)
     no_alignment=dict(metadata)
     del no_alignment["component.vae.alignment"]
     undeclared=save_single_file_state(state,no_alignment,str(tmp_path/"undeclared.safetensors"))

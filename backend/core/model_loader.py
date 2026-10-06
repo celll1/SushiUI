@@ -2496,6 +2496,8 @@ class ModelLoader:
         # (design §9.1). A declaration that cannot be honoured -- no resolvable
         # locator, or a locator whose content hash moved -- is a refusal here, not
         # a silent load at the architecture's native channel count.
+        from core.models.components.sd_vae_alignment import resolve_checkpoint_path
+        file_path=resolve_checkpoint_path(file_path)
         declared_vae = None       # ResolvedVAE, or None for a native checkpoint
         custom_vae_type = None    # legacy registry family, when that is what it is
         custom_in_channels = None  # set only when the backbone must be rebuilt
@@ -2523,9 +2525,8 @@ class ModelLoader:
                       f"({declared_vae.latent_channels}ch, {declared_vae.vae_class}, "
                       f"hash={declared_vae.content_hash})")
             try:
-                from safetensors import safe_open
-                with safe_open(file_path, framework="pt") as _f:
-                    _md = _f.metadata() or {}
+                from core.models.components.sd_vae_alignment import read_checkpoint_metadata
+                _md = read_checkpoint_metadata(file_path)
                 _tt = (_md.get("sushi.te_type") or "").strip().lower()
                 if _tt and _tt not in ("none", "clip"):
                     custom_te = {
@@ -2552,7 +2553,7 @@ class ModelLoader:
 
         # Check if VAE is embedded
         print(f"[ModelLoader] Checking if model has embedded VAE...")
-        has_vae = ModelLoader.has_embedded_vae(file_path)
+        has_vae = declared_vae is not None if alignment_declaration is not None else ModelLoader.has_embedded_vae(file_path)
         print(f"[ModelLoader] VAE detection result: {'embedded' if has_vae else 'not embedded'}")
 
         # Load external VAE only if not embedded
@@ -2606,7 +2607,11 @@ class ModelLoader:
         try:
             from core.transformers_clip_compat import install as install_clip_compat
             install_clip_compat()
-            if model_type == "sdxl":
+            if aligned_unet is not None:
+                from core.models.components.sd_vae_alignment import load_pipeline_artifact
+                pipeline=load_pipeline_artifact(file_path,arch=model_type,dtype=torch_dtype,
+                    unet=aligned_unet,vae=external_vae)
+            elif model_type == "sdxl":
                 # Only pass vae parameter if external VAE was loaded
                 if external_vae is not None:
                     pipeline = StableDiffusionXLPipeline.from_single_file(
@@ -2637,6 +2642,8 @@ class ModelLoader:
                     **({"vae": external_vae} if declared_vae is not None and external_vae is not None else {}),
                 )
         except Exception as e:
+            if aligned_unet is not None:
+                raise
             # Fallback: try with float32
             print(f"Failed to load with fp16, trying with fp32: {e}")
             if model_type == "sdxl":

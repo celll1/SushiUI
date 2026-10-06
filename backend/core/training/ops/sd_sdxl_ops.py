@@ -53,21 +53,23 @@ def load_components(trainer) -> None:
     # be mid-initialization in some import orders.
     from core.training.base_trainer import _vramdiag
 
-    is_safetensors = trainer.model_path.endswith('.safetensors')
+    is_safetensors = trainer.model_path.endswith(('.safetensors','.safetensors.index.json'))
     declared = None          # ResolvedVAE the base declares, or None if native
     declared_module = None
 
     if is_safetensors:
+        from core.models.components.sd_vae_alignment import resolve_checkpoint_path
+        trainer.model_path=resolve_checkpoint_path(trainer.model_path)
         print(f"{trainer.log_prefix} Loading from safetensors file")
         # A base saved by a VAE-swap run must be BUILT at the channel count it
         # declares (design §8.2): from_single_file otherwise builds the arch
         # default and cannot load the trained conv_in/conv_out.
         declared = load_declared_latent_io(trainer.model_path)
         sf_kwargs = {}
-        from safetensors import safe_open
+        from core.models.components.sd_vae_alignment import read_checkpoint_metadata
         from core.models.components.spatial_swap import read_declaration,restored_image_codec
-        with safe_open(trainer.model_path,framework="pt") as checkpoint:
-            alignment=read_declaration(checkpoint.metadata() or {})
+        metadata=read_checkpoint_metadata(trainer.model_path)
+        alignment=read_declaration(metadata)
         if alignment is not None and declared is None:
             raise ValueError("Aligned SD checkpoint is missing its codec declaration")
         if declared is not None:
@@ -90,24 +92,22 @@ def load_components(trainer) -> None:
         # Try SDXL first, fall back to SD1.5
         from core.transformers_clip_compat import install as install_clip_compat
         install_clip_compat()
-        try:
-            print(f"{trainer.log_prefix} Trying SDXL pipeline...")
-            temp_pipeline = StableDiffusionXLPipeline.from_single_file(
-                trainer.model_path,
-                torch_dtype=trainer.dtype,
-                use_safetensors=True,
-                **sf_kwargs,
-            )
-            is_sdxl_model = True
-        except Exception as e:
-            print(f"{trainer.log_prefix} Not SDXL, trying SD1.5 pipeline...")
-            temp_pipeline = StableDiffusionPipeline.from_single_file(
-                trainer.model_path,
-                torch_dtype=trainer.dtype,
-                use_safetensors=True,
-                **sf_kwargs,
-            )
-            is_sdxl_model = False
+        if alignment is not None:
+            from core.models.components.sd_vae_alignment import load_pipeline_artifact
+            temp_pipeline=load_pipeline_artifact(trainer.model_path,arch=metadata.get("model_type"),
+                dtype=trainer.dtype,unet=sf_kwargs["unet"],vae=declared_module)
+            is_sdxl_model=metadata["model_type"]=="sdxl"
+        else:
+            try:
+                print(f"{trainer.log_prefix} Trying SDXL pipeline...")
+                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
+                    trainer.model_path,torch_dtype=trainer.dtype,use_safetensors=True,**sf_kwargs)
+                is_sdxl_model = True
+            except Exception as e:
+                print(f"{trainer.log_prefix} Not SDXL, trying SD1.5 pipeline...")
+                temp_pipeline = StableDiffusionPipeline.from_single_file(
+                    trainer.model_path,torch_dtype=trainer.dtype,use_safetensors=True,**sf_kwargs)
+                is_sdxl_model = False
 
         trainer.vae = temp_pipeline.vae
         trainer.text_encoder = temp_pipeline.text_encoder

@@ -48,6 +48,22 @@ CPU回帰11件、変更Python compile/実importが通過。公開Full APIは未�
 再生成はrepo venvで`tools/convert_minimax_h3_full_base.py SOURCE OUTPUT --official-dir DIR`を
 実行して計画確認後、`--execute`を付ける。実GPU residency/optimizer退避の検証が次の段階。
 
+H3/LTXのdense Full初期配置は`training/model_staging.py`で、退避予定blockをCPUに残し、
+resident block/heads/bridgeのみを指定deviceへ移す。conductorの所有権確定はadapter設定後。
+別modelのblockやblock間/resident境界を跨ぐ共有tensorは移動前に拒否する。
+frozen DiTのLoRA/TE-only経路は従来の配置を維持する。
+関連CPU37件、最終共有tensor拒否4件と変更Python compile/実importが通過。
+
+`minimax_h3_aligned_offload_gpu_test.py`（`SUSHI_VAE_SWAP_GPU_TESTS=1`）で実小型7層H3の
+paired_spatial、target-native /32、追加channel、U-net有無、FP32/BF16をCUDAで検証した。
+5層をCPU master/2slotで退避し、fused Adafactorによる3回更新で全parameterのstep=3、
+GPU更新直後にGPU内cloneした値とD2H後のCPU値がbit一致、各回のslot解放/flushを確認した。
+resident版とのparameter相対L2最大はFP32 2.98e-8、BF16 0.00160。BF16の独立した
+学習列はbit一致ではなく、lossと各tensor相対L2をcompute precision以内で検査する。
+FP32はH2D 499,200/D2H 374,400 bytes、BF16は353,280/264,960 bytes（各3更新）。
+GPU4件が通過。合成tensorのみで既存runは変更していない。
+公式全モデル、実caption encoder、Full optimizer/resume、画質/速度の受入と公開Full gate解除は残る。
+
 LTX学習のRoPE bounds、dummy audio用clip実時間、training bucketのframe格子を
 VideoCodecContractへ接続した。independent/causal/H3 chunkを同じ座標helperで扱い、
 通常codecの座標は従来と一致する。H3 chunkの校正clipはsource LTX8と共通の最短73frameを選ぶ。

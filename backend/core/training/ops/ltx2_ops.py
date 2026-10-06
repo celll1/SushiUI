@@ -229,15 +229,19 @@ def load_components(trainer) -> None:
             prefix=trainer.log_prefix,
         )
 
-    # Plain GPU move. Block-swap init deferred to setup_block_swap() (called by
-    # the mode subclass AFTER LoRA wrap) — same reasoning as anima_ops.
+    # Block-swap ownership is captured after adapter construction.
     trainer.layer_offload_conductor = None
     if trainer.blocks_to_swap > 0:
         print(f"{trainer.log_prefix} Block Swap requested ({trainer.blocks_to_swap} blocks); "
               f"deferred until adapter setup completes")
     print(f"{trainer.log_prefix} Moving LTX-2.3 DiT to {trainer.device} "
           f"(block swap, if any, will redistribute after adapter setup)")
-    trainer.transformer.to(trainer.device)
+    from core.training.model_staging import stage_dense_block_model
+    if trains_denoiser_weights(trainer) and trainer.blocks_to_swap > 0:
+        stage_dense_block_model(trainer.transformer, trainer.transformer.transformer_blocks,
+                                trainer.blocks_to_swap, trainer.device)
+    else:
+        trainer.transformer.to(trainer.device)
 
     print(f"{trainer.log_prefix} LTX-2.3 model loaded successfully")
     print(f"{trainer.log_prefix} Scheduler: {trainer.scheduler.__class__.__name__}, "

@@ -30,7 +30,8 @@ def initialize_swap(trainer,resolved,*,handler):
         return report
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.in_channels,source_wiring=handler.resolve_wiring(trainer),
-        patch_size=2,resize=resize,pending_key="_anima_vae_calibration_source")
+        patch_size=2,resize=resize,pending_key="_anima_vae_calibration_source",
+        topology_config=lambda:native_config(model))
 
 
 def calibrate(trainer,datasets):

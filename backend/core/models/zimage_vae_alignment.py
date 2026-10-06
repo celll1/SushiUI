@@ -50,7 +50,8 @@ def apply_swap(trainer, resolved, module=None, *, handler):
                 topology["regions"], native_config(model)))
         return report
     return initialize_image_swap(trainer, resolved, handler=handler, model=model, old_channels=model.in_channels,
-        source_wiring=source_spec, patch_size=2, resize=resize, pending_key="_zimage_vae_calibration_source")
+        source_wiring=source_spec, patch_size=2, resize=resize, pending_key="_zimage_vae_calibration_source",
+        topology_config=lambda:native_config(model))
 
 
 def calibrate(trainer, datasets):

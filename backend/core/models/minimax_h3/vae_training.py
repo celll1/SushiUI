@@ -70,6 +70,9 @@ def apply_swap(trainer, resolved, *, handler, module=None):
     declaration = image.declaration(source=resolved.source, source_identity=source_identity,
         target_identity=resolved.latent_hash, old_channels=inner.config.in_channels,
         old_scale=source_contract.image.spatial_scale)
+    from core.rewiring.training import prepare_topology_io_rebase
+    from .residual_unet import native_config
+    finish_topology = prepare_topology_io_rebase(trainer.config,"minimax_h3",native_config(inner.config))
     with torch.random.fork_rng(devices=[]):
         alignment = SpatialAlignmentPair(declaration)
     wrapper = install_video_alignment(model, alignment, contract, defer_calibration=True)
@@ -82,6 +85,8 @@ def apply_swap(trainer, resolved, *, handler, module=None):
     trainer.wiring = handler.resolve_wiring(trainer)
     if getattr(inner, "_residual_unet_spec", None) is not None:
         trainer.config["dit_rewiring_spec"] = inner._residual_unet_spec
+    if finish_topology is not None:
+        finish_topology(native_config(inner.config))
     setattr(trainer, PENDING, (old.to("cpu").requires_grad_(False).eval(), source_contract))
     components = getattr(trainer, "minimax_h3_components", None)
     if components is not None:

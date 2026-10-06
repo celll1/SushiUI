@@ -102,10 +102,14 @@ def configure_swap(trainer, components):
     declaration = codec.declaration(source=source,source_identity=identity,target_identity=resolved.latent_hash,
                                    old_channels=int(model.config.in_channels),old_scale=16)
     plan = SpatialSwapPlan.build(declaration,patch_size=2)
+    from core.rewiring.training import prepare_topology_io_rebase
+    finish_topology = prepare_topology_io_rebase(trainer.config,"qwen_image_21",native_config(dict(model.config)),declaration=declaration)
     topology = getattr(model,"_residual_unet_spec",None)
     resize_latent_io(model,QWEN_IMAGE_21_LATENT_IO,plan.backbone_channels)
     resize_global_payload(model,declaration["old_channels"],plan.backbone_channels)
     model.out_channels = plan.backbone_channels
+    if finish_topology is not None:
+        finish_topology(native_config(dict(model.config)))
     if topology is not None:
         restore_topology(model,build_spec("qwen_image_21",
             [{"name":"main","block_count":len(model.transformer_blocks)}],topology["regions"],native_config(dict(model.config))))

@@ -86,6 +86,9 @@ def apply_swap(trainer, resolved, *, handler, module=None):
         return ResizeReport((), channels, channels, channels, 0, 0)
     with torch.random.fork_rng(devices=[]):
         pair = AudioAlignmentPair(source, target_contract)
+    from core.rewiring.training import prepare_topology_io_rebase
+    from .residual_unet import native_config
+    finish_topology = prepare_topology_io_rebase(trainer.config,"acestep",native_config(model.decoder.config))
     install_decoder_alignment(model, pair)
     bind_encoding_contract(target, pair)
     trainer.vae = target
@@ -96,6 +99,8 @@ def apply_swap(trainer, resolved, *, handler, module=None):
     trainer.wiring = handler.resolve_wiring(trainer)
     if getattr(model, "_residual_unet_spec", None) is not None:
         trainer.config["dit_rewiring_spec"] = model._residual_unet_spec
+    if finish_topology is not None:
+        finish_topology(native_config(model.decoder.config))
     setattr(trainer, PENDING, old.to("cpu").requires_grad_(False).eval())
     return ResizeReport(("decoder.proj_in", "decoder.proj_out", "audio_alignment"),
         source.latent_channels, source.latent_channels, pair.backbone_channels,

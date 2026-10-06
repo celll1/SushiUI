@@ -100,7 +100,10 @@ def configure_training_topology(model, config, *, resuming=False, pending_adapte
     needs_identity = config.get("dit_rewiring_mode") == "configure" or existing is not None or declared is not None or (
         resume_spec is not NO_RESUME_SPEC and resume_spec is not None)
     native = native_config(inner.config) if needs_identity else {}
-    view = SimpleNamespace(config=native, _residual_unet_spec=existing)
+    from core.rewiring.spec import digest
+    source_config = getattr(inner,"_video_source_config",None)
+    view = SimpleNamespace(config=native, _residual_unet_spec=existing,
+        _rewiring_source_config_sha256=digest(source_config) if source_config is not None else None)
     resolved = resolve_training_topology(view, dict(config), "ltx2", validate_topology_identity,
         lambda owner, graph: None, default_topology, resuming=resuming, pending_adapter_resume=pending_adapter_resume,
         resume_spec=resume_spec, install=False)

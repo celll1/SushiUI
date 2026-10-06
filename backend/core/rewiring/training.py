@@ -37,6 +37,23 @@ def validate_training_features(config, architecture=None):
 NO_RESUME_SPEC = object()
 
 
+def prepare_topology_io_rebase(config, architecture, source_config, *, declaration=None):
+    """Validate source identity before IO migration; preserve its execution layout."""
+    from .spec import build_spec, validate_model_identity, digest
+    if declaration is not None:
+        declaration["rewiring_source_config_sha256"] = digest(source_config)
+    _, requested = validate_training_rewiring(config, architecture)
+    if requested is None:
+        return None
+    requested = validate_model_identity(requested, architecture, requested["streams"], source_config)
+
+    def finish(target_config):
+        config["dit_rewiring_spec"] = build_spec(architecture, requested["streams"],
+            requested["regions"], target_config)
+
+    return finish
+
+
 def resolve_training_topology(model, config, architecture, validate_topology_identity,
                               restore_topology, default_topology=None, *, resuming=False,
                               pending_adapter_resume=False, resume_spec=NO_RESUME_SPEC,
@@ -45,6 +62,14 @@ def resolve_training_topology(model, config, architecture, validate_topology_ide
     mode, requested = validate_training_rewiring(config, architecture,
         checkpoint_inheritance=existing is not None or
         (resume_spec is not NO_RESUME_SPEC and resume_spec is not None))
+    if requested is not None and existing is not None:
+        pair = getattr(model,"vae_latent_bridge",None)
+        source_identity = (pair.declaration.get("rewiring_source_config_sha256") if pair is not None
+                           else getattr(model,"_rewiring_source_config_sha256",None))
+        if source_identity is not None and requested["base_config_sha256"] == source_identity:
+            rebound = dict(requested,base_config_sha256=existing["base_config_sha256"])
+            if rebound == existing:
+                requested = existing
     if mode == "configure" and requested is None:
         requested = None if default_topology is None else default_topology(dict(model.config))
         if requested is None:

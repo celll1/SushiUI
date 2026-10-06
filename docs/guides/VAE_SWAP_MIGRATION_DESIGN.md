@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3のtarget-native video IO境界を`minimax_h3/video_alignment.py`へ実装した。
+公式のC-outerな1x2x2 patchをunpackし、各target/reference segment内だけで3x3 bridgeを適用して
+同じ格子にrepackする。元のtoken格子へは戻さない。H3のtimestepはclean fractionであるため入力は
+W*x+alpha*b、x0-minus-epsilonの出力velocityはW*v+bとする。audio/text列とその入出力層は変換しない。
+audio出力は共有AV attentionの影響を受けるので、元モデルとの波形同一性を保証するものではない。
+内部width=max(oldC,newC)へ共通resizeを使用し、既存層の重みと追加チャネルの学習可能性を保つ。
+codecの空間/時間/正規化契約をU-net identityへ含め、既存topologyを新しい内部widthで再構築する。
+segmentの完全被覆、packed modality indices、時刻、構造identityを検査し、runtime controllerを
+設置済みの場合はParameterを交換する前に拒否する。
+小型実H3 DiTのFP32/BF16（公式loaderと同じFP32保持層）で、独立conv参照とのvideo/audio出力一致、
+追加チャネルの勾配、checkpointingの出力/勾配一致、segment順序変更、codec identity改変拒否を確認した。
+関連H3 packed/U-net/codec・共通video・LTX境界のCPU回帰86件・14subtestが通過した。
+これは入出力境界の実装であり、公開training/generation入口への完成した配線ではない。
+非均等の時刻座標、target frame数を使うsampler/clip/cache、校正owner、Full adapter/offload、
+artifact復元が残るため、H3の公開swap gateは未解除。公式33B全重みの学習/画質/速度検証も未完である。
+変更PythonのcompileとCUDAを抑止した実importを確認した。外部画像・動画・音声は使っていない。
+
 H3のnative video codecを共通resolverと正規化facadeへ接続した。nominal temporal stride=4だけでは
 frame数を決定できず、policyはminimax_h3_chunks_v1、1枚または17n+5→5n+2（n>=1）とする。
 encoderの22→7・39→12とdecodeの逆写像、1枚経路を小型の実H3 VAE・合成RGBで確認した。

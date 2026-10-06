@@ -139,8 +139,19 @@ def test_real_causal_source_codec_calibration_public_loader_and_resume(tmp_path)
     with torch.no_grad(): value.vae_latent_bridge.input.projection.bias.add_(.1)
     path=tmp_path/"full.safetensors"
     Krea2FullParameterAdapter(trainer).write_checkpoint(7,0,path)
-    with patch.object(loader,"_load_scheduler",return_value=object()):
-        components=loader.load_krea2_components(str(path),torch_dtype=torch.float32,load_text_encoder=False)
+    companion=tmp_path/"original_model"
+    for name in ("text_encoder","vae"):
+        folder=companion/name;folder.mkdir(parents=True,exist_ok=True)
+        (folder/"config.json").write_text("{}",encoding="utf-8")
+    with patch.object(loader,"_load_scheduler",return_value=object()) as resolve_scheduler, \
+         patch.object(loader,"_resolve_te_dir",wraps=loader._resolve_te_dir) as resolve_te, \
+         patch.object(loader,"_resolve_vae_dir",wraps=loader._resolve_vae_dir) as resolve_vae:
+        components=loader.load_krea2_components(str(path),torch_dtype=torch.float32,
+            load_text_encoder=False,companion_path=str(companion))
+    resolve_te.assert_called_once_with(str(companion),None)
+    resolve_scheduler.assert_called_once_with(str(companion))
+    resolve_vae.assert_called_once_with(str(companion),None)
+    assert loader._resolve_te_dir(str(companion),None) == str(companion/"text_encoder")
     restored=components["transformer"]
     assert components["vae_scale_factor"] == 16
     assert components["declared_vae"].config["scaling_factor"] == .7
@@ -161,3 +172,15 @@ def test_real_causal_source_codec_calibration_public_loader_and_resume(tmp_path)
     result=load_single_file(str(sharded),torch_dtype=torch.float32)
     assert result["transformer"].vae_latent_bridge.ready
     assert not torch.cuda.is_initialized()
+
+
+@pytest.mark.parametrize("location", ["text_encoder", "tokenizer", None])
+def test_tokenizer_prefers_local_companions_before_hub(tmp_path,location):
+    from core.models.krea2 import krea2_loader as loader
+    if location:
+        folder=tmp_path/location;folder.mkdir()
+        (folder/"tokenizer_config.json").write_text("{}",encoding="utf-8")
+    with patch("transformers.AutoTokenizer.from_pretrained",return_value=object()) as load:
+        loader._load_tokenizer(str(tmp_path/"text_encoder"))
+    source=str(tmp_path/location) if location else loader.TE_HUB_ID
+    load.assert_called_once_with(source,trust_remote_code=True)

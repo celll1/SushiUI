@@ -45,6 +45,7 @@ def load_components(trainer) -> None:
         model_path=trainer.model_path,
         torch_dtype=trainer.weight_dtype,
         load_text_encoder=True,
+        companion_path=getattr(trainer, "krea2_companion_path", None),
     )
 
     trainer.transformer = components["transformer"]

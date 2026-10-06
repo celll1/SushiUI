@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import re
+from contextlib import nullcontext
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -400,7 +401,12 @@ def build_krea2_transformer(
     integer codes into an e4m3 buffer without raising. ``load_fp8_state_dict`` then serves both: it keys on
     "is this floating point?", so an int8 weight is moved to the device with its
     dtype intact exactly as a float8 one is."""
-    model = Krea2Transformer2DModel.from_config(config)
+    has_int8 = is_int8_state_dict(diffusers_sd)
+    has_fp8 = is_fp8_state_dict(diffusers_sd)
+    from accelerate import init_empty_weights
+    # Dense saves already own every parameter; avoid an extra FP32 model at resume.
+    with (nullcontext() if has_int8 or has_fp8 else init_empty_weights(include_buffers=False)):
+        model = Krea2Transformer2DModel.from_config(config)
     if alignment_declaration is not None:
         from core.models.components.latent_adapter import validate_declaration
         declaration = validate_declaration(alignment_declaration)
@@ -429,8 +435,6 @@ def build_krea2_transformer(
     quant_report = scaled_quantization_report(
         quantized_state_dict_report(diffusers_sd), arch="Krea 2")
 
-    has_int8 = is_int8_state_dict(diffusers_sd)
-    has_fp8 = is_fp8_state_dict(diffusers_sd)
     if has_int8 or has_fp8:
         model.to(torch_dtype)
         n_int8 = swap_linears_to_int8(model, diffusers_sd, compute_dtype=torch_dtype) if has_int8 else 0
@@ -451,8 +455,9 @@ def build_krea2_transformer(
         # mismatched case; it must not reach the load below. A pure float8 cast
         # reports None above and loads here, which is what it asks for.
         verify_quantized_swap(quant_report, 0, arch="Krea 2")
-        model.to(torch_dtype)
-        missing, unexpected = model.load_state_dict(diffusers_sd, strict=False)
+        dense_state = {key: value.to(dtype=torch_dtype).contiguous() if value.is_floating_point() else value
+                       for key, value in diffusers_sd.items()}
+        missing, unexpected = model.load_state_dict(dense_state, strict=False, assign=True)
         if unexpected:
             raise RuntimeError(f"[Krea2] unexpected transformer keys: {unexpected[:8]}")
         # Only genuinely-missing (non-buffer) keys are fatal; RoPE has no params.

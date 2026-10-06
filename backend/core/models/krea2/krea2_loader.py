@@ -163,9 +163,9 @@ def _load_qwen_image_vae(vae_dir: Optional[str], torch_dtype: torch.dtype):
 def _load_tokenizer(te_dir: Optional[str]):
     from transformers import AutoTokenizer
 
-    src = te_dir if (te_dir and os.path.isfile(os.path.join(te_dir, "tokenizer_config.json"))) else None
-    if src is None:
-        src = TE_HUB_ID
+    candidates = (te_dir, os.path.join(os.path.dirname(te_dir), "tokenizer")) if te_dir else ()
+    src = next((folder for folder in candidates
+                if os.path.isfile(os.path.join(folder, "tokenizer_config.json"))), TE_HUB_ID)
     print(f"[Krea2Loader] Loading tokenizer from: {src}")
     return AutoTokenizer.from_pretrained(src, trust_remote_code=True)
 
@@ -229,6 +229,7 @@ def load_krea2_components(
     te_dir: Optional[str] = None,
     vae_dir: Optional[str] = None,
     load_text_encoder: bool = True,
+    companion_path: Optional[str] = None,
 ) -> dict:
     """Load Krea 2 components from a diffusers directory or single-file safetensors.
 
@@ -281,12 +282,13 @@ def load_krea2_components(
         print(f"[Krea2Loader] Declares a non-native VAE ({declared_vae.provenance}, "
               f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
 
-    scheduler = _load_scheduler(model_path)
+    companion_source = companion_path or model_path
+    scheduler = _load_scheduler(companion_source)
     if getattr(transformer,"vae_latent_bridge",None) is not None and declared_vae is None:
         raise ValueError("Aligned Krea checkpoint is missing its codec declaration")
 
-    resolved_te = _resolve_te_dir(model_path, te_dir)
-    resolved_vae = _resolve_vae_dir(model_path, vae_dir)
+    resolved_te = _resolve_te_dir(companion_source, te_dir)
+    resolved_vae = _resolve_vae_dir(companion_source, vae_dir)
 
     text_encoder = None
     tokenizer = None

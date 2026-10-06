@@ -29023,9 +29023,20 @@ components:
           example: 'registry:flux1'
         vae_swap_new_channel_init:
           type: 'string'
-          enum: ['zero']
-          default: 'zero'
-          description: How channels the previous VAE did not have are initialised in the resized latent input/output layers.
+          enum: ['auto', 'zero', 'paired_spatial']
+          default: 'auto'
+          description: Auto selects paired spatial calibration for Ming using the target VAE's token grid. Other architectures retain legacy zero initialization; explicit paired_spatial is currently Ming-only. RGB targets do not retain alpha. Existing aligned checkpoints restore their weights without recalibration.
+        vae_swap_calibration_samples:
+          type: integer
+          minimum: 2
+          maximum: 256
+          default: 32
+          description: Images used for first-swap paired spatial calibration. Calibration images are not embedded in checkpoints; resume does not recalibrate.
+        vae_swap_calibration_resolution:
+          type: integer
+          enum: [128, 256, 512]
+          default: 256
+          description: Calibration crop size. The target VAE grid owns the token count; old clean latents are resampled to this grid before fitting.
         sensenova_gen_patch:
           type: 'integer'
           minimum: 0

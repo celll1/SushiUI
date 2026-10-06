@@ -32,6 +32,27 @@ class MingImage01ArchHandler(ArchHandler):
         from core.training.ops.ming_image_01_ops import load_components
         load_components(trainer)
 
+    def resolve_wiring(self, trainer):
+        vae = getattr(trainer, "vae", None)
+        from core.models.ming_image_01.vae_alignment import NormalizedFrameVAE
+        if isinstance(vae, NormalizedFrameVAE):
+            self.pixel_align = vae.spatial_scale_factor * 2
+            return self.wiring.replace(latent_channels=vae.config.z_dim,
+                vae_scale_factor=vae.spatial_scale_factor, vae_norm="shift_scale")
+        return self.wiring
+
+    def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
+        scale = facts.get("scale_factor")
+        if facts.get("ndim") not in (4, 5) or type(scale) is not int or scale < 1:
+            return False, "Ming VAE swap requires an image VAE with declared spatial compression"
+        if scale % 8 and 8 % scale:
+            return False, "Ming VAE swap requires integer spatial scale relative to 8x"
+        return True, None
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager):
+        from core.models.ming_image_01.vae_alignment import calibrate
+        calibrate(trainer, datasets)
+
     def setup_block_swap(self, trainer):
         from core.models.ming_image_01.block_offload import setup_training_block_swap
         setup_training_block_swap(trainer)

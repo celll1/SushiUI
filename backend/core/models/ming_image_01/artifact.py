@@ -89,12 +89,20 @@ def validate_configs(configs: dict[str, dict]) -> str:
         raise ValueError("Ming head/RoPE geometry is inconsistent")
     if dit.get("all_patch_size") != [2] or dit.get("all_f_patch_size") != [1]:
         raise ValueError("Ming 0.1 supports spatial patch 2 and frame patch 1")
-    if (vae.get("_class_name") != "AutoencoderKLQwenImage"
+    alignment = dit.get("vae_alignment")
+    if alignment is not None:
+        from .vae_alignment import validate_declaration
+        validate_declaration(alignment)
+        if (max(alignment["old_channels"], alignment["new_channels"]) != dit["in_channels"]
+                or alignment["new_channels"] != vae.get("z_dim", vae.get("latent_channels"))
+                or alignment["input_channels"] != vae.get("in_channels", vae.get("input_channels", 3))):
+            raise ValueError("Ming aligned VAE config disagrees with its bridge declaration")
+    elif (vae.get("_class_name") != "AutoencoderKLQwenImage"
             or vae.get("input_channels") != 4 or vae.get("z_dim") != 16
             or dit["in_channels"] != vae["z_dim"]):
         raise ValueError("Ming requires its 4-channel RGBA / 16-channel latent VAE")
     scale, shift = vae.get("scaling_factor"), vae.get("shift_factor")
-    if (type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0
+    if alignment is None and (type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0
             or type(shift) not in (int, float) or not math.isfinite(shift)):
         raise ValueError("Invalid Ming VAE scale/shift")
     if (mlp.get("diffusion_c_input_dim") != dit["cap_feat_dim"]
@@ -285,6 +293,14 @@ def inspect_artifact(path: str | Path, *, require_weights: bool = True) -> MingA
         raise ValueError("Ming manifest profile/config fingerprint disagrees with components")
     headers = {name: component_headers(directory) for name, directory in components.items()
                if name != "scheduler"} if require_weights else {}
+    if configs["transformer"].get("vae_alignment") is not None and require_weights:
+        from .vae_alignment import WEIGHTS, MingVAEAlignment
+        alignment_headers = read_tensor_headers(root / WEIGHTS)
+        declared = MingVAEAlignment(configs["transformer"]["vae_alignment"]).state_dict()
+        if set(declared) != set(alignment_headers) or any(
+                tuple(value.shape) != alignment_headers[key].shape for key, value in declared.items()):
+            raise ValueError("Ming alignment tensor headers disagree with its declaration")
+        headers["vae_alignment"] = alignment_headers
     source = raw.get("source", {}) if raw else {}
     if not isinstance(source, dict) or any(not isinstance(v, str) for v in source.values()):
         raise ValueError("Ming source provenance must be string-valued")

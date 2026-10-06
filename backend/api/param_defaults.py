@@ -3087,8 +3087,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # "registry:<key>" / "file:<path>" / "model:<path>" (design §7.1).
     "vae_swap_source": "",
     # How channels the old VAE did not have are initialised in the resized latent
-    # I/O layers. "zero" is the only accepted value (design D3).
-    "vae_swap_new_channel_init": "zero",
+    # auto selects spatial calibration for Ming; legacy handlers retain zero.
+    "vae_swap_new_channel_init": "auto",
+    "vae_swap_calibration_samples": 32,
+    "vae_swap_calibration_resolution": 256,
     # SenseNova VAE swap only: the generation patch in LATENT cells. 0 = inherit
     # (keep the base checkpoint's own patch; 4 for a pixel-space base), which is
     # the default because a positive value REBUILDS the generation ViT's patch

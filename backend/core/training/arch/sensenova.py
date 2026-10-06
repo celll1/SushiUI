@@ -352,7 +352,8 @@ class SenseNovaArchHandler(ArchHandler):
         )
 
         config = getattr(trainer, "config", None) or {}
-        init = str(config.get("vae_swap_new_channel_init") or "zero")
+        from core.training.vae_swap import initialization_mode
+        init = initialization_mode(config, self.name)
         geometry = gen_geometry(trainer.transformer)
         # 0 (INHERIT_GEN_PATCH, the served default) keeps a latent base's own
         # patch: update_training_run sends every Pydantic default, so editing a

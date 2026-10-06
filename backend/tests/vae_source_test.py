@@ -22,6 +22,16 @@ from core.models.common.single_file_format import build_component_metadata
 from core.models.common.vae_store import LDM_SINGLE_FILE_DEFAULT_SCALING_FACTOR
 
 
+def test_qwen21_causal_conv2d_weights_retain_five_dimensional_interface():
+    facts = vs._resolve_facts(source="file:synthetic",family="custom",declared={},
+        shapes={"decoder.conv_in.weight":(8,64,3,3)},
+        config={"_class_name":"AutoencoderKLQwenImage21","z_dim":64,
+                "scale_factor_spatial":16,"scale_factor_temporal":8,
+                "latents_mean":[0.]*64,"latents_std":[1.]*64})
+    assert (facts["ndim"],facts["scale_factor"],facts["scale_temporal"]) == (5,16,8)
+    assert facts["norm"] == "per_channel"
+
+
 
 def _ldm_vae_state(channels=4, downsamplers=3, seed=0):
     """An original/LDM-keyed AutoencoderKL: one downsampler per halving."""

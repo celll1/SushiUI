@@ -15981,9 +15981,11 @@ class TrainingRunCreateRequest(BaseModel):
     # VAE swap (arch-independent; full fine-tune only). sdxl_vae_type below is a
     # read-only alias kept so an existing run's config still loads.
     vae_swap_source: str = TRAINING_DEFAULTS["vae_swap_source"]
-    vae_swap_new_channel_init: Literal["zero"] = TRAINING_DEFAULTS[
+    vae_swap_new_channel_init: Literal["auto", "zero", "paired_spatial"] = TRAINING_DEFAULTS[
         "vae_swap_new_channel_init"
     ]
+    vae_swap_calibration_samples: int = Field(TRAINING_DEFAULTS["vae_swap_calibration_samples"], ge=2, le=256)
+    vae_swap_calibration_resolution: Literal[128, 256, 512] = TRAINING_DEFAULTS["vae_swap_calibration_resolution"]
     # 0 = inherit the base checkpoint's own generation patch (4 for a
     # pixel-space base); a positive multiple of 4 rebuilds the grid.
     sensenova_gen_patch: int = Field(

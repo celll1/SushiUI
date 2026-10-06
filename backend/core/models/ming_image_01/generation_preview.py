@@ -24,9 +24,9 @@ def scheduler_preview(scheduler,state,requested=None):
         state['clean']=None
 
 
-def primary_latent(latent,profile):
-    if latent.ndim==4 and latent.shape[1]==16 and profile=='generation_edit':return latent
-    if latent.ndim!=5 or latent.shape[1]!=16:
+def primary_latent(latent,profile,channels=16):
+    if latent.ndim==4 and latent.shape[1]==channels and profile=='generation_edit':return latent
+    if latent.ndim!=5 or latent.shape[1]!=channels:
         raise ValueError('Ming preview requires native 16-channel image/frame latents')
     index=1 if profile=='layer_decompose' else 0
     if latent.shape[2]<=index:raise ValueError('Ming preview is missing its primary target frame')
@@ -35,11 +35,12 @@ def primary_latent(latent,profile):
 
 @torch.no_grad()
 def decode_preview(vae,latent):
-    if latent.ndim!=4 or latent.shape[0]<1 or latent.shape[1]!=16 or min(latent.shape[-2:])<1 or not torch.isfinite(latent[:1]).all():
+    if latent.ndim!=4 or latent.shape[0]<1 or latent.shape[1]!=getattr(vae.config,"z_dim",16) or min(latent.shape[-2:])<1 or not torch.isfinite(latent[:1]).all():
         raise ValueError('Ming preview requires finite native [B,16,H,W] latents')
     value=latent[:1]
     # Bound native VAE preview cost to a 256-pixel longest edge.
-    ratio=min(1.,32/max(value.shape[-2:]))
+    bound=256/int(getattr(vae,"spatial_scale_factor",8))
+    ratio=min(1.,bound/max(value.shape[-2:]))
     height,width=(max(2,math.floor(edge*ratio)) for edge in value.shape[-2:])
     if value.shape[-2:]!=(height,width):value=F.interpolate(value.float(),size=(height,width),mode='area')
     value=value.to(device=vae.device,dtype=vae.dtype).unsqueeze(2)

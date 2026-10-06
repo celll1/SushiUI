@@ -166,7 +166,9 @@ class ImageGenerationPipeline(DiffusionPipeline):
             transformer=transformer,
         )
 
-        if hasattr(self, "vae") and self.vae is not None and 'temperal_downsample' in self.vae.config:
+        if getattr(self.vae, "spatial_scale_factor", None) is not None:
+            self.vae_scale_factor = self.vae.spatial_scale_factor
+        elif hasattr(self, "vae") and self.vae is not None and 'temperal_downsample' in self.vae.config:
             self.vae_scale_factor = 2 ** len(self.vae.config.temperal_downsample)
         else:
             self.vae_scale_factor = (

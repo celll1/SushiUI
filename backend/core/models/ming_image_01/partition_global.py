@@ -139,6 +139,22 @@ def from_payload(metadata,tensors,*,latent_channels,hidden_dim,dtype=torch.float
 GLOBAL_NAME="ming_partition_global_adapter"
 
 
+def resize_channels(adapter, channels):
+    """Preserve position-major latent weights and the three coordinate columns."""
+    old = adapter.latent_channels
+    resized = MingPartitionGlobalAdapter(channels, adapter.hidden_dim, rank=adapter.rank,
+        summary_tokens=adapter.summary_tokens, dtype=adapter.key.weight.dtype).to(adapter.key.weight.device)
+    state = adapter.state_dict()
+    for name in ("key", "value", "query"):
+        weight = state[name+".weight"].new_zeros(adapter.rank, 4*channels+3)
+        weight[:, :-3].reshape(adapter.rank, 4, channels)[:, :, :min(old, channels)].copy_(
+            state[name+".weight"][:, :-3].reshape(adapter.rank, 4, old)[:, :, :min(old, channels)])
+        weight[:, -3:] = state[name+".weight"][:, -3:]
+        state[name+".weight"] = weight
+    resized.load_tensors(state)
+    return resized.train(adapter.training)
+
+
 def payload_from_directory(root,*,latent_channels,hidden_dim):
     from pathlib import Path
     from safetensors.torch import load_file

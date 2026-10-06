@@ -177,6 +177,9 @@ def convert_package(source, destination, *, format_, device="cpu", max_shard_byt
         (staging/"quantization.json").write_text(json.dumps(report,indent=2,sort_keys=True,allow_nan=False)+"\n",encoding="utf-8")
         if (artifact.root/"training.json").is_file():
             shutil.copy2(artifact.root/"training.json",staging/"training.json")
+        if artifact.configs["transformer"].get("vae_alignment") is not None:
+            from .vae_alignment import WEIGHTS
+            shutil.copy2(artifact.root/WEIGHTS, staging/WEIGHTS)
         if global_payload is not None:
             from types import SimpleNamespace
             write_payload(SimpleNamespace(_ming_partition_global_payload=global_payload),staging)

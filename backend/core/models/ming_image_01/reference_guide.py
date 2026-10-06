@@ -57,7 +57,9 @@ def prepare_guides(vae, configs, *, width, height, batch, seed, check_cancel):
         pixels = np.asarray(config.image.convert("RGBA").resize((width,height),Image.Resampling.BILINEAR)).copy()
         pixels = (torch.from_numpy(pixels).permute(2,0,1).float()/127.5-1)[None,:,None].expand(batch,-1,-1,-1,-1)
         clean = encode_frames(vae,pixels).squeeze(2).float()
-        if clean.shape != (batch,16,height//8,width//8) or not torch.isfinite(clean).all():
+        channels=int(vae.config.z_dim)
+        scale=int(getattr(vae,"spatial_scale_factor",8))
+        if clean.shape != (batch,channels,height//scale,width//scale) or not torch.isfinite(clean).all():
             raise ValueError("Ming Reference Guide VAE latent shape/value disagrees with the native 16-channel grid")
         generator = torch.Generator(device="cpu").manual_seed((seed+17011+index)%(2**63))
         noise = torch.randn(clean.shape,generator=generator,dtype=torch.float32).to(clean.device)

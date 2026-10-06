@@ -608,6 +608,17 @@ class DiffusionTransformer(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrigin
         target_spatial_position_ids=None,
         target_input_residual=None,
     ):
+        arguments = dict(patch_size=patch_size, f_patch_size=f_patch_size, ref_x=ref_x,
+            cap_feats_2=cap_feats_2, return_dict=return_dict,
+            target_spatial_position_ids=target_spatial_position_ids, target_input_residual=target_input_residual)
+        if hasattr(self, "vae_latent_bridge"):
+            from ...vae_alignment import aligned_forward
+            return aligned_forward(self, x, t, cap_feats, **arguments)
+        return self._native_forward(x, t, cap_feats, **arguments)
+
+    def _native_forward(self, x, t, cap_feats, patch_size=2, f_patch_size=1,
+                        ref_x=None, cap_feats_2=None, return_dict=True,
+                        target_spatial_position_ids=None, target_input_residual=None):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
 

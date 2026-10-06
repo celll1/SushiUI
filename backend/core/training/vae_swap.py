@@ -16,6 +16,18 @@ from typing import Any, Dict, Optional, Tuple
 _LEGACY_NEUTRAL = ("", "none", "sdxl")
 
 
+def initialization_mode(config, arch):
+    from api.param_defaults import TRAINING_DEFAULTS
+    mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
+    if mode == "auto":
+        return "paired_spatial" if arch == "ming_image_01" else "zero"
+    if mode not in ("zero", "paired_spatial"):
+        raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
+    if mode == "paired_spatial" and arch != "ming_image_01":
+        raise ValueError("paired_spatial is currently wired for Ming; select zero for this architecture")
+    return mode
+
+
 def legacy_source_from_config(config: Dict[str, Any]) -> str:
     """``sdxl_vae_type: flux1`` -> ``registry:flux1``; neutral values -> ``""``."""
     legacy = str((config or {}).get("sdxl_vae_type", "") or "").strip().lower()
@@ -178,6 +190,9 @@ def preflight_vae_swap(
     check_swap_method(source, method)
     check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
+    mode = initialization_mode(config, arch)
+    if arch == "ming_image_01" and mode != "paired_spatial":
+        raise ValueError("Ming VAE swaps require paired_spatial initialization")
 
     try:
         form, value = parse_vae_source(source)

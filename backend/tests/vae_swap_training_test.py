@@ -158,12 +158,13 @@ def test_the_value_reaches_the_yaml_and_comes_back(tmp_path):
         output_dir=str(tmp_path), dataset_path=str(tmp_path))
     process = yaml.safe_load(text)["config"]["process"][0]
     assert process["train"]["vae_swap_source"] == "registry:flux1"
-    assert process["train"]["vae_swap_new_channel_init"] == "zero"
+    from api.param_defaults import TRAINING_DEFAULTS
+    assert process["train"]["vae_swap_new_channel_init"] == TRAINING_DEFAULTS["vae_swap_new_channel_init"]
     assert resolve_vae_swap_source(process["train"]) == "registry:flux1"
 
     restored = _extract_request_params_from_yaml(process, "full_finetune")
     assert restored["vae_swap_source"] == "registry:flux1"
-    assert restored["vae_swap_new_channel_init"] == "zero"
+    assert restored["vae_swap_new_channel_init"] == TRAINING_DEFAULTS["vae_swap_new_channel_init"]
 
 
 # ---------------------------------------------------------------------------

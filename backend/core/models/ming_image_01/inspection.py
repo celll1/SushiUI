@@ -61,7 +61,8 @@ def loaded_model_info(components):
             "conditioner_cacheable": components.conditioner.cacheable,
             "dit_rewiring_parameter_counts": parameter_counts("ming_image_01", config),
             "dit_rewiring_spec": getattr(components.transformer, "_residual_unet_spec", None),
-            "dit_rewiring_token_stride": 16,
+            "dit_rewiring_token_stride": 2 * int(getattr(components.vae, "spatial_scale_factor", 8)),
+            "vae_alignment": getattr(getattr(components.transformer, "vae_latent_bridge", None), "declaration", None),
             "main_blocks": len(components.transformer.layers),
             "noise_refiner_blocks": len(components.transformer.noise_refiner),
             "context_refiner_blocks": len(components.transformer.context_refiner)}

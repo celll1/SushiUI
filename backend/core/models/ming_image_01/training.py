@@ -50,7 +50,9 @@ def flow_loss(transformer, *, clean: torch.Tensor, noise: torch.Tensor,
               sigma: torch.Tensor, conditioning: MingConditioning,
               frame_weights: torch.Tensor, reference_latents=None, cfg_drop_mask=None):
     """References condition attention; only explicitly supervised targets incur loss."""
-    if clean.ndim != 5 or clean.shape[1] != transformer.in_channels:
+    alignment = getattr(transformer, "vae_latent_bridge", None)
+    channels = transformer.in_channels if alignment is None else alignment.declaration["new_channels"]
+    if clean.ndim != 5 or clean.shape[1] != channels:
         raise ValueError("Ming training targets must be [B, C, F, H, W] native latents")
     batch, _, frames, height, width = clean.shape
     if min(batch, frames, height, width) < 1 or height % 2 or width % 2:

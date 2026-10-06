@@ -142,6 +142,12 @@ class ResolvedVAE:
         import diffusers
 
         cls = getattr(diffusers, self.vae_class, None)
+        if self.vae_class == "AutoencoderKLQwenImage21":
+            from core.models.qwen_image_21.vendor.autoencoder import AutoencoderKLQwenImage21
+            cls = AutoencoderKLQwenImage21
+        elif self.vae_class == "AutoencoderKLQwenImage" and self.config.get("input_channels") == 4:
+            from core.models.ming_image_01.vendor.diffusion.autoencoder_kl_qwenimage import AutoencoderKLQwenImage
+            cls = AutoencoderKLQwenImage
         if cls is None:
             raise VaeSourceError(
                 f"diffusers has no VAE class '{self.vae_class}' (source {self.source})")
@@ -475,6 +481,16 @@ def _resolve_facts(
     family: str,
 ) -> Dict[str, Any]:
     observed = observe_vae(shapes)
+    config = dict(config)
+    if config.get("_class_name") == "AutoencoderKLQwenImage21":
+        config.setdefault("spatial_compression_ratio", config.get("scale_factor_spatial"))
+        config.setdefault("temporal_compression_ratio", config.get("scale_factor_temporal"))
+        # Its causal wrapper stores Conv2d weights but consumes B/C/T/H/W.
+        observed["ndim"] = 5
+        observed.pop("scale_temporal", None)
+    elif config.get("_class_name") == "AutoencoderKLQwenImage" and isinstance(config.get("temperal_downsample"), list):
+        config.setdefault("spatial_compression_ratio", 2 ** len(config["temperal_downsample"]))
+        config.setdefault("temporal_compression_ratio", 2 ** sum(config["temperal_downsample"]))
     if not observed:
         raise VaeSourceError(
             f"{source} carries no VAE weights (no '{_DECODER_CONVIN_SUFFIX}')")
@@ -621,6 +637,27 @@ def resolve_vae_source(
     a checkpoint (``load_declared_latent_io``) turns it off.
     """
     form, value = parse_vae_source(source)
+    if form == "model" and os.path.isdir(value):
+        manifest_path = os.path.join(value, "manifest.json")
+        manifest = _read_json(manifest_path)
+        if manifest.get("model_type") == "qwen_image_21":
+            from core.models.qwen_image_21.artifact import load_manifest
+            item = load_manifest(value)
+            config = dict(item.vae_config)
+            config["_class_name"] = "AutoencoderKLQwenImage21"
+            with open(item.vae, "rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            weights = _WeightFile(item.vae)
+            return ResolvedVAE(source, form, "custom", int(config["z_dim"]),
+                int(config["scale_factor_spatial"]), int(config["scale_factor_temporal"]),
+                5, "per_channel", 1, config["_class_name"], config, digest,
+                source, None, False, False, None, None, path=item.vae,
+                state_dict=weights.tensors(weights.shapes) if load_weights else None)
+        directory = os.path.join(value, "vae")
+        if os.path.isdir(directory):
+            resolved = resolve_vae_source(f"file:{directory}", arch=arch,
+                native_hash=native_hash, download=download, load_weights=load_weights)
+            return _dc_replace(resolved, source=source, form=form, provenance=source, locator=None)
     family = "custom"
     config: Dict[str, Any] = {}
     declared: Dict[str, Any] = {}

@@ -276,6 +276,19 @@ class AceStepMixin:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _acestep_conditioning_codec(self):
+        dit = self.acestep_components["dit"]
+        pair = getattr(getattr(dit, "decoder", None), "_audio_latent_alignment", None)
+        key = "vae" if pair is None else "source_vae"
+        codec = self.acestep_components.get(key)
+        if codec is None:
+            raise ValueError("ACE aligned generation requires its original conditioning codec")
+        if pair is not None:
+            from core.models.components.audio_latent_adapter import AudioCodecContract
+            if AudioCodecContract.from_oobleck(codec) != pair.source:
+                raise ValueError("ACE conditioning codec geometry differs from its alignment")
+        return key, codec, pair
+
     def _acestep_maybe_install_block_offload(self, params, dit, device):
         requested = int(params.get("blocks_to_swap", 0) or 0)
         if requested <= 0:
@@ -308,21 +321,25 @@ class AceStepMixin:
 
         from core.models.acestep.defaults import SAMPLE_RATE, SILENCE_LATENT_FRAMES
 
-        vae = self.acestep_components["vae"]
+        codec_key, vae, pair = self._acestep_conditioning_codec()
         was_on = next(vae.parameters()).device
-        self._acestep_move("vae", device)
+        self._acestep_move(codec_key, device)
         vae_dtype = next(vae.parameters()).dtype
         duration_sec = SILENCE_LATENT_FRAMES / 25.0  # 30s
+        channels, samples = 2, int(round(duration_sec * SAMPLE_RATE))
+        if pair is not None:
+            frames = self.acestep_components["dit"].config.timbre_fix_frame
+            channels, samples = pair.source.waveform_channels, frames * pair.source.hop_length
         zeros = torch.zeros(
-            1, 2, int(round(duration_sec * SAMPLE_RATE)), device=device, dtype=vae_dtype
+            1, channels, samples, device=device, dtype=vae_dtype
         )
-        with torch.inference_mode():
-            # .mode() (deterministic mean), not .sample() -- silence should
-            # encode to a fixed, reproducible latent, not a stochastic draw.
-            silence_latent = vae.encode(zeros).latent_dist.mode()  # [1, 64, 750]
+        try:
+            with torch.inference_mode():
+                silence_latent = vae.encode(zeros).latent_dist.mode()
+        finally:
+            self._acestep_move(codec_key, str(was_on))
         silence_latent = silence_latent.transpose(1, 2).contiguous()  # [1, 750, 64]
         self.acestep_components["silence_latent"] = silence_latent.detach().to("cpu")
-        self._acestep_move("vae", str(was_on) if was_on is not None else "cpu")
         self._acestep_empty_cache()
         print(f"[AceStep] Built silence-latent asset: shape={tuple(silence_latent.shape)}")
         return silence_latent.to(device)
@@ -436,7 +453,7 @@ class AceStepMixin:
 
     @staticmethod
     def _acestep_repaint_frame_range(
-        repaint_start: float, repaint_end: float, latent_frames: int
+        repaint_start: float, repaint_end: float, latent_frames: int, *, latent_rate=None
     ) -> Tuple[int, int]:
         """Convert repaint_start/end (seconds) to a [start, end) latent-frame
         range, clamped to the reference's actual length (25 Hz latent rate,
@@ -445,8 +462,10 @@ class AceStepMixin:
         official service's "extend before the reference" mode) are NOT
         supported here -- out of scope for "regenerate a time-range of a
         reference clip, keeping the rest"; a negative start simply clamps to 0."""
-        s = int(round(max(0.0, repaint_start) * 25.0))
-        e = int(round(max(0.0, repaint_end) * 25.0))
+        from core.models.acestep.defaults import LATENT_FRAME_RATE
+        rate = LATENT_FRAME_RATE if latent_rate is None else latent_rate
+        s = int(round(max(0.0, repaint_start) * rate))
+        e = int(round(max(0.0, repaint_end) * rate))
         s = max(0, min(s, latent_frames - 1))
         e = max(s + 1, min(e, latent_frames))
         return s, e
@@ -1099,6 +1118,9 @@ class AceStepMixin:
         from api.error_handlers import ValidationError
         from core.models.acestep.residual_unet import generation_metadata
         try:
+            pair = getattr(getattr(self.acestep_components["dit"], "decoder", None), "_audio_latent_alignment", None)
+            if pair is not None:
+                length = (length * pair.source.hop_length + pair.target.hop_length-1) // pair.target.hop_length
             actual = generation_metadata(self.acestep_components["dit"], length)
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
@@ -1207,7 +1229,9 @@ class AceStepMixin:
             except Exception:
                 pass
 
-        latent_frames = int(round(round(audio_duration, 1) * 25))
+        pair = getattr(getattr(dit, "decoder", None), "_audio_latent_alignment", None)
+        conditioning_rate = 25 if pair is None else pair.source.sample_rate / pair.source.hop_length
+        latent_frames = int(round(round(audio_duration, 1) * conditioning_rate))
         latent_frames = max(latent_frames, 1)
 
         self._acestep_rewiring_preflight(params, latent_frames)
@@ -1236,7 +1260,7 @@ class AceStepMixin:
             self._acestep_empty_cache()
 
         src_latents = self._acestep_silence_slice(silence_latent, latent_frames).to(model_dtype)  # [1, T, 64]
-        chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
+        chunk_masks = torch.ones_like(src_latents)
         is_covers = torch.zeros(1, dtype=torch.bool, device=device)
         # Silence timbre (no reference audio): matches infer_refer_latent's
         # all-zero-refer_audio branch (self.silence_latent[:, :750, :]).
@@ -1314,6 +1338,8 @@ class AceStepMixin:
             with torch.inference_mode():
                 waveform = vae.decode(pred_for_decode).sample  # [1, 2, samples]
             waveform = waveform.float()
+            if pair is not None:
+                waveform = waveform[..., :latent_frames * pair.source.hop_length]
             peak = waveform.abs().amax(dim=[1, 2], keepdim=True)
             if torch.any(peak > 1.0):
                 waveform = waveform / peak.clamp(min=1.0)
@@ -1493,16 +1519,19 @@ class AceStepMixin:
         ref_wav, ref_sr = self._acestep_load_reference_audio(reference_audio)
         ref_wav = self._acestep_normalize_stereo_48k(ref_wav, ref_sr)  # [2, samples], CPU float32
 
-        self._acestep_move("vae", device)
+        codec_key, source_vae, pair = self._acestep_conditioning_codec()
+        self._acestep_move(codec_key, device)
         try:
-            vae_dtype = next(vae.parameters()).dtype
+            vae_dtype = next(source_vae.parameters()).dtype
             ref_wav_dev = ref_wav.unsqueeze(0).to(device=device, dtype=vae_dtype)  # [1, 2, samples]
+            if pair is not None:
+                ref_wav_dev = torch.nn.functional.pad(ref_wav_dev, (0, (-ref_wav_dev.shape[-1]) % pair.source.hop_length))
             with torch.inference_mode():
                 # .mode() (deterministic mean), matching the silence-latent asset.
-                ref_latent = vae.encode(ref_wav_dev).latent_dist.mode()  # [1, 64, T]
+                ref_latent = source_vae.encode(ref_wav_dev).latent_dist.mode()  # [1, 64, T]
             ref_latent = ref_latent.transpose(1, 2).contiguous().to(model_dtype)  # [1, T, 64]
         finally:
-            self._acestep_move("vae", "cpu")
+            self._acestep_move(codec_key, "cpu")
             self._acestep_empty_cache()
 
         latent_frames = int(ref_latent.shape[1])
@@ -1513,7 +1542,8 @@ class AceStepMixin:
             )
         # Duration is DERIVED from the reference length (recipe section 4),
         # not a user-facing param; only used for the "# Metas" text block.
-        audio_duration = latent_frames / 25.0
+        conditioning_rate = 25 if pair is None else pair.source.sample_rate / pair.source.hop_length
+        audio_duration = latent_frames / conditioning_rate
 
         text_prompt = self._acestep_build_text_prompt(
             caption, audio_duration, bpm, key_scale, time_signature, vocal_language
@@ -1545,7 +1575,7 @@ class AceStepMixin:
         clean_src_latents = None
         repaint_mask = None
         if is_repaint:
-            s, e = self._acestep_repaint_frame_range(repaint_start, repaint_end, latent_frames)
+            s, e = self._acestep_repaint_frame_range(repaint_start, repaint_end, latent_frames, latent_rate=conditioning_rate)
             repaint_frame_range = (s, e)
 
             silence_slice = self._acestep_silence_slice(silence_latent, latent_frames).to(model_dtype)
@@ -1553,7 +1583,7 @@ class AceStepMixin:
             src_latents = ref_latent.clone()  # [1, T, 64]
             src_latents[:, s:e, :] = silence_slice[:, s:e, :]
 
-            chunk_masks = torch.zeros(1, latent_frames, 64, dtype=model_dtype, device=device)
+            chunk_masks = torch.zeros_like(src_latents)
             chunk_masks[:, s:e, :] = 1.0  # True/1 INSIDE the repaint region (opposite fill from cover)
 
             is_covers = torch.zeros(1, dtype=torch.bool, device=device)
@@ -1563,7 +1593,7 @@ class AceStepMixin:
             clean_src_latents = ref_latent  # FULL, unmodified reference latent (the "hold" target)
         else:
             src_latents = ref_latent  # [1, T, 64] -- the reference latent (NOT silence)
-            chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
+            chunk_masks = torch.ones_like(src_latents)
             is_covers = torch.ones(1, dtype=torch.bool, device=device)
 
         # Silence timbre (semantic-only cover/repaint): matches txt2aud's timbre condition.
@@ -1656,6 +1686,8 @@ class AceStepMixin:
             with torch.inference_mode():
                 waveform = vae.decode(pred_for_decode).sample  # [1, 2, samples]
             waveform = waveform.float()
+            if pair is not None:
+                waveform = waveform[..., :ref_wav.shape[-1]]
             peak = waveform.abs().amax(dim=[1, 2], keepdim=True)
             if torch.any(peak > 1.0):
                 waveform = waveform / peak.clamp(min=1.0)
@@ -1670,8 +1702,8 @@ class AceStepMixin:
             waveform_out = self._acestep_apply_repaint_waveform_splice(
                 waveform_out,
                 ref_wav.to(device=waveform_out.device, dtype=waveform_out.dtype),
-                start_sec=s / 25.0,  # latent-frame-derived boundary, NOT the raw
-                end_sec=e / 25.0,    # user seconds -- exactly matches the mask.
+                start_sec=s / conditioning_rate,
+                end_sec=e / conditioning_rate,
                 sample_rate=48000,
                 crossfade_duration=0.01,
             )
@@ -1842,16 +1874,19 @@ class AceStepMixin:
                        f"input_trim_start_sec={trim_start_sec}, input_trim_end_sec={trim_end_sec}.",
             )
 
-        self._acestep_move("vae", device)
+        codec_key, source_vae, pair = self._acestep_conditioning_codec()
+        self._acestep_move(codec_key, device)
         try:
-            vae_dtype = next(vae.parameters()).dtype
+            vae_dtype = next(source_vae.parameters()).dtype
             ref_wav_dev = trimmed_wav.unsqueeze(0).to(device=device, dtype=vae_dtype)  # [1, 2, samples]
+            if pair is not None:
+                ref_wav_dev = torch.nn.functional.pad(ref_wav_dev, (0, (-ref_wav_dev.shape[-1]) % pair.source.hop_length))
             with torch.inference_mode():
                 # .mode() (deterministic mean), matching the silence-latent asset / aud2aud.
-                ref_latent = vae.encode(ref_wav_dev).latent_dist.mode()  # [1, 64, T_ref]
+                ref_latent = source_vae.encode(ref_wav_dev).latent_dist.mode()  # [1, 64, T_ref]
             ref_latent = ref_latent.transpose(1, 2).contiguous().to(model_dtype)  # [1, T_ref, 64]
         finally:
-            self._acestep_move("vae", "cpu")
+            self._acestep_move(codec_key, "cpu")
             self._acestep_empty_cache()
 
         t_ref = int(ref_latent.shape[1])
@@ -1861,23 +1896,24 @@ class AceStepMixin:
                 detail=f"VAE-encoded (trimmed) input latent has {t_ref} frames (need >= 1).",
             )
 
-        t_total = max(1, int(round(total_duration * 25.0)))
+        conditioning_rate = 25 if pair is None else pair.source.sample_rate / pair.source.hop_length
+        t_total = max(1, int(round(total_duration * conditioning_rate)))
         if t_ref > t_total:
             raise ValidationError(
                 "Input audio (after trim) does not fit inside total_duration",
-                detail=f"Trimmed input is {t_ref / 25.0:.3f}s ({t_ref} latent frames); "
+                detail=f"Trimmed input is {t_ref / conditioning_rate:.3f}s ({t_ref} latent frames); "
                        f"total_duration is {total_duration:.3f}s ({t_total} latent frames). "
                        f"Trim the input further or increase total_duration.",
             )
-        desired_off = int(round(input_offset_sec * 25.0))
+        desired_off = int(round(input_offset_sec * conditioning_rate))
         off = max(0, min(desired_off, t_total - t_ref))
         if off != desired_off:
             try:
                 from api.generation_status import add_warning
                 add_warning(
-                    f"input_offset_sec clamped from {desired_off / 25.0:.3f}s to {off / 25.0:.3f}s "
-                    f"so the placed input ({t_ref / 25.0:.3f}s) fits inside total_duration "
-                    f"({t_total / 25.0:.3f}s).",
+                    f"input_offset_sec clamped from {desired_off / conditioning_rate:.3f}s to {off / conditioning_rate:.3f}s "
+                    f"so the placed input ({t_ref / conditioning_rate:.3f}s) fits inside total_duration "
+                    f"({t_total / conditioning_rate:.3f}s).",
                     code="outpaint_audio_offset_clamped",
                 )
             except Exception:
@@ -1887,11 +1923,11 @@ class AceStepMixin:
         # params.copy() -> gallery metadata/DB path picks this up
         # automatically, mirroring the video-outpaint `outpaint_effective_*`
         # convention (`core.pipeline_backends.ltx2._generate_vidoutpaint_ltx2`).
-        params["outpaint_effective_offset_sec"] = off / 25.0
-        params["outpaint_effective_duration_sec"] = t_ref / 25.0
-        params["outpaint_effective_total_duration_sec"] = t_total / 25.0
+        params["outpaint_effective_offset_sec"] = off / conditioning_rate
+        params["outpaint_effective_duration_sec"] = t_ref / conditioning_rate
+        params["outpaint_effective_total_duration_sec"] = t_total / conditioning_rate
 
-        audio_duration = t_total / 25.0
+        audio_duration = t_total / conditioning_rate
 
         text_prompt = self._acestep_build_text_prompt(
             caption, audio_duration, bpm, key_scale, time_signature, vocal_language
@@ -1926,7 +1962,7 @@ class AceStepMixin:
         src_latents = silence_full.clone()  # [1, T_total, 64]
         src_latents[:, off:off + t_ref, :] = ref_latent
 
-        chunk_masks = torch.ones(1, t_total, 64, dtype=model_dtype, device=device)
+        chunk_masks = torch.ones_like(src_latents)
         chunk_masks[:, off:off + t_ref, :] = 0.0  # 0 INSIDE the held/placed span (opposite fill from repaint)
 
         is_covers = torch.zeros(1, dtype=torch.bool, device=device)
@@ -2012,6 +2048,8 @@ class AceStepMixin:
             with torch.inference_mode():
                 waveform = vae.decode(pred_for_decode).sample  # [1, 2, samples]
             waveform = waveform.float()
+            if pair is not None:
+                waveform = waveform[..., :t_total * pair.source.hop_length]
             peak = waveform.abs().amax(dim=[1, 2], keepdim=True)
             if torch.any(peak > 1.0):
                 waveform = waveform / peak.clamp(min=1.0)
@@ -2027,8 +2065,8 @@ class AceStepMixin:
         waveform_out = self._acestep_apply_outpaint_waveform_splice(
             waveform_out,
             trimmed_wav.to(device=waveform_out.device, dtype=waveform_out.dtype),
-            offset_sec=off / 25.0,   # latent-frame-derived boundary, NOT the
-            dur_sec=t_ref / 25.0,    # raw user input -- exactly matches the mask.
+            offset_sec=off / conditioning_rate,
+            dur_sec=t_ref / conditioning_rate,
             sample_rate=48000,
             crossfade_ms=10.0,
         )

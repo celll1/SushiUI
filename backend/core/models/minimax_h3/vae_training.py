@@ -5,7 +5,7 @@ from math import lcm
 
 import torch
 
-from core.models.components.latent_adapter import ImageCodecContract, SpatialAlignmentPair
+from core.models.components.latent_adapter import ImageCodecContract, SpatialAlignmentPair, calibration_source_side
 from core.models.components.video_latent_adapter import (
     VideoCodecContract, NormalizedVideoVAE, PairedVideoCalibration, paired_calibration_frames, codec_temporal_policy,
 )
@@ -132,21 +132,22 @@ def calibrate(trainer, datasets):
     fit = PairedVideoCalibration(alignment, ridge=1e-2)
     spatial = lcm(source.image.spatial_scale, target.contract.image.spatial_scale)
     canvas = max(spatial, (side//spatial)*spatial)
+    teacher_canvas = calibration_source_side(canvas, alignment.declaration)
     frames = paired_calibration_frames(source, target.contract)
 
-    def pixels(sample):
+    def pixels(sample, size=canvas):
         video, path = sample
         if video:
             from core.training.video_loader import load_clip
             from core.training.components.wiring import MINIMAX_H3_TEMPORAL
             spec = replace(MINIMAX_H3_TEMPORAL, frame_multiple=frames-1, frame_offset=1,
                 min_decodable_frames=frames, default_clip_lengths=(frames,))
-            value = load_clip(path, clip_length=frames, target_h=canvas, target_w=canvas, spec=spec)
+            value = load_clip(path, clip_length=frames, target_h=size, target_w=size, spec=spec)
             return value.permute(1, 0, 2, 3)[None]
         from PIL import Image, ImageOps
         import numpy as np
         with Image.open(path) as opened:
-            image = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (canvas, canvas))
+            image = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (size, size))
             value = torch.from_numpy(np.array(image).copy()).permute(2, 0, 1).float()/127.5-1
         return value[None, :, None]
 
@@ -164,7 +165,7 @@ def calibrate(trainer, datasets):
             with torch.no_grad():
                 for i, sample in enumerate(samples):
                     trainer._check_stop_requested()
-                    value = transform_pixels(pixels(sample).to(trainer.device), encode=True).to(old_dtype)
+                    value = transform_pixels(pixels(sample, teacher_canvas).to(trainer.device), encode=True).to(old_dtype)
                     z = old.encode(value).latent_dist.mode().float()
                     mean = z.new_tensor(old.config.latents_mean).view(1, -1, 1, 1, 1)
                     std = z.new_tensor(old.config.latents_std).view(1, -1, 1, 1, 1)

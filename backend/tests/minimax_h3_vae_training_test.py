@@ -91,8 +91,23 @@ def test_calibration_optimizer_ownership_and_saved_continuation(tmp_path, channe
     progress = []
     trainer._vae_alignment_progress_callback = lambda **kw: progress.append(kw)
     data = images(tmp_path)
+    teacher_shapes, target_shapes = [], []
+    old_encode = getattr(trainer, PENDING)[0].encode
+    target_encode = trainer.vae.encode
+    def record_teacher(value, *args, **kwargs):
+        teacher_shapes.append(tuple(value.shape[-2:]))
+        return old_encode(value, *args, **kwargs)
+    def record_target(value, *args, **kwargs):
+        target_shapes.append(tuple(value.shape[-2:]))
+        return target_encode(value, *args, **kwargs)
+    getattr(trainer, PENDING)[0].encode = record_teacher
+    trainer.vae.encode = record_target
     rng = torch.random.get_rng_state().clone()
     trainer.arch.calibrate_before_training(trainer, data, None)
+    trainer.vae.encode = target_encode
+    expected_side = 64 if scale == 32 else 128
+    assert teacher_shapes == [(expected_side, expected_side)]*2
+    assert target_shapes == [(128, 128)]*2
     assert pair.ready and not hasattr(trainer, PENDING)
     assert torch.equal(rng, torch.random.get_rng_state())
     assert trainer.events == ["park", "restore"]

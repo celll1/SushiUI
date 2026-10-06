@@ -8,6 +8,30 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+H3/LTXの新規paired_spatial校正にも、共有`calibration_source_side`を配線した。
+交換先の空間縮小率が大きい場合はteacher画像・clipを先に縮めてencodeし、
+target画像サイズとruntime token gridは維持する。時間軸の既存clock/補間は変更しない。
+保存済みready bridgeの再開は再校正しない。H3の16x→32xとLTXの32x→64xを
+小型実codecで検証し、H3/LTXの校正・保存復元・キャンセル・時間軸のCPU回帰37件、
+変更Pythonのcompile、CUDA未初期化の実importが通過した。
+
+公式H3/LTX codecでもgeneral ratingを再確認した40枚で3×3校正した。
+H3 teacherを256px、LTX targetを512pxでencodeすると両者の空間格子は16×16となる。
+73frameの静止clipの時間格子は22対10で、因果first-frameを保つ既存補間を使った。
+同じ未使用general画像2枚のPSNR（LTX codec単体再構成に対する値）は
+従来の16.74/19.15dBから17.14/19.40dBとなった。評価数が少なく改善も小幅であり、
+動画DiTの画質回復や動くclipの受入を示す値ではない。
+この直接codec比較はridge=1e-3、production校正は既存の1e-2を維持する。
+校正画像・kernel・評価出力はignored localにのみ保持する。
+
+公式H3 dense DiTと公式BF16 caption条件でも、上のteacher格子校正と中心行列の
+直交Gaussian補正・clean予測の再写像を組み合わせて比較した。49層block swap、
+U-netなし、73frame・256px・seed63・32指定steps（31 denoise更新）でdecodeまで完走したが、
+出力は色の塊と格子状の崩れがあり、狐の概形を認識できず画質は未受入。
+この試験は既存の2更新済みaligned bundleを使い、bridgeのみ再校正したため、厳密な
+未更新DiT同士の比較ではない。静止画像clipによる校正で、動くclipの分布は未検証。
+noise候補は本番に切り替えない。次の検証では静止校正と時間軸の整合を分けて調べる。
+
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、
 交換後のnative gridで3×3 paired_spatialをfitした。生成は1024px、DDIM epsilon、

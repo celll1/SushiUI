@@ -28,7 +28,7 @@ class Trainer(SimpleNamespace):
             raise RuntimeError('stop requested')
 
 
-def setup(tmp_path,new):
+def setup(tmp_path,new,scale=2):
     from diffusers import AutoencoderKL, AutoencoderKLLTX2Video, LTX2VideoTransformer3DModel, LTX2Pipeline
     from core.models.ltx2.residual_unet import native_config,wrap_transformer
     from core.models.common.vae_source import resolve_vae_source
@@ -61,8 +61,10 @@ def setup(tmp_path,new):
     from copy import deepcopy
     trainer.config.update(dit_rewiring_mode='configure', dit_rewiring_spec=deepcopy(graph))
     trainer.arch = Ltx2ArchHandler(trainer)
-    codec = AutoencoderKL(in_channels=3,out_channels=3,latent_channels=new,block_out_channels=(4,8),
-        down_block_types=('DownEncoderBlock2D',)*2,up_block_types=('UpDecoderBlock2D',)*2,
+    depth = scale.bit_length()
+    widths = (4,8) if scale == 2 else (4,)*depth
+    codec = AutoencoderKL(in_channels=3,out_channels=3,latent_channels=new,block_out_channels=widths,
+        down_block_types=('DownEncoderBlock2D',)*depth,up_block_types=('UpDecoderBlock2D',)*depth,
         norm_num_groups=1,scaling_factor=2.,shift_factor=.25)
     codec.save_pretrained(tmp_path/'codec')
     resolved = resolve_vae_source('file:'+str(tmp_path/'codec'),arch='ltx2',download=False,load_weights=True)
@@ -78,6 +80,27 @@ def images(tmp_path):
         Image.fromarray(np.random.default_rng(i).integers(0,256,(32,48,3),dtype=np.uint8)).save(path)
         items.append({'image_path':str(path)})
     return [SimpleNamespace(items=items)]
+
+
+def test_stronger_compression_encodes_teacher_on_target_spatial_grid(tmp_path):
+    from core.models.ltx2.vae_training import PENDING
+    trainer, resolved = setup(tmp_path, 10, scale=64)
+    trainer.arch.apply_vae_swap(trainer, resolved)
+    teacher = getattr(trainer, PENDING)[0]
+    source_shapes, target_shapes = [], []
+    source_encode, target_encode = teacher.encode, trainer.vae.encode
+    def source_record(value, *args, **kwargs):
+        source_shapes.append(tuple(value.shape))
+        return source_encode(value, *args, **kwargs)
+    def target_record(value, *args, **kwargs):
+        target_shapes.append(tuple(value.shape))
+        return target_encode(value, *args, **kwargs)
+    teacher.encode, trainer.vae.encode = source_record, target_record
+    trainer.arch.calibrate_before_training(trainer, images(tmp_path), None)
+    assert source_shapes == [(1,3,1,64,64)]*2
+    assert target_shapes == [(1,3,1,128,128)]*2
+    assert trainer.transformer_original._video_latent_alignment.ready
+    assert not hasattr(trainer, PENDING)
 
 
 @pytest.mark.parametrize('new',[2,10])

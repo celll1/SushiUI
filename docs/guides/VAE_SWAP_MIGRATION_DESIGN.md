@@ -37,6 +37,14 @@ U-netのpoolingが異なるAdaLNラベルを混ぜない制約で拒否された
 振幅補正は相関ノイズや失われた空間/時間情報を復元するものではない。この候補は
 本番へ採用せず、ローカルスクリプト/生成物だけを保持する（gitには含めない）。
 
+さらに、生成開始時の既知targetノイズを入力畳み込みに通し、残りノイズ率に比例して
+`eps_native - A eps_target`を加える候補を比較した。native 24 channelには別seedの
+単位Gaussianを置き、追加channelはゼロとし、native clean予測を出力3×3 bridgeで
+target velocityへ戻した。公式TE・同prompt・target seed63・native noise seed64・
+target-native 160 row・2段U-netで31評価と73frame decodeが通過したが、狐を
+識別できず未受入。caption条件・gridは維持したが、独立nativeノイズを追加するため
+同一ノイズ軌道の比較ではない。これも本番には採用せず、生成物はignored localのみ。
+
 H3 Full factoryを内部alignedアダプターへ接続し、共通の読込前契約を追加した。
 train_unet有効・text/image encoder学習無効・target codec同梱・paired_spatialを必須とし、
 新規交換では浮動小数点DiTのheaderを、保存済みbundleでは既存の厳密なnative preflightを

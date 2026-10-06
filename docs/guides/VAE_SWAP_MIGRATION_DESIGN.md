@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+H3のcodec clockとpacked segmentを既存sampler・train_stepへ接続した。
+時間座標はpixel_frame_v1で保存し、独立frame codecはj、causal codecはj*temporal_scale、
+H3 codecは既存の非均等chunk offsetを共通のpixel frame時間軸（5/3 rotary units/frame）へ写す。
+参照動画のclock spanとlast/integer anchorは交換先codecのpixel frame数で求め、音声は既存の
+40 latent/sの時計を維持する。H3 codecを指定した場合も、従来layoutのfloat演算/indicesをbit-exactで保持する。
+各reference/anchor/target segmentはframe-majorのsequence rowsを記録し、pinで並べ替えられた
+video_indicesの逆写像からbridge rowsを求める。これによりtemporal/spatial pinでも3x3の隣接関係を保つ。
+sampler/train_stepの共通forward kwargsはcodec/clock契約とsegmentの完全被覆を検査し、
+不一致をscheduler変更前に拒否する。U-net identityにもclock policyを含む。
+training layout cacheは交換先codec契約で分離し、音声なしbatchの長さはtarget codecから逆算する。
+小型実H3 samplerのdense/U-net×独立/causal/H3 clock、参照・video/audio pin保持、実train_stepの
+勾配とcache契約、従来layout/inpaint/training回帰303件・14subtestがCPUで通過した。
+変更PythonのcompileとCUDAを抑止した実importを確認した。外部画像・動画・音声は使っていない。
+検証は校正済みbridgeを小型DiTへ直接installした経路であり、公開model loader/Full training ownerの
+受け入れを代替しない。生成canvasからtarget shapeを選ぶbackend、clip encode/decodeとcache namespace、
+校正owner、Full adapter/offload、artifact復元・公開gate、公式33B全重みの学習/画質/速度検証は残る。
+
 H3のtarget-native video IO境界を`minimax_h3/video_alignment.py`へ実装した。
 公式のC-outerな1x2x2 patchをunpackし、各target/reference segment内だけで3x3 bridgeを適用して
 同じ格子にrepackする。元のtoken格子へは戻さない。H3のtimestepはclean fractionであるため入力は
@@ -21,8 +38,9 @@ segmentの完全被覆、packed modality indices、時刻、構造identityを検
 追加チャネルの勾配、checkpointingの出力/勾配一致、segment順序変更、codec identity改変拒否を確認した。
 関連H3 packed/U-net/codec・共通video・LTX境界のCPU回帰86件・14subtestが通過した。
 これは入出力境界の実装であり、公開training/generation入口への完成した配線ではない。
-非均等の時刻座標、target frame数を使うsampler/clip/cache、校正owner、Full adapter/offload、
-artifact復元が残るため、H3の公開swap gateは未解除。公式33B全重みの学習/画質/速度検証も未完である。
+時刻/segmentのsampler・train_step接続は上記の後続段階で確認した。clip/cache、校正owner、
+Full adapter/offload、artifact復元が残るため、H3の公開swap gateは未解除。
+公式33B全重みの学習/画質/速度検証も未完である。
 変更PythonのcompileとCUDAを抑止した実importを確認した。外部画像・動画・音声は使っていない。
 
 H3のnative video codecを共通resolverと正規化facadeへ接続した。nominal temporal stride=4だけでは

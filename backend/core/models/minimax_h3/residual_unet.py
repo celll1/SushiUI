@@ -38,6 +38,10 @@ def native_config(config):
     resolved[GRID_POLICY_KEY] = GRID_POLICY
     codec = config.get(VIDEO_CODEC_KEY)
     if codec is not None:
+        from .video_alignment import VIDEO_POSITION_POLICY_KEY,VIDEO_POSITION_POLICY
+        if config.get(VIDEO_POSITION_POLICY_KEY) != VIDEO_POSITION_POLICY:
+            raise ValueError('H3 video position policy is missing or unsupported')
+        resolved[VIDEO_POSITION_POLICY_KEY] = VIDEO_POSITION_POLICY
         from dataclasses import asdict
         from core.models.components.latent_adapter import ImageCodecContract
         from core.models.components.video_latent_adapter import VideoCodecContract
@@ -151,8 +155,12 @@ def run_native_blocks(wrapper, hidden, temb, state):
 def forward_kwargs(transformer, layout):
     """Use target geometry recorded by the native layout builder, never modality guesses."""
     inner = getattr(transformer, 'transformer', transformer)
+    codec_kwargs = {}
+    if getattr(inner, '_video_latent_alignment', None) is not None:
+        from .video_alignment import forward_kwargs as codec_forward_kwargs
+        codec_kwargs = codec_forward_kwargs(transformer,layout)
     if getattr(inner, '_residual_unet_spec', None) is None:
-        return {}
+        return codec_kwargs
     from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
     if not isinstance(transformer, MiniMaxH3BlockLoopWrapper):
         raise ValueError('MiniMax-H3 residual generation/training requires its native execution wrapper')
@@ -167,7 +175,7 @@ def forward_kwargs(transformer, layout):
     if start < 0 or start + count != positions.shape[0] or positions.shape[0] != layout['sequence_length']:
         raise ValueError('MiniMax-H3 native layout target geometry disagrees with packed sequence')
     target = torch.arange(start, start+count, device=positions.device)
-    return {'residual_video_grid':dict(frames=grid['frames'], height=grid['height'],
+    return {**codec_kwargs,'residual_video_grid':dict(frames=grid['frames'], height=grid['height'],
                                      width=grid['width'], target_indices=target)}
 
 

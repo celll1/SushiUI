@@ -9,6 +9,45 @@ from core.models.components.latent_adapter import _Config
 from core.models.minimax_h3_block_loop_wrapper import MiniMaxH3BlockLoopWrapper
 from .h3_pipeline_ops import patchify_video_latents, unpatchify_video_rows
 
+VIDEO_POSITION_POLICY_KEY = "sushi_video_position_policy"
+VIDEO_POSITION_POLICY = "pixel_frame_v1"
+
+
+def forward_kwargs(transformer, layout):
+    inner = getattr(transformer,"transformer",transformer)
+    if getattr(inner,"_video_latent_alignment",None) is None:
+        return {}
+    if not isinstance(transformer,AlignedMiniMaxH3BlockLoopWrapper):
+        raise ValueError("Aligned H3 requires its video execution wrapper")
+    if (layout.get("video_codec_contract") != asdict(inner._video_codec_contract)
+            or layout.get("video_position_policy") != VIDEO_POSITION_POLICY
+            or inner.config.get(VIDEO_POSITION_POLICY_KEY) != VIDEO_POSITION_POLICY):
+        raise ValueError("H3 layout disagrees with the codec/position contract")
+    validate_codec_grids(layout.get("video_codec_grids"),layout["video_indices"].numel(),
+                         layout["position_ids"].device)
+    return dict(video_codec_grids=layout["video_codec_grids"])
+
+
+def validate_codec_grids(grids, count, device):
+    if not isinstance(grids,(list,tuple)) or not grids:
+        raise ValueError("Aligned H3 requires explicit grids for every target/reference video segment")
+    indices = []
+    for group in grids:
+        if not isinstance(group,dict) or set(group) != {"rows","frames","height","width"}:
+            raise ValueError("H3 codec grid segment fields differ")
+        frames,height,width = (group[key] for key in ("frames","height","width"))
+        if any(type(n) is not int or n < 1 for n in (frames,height,width)) or height % 2 or width % 2:
+            raise ValueError("H3 codec segment requires an even positive spatial grid")
+        rows = group["rows"]
+        if (not torch.is_tensor(rows) or rows.dtype != torch.long or rows.ndim != 1 or rows.device != device
+                or rows.numel() != frames*(height//2)*(width//2)):
+            raise ValueError("H3 codec segment rows disagree with their device/grid")
+        indices.append(rows)
+    covered = torch.cat(indices)
+    if covered.numel() != count or not torch.equal(covered.sort().values,torch.arange(count,device=device)):
+        raise ValueError("H3 codec grids must partition every video row exactly once")
+    return indices
+
 
 def map_video_rows(bridge, rows, *, grid, patch, clean_fraction=None, velocity=False):
     if (len(grid) != 3 or any(type(n) is not int or n < 1 for n in grid)
@@ -37,8 +76,6 @@ class AlignedMiniMaxH3BlockLoopWrapper(MiniMaxH3BlockLoopWrapper):
                 timestep, timestep_indices, token_tags, position_ids, video_indices, audio_indices, text_indices,
                 attention_kwargs=None, return_dict=True, *, residual_video_grid=None, video_codec_grids=None):
         pair = self.transformer._video_latent_alignment
-        if not isinstance(video_codec_grids,(list,tuple)) or not video_codec_grids:
-            raise ValueError("Aligned H3 requires explicit grids for every target/reference video segment")
         total = token_tags.numel()
         indices = (video_indices,audio_indices,text_indices)
         if (token_tags.ndim != 1 or token_tags.dtype != torch.long
@@ -55,18 +92,7 @@ class AlignedMiniMaxH3BlockLoopWrapper(MiniMaxH3BlockLoopWrapper):
                 or hidden_states.shape[1:] != (video_indices.numel(),4*pair.input.source_channels)):
             raise ValueError("H3 video rows disagree with the external codec width")
         count = video_indices.numel()
-        groups = []
-        for group in video_codec_grids:
-            if not isinstance(group,dict) or set(group) != {"rows","frames","height","width"}:
-                raise ValueError("H3 codec grid segment fields differ")
-            indices = group["rows"]
-            if (not torch.is_tensor(indices) or indices.dtype != torch.long or indices.ndim != 1
-                    or indices.device != hidden_states.device or indices.numel() < 1):
-                raise ValueError("H3 codec segment rows require device-local long indices")
-            groups.append(indices)
-        covered = torch.cat(groups)
-        if covered.numel() != count or not torch.equal(covered.sort().values,torch.arange(count,device=covered.device)):
-            raise ValueError("H3 codec grids must partition every video row exactly once")
+        groups = validate_codec_grids(video_codec_grids,count,hidden_states.device)
         if (timestep.ndim != 1 or not torch.isfinite(timestep).all() or (timestep < 0).any()
                 or (timestep > 1).any() or timestep.device != hidden_states.device
                 or timestep_indices.device != hidden_states.device or timestep_indices.dtype != torch.long
@@ -126,7 +152,7 @@ def install_video_alignment(model, alignment, contract):
                         in_kind="packed_linear",out_kind="packed_linear",pack_elems=prod(source["patch_size"]),
                         in_channel_order="outer",out_channel_order="outer")
     inner._video_resize_report = resize_latent_io(inner,spec,max(d["old_channels"],d["new_channels"]))
-    inner.register_to_config(**{VIDEO_CODEC_KEY:asdict(contract)})
+    inner.register_to_config(**{VIDEO_CODEC_KEY:asdict(contract),VIDEO_POSITION_POLICY_KEY:VIDEO_POSITION_POLICY})
     inner._video_latent_alignment = alignment.to(device=inner.proj_in.weight.device,dtype=inner.proj_in.weight.dtype)
     inner._video_codec_contract,inner._video_source_config = contract,source
     if graph is not None:

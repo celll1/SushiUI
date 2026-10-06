@@ -193,7 +193,11 @@ def _frame_position_grid(latent_height: int, latent_width: int, patch_h: int,
     return torch.stack([g.reshape(-1) for g in grids], dim=-1), width_grid
 
 
-def _temporal_position_grid(num_latent_frames: int, origin: float) -> torch.Tensor:
+def _temporal_position_grid(num_latent_frames: int, origin: float, codec=None) -> torch.Tensor:
+    if codec is not None:
+        codec.pixel_frames(num_latent_frames)
+        if codec.temporal_policy != "minimax_h3_chunks_v1":
+            return origin+torch.arange(num_latent_frames,dtype=torch.float64)*codec.temporal_scale*ROPE_FRAME_RESCALE
     spans = torch.tensor(
         [ROPE_FRAME_RESCALE * ROPE_FRAMES_PER_LATENT[i % len(ROPE_FRAMES_PER_LATENT)]
          for i in range(num_latent_frames)],
@@ -225,15 +229,50 @@ def _fill_audio_positions(
     ])
 
 
-def _clip_pixel_frames(num_latent_frames: int) -> int:
+def _clip_pixel_frames(num_latent_frames: int, codec=None) -> int:
     """How many PIXEL frames ``num_latent_frames`` latent frames cover.
 
     The video VAE's ``(1, 4, 4, 4, 4)`` temporal chunking, summed. MEASURED
     against the loader's own ``minimax_h3_latent_frames`` inverse: 7 -> 22,
     12 -> 39, 37 -> 124.
     """
+    if codec is not None:
+        return codec.pixel_frames(num_latent_frames)
     return sum(ROPE_FRAMES_PER_LATENT[i % len(ROPE_FRAMES_PER_LATENT)]
                for i in range(num_latent_frames))
+
+
+def _video_rotary_span(frames, codec=None):
+    if codec is not None:
+        codec.pixel_frames(frames)
+        if codec.temporal_policy != "minimax_h3_chunks_v1":
+            return codec.pixel_frames(frames)*ROPE_FRAME_RESCALE
+    return sum(ROPE_FRAME_RESCALE*ROPE_FRAMES_PER_LATENT[i % len(ROPE_FRAMES_PER_LATENT)]
+               for i in range(frames))
+
+
+def _codec_layout_metadata(layout, segments, codec, patch):
+    if codec is None:
+        return
+    from dataclasses import asdict
+    from .video_alignment import VIDEO_POSITION_POLICY
+    if tuple(patch) != (1,2,2):
+        raise ValueError("H3 codec layout requires 1x2x2 patches")
+    indices = layout["video_indices"]
+    inverse = torch.full((layout["sequence_length"],),-1,dtype=torch.long,device=indices.device)
+    inverse[indices] = torch.arange(indices.numel(),device=indices.device)
+    grids = []
+    for start,frames,height,width in segments:
+        if any(type(n) is not int or n < 1 for n in (frames,height,width)) or height % 2 or width % 2:
+            raise ValueError("H3 codec segment requires an even positive spatial grid")
+        count = frames*(height//2)*(width//2)
+        rows = inverse[torch.arange(start,start+count,device=indices.device)]
+        if (rows < 0).any():
+            raise ValueError("H3 codec segment refers to non-video rows")
+        grids.append(dict(rows=rows,frames=frames,height=height,width=width))
+    layout["video_codec_grids"] = grids
+    layout["video_codec_contract"] = asdict(codec)
+    layout["video_position_policy"] = VIDEO_POSITION_POLICY
 
 
 def is_frame_index_anchor(anchor: "int | str") -> bool:
@@ -254,7 +293,7 @@ def is_frame_index_anchor(anchor: "int | str") -> bool:
 
 
 def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
-                        num_latent_frames: int) -> float:
+                        num_latent_frames: int, codec=None) -> float:
     """Where one keyframe anchor sits on the packed sequence's time axis.
 
     That axis is literally PIXEL-FRAME time: ``t(f) = num_text_tokens +
@@ -277,6 +316,8 @@ def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
         if anchor == "first":
             return float(num_text_tokens)
         if anchor == "last":
+            if codec is not None and codec.temporal_policy != "minimax_h3_chunks_v1":
+                return float(num_text_tokens)+ROPE_FRAME_RESCALE*(codec.pixel_frames(num_latent_frames)-1)
             # numpy's PAIRWISE summation, because that is how the reference
             # computes this anchor; a sequential sum differs in the last ulp
             # from 16 latent frames onwards.
@@ -294,7 +335,7 @@ def _anchor_rotary_time(anchor: "int | str", num_text_tokens: int,
             f"index, got {anchor!r}.")
 
     frame = int(anchor)
-    num_pixel_frames = _clip_pixel_frames(num_latent_frames)
+    num_pixel_frames = _clip_pixel_frames(num_latent_frames,codec)
     if frame < 0:
         raise ValueError(
             f"A keyframe anchor's frame index must be >= 0, got {frame}. A request's "
@@ -502,6 +543,7 @@ def build_packed_layout(
     pinned_audio_latents: Sequence[int] = (),
     text_token_tags: Optional[torch.Tensor] = None,
     device: Optional[torch.device | str] = None,
+    video_codec_contract=None,
 ) -> Dict[str, Any]:
     """The ``[text | conditions | audio | video]`` layout of one request.
 
@@ -592,7 +634,7 @@ def build_packed_layout(
     frame_grid, width_grid = _frame_position_grid(latent_height, latent_width, patch_h, patch_w)
 
     for index, anchor in enumerate(keyframe_anchors):
-        anchor_time = _anchor_rotary_time(anchor, num_text_tokens, num_latent_frames)
+        anchor_time = _anchor_rotary_time(anchor, num_text_tokens, num_latent_frames,video_codec_contract)
         rows = slice(condition_start + index * rows_per_frame,
                      condition_start + (index + 1) * rows_per_frame)
         position_ids[rows, 0] = anchor_time
@@ -603,7 +645,7 @@ def build_packed_layout(
                           float(num_text_tokens), width_grid)
 
     video_position_ids = torch.empty(num_latent_frames, rows_per_frame, 3, dtype=torch.float64)
-    video_position_ids[:, :, 0] = _temporal_position_grid(num_latent_frames, float(num_text_tokens))[:, None]
+    video_position_ids[:, :, 0] = _temporal_position_grid(num_latent_frames, float(num_text_tokens),video_codec_contract)[:, None]
     video_position_ids[:, :, 1:] = frame_grid[None]
     position_ids[video_start:] = video_position_ids.reshape(-1, 3)
 
@@ -720,6 +762,10 @@ def build_packed_layout(
                     "audio_row_permutation", "audio_row_order"):
             if layout[key] is not None:
                 layout[key] = layout[key].to(device)
+    segments = [(condition_start+i*rows_per_frame,1,latent_height,latent_width)
+                for i in range(len(keyframe_anchors))]
+    segments.append((video_start,num_latent_frames,latent_height,latent_width))
+    _codec_layout_metadata(layout,segments,video_codec_contract,patch_size)
     return layout
 
 
@@ -739,6 +785,7 @@ def build_ref2va_packed_layout(
     pin_target_audio: bool = False,
     pinned_audio_latents: Sequence[int] = (),
     device: Optional[torch.device | str] = None,
+    video_codec_contract=None,
 ) -> Dict[str, Any]:
     """The ``[text | reference blocks | keyframe anchors | target audio | target video]`` layout.
 
@@ -870,6 +917,7 @@ def build_ref2va_packed_layout(
         latent_height, latent_width, patch_h, patch_w)
 
     video_index_blocks: List[torch.Tensor] = []
+    codec_segments = []
     audio_index_blocks: List[torch.Tensor] = []
     cursor = num_text_tokens
     rotary_time = float(num_text_tokens)
@@ -880,6 +928,7 @@ def build_ref2va_packed_layout(
             rows = slice(cursor, cursor + num_rows)
             cursor = rows.stop
             video_index_blocks.append(torch.arange(rows.start, rows.stop))
+            codec_segments.append((rows.start,frames,height,width))
             frame_grid, _ = _frame_position_grid(height, width, patch_h, patch_w)
             position_ids[rows, 0] = rotary_time
             position_ids[rows, 1:] = frame_grid.repeat(frames, 1)
@@ -903,22 +952,21 @@ def build_ref2va_packed_layout(
             if num_audio_rows:
                 audio_index_blocks.append(torch.arange(audio_rows.start, audio_rows.stop))
             video_index_blocks.append(torch.arange(video_rows.start, video_rows.stop))
+            codec_segments.append((video_rows.start,frames,height,width))
 
             frame_grid, width_grid = _frame_position_grid(height, width, patch_h, patch_w)
             reference_audio_latents = num_audio_rows // AUDIO_CHANNELS
             if num_audio_rows:
                 _fill_audio_positions(position_ids, audio_rows, reference_audio_latents,
                                       rotary_time, width_grid)
-            frame_time = _temporal_position_grid(frames, rotary_time)
+            frame_time = _temporal_position_grid(frames, rotary_time,video_codec_contract)
             position_ids[video_rows, 0] = frame_time.repeat_interleave(frame_grid.shape[0])
             position_ids[video_rows, 1:] = frame_grid.repeat(frames, 1)
             # SEQUENTIAL float64 sum, deliberately NOT the pairwise sum the
             # `"last"` keyframe anchor uses: the reference implementation keeps
             # both, one per call site, and the two differ in the last ulp from
             # 16 latent frames onwards.
-            video_span = sum(
-                ROPE_FRAME_RESCALE * ROPE_FRAMES_PER_LATENT[index % len(ROPE_FRAMES_PER_LATENT)]
-                for index in range(frames))
+            video_span = _video_rotary_span(frames,video_codec_contract)
             rotary_time += max(float(reference_audio_latents), video_span)
         else:
             raise ValueError(f"A reference must be an 'image', a 'video' or an 'audio', got {kind!r}.")
@@ -929,10 +977,11 @@ def build_ref2va_packed_layout(
     # origin, but placing one does not move it, so the target audio/video below
     # still starts where it would with no anchors at all.
     for anchor in keyframe_anchors:
-        anchor_time = _anchor_rotary_time(anchor, rotary_time, num_latent_frames)
+        anchor_time = _anchor_rotary_time(anchor, rotary_time, num_latent_frames,video_codec_contract)
         rows = slice(cursor, cursor + rows_per_frame)
         cursor = rows.stop
         video_index_blocks.append(torch.arange(rows.start, rows.stop))
+        codec_segments.append((rows.start,1,latent_height,latent_width))
         position_ids[rows, 0] = anchor_time
         position_ids[rows, 1:] = target_frame_grid
 
@@ -940,7 +989,7 @@ def build_ref2va_packed_layout(
     video_start = audio_start + num_target_audio_rows
     _fill_audio_positions(position_ids, slice(audio_start, video_start), num_audio_latents,
                           rotary_time, target_width_grid)
-    frame_time = _temporal_position_grid(num_latent_frames, rotary_time)
+    frame_time = _temporal_position_grid(num_latent_frames, rotary_time,video_codec_contract)
     position_ids[video_start:, 0] = frame_time.repeat_interleave(target_frame_grid.shape[0])
     position_ids[video_start:, 1:] = target_frame_grid.repeat(num_latent_frames, 1)
 
@@ -1042,6 +1091,8 @@ def build_ref2va_packed_layout(
                     "audio_row_permutation", "audio_row_order"):
             if layout[key] is not None:
                 layout[key] = layout[key].to(device)
+    codec_segments.append((video_start,num_latent_frames,latent_height,latent_width))
+    _codec_layout_metadata(layout,codec_segments,video_codec_contract,patch_size)
     return layout
 
 

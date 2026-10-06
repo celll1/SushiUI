@@ -2,7 +2,7 @@
 
 Model characteristics:
   - ``MiniMaxH3Transformer3DModel``: ONE stream of 50 blocks over a packed
-    ``[text | audio | video]`` sequence (not a two-tower MM-DiT), 33 B dense.
+    ``[text | audio | video]`` sequence (not a two-tower MM-DiT), 20.1 B dense.
   - Released weights are weight-only FP8 (``Fp8Linear``) with dequant inside the
     forward; the base stays quantized and resident during training.
   - Qwen3-VL-32B conditioner and both autoencoders stay frozen.

@@ -1140,7 +1140,7 @@ _add("minimax_h3", "vae_override",
 # LoRA training IS implemented (arch handler + ops + adapter, Phase 6b).
 _add_training_unsupported(
     "minimax_h3", "full_finetune",
-    "MiniMax-H3's DiT is a 33 B dense transformer; its parameters, gradients and optimizer state do not fit the single-GPU 48 GB envelope this integration targets, so only LoRA training is implemented")
+    "MiniMax-H3 public full fine-tuning remains gated pending end-to-end trainer/API acceptance; internal unquantized 20.1B aligned DiT training and save/resume have been verified with block offload")
 _add_training_unsupported(
     "minimax_h3", "relora",
     "MiniMax-H3 ReLoRA is not implemented; the supported training bases use weight-only FP8 or packed W4A8 Linears, which cannot accept dense LoRA merges without format-specific requantization. Use LoRA instead")

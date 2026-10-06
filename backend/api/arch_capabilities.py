@@ -1158,13 +1158,7 @@ for _method in ("lora", "relora", "controlnet"):
         "sensenova_sdxl_chimera", _method,
         "SenseNova SDXL Chimera's first training release supports only stage-aware full fine-tuning; adapter and ControlNet save/load contracts are not implemented")
 
-# Ideogram 4: the UI carried this refusal as a hardcoded arch check since before
-# the table existed. Declared here so `_refuse_unsupported_full_finetune` /
-# `_refuse_unsupported_relora` (which read this table) enforce it too, instead of
-# `full_parameter_trainer._create_adapter` falling through to the SD1.5 adapter.
-_add_training_unsupported(
-    "ideogram4", "full_finetune",
-    "Ideogram 4's released base is weight-only quantized. A plain dual-DiT full-parameter adapter and export foundation exist, but public full fine-tuning awaits complete VAE-swap, sampling and official-weight acceptance; quantized trained branches remain refused")
+# Full FT dispatches to the native dual-DiT adapter, which rejects quantized trained branches.
 _add_training_unsupported(
     "ideogram4", "relora",
     "ReLoRA cannot merge dense updates back into Ideogram 4's quantized base")
@@ -1368,9 +1362,10 @@ _add_training_feature_unsupported(
 _add_training_feature_unsupported(
     "ltx2", "vae_swap",
     "a swapped LTX-2.3 checkpoint could be trained but not rendered: the full fine-tune save writes net.*-prefixed weights that no loader reads back (detect_model_type recognises LTX-2.3 only as a diffusers directory), and there is no 5D VAE at LTX-2.3's 32x spatial / 8x temporal ratios to swap to. Its LatentIOSpec and temporal declaration are in place; the refusal is the missing reader, not the resize")
-_add_training_feature_unsupported(
-    "ideogram4", "vae_swap",
-    "a VAE swap resizes the latent-facing layers, which only a full fine-tune trains and saves, and full_finetune is refused for Ideogram 4")
+_add_training_feature_advisory(
+    "ideogram4", "vae_swap", "experimental",
+    "Ideogram defaults to paired_spatial on the target codec grid. Full fine-tuning with ideogram4_train_uncond=true and unquantized dual DiTs is required. Shared calibration, dual bridge restoration, native codec bundling and U-net coexistence are verified with small native models; official full-weight training, quality and throughput acceptance remain pending.",
+    methods=["full_finetune"])
 _add_training_feature_unsupported(
     "minimax_h3", "vae_swap",
     "a VAE swap resizes the latent-facing layers, which only a full fine-tune trains and saves, and full_finetune is refused for MiniMax-H3")
@@ -1381,7 +1376,7 @@ _add_training_feature_advisory(
     "sensenova", "vae_swap", "experimental",
     "SenseNova defaults to paired_spatial on the replacement codec's native grid. It aggregates trained generation patch and PixelShuffle projections, retaining the decoder, understanding tower and reference path. Full fine-tuning with generation fm_modules enabled is required; learned bridges join that optimizer scope. The generation patch inherits the checkpoint (4 latent cells for a pixel base), so token width is patch*VAE scale. Shared calibration, native codec bundling, strict bridge restoration and U-net topology preservation are verified with synthetic small native models and 4-D/independent-frame 5-D codecs. Attached refiners preserve trained weights when expanding channels. Official full-weight paired training, quality and throughput acceptance remain pending. Legacy zero remains explicit; its earlier official-weight functional measurements are recorded in VAE_SWAP_MIGRATION_DESIGN.md 10.6",
     methods=["full_finetune"])
-for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21"):
+for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",

@@ -20,11 +20,11 @@ def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova") else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova"):
-        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I and SenseNova; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4"):
+        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova and Ideogram; select zero for this architecture")
     return mode
 
 
@@ -196,8 +196,12 @@ def preflight_vae_swap(
     check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
     mode = initialization_mode(config, arch)
-    if arch in ("ming_image_01", "qwen_image_21") and mode != "paired_spatial":
+    if arch in ("ming_image_01", "qwen_image_21", "ideogram4") and mode != "paired_spatial":
         raise ValueError(f"{arch} VAE swaps require paired_spatial initialization")
+    if arch == "ideogram4":
+        from api.param_defaults import TRAINING_DEFAULTS
+        if not config.get("ideogram4_train_uncond",TRAINING_DEFAULTS["ideogram4_train_uncond"]):
+            raise ValueError("Ideogram VAE swaps require ideogram4_train_uncond=true so both DiTs train their alignment")
 
     try:
         form, value = parse_vae_source(source)

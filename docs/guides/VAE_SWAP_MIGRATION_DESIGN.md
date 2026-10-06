@@ -11,7 +11,9 @@ LoRA 系での拒否は他 arch と同様に残る。
 Ideogram4にはplain dual-DiT Full FTの内部基盤を追加した。条件付きと任意の無条件DiTを
 学習対象にし、TE/VAEは固定する。非学習の無条件DiTはCPUに保持し、推論に必要な双方を保存する。
 実native小型DiTのoptimizer更新・両branch復元、量子化branchの事前拒否、adapter dispatchをCPUで検証した。
-公開Full FTのゲートはまだ解除していない。paired_spatial・縮小率変更、周期サンプルと公式重みの受け入れが残る。
+公開Full FTはnative adapterへ接続した。量子化された学習対象branchはadapterが事前拒否する。
+VAE交換はexperimentalとしてAPI/UIから設定でき、両branchを学習する
+`ideogram4_train_uncond=true`をpreflightで必須とする。autoはpaired_spatialを選ぶ。
 Ideogramのtarget-native境界も追加した。元のpackingは`(patch_h,patch_w,C)`なので、
 共有packed bridgeとsource BatchNorm校正にinner順序を明示する。モデル時刻`t=1-sigma`の
 入力biasと`x0_minus_eps`の出力biasを別々に適用し、text prefixを画像bridgeへ入れない。
@@ -34,7 +36,7 @@ text encoding→dual-DiT→VAE decodeの順に配置し、optimizerと勾配をC
 mutable block swap付きの両DiTサンプルも小型nativeモデル・BF16でGPU検証した。
 転送スロットはencoding/decode時に解放し、denoiseで再確保する。CPU masterのviewと
 学習hookを保ち、常駐経路と同一画像、停止後の状態復元、以降の逆伝搬・更新が通過した。
-公開API設定・量子化モデルのsampling residency・公式全重みの受け入れはまだ未了。
+公開周期サンプル・量子化モデルのsampling residency・公式全重みの受け入れはまだ未了。
 内部sample経路はNAG、negative/reference/condition promptを明示拒否する。
 
 本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の
@@ -359,7 +361,7 @@ QwenでもVAE swapと2段U-netのforward/backwardをCPUと小型合成モデル�
 | minit2i | 3 / 4 / 16 | `img_embedder.proj1 Conv2d(C,128,k=P,s=P,bias=False)`, `final_layer.linear Linear(hidden→P²·C)`（`mmjit.py:104-109,278-284`） | 入力側は conv（折込なし）、出力側は packed で C が最内（`mmjit.py:371-377`） | 実装済み（config 値）。差し替え＝`vae_type` 変更＋変形として同機構に乗せる | 3 |
 | sensenova | pixel、VAE なし、格子 /32 | §10 | — | アーキ的に別物。研究段階の変更として最終波 | 4 |
 | acestep | audio 64 / 1920 | `decoder.proj_in Conv1d(192→inner)`, `decoder.proj_out ConvTranspose1d(inner→64)`（`modeling_acestep_v15_turbo.py:1268-1305`）、`detokenize.proj_out`（`:894`）、凍結 RVQ | 時間 patchify のみ、C は 3 倍（`:1706`, `:1359`） | 可能だが凍結 RVQ の再学習/置換と `silence_latent` 資産（`acestep_ops.py:189-196,537-548`）の再生成が必要 | 保留 |
-| ideogram4 | 32 / 8 | `input_proj`, `final_layer.linear` ×2 transformer | あり | **対象外**: full FT が拒否されている（`arch_capabilities.py:1028-1030`）、`Ideogram4FullParameterAdapter` 不在 | — |
+| ideogram4 | 32 / 8 | `input_proj`, `final_layer.linear` ×2 transformer | あり | experimental paired_spatial: plain dual-DiT Full FT、両branch学習必須（冒頭の現行状況参照） | target-native |
 | minimax_h3 | video 24 / 16, audio 32 | `proj_in/out`, `audio_proj_in/out` | あり | **対象外**: full FT が 3層で拒否（`arch_capabilities.py:1004-1006`, `full_parameter_trainer.py:226-246`） | — |
 | minimax_music3 | 128 / 512 | — | — | **対象外**: 学習非対応 | — |
 

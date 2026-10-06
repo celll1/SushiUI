@@ -267,7 +267,7 @@ def map_video_tokens(bridge, tokens, *, grid, sigma=None, velocity=False):
     return mapped.flatten(2).transpose(1, 2)
 
 
-def calibration_video_grid(latent, shape):
+def calibration_video_grid(latent, shape, *, source_contract=None, target_contract=None):
     """Calibration-only teacher resampling; retain the causal first frame."""
     from torch.nn import functional as F
     if latent.ndim != 5 or len(shape) != 3 or any(type(n) is not int or n < 1 for n in shape):
@@ -276,6 +276,24 @@ def calibration_video_grid(latent, shape):
         raise ValueError("Video calibration requires nonempty latents")
     frames, height, width = shape
     spatial = calibration_grid(latent, (height, width))
+    if (source_contract is None) != (target_contract is None):
+        raise ValueError("Temporal calibration requires both codec clocks")
+    if source_contract is not None:
+        source_spans = source_contract.frame_spans(spatial.shape[2])
+        target_spans = target_contract.frame_spans(frames)
+        if source_spans[-1][1] != target_spans[-1][1]:
+            raise ValueError("Calibration codec clocks cover different pixel clip lengths")
+        if source_spans == target_spans:
+            return spatial
+        if spatial.shape[2] == 1:
+            raise ValueError("A still-image teacher cannot calibrate a temporal clip")
+        source_times = spatial.new_tensor([(a+b-1)/2 for a,b in source_spans], dtype=torch.float32)
+        target_times = spatial.new_tensor([(a+b-1)/2 for a,b in target_spans], dtype=torch.float32)
+        upper = torch.searchsorted(source_times, target_times).clamp(1, len(source_spans)-1)
+        lower = upper-1
+        weight = ((target_times-source_times[lower])/(source_times[upper]-source_times[lower])).clamp(0,1)
+        weight = weight[None,None,:,None,None]
+        return spatial[:,:,lower].float()*(1-weight)+spatial[:,:,upper].float()*weight
     if spatial.shape[2] == frames:
         return spatial
     if frames == 1:
@@ -288,8 +306,20 @@ def calibration_video_grid(latent, shape):
 
 
 class PairedVideoCalibration(PairedSpatialCalibration):
+    def __init__(self, alignment, *, ridge, source_contract=None, target_contract=None):
+        if (source_contract is None) != (target_contract is None):
+            raise ValueError("Temporal calibration requires both codec clocks")
+        if source_contract is not None:
+            for codec,prefix in ((source_contract,"old"),(target_contract,"new")):
+                if (codec.image.latent_channels != alignment.declaration[prefix+"_channels"]
+                        or codec.image.spatial_scale != alignment.declaration[prefix+"_scale"]):
+                    raise ValueError("Calibration clock geometry differs from alignment declaration")
+        super().__init__(alignment, ridge=ridge)
+        self.source_contract, self.target_contract = source_contract, target_contract
+
     def add(self, source, target):
         if source.ndim != 5 or target.ndim != 5 or source.shape[0] != target.shape[0]:
             raise ValueError("Paired video calibration requires matching clip batches")
-        source = calibration_video_grid(source, tuple(target.shape[-3:]))
+        source = calibration_video_grid(source, tuple(target.shape[-3:]),
+            source_contract=self.source_contract, target_contract=self.target_contract)
         super().add(source, target)

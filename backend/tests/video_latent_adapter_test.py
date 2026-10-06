@@ -141,6 +141,40 @@ def test_calibration_preserves_first_frame_and_only_resamples_teacher():
         calibration_video_grid(source[:, :, :1], (3, 4, 6))
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("independent", [False, True])
+def test_calibration_interpolates_in_declared_pixel_time(reverse, independent):
+    h3 = VideoCodecContract(ImageCodecContract(2,16,5,"per_channel",1,3),4,"minimax_h3_chunks_v1")
+    other = VideoCodecContract(ImageCodecContract(2,32,4 if independent else 5,"identity",1,3),
+        1 if independent else 8,"independent_frames_v1" if independent else "causal_first_frame_v1")
+    source_clock, target_clock = (other,h3) if reverse else (h3,other)
+    source_frames, target_frames = source_clock.latent_frames(73), target_clock.latent_frames(73)
+    centers = torch.tensor([(a+b-1)/2 for a,b in source_clock.frame_spans(source_frames)])
+    latent = centers[None,None,:,None,None].expand(2,2,-1,8,12).clone()
+    original = latent.clone()
+    result = calibration_video_grid(latent,(target_frames,4,6),
+        source_contract=source_clock,target_contract=target_clock)
+    expected = torch.tensor([(a+b-1)/2 for a,b in target_clock.frame_spans(target_frames)])
+    expected = expected.clamp(centers[0],centers[-1])
+    torch.testing.assert_close(result,expected[None,None,:,None,None].expand(2,2,-1,4,6))
+    torch.testing.assert_close(result[:,:,0],original[:,:,0,:4,:6])
+    torch.testing.assert_close(latent,original,rtol=0,atol=0)
+
+
+def test_calibration_refuses_partial_or_inconsistent_codec_clocks():
+    clock = contract(5,8,"causal_first_frame_v1")
+    latent = torch.zeros(1,2,10,4,6)
+    with pytest.raises(ValueError,match="both codec clocks"):
+        calibration_video_grid(latent,(10,4,6),source_contract=clock)
+    with pytest.raises(ValueError,match="different pixel clip lengths"):
+        calibration_video_grid(latent,(9,4,6),source_contract=clock,target_contract=clock)
+    declaration = clock.image.declaration(source="synthetic",source_identity="old",target_identity="new",
+        old_channels=3,old_scale=2)
+    with pytest.raises(ValueError,match="clock geometry"):
+        PairedVideoCalibration(SpatialAlignmentPair(declaration),ridge=1e-3,
+            source_contract=clock,target_contract=clock)
+
+
 def test_paired_clip_calibration_fits_both_directions():
     declaration = contract(5, 4, "causal_first_frame_v1").image.declaration(
         source="synthetic", source_identity="source", target_identity="target", old_channels=2, old_scale=1)

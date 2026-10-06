@@ -132,6 +132,7 @@ def test_calibration_optimizer_ownership_and_saved_continuation(tmp_path, channe
     assert vae.dtype == dtype and identity.latent_hash == resolved.latent_hash
     for key, value in trainer.transformer.transformer.state_dict().items():
         torch.testing.assert_close(value, restored.transformer.state_dict()[key], rtol=0, atol=0)
+    restored.train(trainer.transformer.training)
     with torch.no_grad():
         for left, right in zip(forward(trainer.transformer), forward(restored)):
             torch.testing.assert_close(left, right, rtol=1e-5, atol=1e-6)

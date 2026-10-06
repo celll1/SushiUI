@@ -8,6 +8,31 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+動画校正の時間補間にもsource/targetの`VideoCodecContract`を渡すよう、H3/LTXを配線した。
+単なるlatent番号の補間ではなく、各codecのpixel-frame範囲の中心でteacherを線形補間する。
+両clockのpixel clip長の不一致、片側だけのclock、宣言とclockのchannel/stride不一致を拒否する。
+端点外は外挿せずclampし、first-frameは維持する。runtimeの動画格子・位置・schedulerは変更しない。
+source/target clockが同じ場合は時間補間せず、保存済みready bridgeは再校正しない。
+H3/LTX/独立frameの両方向clockと保存復元のCPU回帰42件、compileとCUDA未初期化の
+実importが通過した。H3の復元forward比較はtrain/evalを揃え、既存の許容誤差を維持した。
+
+公式H3が生成した狐動画と合成の動く図形1clipで校正し、別の位相の合成clipで評価した。
+実codecの入力はH3 128px/LTX 256px、73frame、latentはC24×22×8×8対C128×10×8×8。
+3×3校正のheld-out latent MSEは一様補間0.11397、clock補間0.11050、
+未clipの正規化decoder出力に対するPSNRは23.98対24.63dBとなった。
+図形の残像とぼけは残り、独立した実動画の汎用画質受入ではない。
+同じCPU thread数8では本番校正の全8 state tensorがGPU試作の保存値とbit一致した。
+異なるthread数4ではFP64集計/solve順序によるFP32 kernelの微小差（最大約2.3e-10）を観測した。
+この検証は生成動画・合成画像だけを使い、新しい実dataset画像は使用していない。
+校正kernel・clip latent・生成結果はignored localにのみ保持する。
+
+上のmoving clock kernelで、公式H3 DiT・同じ狐prompt/seed63・73frame/256px・U-netなしの
+生成も比較した。直交Gaussian/clean再写像、および出力3×3 kernelの64反復正則化逆写像
+（ridge=1e-5）によるinput整合の両候補が31更新とdecodeを完走したが、どちらも狐の概形を
+認識できず画質は未受入。既存2更新済みaligned bundleのbridgeを差し替えた試作であり、
+Full再学習後の画質や純粋な未更新baseの比較ではない。生成時noise/逆写像policyは切り替えない。
+校正処理のclock配線のみ本番へ反映し、H3→LTXの生成回復は引き続き未完として扱う。
+
 H3/LTXの新規paired_spatial校正にも、共有`calibration_source_side`を配線した。
 交換先の空間縮小率が大きい場合はteacher画像・clipを先に縮めてencodeし、
 target画像サイズとruntime token gridは維持する。時間軸の既存clock/補間は変更しない。

@@ -114,7 +114,11 @@ def calibrate(trainer, datasets):
     old, source = pending
     target = trainer.vae
     alignment = trainer.transformer_original._video_latent_alignment
-    fit = PairedVideoCalibration(alignment, ridge=1e-2)
+    source_contract = VideoCodecContract(ImageCodecContract(alignment.declaration["old_channels"],
+        source.vae_scale_factor, 5, source.vae_norm, source.vae_norm_pack, 3),
+        source.vae_scale_temporal, "causal_first_frame_v1")
+    fit = PairedVideoCalibration(alignment, ridge=1e-2,
+        source_contract=source_contract, target_contract=target.contract)
     spatial = lcm(source.vae_scale_factor, target.spatial_compression_ratio)
     canvas = max(spatial, (side//spatial)*spatial)
     from core.models.components.latent_adapter import calibration_source_side

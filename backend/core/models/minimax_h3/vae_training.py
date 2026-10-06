@@ -129,7 +129,8 @@ def calibrate(trainer, datasets):
     old, source = pending
     target = trainer.vae
     alignment = trainer.transformer_original._video_latent_alignment
-    fit = PairedVideoCalibration(alignment, ridge=1e-2)
+    fit = PairedVideoCalibration(alignment, ridge=1e-2,
+        source_contract=source, target_contract=target.contract)
     spatial = lcm(source.image.spatial_scale, target.contract.image.spatial_scale)
     canvas = max(spatial, (side//spatial)*spatial)
     teacher_canvas = calibration_source_side(canvas, alignment.declaration)

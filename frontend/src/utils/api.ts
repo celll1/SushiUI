@@ -7969,11 +7969,11 @@ export const updateTrainingRun = async (id: number, request: TrainingRunCreateRe
 
 /** One VAE a full fine-tune could migrate to (GET /training/vae-sources). */
 export interface VaeSwapCandidate {
-  domain?: "audio" | null;
+  domain?: "audio" | "video" | null;
   sample_rate?: number | null;
   waveform_channels?: number | null;
   hop_length?: number | null;
-  frame_policy?: "aligned_hop_v1" | null;
+  frame_policy?: "aligned_hop_v1" | "minimax_h3_chunks_v1" | null;
   /** The value `vae_swap_source` takes: "registry:<key>" | "file:<path>" | "model:<path>". */
   source: string;
   name?: string;

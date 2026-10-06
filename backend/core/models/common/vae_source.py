@@ -140,6 +140,8 @@ class ResolvedVAE:
                          hop_length=self.scale_temporal, frame_policy="aligned_hop_v1")
             facts.pop("pixel_channels")
             facts["output_channels"] = self.config["audio_channels"]
+        elif self.vae_class == "AutoencoderKLMiniMaxH3":
+            facts.update(domain="video", frame_policy="minimax_h3_chunks_v1")
         return facts
 
     def load_module(self, torch_dtype: Optional[torch.dtype] = None):
@@ -155,6 +157,9 @@ class ResolvedVAE:
         if self.vae_class == "AutoencoderKLQwenImage21":
             from core.models.qwen_image_21.vendor.autoencoder import AutoencoderKLQwenImage21
             cls = AutoencoderKLQwenImage21
+        elif self.vae_class == "AutoencoderKLMiniMaxH3":
+            from core.models.minimax_h3.vendor.autoencoder_kl_minimax_h3 import AutoencoderKLMiniMaxH3
+            cls = AutoencoderKLMiniMaxH3
         elif self.vae_class == "AutoencoderKLQwenImage" and self.config.get("input_channels") == 4:
             from core.models.ming_image_01.vendor.diffusion.autoencoder_kl_qwenimage import AutoencoderKLQwenImage
             cls = AutoencoderKLQwenImage
@@ -177,6 +182,8 @@ class ResolvedVAE:
             # No config to build from: the original/LDM key layout, which
             # diffusers converts itself. It accepts the state dict directly.
             module = cls.from_single_file(self.state_dict, torch_dtype=torch_dtype)
+        if self.vae_class == "AutoencoderKLMiniMaxH3":
+            module.register_to_config(_class_name=self.vae_class)
 
         overrides = {k: v for k, v in (("scaling_factor", self.scaling_factor),
                                        ("shift_factor", self.shift_factor))
@@ -412,6 +419,12 @@ def latent_space_hash(weights_hash: str, config) -> str:
     if config.get("_class_name") == "AutoencoderOobleck":
         identity["audio_geometry"] = {key: config.get(key) for key in (
             "sampling_rate", "audio_channels", "downsampling_ratios", "decoder_input_channels")}
+    elif config.get("_class_name") == "AutoencoderKLMiniMaxH3":
+        identity["video_geometry"] = {key: config.get(key) for key in (
+            "spatial_downsample_factors", "temporal_downsample_factors", "spatial_padding_mode",
+            "norm_eps", "clip_length", "token_drop")}
+        identity["frame_policy"] = "minimax_h3_chunks_v1"
+        identity["pixel_policy"] = "minimax_h3_imagenet_v1"
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(f"{weights_hash}:{payload}".encode()).hexdigest()[:16]
 
@@ -513,6 +526,12 @@ def _resolve_facts(
     declared: Dict[str, Any],
     family: str,
 ) -> Dict[str, Any]:
+    if config.get("_class_name") == "AutoencoderKLMiniMaxH3":
+        from core.models.minimax_h3.vae_contract import resolve_facts
+        try:
+            return resolve_facts(config, shapes)
+        except ValueError as error:
+            raise VaeSourceError(f"{source}: {error}") from error
     if config.get("_class_name") == "AutoencoderOobleck":
         from core.models.components.audio_latent_adapter import AudioCodecContract
         from types import SimpleNamespace

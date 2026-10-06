@@ -229,6 +229,7 @@ class NormalizedFrameVAE(nn.Module):
         distributions = []
         for frame in pixels.unbind(2):
             frame = frame[:, :self.declaration["input_channels"]]
+            frame = codec_pixels(self.inner, frame, encode=True)
             if self.declaration["ndim"] == 5:
                 frame = frame.unsqueeze(2)
             distributions.append(self.inner.encode(frame, **kwargs).latent_dist)
@@ -247,6 +248,7 @@ class NormalizedFrameVAE(nn.Module):
                 if result.shape[2] != 1:
                     raise ValueError("Image codec changed the independent frame count")
                 result = result.squeeze(2)
+            result = codec_pixels(self.inner, result, encode=False)
             if result.shape[1] == 3:
                 result = torch.cat((result, torch.ones_like(result[:, :1])), dim=1)
             if result.shape[1] != 4:
@@ -257,6 +259,14 @@ class NormalizedFrameVAE(nn.Module):
 
     def save_pretrained(self, path, **kwargs):
         return self.inner.save_pretrained(path, **kwargs)
+
+
+def codec_pixels(module, pixels, *, encode):
+    codec_class = module.config.get("_class_name") or type(module).__name__
+    if codec_class == "AutoencoderKLMiniMaxH3":
+        from core.models.minimax_h3.vae_contract import transform_pixels
+        return transform_pixels(pixels, encode=encode)
+    return pixels
 
 
 class _ImagePosterior:

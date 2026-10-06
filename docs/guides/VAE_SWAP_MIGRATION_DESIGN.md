@@ -29,7 +29,19 @@ U-netなしの3prompt/1seedの候補比較に限る結果であり、本番noise
 revisionは`462165984030d82259a11f4367a4eed129e94a7b`、サイズ6,938,078,334 bytes、
 SHA-256は`31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`でLFS hashと一致。
 共通model判定がsdxl、2515 tensor、label embeddingが1280×2816であることを
-CUDA未初期化で確認した。取得とheader確認であり、SDXL交換VAEの学習・画質受入ではない。
+CUDA未初期化で確認した。
+
+この公式SDXLベースで、合成図形2枚のみを使った公開API Full学習step1→保存→step2再開→
+生成を検証した。C4/8x→Qwen 2.1 VAE C64/16x、paired_spatial校正2枚・256px、
+BF16・Adafactor・batch1。入力/出力bridgeのcalibrated=trueと交換VAEの同梱を保存headerで確認。
+optimizerの1,683状態がすべてstep1からstep2へ進み、復元logも1,683 restoredを示した。
+fresh 1件はepsilon学習で使わない出力bridge biasで、step1/2双方の非更新名が一致する。
+lossは1.26342→0.20328、GradNormは2.244891→0.710323。少数stepの機能確認に限る。
+step2の単一safetensorsを生成APIへ読み込み、model type=sdxl・latent_channels=64、
+256px・2steps・seed63の生成HTTP200を確認した。生成画質や追加学習の収束は未受入。
+SDXLは元からU-netであり、DiTの2段U-net化を追加した検証ではない。
+専用run/datasetのDBとdiskは整理済み。小さな診断記録・optimizer・生成PNGはignored localの
+`local/verification/sdxl_api_swap_results/`へ保持し、選択モデルは元のMing Layerへ戻した。
 
 現在のKrea全3shardも、公式`krea/Krea-2-Raw`の配布metadataと全SHA-256を再照合した。
 revision `6b0ece7fffb640c5e3bcbe0a7f10f66b8e60a603`の各transformer shardと完全一致。

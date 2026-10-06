@@ -132,15 +132,18 @@ class GenGeometry:
 
 
 def gen_geometry(transformer) -> GenGeometry:
-    """This tree's generation geometry, read from the model the loader built."""
+    """External generation grid; aligned backbone IO may have more channels."""
     merge = int(1 / transformer.downsample_ratio)
     patch = int(getattr(transformer, "gen_patch_size", 0)
                 or transformer.patch_size * merge)
+    pair = getattr(transformer, "vae_latent_bridge", None)
     return GenGeometry(
-        channels=int(getattr(transformer, "gen_in_channels", 0) or 3),
+        channels=(pair.declaration["new_channels"] if pair is not None
+                  else int(getattr(transformer, "gen_in_channels", 0) or 3)),
         patch=patch,
         vit_patch=int(getattr(transformer, "gen_vit_patch_size", 0) or patch // merge),
-        vae_scale_factor=int(getattr(transformer, "gen_vae_scale_factor", 0) or 1),
+        vae_scale_factor=(pair.declaration["new_scale"] if pair is not None
+                         else int(getattr(transformer, "gen_vae_scale_factor", 0) or 1)),
     )
 
 

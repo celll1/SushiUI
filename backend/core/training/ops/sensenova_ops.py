@@ -2494,6 +2494,8 @@ def train_step(
             from core.models.sensenova.latent_refiner import apply_latent_refiner
 
             z_grid = transformer.unpatchify(z, patch, height, width)
+            from core.models.sensenova.vae_alignment import input_state
+            z_grid = input_state(transformer, z_grid, t)
             decoded = apply_latent_refiner(
                 transformer.fm_modules["fm_refiner"], decoded, z_grid, t,
                 noise_scale,
@@ -2509,7 +2511,8 @@ def train_step(
                     "sn_refiner_gate",
                     transformer.fm_modules["fm_refiner"].gate.detach(),
                 )
-        x0_pred = transformer.patchify(decoded, patch)
+        from core.models.sensenova.vae_alignment import output_x0
+        x0_pred = transformer.patchify(output_x0(transformer, decoded), patch)
         x0_tokens = transformer.patchify(x0, patch)
         # fp32 t here lifts v into fp32, which the MSE below wanted anyway --
         # the .float() calls become no-ops rather than extra copies.

@@ -700,12 +700,15 @@ class NEOChatModel(PreTrainedModel):
                 z_grid = self.unpatchify(
                     z, patch, token_h * patch, token_w * patch
                 )
+                from ..vae_alignment import input_state
+                z_grid = input_state(self, z_grid, t)
                 smoothed_img_2d = apply_latent_refiner(
                     self.fm_modules["fm_refiner"], smoothed_img_2d,
                     z_grid, t, noise_scale,
                 )
 
-            x_pred = self.patchify(smoothed_img_2d, patch)
+            from ..vae_alignment import output_x0
+            x_pred = self.patchify(output_x0(self, smoothed_img_2d), patch)
         else:
             if self.use_deep_fm_head:
                 x_pred = self.fm_modules["fm_head"](

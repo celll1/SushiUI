@@ -15,6 +15,17 @@ Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方�
 `auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXL、MiniT2Iでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
+SenseNovaにはtarget-native境界の基盤を追加した。generation ViT入力は`alpha=t`、
+ConvDecoder出力はx0として共有bridgeを通し、velocityとlossは外部格子で計算する。
+refinerも内部チャネル領域でnoisy状態とhead出力を受け取る。
+学習済みpatch embedは総和を保つ面積集約、PixelShuffle出力は面積平均で移行し、
+generation decoder・理解側tower・noise_scaleを再初期化しない。U-netのregionを維持してIO identityを更新する。
+CPU合成検証ではFP32/BF16の入力応答・出力平均、チャネル増減時の学習lossとbridge勾配、
+実vendor推論、refiner併用、bridge state復元、U-net identity更新が通過。
+既存latent移行とfm_modules勾配の回帰62件を確認し、追加のU-net/refiner回帰も通過した。
+変更Pythonのpy_compileと実importはCUDAを初期化せずに通過した。
+この段階では公開autoは従来zeroのままで、共有校正owner・loader/export・API/UIへの配線は残る。
+公式全重みによるSenseNova paired_spatialの学習・画質検証も未了。
 MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで
 入力を`alpha=t`、出力をx0として変換し、通常DiTとresidual U-netへ同じ境界を適用する。
 `pred_velocity`も外部latent上のx0との差から計算するため、CFGと学習の条件付けを維持する。

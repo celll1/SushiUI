@@ -242,41 +242,36 @@ def test_audio_loss_weight_default_matches_the_ssot_and_the_spec():
 
 
 # ===========================================================================
-# F2 -- the full-FT refusal fires from the checkpoint, before any load
+# F2 -- aligned Full replaces the blanket refusal; ReLoRA stays refused
 # ===========================================================================
 
-def test_full_finetune_refusal_reads_the_capability_table(monkeypatch):
-    """`_refuse_unsupported_full_finetune` must raise from DETECTION alone --
-    that is what makes it cheaper than the 21 GB DiT + 48 GiB text-encoder load
-    the constructor would otherwise perform first."""
+def test_aligned_full_finetune_is_not_globally_refused(monkeypatch):
+    """The per-run alignment contract replaces a blanket Full refusal."""
     from core.training.full_parameter_trainer import FullParameterTrainer
     import core.model_loader as ML
 
     monkeypatch.setattr(ML.ModelLoader, "detect_model_type",
                         staticmethod(lambda p: "minimax_h3"))
-    with pytest.raises(ValueError) as exc:
-        FullParameterTrainer._refuse_unsupported_full_finetune("any/path")
-    assert "minimax_h3" in str(exc.value)
-    assert "lora" in str(exc.value).lower()
+    assert FullParameterTrainer._refuse_unsupported_full_finetune("any/path") == "minimax_h3"
 
     # Negative control: an architecture that DOES offer full FT is untouched.
     monkeypatch.setattr(ML.ModelLoader, "detect_model_type", staticmethod(lambda p: "sdxl"))
     FullParameterTrainer._refuse_unsupported_full_finetune("any/path")
 
 
-def test_staged_aligned_full_adapter_is_not_publicly_exported():
+def test_aligned_full_adapter_is_publicly_exported():
     import core.training.adapters as adapters
     from core.training.adapters.minimax_h3_adapter import MiniMaxH3AlignedFullParameterAdapter
 
     assert issubclass(MiniMaxH3AlignedFullParameterAdapter, adapters.BaseFullParameterAdapter)
-    assert "MiniMaxH3AlignedFullParameterAdapter" not in adapters.__all__
+    assert "MiniMaxH3AlignedFullParameterAdapter" in adapters.__all__
 
 
 def test_training_unsupported_table_declares_it():
     """Layer 1: the table a client filters its method dropdown from."""
     from api.arch_capabilities import TRAINING_UNSUPPORTED
 
-    assert "full_finetune" in TRAINING_UNSUPPORTED.get("minimax_h3", {})
+    assert "full_finetune" not in TRAINING_UNSUPPORTED.get("minimax_h3", {})
     assert "relora" in TRAINING_UNSUPPORTED.get("minimax_h3", {})
 
 

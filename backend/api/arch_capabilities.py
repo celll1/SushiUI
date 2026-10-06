@@ -1128,19 +1128,7 @@ _add("minimax_h3", "attention_impl",
 _add("minimax_h3", "vae_override",
      "VAE override is not supported on MiniMax-H3: it owns two autoencoders (a 24-channel causal video VAE and a separate 32-channel audio VAE), its video VAE takes ImageNet-normalised RGB rather than [-1, 1], and its tiling policy is pinned because changing it changes the output")
 
-# Training methods MiniMax-H3 does not offer. Refused in THREE layers, all of
-# them live:
-#   1. this table -- a client filters its training-method dropdown from it, so a
-#      full fine-tune is not offerable in the first place;
-#   2. the deliberate absence of a `MiniMaxH3FullParameterAdapter` class in
-#      `core/training/adapters/minimax_h3_adapter.py` (that module exports the
-#      LoRA adapter only);
-#   3. a hard `ValueError` in `full_parameter_trainer._create_adapter`, which
-#      fires before any model is loaded if a run is queued anyway.
-# LoRA training IS implemented (arch handler + ops + adapter, Phase 6b).
-_add_training_unsupported(
-    "minimax_h3", "full_finetune",
-    "MiniMax-H3 public full fine-tuning remains gated pending end-to-end trainer/API acceptance; internal unquantized 20.1B aligned DiT training and save/resume have been verified with block offload")
+# Aligned Full is admitted by full_training_contract before model loading.
 _add_training_unsupported(
     "minimax_h3", "relora",
     "MiniMax-H3 ReLoRA is not implemented; the supported training bases use weight-only FP8 or packed W4A8 Linears, which cannot accept dense LoRA merges without format-specific requantization. Use LoRA instead")
@@ -1373,9 +1361,10 @@ _add_training_feature_advisory(
     "ideogram4", "vae_swap", "experimental",
     "Ideogram defaults to paired_spatial on the target codec grid. Full fine-tuning with ideogram4_train_uncond=true and unquantized dual DiTs is required. Shared calibration, dual bridge restoration, native codec bundling and U-net coexistence are verified with small native models; official full-weight training, quality and throughput acceptance remain pending.",
     methods=["full_finetune"])
-_add_training_feature_unsupported(
-    "minimax_h3", "vae_swap",
-    "a VAE swap resizes the latent-facing layers, which only a full fine-tune trains and saves, and full_finetune is refused for MiniMax-H3")
+_add_training_feature_advisory(
+    "minimax_h3", "vae_swap", "experimental",
+    "H3 Full requires an unquantized DiT, train_unet=true, frozen text/image encoders, paired_spatial and a bundled target RGB codec. A fresh base must specify a VAE swap; native aligned Full checkpoints restore their codec and bridges. Target-native spatial/temporal grids and U-net coexistence, official 20.1B DiT updates, bundle restoration and one runner/API update with save are verified. GPU optimizer resume and quality acceptance remain pending; unlearned H3-to-LTX generation does not yet preserve recognizable objects. The audio codec is retained.",
+    methods=["full_finetune"])
 _add_training_feature_advisory(
     "acestep", "vae_swap", "experimental",
     "ACE-Step defaults to paired_temporal on the replacement codec's native time grid. Unquantized full fine-tuning with train_unet=true and a bundled 48kHz stereo Oobleck codec is required. Calibration uses bounded audio windows from the run's dataset. RVQ, timbre and reference conditioning retain the original codec; decoder bridges and target codec identity are saved, restored and compatible with U-net topology. Small native-model calibration, training, generation and artifact restoration are CPU-verified; official full-weight training, quality and throughput acceptance remain pending.",
@@ -1384,7 +1373,7 @@ _add_training_feature_advisory(
     "sensenova", "vae_swap", "experimental",
     "SenseNova defaults to paired_spatial on the replacement codec's native grid. It aggregates trained generation patch and PixelShuffle projections, retaining the decoder, understanding tower and reference path. Full fine-tuning with generation fm_modules enabled is required; learned bridges join that optimizer scope. The generation patch inherits the checkpoint (4 latent cells for a pixel base), so token width is patch*VAE scale. Shared calibration, native codec bundling, strict bridge restoration and U-net topology preservation are verified with synthetic small native models and 4-D/independent-frame 5-D codecs. Attached refiners preserve trained weights when expanding channels. Official full-weight paired training, quality and throughput acceptance remain pending. Legacy zero remains explicit; its earlier official-weight functional measurements are recorded in VAE_SWAP_MIGRATION_DESIGN.md 10.6",
     methods=["full_finetune"])
-for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "acestep"):
+for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "acestep", "minimax_h3"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",

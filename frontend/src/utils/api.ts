@@ -2153,15 +2153,7 @@ export interface ArchCapabilities {
   // where the arch says so, snap) against. Present only for video
   // architectures. Optional so an older backend still type-checks.
   video_constraints?: Record<string, VideoConstraints>;
-  // arch -> training method -> the factual reason that method is REFUSED.
-  //
-  // A DIFFERENT axis from `unsupported`, which is about generation parameters
-  // that are accepted and ignored. An entry here means the trainer RAISES, so a
-  // client must not offer the method: MiniMax-H3 declares `full_finetune`
-  // unsupported (33 B dense DiT, weight-only FP8 base). Served straight from the
-  // backend's TRAINING_UNSUPPORTED table so the dropdown, the refusal and the
-  // reason shown to the user all come from one source. Optional so an older
-  // backend without the key still type-checks.
+  // Whole-method refusals come from TRAINING_UNSUPPORTED; absent methods stay selectable.
   training_unsupported?: Record<string, Record<string, string>>;
   // arch -> training CONFIG FEATURE -> why the trainer has no such mechanism
   // there (block swap, fused optimizer groups, reference images, text-encoder

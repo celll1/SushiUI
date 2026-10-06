@@ -1957,16 +1957,16 @@ Paths below are relative to `backend/core/training/`.
     "cannot identify image file" error; the guard is generic over both video
     archs. Short end-of-clip audio windows carry a row-level validity mask, so
     batch-shape padding is not supervised as real silence.
-  - **Full fine-tuning is refused**, in three live layers: the
-    `TRAINING_UNSUPPORTED["minimax_h3"]["full_finetune"]` declaration served by
-    `GET /schema/arch-capabilities` (which the training UI filters its method
-    dropdown from), the deliberate absence of a `MiniMaxH3FullParameterAdapter`
-    class, and a hard `ValueError` in `full_parameter_trainer` —
-    `_refuse_unsupported_full_finetune` raised before `super().__init__()` loads
-    anything, with the adapter-selection branch as a backstop so the missing
-    adapter can never fall through to SD1.5's.
-    Reason: a 33 B dense DiT's parameters, gradients and optimizer state do not
-    fit the single-GPU 48 GB envelope this integration targets.
+  - **Aligned Full fine-tuning is experimental** through
+    `MiniMaxH3AlignedFullParameterAdapter`. The shared pre-load contract requires
+    an unquantized DiT, train_unet enabled, frozen text/image encoders,
+    paired_spatial and a bundled target RGB codec. Fresh bases require a VAE
+    swap; native aligned bundles restore their codec and bridges. The official
+    dense DiT is 20.1 B parameters. One API training step, caption/latent encoding
+    and bundle/optimizer save passed on a 48 GB GPU with block swap and fused
+    8-bit updates. GPU optimizer resume and recognizable-object generation
+    remain unaccepted. ReLoRA remains refused. See
+    `docs/guides/VAE_SWAP_MIGRATION_DESIGN.md` for the measured boundaries.
   - **Training clips use the grid, not the production bounds.** Default clip
     lengths are `(22, 39)`; bucketing validates against the grid plus the 22-frame
     decodable floor, so a short training bucket is not a violation of the
@@ -3346,7 +3346,7 @@ Paths below are relative to `backend/core/training/`.
   `TEMPORAL_SPECS`: the per-video-arch clip-length, frame-rate and canvas
   contract read by route validation, bucketing, the video loader, the clip-cache
   key and `GET /schema/arch-capabilities`.
-- `backend/core/training/{arch,ops,adapters}/minimax_h3*.py` — LoRA training
+- `backend/core/training/{arch,ops,adapters}/minimax_h3*.py` — LoRA and experimental aligned Full training
   path (target set, joint video+audio objective, `audio_loss_weight`).
 - `backend/core/inference/custom_sampling.py` — SD/SDXL CFG short-circuit at cfg==1.0.
 - `backend/core/models/{lens,ideogram4,minit2i,krea2,anima}/*_loader.py` — component

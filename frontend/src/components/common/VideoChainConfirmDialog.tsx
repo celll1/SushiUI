@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { videoChainGeometryKey } from "@/utils/videoCodecGeometry";
 import {
   ArchCapabilities,
   VideoChainBoundaryCrossingPolicy,
@@ -160,6 +161,11 @@ export default function VideoChainConfirmDialog({
   // recorded on every generated segment.
   const [dirty, setDirty] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [validatedGeometryKey, setValidatedGeometryKey] = useState<string | null>(null);
+  const validationToken = useRef(0);
+  const geometryKey = videoChainGeometryKey(archCapabilities, planInput?.architecture);
+  const geometryKeyRef = useRef(geometryKey);
+  geometryKeyRef.current = geometryKey;
   const [attempt, setAttempt] = useState(0);
   // What each continuation is conditioned on. The DEFAULT stays
   // `boundary_frame` -- the richer modes are unmeasured, and this dialog is not
@@ -248,6 +254,9 @@ export default function VideoChainConfirmDialog({
   const planRequestKey = planRequest ? JSON.stringify(planRequest) : null;
 
   useEffect(() => {
+    const plannedGeometryKey = geometryKeyRef.current;
+    validationToken.current += 1;
+    setValidating(false);
     if (!isOpen) {
       setPhase("planning");
       setManifest(null);
@@ -255,6 +264,7 @@ export default function VideoChainConfirmDialog({
       setWarnings([]);
       setPlanError(null);
       setDirty(false);
+      setValidatedGeometryKey(null);
       return;
     }
     if (!planRequestKey) {
@@ -277,6 +287,7 @@ export default function VideoChainConfirmDialog({
           ...normalizeIssues(response.manifest?.warnings),
         ]);
         setDirty(false);
+        setValidatedGeometryKey(plannedGeometryKey);
         setPhase("editor");
       })
       .catch((error: any) => {
@@ -294,6 +305,7 @@ export default function VideoChainConfirmDialog({
       });
     return () => {
       cancelled = true;
+      validationToken.current += 1;
     };
   }, [isOpen, planRequestKey, attempt]);
 
@@ -342,12 +354,14 @@ export default function VideoChainConfirmDialog({
 
   const revalidate = useCallback(async () => {
     if (manifest == null) return;
+    const token = ++validationToken.current;
     setValidating(true);
     try {
       const response = await validateVideoChainManifest({
         manifest,
         recompute_plan_hash: true,
       });
+      if (token !== validationToken.current) return;
       setErrors(normalizeIssues(response.errors));
       setWarnings(normalizeIssues(response.warnings));
       // `dirty` clears only when the edits actually came back with a hash to
@@ -355,17 +369,19 @@ export default function VideoChainConfirmDialog({
       // leaves the edited manifest holding its PRE-edit hash, and that hash is
       // stamped onto every segment's provenance -- so it stays dirty and the
       // "Start chain" button stays disabled until a validate answers properly.
-      if (response.manifest) {
+      if (response.valid && response.manifest) {
         setManifest({
           ...response.manifest,
           plan_hash: response.plan_hash ?? response.manifest.plan_hash,
         });
         setDirty(false);
-      } else if (response.plan_hash) {
+        setValidatedGeometryKey(geometryKey);
+      } else if (response.valid && response.plan_hash) {
         setManifest((previous) =>
           previous == null ? previous : { ...previous, plan_hash: response.plan_hash as string }
         );
         setDirty(false);
+        setValidatedGeometryKey(geometryKey);
       } else {
         setErrors((previous) => [
           ...previous,
@@ -379,6 +395,7 @@ export default function VideoChainConfirmDialog({
         ]);
       }
     } catch (error: any) {
+      if (token !== validationToken.current) return;
       setErrors([
         {
           code: "validate_request_failed",
@@ -390,9 +407,9 @@ export default function VideoChainConfirmDialog({
         },
       ]);
     } finally {
-      setValidating(false);
+      if (token === validationToken.current) setValidating(false);
     }
-  }, [manifest]);
+  }, [manifest, geometryKey]);
 
   if (!isOpen) return null;
 
@@ -414,7 +431,8 @@ export default function VideoChainConfirmDialog({
     segmentZeroBindings != null &&
     segmentZeroBindings.length === 0;
   const canStartPlanned =
-    phase === "editor" && manifest != null && errors.length === 0 && !dirty && !segmentZeroUnbound;
+    phase === "editor" && manifest != null && errors.length === 0 && !dirty && !segmentZeroUnbound
+    && validatedGeometryKey === geometryKey && !validating;
   const showFallbackChoices = phase === "unavailable" || errors.length > 0;
 
   return (
@@ -682,6 +700,7 @@ export default function VideoChainConfirmDialog({
                         >
                           <input
                             type="checkbox"
+                            disabled={validating}
                             checked={(reference.segment_indices ?? []).includes(segment.index)}
                             onChange={() => toggleBinding(reference.id, segment.index)}
                           />
@@ -707,6 +726,7 @@ export default function VideoChainConfirmDialog({
                       <span>references {segment.reference_ids?.length ?? 0}</span>
                     </div>
                     <textarea
+                      disabled={validating}
                       value={segment.prompt}
                       onChange={(event) => editSegmentPrompt(segment.index, event.target.value)}
                       rows={6}
@@ -721,9 +741,14 @@ export default function VideoChainConfirmDialog({
                   Edited. Validate the changes to recompute the plan hash before starting the chain.
                 </p>
               )}
+              {validatedGeometryKey !== geometryKey && (
+                <p className="text-xs text-amber-400">
+                  Loaded codec geometry changed. Validate this plan again or replan before starting.
+                </p>
+              )}
               <button
                 onClick={revalidate}
-                disabled={validating || !dirty}
+                disabled={validating || (!dirty && validatedGeometryKey === geometryKey)}
                 className={`px-3 py-1.5 rounded text-xs font-medium ${
                   validating || !dirty
                     ? "bg-gray-700 text-gray-500 cursor-not-allowed"

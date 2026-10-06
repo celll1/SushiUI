@@ -1,5 +1,8 @@
 import type { ArchCapabilities, VideoConstraints } from "./api";
 
+export const videoChainGeometryKey = (base: ArchCapabilities | null | undefined, arch: string | null | undefined): string =>
+  JSON.stringify(arch ? base?.video_constraints?.[arch] ?? null : null);
+
 export const overlayLoadedVideoConstraints = (
   base: ArchCapabilities | null,
   model: { type?: string; loaded_video_constraints?: VideoConstraints } | null | undefined,

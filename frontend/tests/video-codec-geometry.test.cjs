@@ -15,6 +15,7 @@ function load(name) {
 }
 const math = load('videoChainMath.ts');
 const overlay = load('videoCodecGeometry.ts').overlayLoadedVideoConstraints;
+const geometryKey = load('videoCodecGeometry.ts').videoChainGeometryKey;
 const plain = value => JSON.parse(JSON.stringify(value));
 test('native chunks retain their nonuniform repeated boundaries', () => {
   assert.deepEqual(plain(math.latentGroupSpans([1,4,4,4,4], 22)).map(row => row[1]), [1,5,9,13,17,18,22]);
@@ -51,10 +52,18 @@ test('loaded overlay is immutable and removed on unload or native-model change',
 test('changed TS and TSX wiring has valid syntax without invoking a type checker', () => {
   for (const name of ['contexts/StartupContext.tsx', 'components/generation/InpaintPanel.tsx',
     'components/generation/VideoInpaintTimeline.tsx', 'utils/api.ts', 'utils/videoChainMath.ts',
-    'utils/videoCodecGeometry.ts']) {
+    'utils/videoCodecGeometry.ts', 'components/common/VideoChainConfirmDialog.tsx']) {
     const file = path.join(__dirname, '../src', name);
     const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true,
       name.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
     assert.equal(source.parseDiagnostics.length, 0, name);
   }
+});
+test('a chain geometry key changes only with its selected architecture contract', () => {
+  const caps = { video_constraints: { minimax_h3: { frame_multiple: 2, frame_offset: 1 } } };
+  assert.equal(geometryKey(caps, 'minimax_h3'), geometryKey(plain(caps), 'minimax_h3'));
+  assert.notEqual(geometryKey(caps, 'minimax_h3'), geometryKey({ video_constraints: {
+    minimax_h3: { frame_multiple: 1, frame_offset: 1 } } }, 'minimax_h3'));
+  assert.equal(geometryKey(null, 'minimax_h3'), 'null');
+  assert.equal(geometryKey(caps, null), 'null');
 });

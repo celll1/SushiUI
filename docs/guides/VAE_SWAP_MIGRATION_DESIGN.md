@@ -15,6 +15,16 @@ Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方�
 `auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXLでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
+MiniT2Iはlatent型のnative入出力境界を追加した。`MiniT2IMMJiTModel`のforwardで
+入力を`alpha=t`、出力をx0として変換し、通常DiTとresidual U-netへ同じ境界を適用する。
+`pred_velocity`も外部latent上のx0との差から計算するため、CFGと学習の条件付けを維持する。
+CPU合成検証はチャネル増減、target-native非正方形格子、bias係数、勾配、
+strict state復元、未校正拒否を含む。MiniT2I関連54件のテストと実importが通過。
+これは内部境界の段階であり、MiniT2Iのauto既定値はまだzeroのまま。
+次に校正owner、宣言付き単一/sharded loader、native codec同梱export、生成noise/strideと
+定期sampleの外部形状、API/UIの候補と校正設定を接続する。
+pixel型からの移行は既存patch16をlatent patchへ変換する設計・検証も必要であり、
+latent型の境界を追加しただけでは対応済みとはしない。
 共有実装は`core/models/components/latent_adapter.py`に置く。
 `ImageCodecContract`は親モデル名ではなくcodecのチャネル・縮小率・rank・正規化から
 宣言を作り、`SpatialSwapPlan`は外部チャネルとバックボーン内部幅を分離する。

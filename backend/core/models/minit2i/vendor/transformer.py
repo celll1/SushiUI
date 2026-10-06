@@ -104,8 +104,10 @@ class MiniT2IMMJiTModel(ModelMixin, ConfigMixin):
 
     # net(img, t, context, attn_mask) -> predicted x0 (RGB)
     def forward(self, img, t, context, attn_mask):
-        return self.model.net(img, t, context, attn_mask)
+        from core.models.minit2i.vae_alignment import predict_x0
+        return predict_x0(self, img, t, context, attn_mask)
 
     def pred_velocity(self, x, t, text, mask):
         """v = (x0_pred - x)/clamp(1-t,0.05); integrate x += v*dt for sampling."""
-        return self.model.pred_velocity(x, t, text, mask)
+        x0 = self(x, t, text, mask)
+        return (x0 - x) / torch.clamp(1 - t[:, None, None, None], min=0.05)

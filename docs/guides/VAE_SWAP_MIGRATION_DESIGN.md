@@ -8,6 +8,18 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+SD1.5/SDXLのGaussian補正は、共通pairのVP入力・prediction演算と学習境界まで実装した。
+入力は`alpha*A(x0)+alpha*b+sigma*Q(noise)`、epsilon出力は固定noise補空間残差、
+VP v出力は`alpha`倍の残差、x0出力は通常のaffine写像。flow vは既存の符号規約を維持する。
+学習は実露出noise・実schedulerのalpha/sigmaを渡し、標準/混合精度、epsilon/v/sampleで検証する。
+SDの新規交換へpolicyを既定選択する変更はまだ行っていない。生成側で初期noise、
+ancestral更新、CFG/NAGのbatch展開、style別noise、guide/inpaint混合を追跡する配線が必要。
+単に最初のnoiseを全stepで使うだけでは、追加されたstochastic noiseとの整合性を満たさない。
+この段階のCPU演算・学習回帰を、SDのGaussian生成・公式全重みGPU受入の代わりにはしない。
+共有Gaussian、SD sampling、Qwen/Krea/Anima/Z-Image回帰176件と、修正後のSD保存復元1件が通過。
+後者は固定補正bufferがBF16ロード後もbit一致することを確認した。変更したbackendの
+`py_compile`と実importも通過し、CUDA contextは未作成。実画像は使用していない。
+
 Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く、channel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。校正した3×3入力/出力kernelと、中心行列のSVD行直交射影を
 固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが

@@ -511,6 +511,7 @@ def load_ideogram4_single_file(
 
     print("[Ideogram4Loader] Combined single-file loaded successfully.")
     return {
+        "base_dir": base_dir,
         "type": "ideogram4",
         "transformer": transformer,
         "unconditional_transformer": unconditional_transformer,

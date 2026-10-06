@@ -535,15 +535,13 @@ def test_a_lora_save_pairs_the_projector_with_the_checkpoint(tmp_path):
     assert (tmp_path / "ideogram4_step_5.repa.safetensors").is_file()
 
 
-def test_full_finetuning_refuses_before_it_could_return_no_path():
-    """The base adapter raises when write_checkpoint returns None with REPA on.
-    Ideogram 4 cannot reach that: full FT refuses at the top, and the refusal is
-    what a bf16 base would have to lift -- with a returned path."""
+def test_full_export_refuses_missing_inference_twin_before_it_could_return_no_path():
+    """A conditional-only LoRA owner cannot emit a full asymmetric-CFG artifact."""
     from core.training.adapters.ideogram4_adapter import Ideogram4FullParameterAdapter
 
     adapter = Ideogram4FullParameterAdapter(_ideogram4_trainer())
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="both conditional and unconditional"):
         adapter.write_checkpoint(5, 0, Path("unused"))
 
 

@@ -276,11 +276,12 @@ accepts `nn.Linear`, `Fp8Linear`, `Int8Linear` and an already-wrapped `LoRALinea
 
 Refusals / gates:
 
-* **Full fine-tuning is not implemented.** All three `Ideogram4FullParameterAdapter` methods
-  (`prepare_models_for_training`, `setup_trainable_parameters`, `save_checkpoint`) raise
-  `NotImplementedError` — the shipped checkpoint stores Linear weights as non-trainable
-  `Fp8Linear` buffers. Mirrored in `api/arch_capabilities` (`"ideogram4", "full_finetune"` and
-  `"ideogram4", "relora"`).
+* **Public full fine-tuning remains gated.** The internal plain dual-DiT adapter supports
+  conditional and optional unconditional training, frozen TE/VAE, and native full export.
+  An untrained inference twin stays on CPU and is preserved in the artifact. Selected
+  weight-only quantized branches are refused before ownership changes. CPU native tests
+  verify optimizer updates and both branches' restore; VAE-swap, sampling and official-weight
+  acceptance are still pending. `api/arch_capabilities` keeps `full_finetune` unavailable.
 * **Training-time sampling is not implemented.** `Ideogram4ArchHandler.sample` prints a warning and
   returns `None`; `Ideogram4ArchHandler.vae_decode` raises `NotImplementedError`. Mirrored in
   `arch_capabilities` (`"ideogram4", "training_samples"`).

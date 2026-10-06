@@ -1164,7 +1164,7 @@ for _method in ("lora", "relora", "controlnet"):
 # `full_parameter_trainer._create_adapter` falling through to the SD1.5 adapter.
 _add_training_unsupported(
     "ideogram4", "full_finetune",
-    "Ideogram 4's base ships FP8/nf4 quantized and its two 9.3 B transformers do not fit a single-GPU full fine-tune; no Ideogram4FullParameterAdapter branch exists in full_parameter_trainer._create_adapter")
+    "Ideogram 4's released base is weight-only quantized. A plain dual-DiT full-parameter adapter and export foundation exist, but public full fine-tuning awaits complete VAE-swap, sampling and official-weight acceptance; quantized trained branches remain refused")
 _add_training_unsupported(
     "ideogram4", "relora",
     "ReLoRA cannot merge dense updates back into Ideogram 4's quantized base")

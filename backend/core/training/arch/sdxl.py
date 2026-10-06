@@ -41,6 +41,12 @@ class SDXLArchHandler(ArchHandler):
         from core.models.components.sd_vae_alignment import calibrate
         calibrate(trainer,datasets)
 
+    def apply_vae_swap(self,trainer,resolved,module=None):
+        if getattr(trainer.unet,"vae_latent_bridge",None) is not None:
+            from core.models.components.sd_vae_alignment import restore_swap_identity
+            return restore_swap_identity(trainer,resolved,handler=self,module=module)
+        return super().apply_vae_swap(trainer,resolved,module=module)
+
     def resolve_timestep_convention(self, trainer=None) -> str:
         # Same dual convention as SD15ArchHandler -- see that docstring; the
         # ddpm/flow branches are shared between sd15 and sdxl in

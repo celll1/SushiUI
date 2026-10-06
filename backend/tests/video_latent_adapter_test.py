@@ -154,3 +154,25 @@ def test_paired_clip_calibration_fits_both_directions():
     assert alignment.ready
     torch.testing.assert_close(alignment.input(target), teacher, atol=2e-6, rtol=2e-6)
     torch.testing.assert_close(alignment.output(teacher), target, atol=2e-6, rtol=2e-6)
+
+
+@pytest.mark.parametrize("scale,expected", [(1,22),(2,39),(4,73),(8,73),(16,209)])
+def test_paired_calibration_uses_both_frame_lattices(scale,expected):
+    from core.models.components.video_latent_adapter import paired_calibration_frames
+    h3 = VideoCodecContract(ImageCodecContract(2,16,5,"per_channel",1,3),4,"minimax_h3_chunks_v1")
+    causal = VideoCodecContract(ImageCodecContract(4,32,5,"per_channel",1,3),scale,"causal_first_frame_v1")
+    assert paired_calibration_frames(h3,causal) == expected
+    assert paired_calibration_frames(causal,h3) == expected
+    assert h3.pixel_frames(h3.latent_frames(expected)) == expected
+    assert causal.pixel_frames(causal.latent_frames(expected)) == expected
+
+
+def test_incompatible_calibration_clocks_and_unknown_policy_refused():
+    from core.models.components.video_latent_adapter import paired_calibration_frames,codec_temporal_policy
+    h3 = VideoCodecContract(ImageCodecContract(2,16,5,"per_channel",1,3),4,"minimax_h3_chunks_v1")
+    causal = VideoCodecContract(ImageCodecContract(4,32,5,"per_channel",1,3),17,"causal_first_frame_v1")
+    with pytest.raises(ValueError,match="no common"):
+        paired_calibration_frames(h3,causal)
+    assert codec_temporal_policy(5,"AutoencoderKLQwenImage21") == "causal_first_frame_v1"
+    with pytest.raises(ValueError,match="explicit temporal policy"):
+        codec_temporal_policy(5,"UnknownVideoCodec")

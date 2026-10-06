@@ -123,7 +123,7 @@ def normalize_dtypes(trainer) -> None:
         trainer.grad_scaler = None
 
 
-def load_components(trainer) -> None:
+def load_components(trainer, *, resuming=False) -> None:
     """Load MiniMax-H3 components for training.
 
     Reuses the INFERENCE loader (``ModelLoader.load_minimax_h3_from_path`` ->
@@ -176,7 +176,7 @@ def load_components(trainer) -> None:
         if checkpoint is not None:
             resume_spec = read_artifact_topology(checkpoint)
     configure_training_topology(trainer.transformer, trainer.config, trainer=trainer,
-                                resume_spec=resume_spec)
+                                resuming=resuming, resume_spec=resume_spec)
     trainer.vae = components["vae"]
     trainer.audio_vae = components["audio_vae"]
     trainer.text_encoder = components["text_encoder"]
@@ -209,6 +209,9 @@ def load_components(trainer) -> None:
     trainer.minimax_h3_audio_latent_rate = float(components["audio_latent_rate"])
     trainer.minimax_h3_fps = float(components["fps"])
     trainer.vae_latent_channels = int(components["latent_channels"])
+
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, components.get("vae_identity"))
 
     # A training process is DEQUANT-ONLY. The released DiT ships weight-only FP8
     # on 300 Linears; the W8A8 `scaled_mm` fast path is enabled by process-wide
@@ -448,16 +451,20 @@ def vae_encode_clip(trainer, clip: torch.Tensor) -> torch.Tensor:
     vae = trainer.vae
     vae_device = next(vae.parameters()).device
     vae_dtype = next(vae.parameters()).dtype
-
-    pix_mean = torch.tensor(list(trainer.minimax_h3_pixel_mean),
-                            dtype=torch.float32).view(1, -1, 1, 1)
-    pix_std = torch.tensor(list(trainer.minimax_h3_pixel_std),
-                           dtype=torch.float32).view(1, -1, 1, 1)
-    x = ((clip.float() + 1.0) / 2.0 - pix_mean) / pix_std      # [T, 3, H, W]
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+    normalized = isinstance(vae, NormalizedVideoVAE)
+    if normalized:
+        x = clip.float()
+    else:
+        pix_mean = torch.tensor(list(trainer.minimax_h3_pixel_mean),
+                                dtype=torch.float32, device=clip.device).view(1, -1, 1, 1)
+        pix_std = torch.tensor(list(trainer.minimax_h3_pixel_std),
+                               dtype=torch.float32, device=clip.device).view(1, -1, 1, 1)
+        x = ((clip.float() + 1.0) / 2.0 - pix_mean) / pix_std
     x = x.permute(1, 0, 2, 3).unsqueeze(0)                     # [1, 3, T, H, W]
     with torch.no_grad():
         z = vae.encode(x.to(device=vae_device, dtype=vae_dtype)).latent_dist.mode()
-        latents = _normalize_video_latents(trainer, z)
+        latents = z.float() if normalized else _normalize_video_latents(trainer, z)
     del x
     return latents
 
@@ -617,15 +624,20 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         if px32 is not None:
             px = px32.to(device=px.device)
 
-    pix_mean = torch.tensor(list(trainer.minimax_h3_pixel_mean),
-                            dtype=torch.float32, device=px.device).view(1, -1, 1, 1)
-    pix_std = torch.tensor(list(trainer.minimax_h3_pixel_std),
-                           dtype=torch.float32, device=px.device).view(1, -1, 1, 1)
-    x = ((px.float() + 1.0) / 2.0 - pix_mean) / pix_std             # [1, 3, H, W]
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+    normalized = isinstance(vae, NormalizedVideoVAE)
+    if normalized:
+        x = px.float()
+    else:
+        pix_mean = torch.tensor(list(trainer.minimax_h3_pixel_mean),
+                                dtype=torch.float32, device=px.device).view(1, -1, 1, 1)
+        pix_std = torch.tensor(list(trainer.minimax_h3_pixel_std),
+                               dtype=torch.float32, device=px.device).view(1, -1, 1, 1)
+        x = ((px.float() + 1.0) / 2.0 - pix_mean) / pix_std
     x = x.unsqueeze(2)                                              # [1, 3, 1, H, W]
     with torch.no_grad():
         z = vae.encode(x.to(device=dev, dtype=vae_dtype)).latent_dist.mode()
-        latents = _normalize_video_latents(trainer, z)               # [1, 24, 1, H/16, W/16]
+        latents = z.float() if normalized else _normalize_video_latents(trainer, z)
     del x
     if debug_preprocessing:
         print(f"[minimax_h3.vae_encode DEBUG] still latents {tuple(latents.shape)} "

@@ -34,20 +34,12 @@ def prepare_video_coords(rope, contract, batch, frames, height, width, device, *
 
 def calibration_clip_frames(source_temporal, target):
     """Choose the shortest moving clip accepted by both frame lattices."""
-    from math import lcm
+    from dataclasses import replace
+    from core.models.components.video_latent_adapter import VideoCodecContract, paired_calibration_frames
     if type(source_temporal) is not int or source_temporal < 1:
         raise ValueError("Source video temporal compression is missing")
-    period = 17 if target.temporal_policy == "minimax_h3_chunks_v1" else target.temporal_scale
-    floor = 22 if target.temporal_policy == "minimax_h3_chunks_v1" else 2
-    for frames in range(floor, floor+lcm(source_temporal, period)+1):
-        if (frames-1) % source_temporal:
-            continue
-        try:
-            target.latent_frames(frames)
-        except ValueError:
-            continue
-        return frames
-    raise ValueError("Source and target video frame lattices have no common moving clip")
+    source = VideoCodecContract(replace(target.image, latent_rank=5), source_temporal, "causal_first_frame_v1")
+    return paired_calibration_frames(source, target)
 
 
 def condition_clip_frames(contract, source_frames, available_frames):

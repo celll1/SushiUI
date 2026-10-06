@@ -5,19 +5,12 @@ from math import lcm
 import torch
 
 from core.models.components.latent_adapter import ImageCodecContract, SpatialAlignmentPair
-from core.models.components.video_latent_adapter import VideoCodecContract, NormalizedVideoVAE, PairedVideoCalibration
+from core.models.components.video_latent_adapter import (
+    VideoCodecContract, NormalizedVideoVAE, PairedVideoCalibration,
+    codec_temporal_policy as temporal_policy,
+)
 
 PENDING = "_ltx2_vae_calibration_source"
-
-
-def temporal_policy(rank, codec_class):
-    if rank == 4:
-        return "independent_frames_v1"
-    if rank == 5 and codec_class in ("AutoencoderKLLTX2Video", "AutoencoderKLQwenImage"):
-        return "causal_first_frame_v1"
-    if rank == 5 and codec_class == "AutoencoderKLMiniMaxH3":
-        return "minimax_h3_chunks_v1"
-    raise ValueError(f"LTX calibration needs an explicit temporal policy for {codec_class}")
 
 
 def apply_swap(trainer, resolved, *, handler, module=None):

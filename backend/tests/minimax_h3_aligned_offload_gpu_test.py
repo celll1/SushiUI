@@ -23,7 +23,8 @@ def device_tree(value):
 
 @pytest.mark.parametrize("rewired", [False, True])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_actual_h3_full_updates_match_resident_fused_optimizer(rewired, dtype):
+@pytest.mark.parametrize("pinned", [False, True])
+def test_actual_h3_full_updates_match_resident_fused_optimizer(rewired, dtype, pinned):
     from minimax_h3_video_alignment_test import setup
     from core.training.ops.minimax_h3_ops import setup_block_swap
     from core.training.optimizers.adafactor_fused import patch_adafactor_fused
@@ -36,7 +37,7 @@ def test_actual_h3_full_updates_match_resident_fused_optimizer(rewired, dtype):
     assert all(p.device.type == "cpu" for layer in swapped.transformer_blocks[2:] for p in layer.parameters())
     resident = model.cuda()
     trainer = SimpleNamespace(transformer=swapped, is_minimax_h3=True, blocks_to_swap=5,
-        block_swap_ring_size=2, gradient_checkpointing=True, use_pinned_memory=True,
+        block_swap_ring_size=2, gradient_checkpointing=True, use_pinned_memory=pinned,
         layer_offload_conductor=None, device=torch.device("cuda"), log_prefix="[H3 GPU verification]")
     setup_block_swap(trainer)
     conductor = trainer.layer_offload_conductor

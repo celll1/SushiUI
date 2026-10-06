@@ -8,6 +8,17 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+共通mutable conductorの`use_pinned_memory=false`では、連続したCPU tensorをmasterとして
+借用し、dense全重みをpacked planeへ複製しない。pinned指定・非連続tensorは従来経路を維持する。
+CPU master/source file不変の回帰5件、関連VAE/U-net回帰を含む63件、compile/実importが通過。
+小型実H3のGPU検証はpinned有無×U-net有無×FP32/BF16の8条件で3回更新を確認した。
+借用経路はtensorごとの転送であり、速度改善を主張するものではない。
+
+公式H3全50層＋LTX /32・128ch VAEでは、49層CPU master/2slot構築、合成画像2枚による
+paired_spatial校正、73frameのtarget encode（latent `[1,128,10,8,8]`）まで通過した。
+続く全DiT forwardでhost memory安全ガードが停止したため、公式全重みの学習受入は未完。
+実画像・公式TE/audio VAEによる画質検証は行っていない。公開H3 Full gateは維持する。
+
 H3のembedded交換VAEを学習用に読み込む際、native用の一律fp16変換を適用せず、
 保存済みprecision/latent identityを維持する。校正済みpair・codec/model契約を確認し、
 外部channel、空間縮小率、frame policyとU-net累積縮小をtraining wiring/bucketへ反映する。

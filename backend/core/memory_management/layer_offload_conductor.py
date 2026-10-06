@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Hashable
 
 import torch
 import torch.nn as nn
@@ -60,8 +60,8 @@ class LayerOffloadConductor:
         self.ring_size = max(1, min(int(ring_size), len(self.swappable)))
         self.transfer_stream = torch.cuda.Stream(device=self.device)
 
-        self._masters: Dict[int, Dict[torch.dtype, torch.Tensor]] = {}
-        self._layouts: Dict[int, list[tuple[Any, str, torch.dtype, int, int, tuple[int, ...]]]] = {}
+        self._masters: Dict[int, Dict[Hashable, torch.Tensor]] = {}
+        self._layouts: Dict[int, list[tuple[Any, str, Hashable, int, int, tuple[int, ...]]]] = {}
         self._trainable: Dict[int, tuple[nn.Parameter, ...]] = {}
         self._backward_seen: set[int] = set()
         self._recompute_seen: set[int] = set()
@@ -116,6 +116,22 @@ class LayerOffloadConductor:
                 continue
 
             tensors = list(self._owned_tensors(layer))
+            if (not self.use_pinned_memory and tensors
+                    and all(t.device.type == "cpu" and t.is_contiguous() for _, _, t in tensors)):
+                planes, layout, cpu_named = {}, [], {}
+                parameter_names = {id(p): name for name, p in layer.named_parameters()}
+                for number, (owner, name, tensor) in enumerate(tensors):
+                    plane = (tensor.dtype, number)
+                    master = tensor.detach().reshape(-1)
+                    planes[plane] = master
+                    layout.append((owner, name, plane, 0, tensor.numel(), tuple(tensor.shape)))
+                    if id(tensor) in parameter_names:
+                        cpu_named[parameter_names[id(tensor)]] = master.view(tensor.shape)
+                self._masters[idx] = planes
+                self._layouts[idx] = layout
+                self._trainable[idx] = tuple(p for p in layer.parameters() if p.requires_grad)
+                self.layer_cpu_copies[idx] = cpu_named
+                continue
             plane_sizes: Dict[torch.dtype, int] = {}
             records = []
             for owner, name, tensor in tensors:
@@ -155,7 +171,7 @@ class LayerOffloadConductor:
         )
 
     def _point_bundle(
-        self, layer_idx: int, bundle: Mapping[torch.dtype, torch.Tensor]
+        self, layer_idx: int, bundle: Mapping[Hashable, torch.Tensor]
     ) -> None:
         for owner, name, plane, offset, numel, shape in self._layouts[layer_idx]:
             getattr(owner, name).data = bundle[plane][offset:offset + numel].view(shape)

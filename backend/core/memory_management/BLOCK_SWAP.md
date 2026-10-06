@@ -52,6 +52,12 @@ Shared encoder-refill main-model moves preserve mutable CPU masters through
 moves only unmanaged weights and recreates the slots. Moving the whole module
 with `.to(cuda)` would detach managed parameters from their CPU master views.
 
+With `use_pinned_memory=false`, contiguous CPU block tensors are borrowed as
+master segments instead of copied into packed planes. This avoids duplicating a
+dense checkpoint in RAM, but submits a transfer per tensor rather than per dtype.
+Pinned or noncontiguous sources retain the packed path. Memory-mapped source
+files remain unchanged after dirty writeback (verified with safetensors).
+
 ## Ordering invariants
 
 - CPU masters are persistent and never alias another block.

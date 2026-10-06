@@ -7,6 +7,11 @@ Frontend fetches these via /schema/* endpoints, eliminating manual sync.
 
 from typing import Any, Dict, Optional
 
+# Native Ideogram sampler settings; these are not separate REST parameters.
+IDEOGRAM4_INFERENCE_DEFAULTS: Dict[str, Any] = {
+    "mu": 0.0, "std": 1.5, "max_sequence_length": 512,
+}
+
 # Compact captioner defaults are exposed by its own schema routes.
 CAPTIONER_DEFAULTS: Dict[str, Any] = {
     "tag_source": "predicted", "tags": [], "max_new_tokens": 96,

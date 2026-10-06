@@ -31,6 +31,7 @@ class Ideogram4ArchHandler(ArchHandler):
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
     supplies_predicted_latent = True
+    wires_sample_step_progress = True
 
     def resolve_wiring(self,trainer):
         from core.models.components.latent_adapter import NormalizedImageVAE
@@ -147,11 +148,5 @@ class Ideogram4ArchHandler(ArchHandler):
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):
-        # P7: warned-skip moved verbatim from the old _dispatch_sample ideogram4
-        # branch. Ideogram4 sampling (dual transformer + fp8 + resolution-aware
-        # dual-branch conditioning) is not yet ported to the trainer. Warn and
-        # skip (return None) rather than crash into the SD/SDXL generate_sample
-        # path; callers guard on ``sample is not None`` before saving.
-        print(f"{trainer.log_prefix} WARNING: step-0/periodic sampling is not yet "
-              f"supported for ideogram4 (dual-transformer + fp8); skipping this sample.")
-        return None
+        from core.training.ops.ideogram4_ops import generate_sample
+        return generate_sample(trainer,sample_ctx)

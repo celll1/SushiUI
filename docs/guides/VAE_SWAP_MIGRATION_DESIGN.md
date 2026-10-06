@@ -59,6 +59,18 @@ samplingは別経路で、上記の保存checkpoint生成は正常終了して�
 画像・校正kernel・比較scriptはignored `local/verification/sdxl_official_quality/`のみ。
 専用DB run/datasetは作らず、元のAPI選択モデルを変えていない。
 
+SDXL seed64の縦縞は追加対照で切り分けた。white/CGの最終latentを3×3出力kernelの
+部分空間へ128反復で射影し、残余を50%/100%除いてdecodeしても縦縞は残った（18枚）。
+逆写像したnative C4 latentを公式SDXL VAEで512px decodeしても縦縞がある（6枚）。
+さらに同じSVD行直交化C4初期Gaussianを、bridgeのない元SDXLへ直接渡した512px生成でも
+3promptすべてに縦縞が出た。original/target size条件512pxの対照と、交換生成に揃えた
+1024px条件の対照の双方で確認した（計6枚）。交換VAE decodeや最終残余だけの問題ではなく、
+同じ初期noise・native 64×64格子での元モデル生成も寄与する。ただし原因の内訳は未確定であり、
+この対照は交換方式の画質受入を意味しない。追加学習・本番noise policyの切替は行っていない。
+今後の比較では、従来の元codec・同じ出力pixel寸法の対照に加え、元モデルの内部token格子と
+条件付け寸法を交換生成に合わせ、投影した同じGaussianを渡す対照も用意する。
+今回の画像・最終latent・scriptはignored `sdxl_official_quality/native_teacher_grid/projection_seed_64/`へ保持。
+
 現在のKrea全3shardも、公式`krea/Krea-2-Raw`の配布metadataと全SHA-256を再照合した。
 revision `6b0ece7fffb640c5e3bcbe0a7f10f66b8e60a603`の各transformer shardと完全一致。
 provenanceと検証logはignored localへ保持し、元M:の重みは変更していない。

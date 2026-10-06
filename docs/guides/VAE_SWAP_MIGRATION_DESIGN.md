@@ -26,6 +26,21 @@ RVQ・timbre encoder・LM hintsは元のacoustic domain/time rateを使うため
 移す設計を検証する。凍結RVQの再学習が必須とはまだ確定していない。無条件のchunk maskへaffine biasを
 加えてもならない。既存native経路の同値性と条件付き生成を確認するまで公開gateは維持する。
 
+ACE native decoder/prepare_conditionへoptionalな音声boundaryを追加した。
+`acestep/vae_boundary.py`はnoisy stateをsigma付きで、source contextをclean affineとして写し、
+velocity出力をtarget Cへ戻す。3群の入力weight（source/mask/noisy）を分けて拡張し、
+追加出力channelはゼロ初期値で勾配を受ける。decoder単体のU-net topologyは新しい内部configへ再構成する。
+prepare_conditionは元のRVQ/timbre入力を保持し、選択済みcover/LM hintsだけtarget gridへ変換する。
+channel-uniform maskだけ対応し、maskはnearestで区間を保持する。audio_codes分岐のquantizer参照も
+methodの`tokenize`からmoduleの`tokenizer`へ修正した。
+小型実decoderでC増減、U-net併用、独立conv参照、optimizer保存復元を検証した。実prepare_conditionの
+分岐は合成encoder/tokenizer stubで検証したため、実RVQの品質の証明ではない。
+decoder geometryの矛盾はweight/config変更前に拒否する。
+関連CPUテスト26件・20subtest、変更Pythonのpy_compileとCUDAを抑止した実importが通過した。
+outer ownerの元acoustic configと拡張decoder configの保存・U-net identityの分離、正式loader/encoder、
+trainingのnative条件長とtarget batch長の分離、samplerの各mask長、API/UIは残作業である。
+boundaryがない既存forwardには変換を追加しない。公開swap gateもまだ解除していない。
+
 LTX-2.3の動画target-native境界を追加し、Full fine-tuneの公開VAE swap設定をexperimentalとして配線した。
 unquantized DiT・train_unet=true・paired_spatial・bundled RGB codecを必須とし、LoRA系は拒否する。
 API preflightは新規交換の保存不能設定と、復元済み交換codecのbundling無効もモデルロード前に拒否する。

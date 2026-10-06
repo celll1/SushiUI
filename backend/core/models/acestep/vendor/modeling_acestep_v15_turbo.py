@@ -1332,6 +1332,13 @@ class AceStepDiTModel(AceStepPreTrainedModel):
         **flash_attn_kwargs: Unpack[FlashAttentionKwargs],
     ):
 
+        alignment = getattr(self, "_audio_latent_alignment", None)
+        if alignment is not None:
+            if return_hidden_states or enable_early_exit:
+                raise ValueError("ACE audio alignment requires a velocity output")
+            from ..vae_boundary import decoder_inputs
+            hidden_states, context_latents = decoder_inputs(alignment, hidden_states, context_latents, timestep)
+
         rewired = getattr(self, "_residual_unet_spec", None) is not None
         if rewired:
             from ..residual_unet import preflight_forward
@@ -1524,6 +1531,9 @@ class AceStepDiTModel(AceStepPreTrainedModel):
         
         # Crop back to original sequence length to ensure exact length match (remove padding)
         hidden_states = hidden_states[:, :original_seq_len, :]
+        if alignment is not None:
+            from ..vae_boundary import decoder_output
+            hidden_states = decoder_output(alignment, hidden_states)
         
         outputs = (hidden_states, past_key_values)
 
@@ -1708,7 +1718,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             lm_hints_25Hz = precomputed_lm_hints_25Hz[:, :src_latents.shape[1], :]
         else:
             if audio_codes is not None:
-                lm_hints_5Hz = self.tokenize.quantizer.get_output_from_indices(audio_codes)
+                lm_hints_5Hz = self.tokenizer.quantizer.get_output_from_indices(audio_codes)
             else:
                 lm_hints_5Hz, indices, llm_mask = self.tokenize(hidden_states, silence_latent, attention_mask)
             lm_hints_25Hz = self.detokenize(lm_hints_5Hz)
@@ -1717,6 +1727,10 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         src_latents = torch.where(is_covers.unsqueeze(-1).unsqueeze(-1) > 0, lm_hints_25Hz, src_latents)
         # Concatenate source latents with chunk masks as context
         context_latents = torch.cat([src_latents, chunk_masks.to(dtype)], dim=-1)
+        alignment = getattr(self.decoder, "_audio_latent_alignment", None)
+        if alignment is not None:
+            from ..vae_boundary import native_context_to_target
+            context_latents = native_context_to_target(alignment, context_latents)
         return encoder_hidden_states, encoder_attention_mask, context_latents
 
     def forward(

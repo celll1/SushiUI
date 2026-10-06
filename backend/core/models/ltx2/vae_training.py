@@ -117,21 +117,23 @@ def calibrate(trainer, datasets):
     fit = PairedVideoCalibration(alignment, ridge=1e-2)
     spatial = lcm(source.vae_scale_factor, target.spatial_compression_ratio)
     canvas = max(spatial, (side//spatial)*spatial)
+    from core.models.components.latent_adapter import calibration_source_side
+    teacher_canvas = calibration_source_side(canvas, alignment.declaration)
     from .video_clock import calibration_clip_frames
     frames = calibration_clip_frames(source.vae_scale_temporal, target.contract)
 
-    def pixels(sample):
+    def pixels(sample, size=canvas):
         video, path = sample
         if video:
             from core.training.video_loader import load_clip
             from core.models.components.wiring import LTX2_TEMPORAL
             spec = replace(LTX2_TEMPORAL, frame_multiple=frames-1)
-            value = load_clip(path, clip_length=frames, target_h=canvas, target_w=canvas, spec=spec)
+            value = load_clip(path, clip_length=frames, target_h=size, target_w=size, spec=spec)
             return value.permute(1,0,2,3)[None]
         from PIL import Image, ImageOps
         import numpy as np
         with Image.open(path) as opened:
-            image = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (canvas, canvas))
+            image = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (size, size))
             value = torch.from_numpy(np.array(image).copy()).permute(2,0,1).float()/127.5-1
         return value[None, :, None]
 
@@ -148,7 +150,7 @@ def calibrate(trainer, datasets):
             with torch.no_grad():
                 for i,sample in enumerate(samples):
                     trainer._check_stop_requested()
-                    value = pixels(sample).to(device=trainer.device,dtype=trainer.vae_dtype)
+                    value = pixels(sample, teacher_canvas).to(device=trainer.device,dtype=trainer.vae_dtype)
                     paired.append(normalize(old.encode(value).latent_dist.mode(),old,source).cpu())
                     if callback:
                         callback(phase="latent_cache",step=i+1,total=2*len(samples))

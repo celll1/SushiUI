@@ -54,6 +54,8 @@ class Ltx2ArchHandler(ArchHandler):
 
     def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
         from core.models.ltx2.vae_training import temporal_policy
+        if facts.get("pixel_channels", 3) != 3 or facts.get("output_channels", 3) != 3:
+            return False,"LTX VAE swap requires RGB encode and decode channels"
         scale,temporal = facts.get("scale_factor"),facts.get("scale_temporal")
         if (facts.get("ndim") not in (4,5) or type(scale) is not int or scale < 1 or
                 type(temporal) is not int or temporal < 1):

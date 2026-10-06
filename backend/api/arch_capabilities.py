@@ -1365,9 +1365,10 @@ _add_training_feature_unsupported(
 # krea2, anima, flux2, lens and minit2i declare one and their loaders rebuild at
 # a declared channel count; every entry below names what the architecture is
 # still missing, and the commit that lands that wave removes its entry.
-_add_training_feature_unsupported(
-    "ltx2", "vae_swap",
-    "a swapped LTX-2.3 checkpoint could be trained but not rendered: the full fine-tune save writes net.*-prefixed weights that no loader reads back (detect_model_type recognises LTX-2.3 only as a diffusers directory), and there is no 5D VAE at LTX-2.3's 32x spatial / 8x temporal ratios to swap to. Its LatentIOSpec and temporal declaration are in place; the refusal is the missing reader, not the resize")
+_add_training_feature_advisory(
+    "ltx2", "vae_swap", "experimental",
+    "LTX defaults to paired_spatial on the replacement codec's spatial and temporal grid. Unquantized full fine-tuning with train_unet=true and a bundled RGB codec is required. Image codecs preserve independent frames; supported video codecs use an explicit causal first-frame contract. The audio codec is retained. Small native-model calibration, U-net coexistence, single-file codec/bridge restoration and clip-cache reuse are CPU-verified; official full-weight training, quality and throughput acceptance remain pending.",
+    methods=["full_finetune"])
 _add_training_feature_advisory(
     "ideogram4", "vae_swap", "experimental",
     "Ideogram defaults to paired_spatial on the target codec grid. Full fine-tuning with ideogram4_train_uncond=true and unquantized dual DiTs is required. Shared calibration, dual bridge restoration, native codec bundling and U-net coexistence are verified with small native models; official full-weight training, quality and throughput acceptance remain pending.",
@@ -1382,7 +1383,7 @@ _add_training_feature_advisory(
     "sensenova", "vae_swap", "experimental",
     "SenseNova defaults to paired_spatial on the replacement codec's native grid. It aggregates trained generation patch and PixelShuffle projections, retaining the decoder, understanding tower and reference path. Full fine-tuning with generation fm_modules enabled is required; learned bridges join that optimizer scope. The generation patch inherits the checkpoint (4 latent cells for a pixel base), so token width is patch*VAE scale. Shared calibration, native codec bundling, strict bridge restoration and U-net topology preservation are verified with synthetic small native models and 4-D/independent-frame 5-D codecs. Attached refiners preserve trained weights when expanding channels. Official full-weight paired training, quality and throughput acceptance remain pending. Legacy zero remains explicit; its earlier official-weight functional measurements are recorded in VAE_SWAP_MIGRATION_DESIGN.md 10.6",
     methods=["full_finetune"])
-for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera"):
+for _a in ("sd15", "sdxl", "zimage", "krea2", "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2"):
     _add_training_feature_unsupported(
         _a, "vae_swap",
         "a VAE swap resizes the backbone's latent input/output layers; LoRA trains neither and its save path persists neither, so the trained pieces would be lost (core/training/vae_swap.check_swap_method)",

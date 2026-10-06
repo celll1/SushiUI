@@ -128,6 +128,8 @@ def check_inherited_bundling(base_model_path: Optional[str], arch: Optional[str]
         # An unresolvable declaration is the loader's refusal to make, with the
         # weights in hand; this check only answers the bundling question.
         return
+    if declared is not None and arch == "ltx2" and declared.identity_native is not True:
+        raise ValueError("Aligned LTX full checkpoints require a bundled video codec")
     if declared is not None and not declared.locator:
         raise ValueError(
             f"{base_model_path} carries its own swapped VAE and no reference to "
@@ -212,8 +214,14 @@ def preflight_vae_swap(
     check_capability(source, arch, method)
     check_bundling(source, bundle_vae_explicit_false)
     mode = initialization_mode(config, arch)
-    if arch in ("ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera") and mode != "paired_spatial":
+    if arch in ("ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2") and mode != "paired_spatial":
         raise ValueError(f"{arch} VAE swaps require paired_spatial initialization")
+    if arch == "ltx2":
+        from api.param_defaults import TRAINING_DEFAULTS
+        if bundle_vae_explicit_false:
+            raise ValueError("LTX VAE swaps require a bundled target codec")
+        if not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]):
+            raise ValueError("LTX VAE swaps require train_unet=true")
     if arch == "sensenova_sdxl_chimera":
         if bundle_vae_explicit_false:
             raise ValueError("Chimera VAE swaps require a bundled target codec")
@@ -245,6 +253,7 @@ def preflight_vae_swap(
             "scale_factor": entry.get("scale_factor"),
             "scale_temporal": entry.get("scale_temporal"),
             "norm": entry.get("norm"),
+            "vae_class": entry.get("class"),
         }
     else:
         described = describe_vae_source(source, arch=arch)
@@ -359,7 +368,16 @@ def module_latent_hash(module) -> Optional[str]:
         config = getattr(module, "config", {})
         if not hasattr(config, "get"):
             config = vars(config)
-        return latent_space_hash(content_hash_for_state_dict(module.state_dict()), config)
+        identity = latent_space_hash(content_hash_for_state_dict(module.state_dict()), config)
+        from core.models.components.video_latent_adapter import NormalizedVideoVAE
+        if isinstance(module, NormalizedVideoVAE):
+            from dataclasses import asdict
+            from hashlib import sha256
+            import json
+            # Identical tensors can implement different video frame-count contracts.
+            geometry = json.dumps(asdict(module.contract), sort_keys=True, separators=(",", ":"))
+            identity = sha256(f"{identity}:{geometry}".encode()).hexdigest()[:16]
+        return identity
     except Exception as e:
         print(f"[VAESwap] VAE latent hash unavailable ({type(e).__name__}: {e}); "
               "a swap is treated as real, a latent cache as unverifiable")

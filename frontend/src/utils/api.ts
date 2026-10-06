@@ -7976,6 +7976,8 @@ export interface VaeSwapCandidate {
   latent_channels?: number | null;
   scale_factor?: number | null;
   scale_temporal?: number | null;
+  pixel_channels?: number | null;
+  output_channels?: number | null;
   ndim?: number | null;
   norm?: string | null;
   vae_class?: string | null;

@@ -280,14 +280,20 @@ def load_lens_single_file(
     # Resize latent faces to the declared VAE before loading trained weights.
     from core.models.common.vae_source import load_declared_latent_io
     declared_vae = load_declared_latent_io(dit_path, arch="lens")
+    from core.models.components.spatial_swap import read_declaration,install,validate_loaded,restored_image_codec
+    alignment = read_declaration(md)
+    if alignment is not None and declared_vae is None:
+        raise ValueError("Aligned Lens checkpoint is missing its codec declaration")
     if declared_vae is not None:
         from core.models.components.latent_io import resize_latent_io
         from core.models.components.wiring import LENS_WIRING
         print(f"[LensLoader] Declares a non-native VAE ({declared_vae.provenance}, "
               f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
-        resize_latent_io(components["transformer"], LENS_WIRING.latent_io,
-                         declared_vae.latent_channels)
-        expected = declared_vae.latent_channels * 4
+        channels = (max(alignment["old_channels"],alignment["new_channels"])
+            if alignment is not None else declared_vae.latent_channels)
+        resize_latent_io(components["transformer"], LENS_WIRING.latent_io,channels)
+        install(components["transformer"],alignment)
+        expected = channels * 4
         saved = dit_sd.get("img_in.weight")
         if saved is not None and int(saved.shape[1]) != expected:
             raise ValueError(
@@ -304,8 +310,9 @@ def load_lens_single_file(
     info = components["transformer"].load_state_dict(dit_sd, strict=False)
     missing = getattr(info, "missing_keys", [])
     unexpected = getattr(info, "unexpected_keys", [])
-    if topology is not None and (missing or unexpected):
+    if (topology is not None or alignment is not None) and (missing or unexpected):
         raise ValueError("Rewired Lens weights do not match their native transformer_config")
+    validate_loaded(components["transformer"])
     print(f"[LensLoader] Applied single-file DiT: missing={len(missing)}, unexpected={len(unexpected)}")
     if unexpected:
         print(f"[LensLoader]   unexpected (first 5): {list(unexpected)[:5]}")
@@ -319,6 +326,8 @@ def load_lens_single_file(
         # The declared VAE carries its own class and config; reattaching its
         # weights onto the base AutoencoderKLFlux2 only works for that class.
         vae = declared_vae.load_module(torch_dtype=torch_dtype)
+        if alignment is not None:
+            vae,declared_vae = restored_image_codec(vae,declared_vae,alignment)
         vae.to("cpu").eval()
         components["vae"] = vae
         components["vae_source"] = declared_vae.provenance

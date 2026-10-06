@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2でpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lensでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
@@ -49,6 +49,16 @@ nativeの位置IDを生成する際に格子とtensor versionを記録し、未�
 実causal Qwen-Image VAEからAutoencoderKLへの校正、生成用encode/decode、公開loaderの復元、
 学習済みbridgeを再校正しない再開とsharded保存をCPU合成データで検証する。
 Kreaの公式全重みによるswap学習・画質・optimizer付きrun再開は未検証。
+Lensも共有の画像codec・初期化・校正を使い、VAE側BatchNormとDiT側2x2 packを分離する。
+bridgeのsigmaはnativeの`timestep / 1000`で、時刻埋め込み・text streamは維持する。
+生成のtxt2img/img2img/inpaint・定期sample・学習cacheの格子は交換先codecから決まる。
+U-net IO変更時のidentity更新、単一/sharded checkpointと学習済みbridgeの再開を配線した。
+校正時はLensのmxfp4 TEを破棄してCUDA割当を解放し、caption ownerが必要時にreloadする。
+`backend/tests/lens_spatial_swap_test.py`はチャネル増減、fp32/bf16、dense/U-net、
+合成画像での実BatchNorm VAE校正・公開codec loader・不完全bridge重み拒否を検証する。
+公式全重みのLens swap学習・画質・optimizer付きrun再開は未検証。
+関連CPU回帰は285件通過後、sharded破損fixtureの数値metadataを修正しLens全10件が通過した。
+変更Pythonのpy_compile・実import、frontend型と設定保存経路の静的確認は通過した。owner build・画面確認は未了。
 2026-10-06の関連CPU回帰テスト338件、変更Pythonのpy_compileとCUDAを抑止した実importが通過した。
 再起動後の`GET /training/vae-sources?arch=krea2`でもQwen 2.1の64ch/16x codecが選択可能。
 aligned exportはcodec宣言のない復元不能な保存を拒否する。frontendは静的確認済みで、ownerのbuild・画面確認は未了。

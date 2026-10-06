@@ -528,9 +528,11 @@ def generate_sample(
     dtype = torch.bfloat16
     max_sequence_length = 512
 
-    width, height = _lens_align(width, height)
-    latent_h = height // 16
-    latent_w = width // 16
+    from core.models.lens.lens_pipeline_ops import token_stride
+    stride = token_stride(trainer.vae)
+    width, height = _lens_align(width, height,multiple=trainer._arch_pixel_align())
+    latent_h = height // stride
+    latent_w = width // stride
 
     trainer.transformer.eval()
     trainer.vae.eval()
@@ -555,7 +557,7 @@ def generate_sample(
         seed_val = seed if (seed is not None and seed >= 0) else _random.randint(0, 2**32 - 1)
         latents = _lens_prepare_latents(
             height, width, dtype=dtype, device=device, seed=seed_val,
-            channels=int(trainer.transformer.config.out_channels))
+            channels=trainer.wiring.latent_channels,vae=trainer.vae)
         sample_scheduler = _copy.deepcopy(trainer.scheduler)
         # Autocast the denoise loop to the sampling compute dtype (bf16). This is
         # unconditional (NOT gated on trainer.mixed_precision): sampling always

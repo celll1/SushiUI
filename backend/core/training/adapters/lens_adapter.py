@@ -234,7 +234,9 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
             if swap_bundled and getattr(trainer, "vae", None) is not None:
                 print(f"[LensFullParameterAdapter] Bundling swapped VAE "
                       f"({swapped.provenance}) under 'vae.' ...")
-                for k, v in trainer.vae.state_dict().items():
+                from core.models.components.latent_adapter import NormalizedImageVAE
+                codec = trainer.vae.inner if isinstance(trainer.vae,NormalizedImageVAE) else trainer.vae
+                for k, v in codec.state_dict().items():
                     combined[f"vae.{k}"] = v.detach().to("cpu").contiguous()
             else:
                 print(f"[LensFullParameterAdapter] Swapped VAE ({swapped.provenance}) "
@@ -251,6 +253,8 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
             "modelspec.architecture": "lens",
             "format": "pt",
         }
+        from core.models.components.spatial_swap import artifact_metadata
+        metadata.update(artifact_metadata(trainer.transformer))
 
         # Base Lens directory hint so single-file reload can resolve TE/VAE/tokenizer.
         base_dir = str(getattr(trainer, "lens_base_dir", None)

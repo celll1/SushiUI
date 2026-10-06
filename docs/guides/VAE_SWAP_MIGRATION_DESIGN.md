@@ -31,8 +31,15 @@ codec encode/decode、optimizer状態のファイル再読込後の継続、再�
 全保存tensorは完全一致、forwardとoptimizer継続はFP32誤差範囲で一致する。
 生成companion読み込みは外部componentのfrom_pretrainedだけfixtureに置き換え、実LTX2Pipeline constructorで
 交換先のspatial/temporal compression ratioとVAE facadeを確認した。これは公式全pipeline生成の証拠ではない。
-残作業は学習handlerの校正hook、動画bucket/cache/durationの交換先時間圧縮率への追従、
-公開API/UI配線と公式全重みの受入検証。aligned diffusers directoryとしての再保存/再ロードも未対応。
+学習loaderから共通VAE交換処理、handlerの校正hook、交換先に追従する空間・時間wiringを接続した。
+新規交換時だけ校正し、復元済みbridgeは再校正しない。校正中は共通residency経路でモデル・optimizerを退避し、
+text encoder/connectorsもCPUへ置く。teacherとtargetを交互にGPUへ置き、中断時はpendingを保持して再試行する。
+校正clipは両codecでencode可能な長さを使う。未知の5D codecの時間規則は推測せず、LTX/Qwenのcausal first-frameと
+4Dの独立frameに限定する。学習dummy audioの長さとサンプル寸法・frame数は交換先の圧縮率を使う。
+小型nativeモデルで、loaderからの交換・freeze、静止画/合成clip校正、進捗・中断再試行、
+U-net併用の実train_stepとbridge勾配、チャネル減少時の共通検証、wrapper維持をCPU検証した。
+残作業は動画bucket/cache/resumeの全経路監査、公開API/UI配線と公式全重みの受入検証。
+aligned diffusers directoryとしての再保存/再ロードも未対応。全アーキテクチャ対応完了を意味しない。
 既存LTX単体Full checkpoint readerは現在実装済みであり、§11 P6の「readerがない」という記述は当時の状態。
 
 Chimeraのlinear-state境界（v1、v2 direct velocity、v2 residual）の内部基盤を追加した。

@@ -177,6 +177,8 @@ def load_components(trainer) -> None:
     configure_training_topology(trainer.transformer, trainer.config, trainer=trainer,
         resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
         resume_spec=resume_spec)
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, getattr(trainer.transformer_original, "_ltx2_vae_identity", None))
 
     setup_attention_backend(trainer, trainer.attention_backend)
 
@@ -313,6 +315,10 @@ def setup_wrapper(trainer) -> None:
         return
     if getattr(trainer, "ltx2_block_loop_wrapper", None) is not None:
         return  # idempotent guard (defensive; no known multi-call site today)
+    from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+    if isinstance(trainer.transformer, Ltx2BlockLoopWrapper):
+        trainer.ltx2_block_loop_wrapper = trainer.transformer
+        return
 
     tread_cfg = getattr(trainer, "tread_config", None)
     blockskip_cfg = getattr(trainer, "blockskip_config", None)
@@ -320,7 +326,6 @@ def setup_wrapper(trainer) -> None:
         trainer.ltx2_block_loop_wrapper = None
         return
 
-    from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
     inner = trainer.transformer
     wrapper = Ltx2BlockLoopWrapper(inner)
     trainer.transformer = wrapper
@@ -467,6 +472,9 @@ def _normalize_ltx_latents(trainer, latents_5d):
     """Apply LTX latents_mean/std + scaling_factor normalization (matches
     ``LTX2Pipeline._normalize_latents``). Input/return: [B, C, T, H', W']."""
     from core.models.components.vae_registry import normalize
+    from core.models.components.video_latent_adapter import NormalizedVideoVAE
+    if isinstance(trainer.vae, NormalizedVideoVAE):
+        return latents_5d
     return normalize(latents_5d, trainer.vae, getattr(trainer, "wiring", None))
 
 
@@ -626,7 +634,8 @@ def train_step(
     # the audio branch grad-free. L_audio derived from clip duration.
     audio_in_channels = int(getattr(trainer, "ltx2_audio_in_channels", _DEFAULT_AUDIO_IN_CHANNELS))
     aud_lps = float(getattr(trainer, "ltx2_audio_latents_per_second", _DEFAULT_AUDIO_LATENTS_PER_SECOND))
-    num_frames_pixel = (t_lat - 1) * 8 + 1
+    temporal = int(getattr(trainer.vae, "temporal_compression_ratio", 8))
+    num_frames_pixel = (t_lat - 1) * temporal + 1
     # Per-sample audio length (clip duration * audio_latents_per_second). The
     # dummy audio tensor is a single [B, L_audio, C] block, so size it to the
     # MAX across the (possibly fps-mixed) batch; the audio branch is grad-free
@@ -837,8 +846,11 @@ def generate_sample(
 
     print(f"{trainer.log_prefix} Generating LTX-2.3 sample: {prompt[:50]}...")
 
-    # Snap dims to the ÷32 spatial factor.
-    snap = 32
+    # Include the target codec stride and any U-net downsampling.
+    snap = int(getattr(trainer.vae, "spatial_compression_ratio", 32))
+    if getattr(trainer, "arch", None) is not None:
+        trainer.arch.resolve_wiring(trainer)
+        snap = trainer.arch.pixel_align
     height = max(snap, (height // snap) * snap)
     width = max(snap, (width // snap) * snap)
 
@@ -858,8 +870,8 @@ def generate_sample(
         gen = torch.Generator(device="cpu")
         gen.manual_seed(seed if (seed is not None and seed >= 0) else _random.randint(0, 2**32 - 1))
 
-        # Keep the clip tiny for a validation sample (9 frames = 1 latent block).
-        num_frames = 9
+        # Use the shortest two-latent-frame validation clip.
+        num_frames = int(getattr(trainer.vae, "temporal_compression_ratio", 8))+1
 
         # callback_on_step_end is latent-transforming (diffusers pops "latents"/
         # "prompt_embeds" back out of the return value), so the adapter MUST

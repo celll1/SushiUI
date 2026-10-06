@@ -17,6 +17,61 @@ from core.training.components.wiring import LTX2_TEMPORAL, LTX2_WIRING
 
 
 class Ltx2ArchHandler(ArchHandler):
+    def __init__(self, trainer=None):
+        super().__init__(trainer)
+        if trainer is not None:
+            self.resolve_wiring(trainer)
+
+    def resolve_wiring(self, trainer):
+        from dataclasses import replace
+        from math import lcm
+        from core.models.components.latent_adapter import topology_alignment
+        from core.models.components.video_latent_adapter import NormalizedVideoVAE
+        vae = getattr(trainer, "vae", None)
+        model = getattr(trainer, "transformer", None)
+        if vae is None or model is None:
+            return self.wiring
+        scales = getattr(model.config, "vae_scale_factors", (self.wiring.vae_scale_temporal,
+                         self.wiring.vae_scale_factor, self.wiring.vae_scale_factor))
+        spatial, temporal = int(scales[1]), int(scales[0])
+        channels = int(model.config.in_channels)
+        normalized = isinstance(vae, NormalizedVideoVAE)
+        if normalized:
+            spatial, temporal = vae.spatial_compression_ratio, vae.temporal_compression_ratio
+            channels = vae.contract.image.latent_channels
+        inner = getattr(model, "transformer", model)
+        h,w = topology_alignment(getattr(inner, "_residual_unet_spec", None))
+        self.pixel_align = spatial*lcm(h,w)
+        lengths = tuple(sorted({((n-1+temporal-1)//temporal)*temporal+1 for n in LTX2_TEMPORAL.default_clip_lengths}))
+        self.temporal = replace(LTX2_TEMPORAL, frame_multiple=temporal, pixel_align=self.pixel_align,
+            latent_frames=lambda n:(n-1)//temporal+1, default_clip_lengths=lengths, suggested_min_frames=temporal+1)
+        return self.wiring.replace(latent_channels=channels, vae_scale_factor=spatial, vae_scale_temporal=temporal,
+            vae_norm="identity" if normalized else self.wiring.vae_norm, vae_norm_pack=1)
+
+    def apply_vae_swap(self, trainer, resolved, module=None):
+        from core.models.ltx2.vae_training import apply_swap
+        return apply_swap(trainer,resolved,handler=self,module=module)
+
+    def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
+        from core.models.ltx2.vae_training import temporal_policy
+        scale,temporal = facts.get("scale_factor"),facts.get("scale_temporal")
+        if (facts.get("ndim") not in (4,5) or type(scale) is not int or scale < 1 or
+                type(temporal) is not int or temporal < 1):
+            return False,"LTX VAE swap requires declared RGB video/image codec geometry"
+        if facts.get("ndim") == 4 and temporal != 1:
+            return False,"A 2D LTX target codec must preserve independent frames"
+        try:
+            temporal_policy(facts.get("ndim"), facts.get("vae_class"))
+        except ValueError as exc:
+            return False,str(exc)
+        if scale % self.wiring.vae_scale_factor and self.wiring.vae_scale_factor % scale:
+            return False,"LTX VAE swap requires integer spatial scale relative to its native codec"
+        return True,None
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager):
+        from core.models.ltx2.vae_training import calibrate
+        calibrate(trainer,datasets)
+
     cfg_null_stage = "caption"
 
     # Its forward installs these on the inner module (ops/ltx2_ops.py).

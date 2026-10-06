@@ -17,6 +17,17 @@ const math = load('videoChainMath.ts');
 const overlay = load('videoCodecGeometry.ts').overlayLoadedVideoConstraints;
 const geometryKey = load('videoCodecGeometry.ts').videoChainGeometryKey;
 const plain = value => JSON.parse(JSON.stringify(value));
+
+test('free-placement chain totals use the nonuniform output timeline grid', () => {
+  const c = { frame_multiple:17, frame_offset:5, min_frames:1, min_decodable_frames:22,
+    max_frames:null, outpaint_placements:['free'] };
+  const caps = { video_constraints:{ ltx2:c } };
+  assert.equal(math.nextVideoChainTotalFrames(caps,'ltx2',22,100,22),39);
+  assert.deepEqual(plain(math.planVideoChainSegments(caps,'ltx2',100,22)),[39,56,73,90,107]);
+  assert.deepEqual(plain(math.planVideoChain(caps,'ltx2',100,22)),{capFrames:22,segments:6,finalFrames:107});
+  assert.equal(math.nextVideoChainTotalFrames(caps,'ltx2',39,100,39),73);
+  assert.equal(math.nextVideoChainTotalFrames(caps,'ltx2',22,100,1),null);
+});
 test('native chunks retain their nonuniform repeated boundaries', () => {
   assert.deepEqual(plain(math.latentGroupSpans([1,4,4,4,4], 22)).map(row => row[1]), [1,5,9,13,17,18,22]);
 });

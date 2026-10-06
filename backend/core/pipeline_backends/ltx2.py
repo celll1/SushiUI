@@ -979,14 +979,18 @@ class LTX2Mixin:
 
         current = pipeline.transformer
         inner = current.transformer if isinstance(current, Ltx2BlockLoopWrapper) else current
-        force_wrap = force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
+        from core.models.ltx2.video_alignment import AlignedLtx2BlockLoopWrapper
+        valid_loop = (isinstance(current,Ltx2BlockLoopWrapper) and (
+            getattr(inner,"_video_latent_alignment",None) is None or isinstance(current,AlignedLtx2BlockLoopWrapper)))
+        force_wrap = (force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
+                      or getattr(inner, "_video_latent_alignment", None) is not None)
 
         if blocks_to_swap <= 0:
             if force_wrap:
                 # FBCache-only wrap: no real block offloader. Idempotent no-op if
                 # already wrapped this way (no swap count, wrapper present).
                 already = (
-                    isinstance(current, Ltx2BlockLoopWrapper)
+                    valid_loop
                     and current._block_offloader is None
                     and getattr(self, "_ltx2_block_swap_count", 0) == 0
                 )
@@ -994,7 +998,11 @@ class LTX2Mixin:
                     return
                 if isinstance(current, Ltx2BlockLoopWrapper) and current._block_offloader is not None:
                     current._block_offloader.cleanup()
-                wrapper = current if isinstance(current, Ltx2BlockLoopWrapper) else Ltx2BlockLoopWrapper(inner, block_offloader=None)
+                if getattr(inner,"_video_latent_alignment",None) is not None:
+                    from core.models.ltx2.video_alignment import AlignedLtx2BlockLoopWrapper, aligned_wrapper
+                    wrapper = current if isinstance(current,AlignedLtx2BlockLoopWrapper) else aligned_wrapper(inner)
+                else:
+                    wrapper = current if isinstance(current, Ltx2BlockLoopWrapper) else Ltx2BlockLoopWrapper(inner, block_offloader=None)
                 wrapper._block_offloader = None
                 pipeline.transformer = wrapper
                 self.ltx2_components["transformer"] = wrapper
@@ -1024,7 +1032,7 @@ class LTX2Mixin:
             return
 
         prev_count = getattr(self, "_ltx2_block_swap_count", 0)
-        if isinstance(current, Ltx2BlockLoopWrapper) and prev_count == blocks_to_swap:
+        if valid_loop and prev_count == blocks_to_swap:
             return  # already wired for this exact swap count
 
         if isinstance(current, Ltx2BlockLoopWrapper) and current._block_offloader is not None:
@@ -1048,7 +1056,12 @@ class LTX2Mixin:
         )
         offloader.prepare_block_devices_before_forward()
 
-        wrapper = Ltx2BlockLoopWrapper(inner, block_offloader=offloader)
+        if getattr(inner,"_video_latent_alignment",None) is not None:
+            from core.models.ltx2.video_alignment import aligned_wrapper
+            wrapper = aligned_wrapper(inner)
+            wrapper._block_offloader = offloader
+        else:
+            wrapper = Ltx2BlockLoopWrapper(inner, block_offloader=offloader)
         pipeline.transformer = wrapper
         self.ltx2_components["transformer"] = wrapper
         i2v = self.ltx2_components.get("i2v_pipeline")
@@ -1089,7 +1102,8 @@ class LTX2Mixin:
         """
         current = self.ltx2_components["pipeline"].transformer
         inner = getattr(current, "transformer", current)
-        force_wrap = force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
+        force_wrap = (force_wrap or getattr(inner, "_residual_unet_spec", None) is not None
+                      or getattr(inner, "_video_latent_alignment", None) is not None)
         if blocks_to_swap > 0:
             pipeline = self._ensure_ltx2_offload(blocks_to_swap=blocks_to_swap)
             self._ensure_ltx2_block_swap_wrapper(blocks_to_swap)

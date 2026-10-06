@@ -233,6 +233,14 @@ export const nextVideoChainTotalFrames = (
   if (!Number.isFinite(cap)) return null;
   const remaining = targetFrames - accumulatedFrames;
   if (remaining <= 0) return null;
+  if (c.outpaint_placements?.length === 1 && c.outpaint_placements[0] === "free") {
+    const rawLimit = accumulatedFrames + cap - VIDEO_CHAIN_ANCHOR_FRAMES;
+    const limit = Math.floor((rawLimit - c.frame_offset) / c.frame_multiple) * c.frame_multiple + c.frame_offset;
+    const snapped = snapUpValidVideoFrameCount(caps, arch, targetFrames);
+    if (snapped == null) return null;
+    const total = Math.min(limit, snapped);
+    return total > accumulatedFrames ? total : null;
+  }
   const requestedGenerated = Math.min(remaining, cap);
   const generatedSpan = snapUpValidVideoFrameCount(caps, arch, requestedGenerated);
   if (generatedSpan == null || generatedSpan <= VIDEO_CHAIN_ANCHOR_FRAMES) return null;

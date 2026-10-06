@@ -1299,6 +1299,9 @@ paths:
         that codec's frame lattice and spatial alignment for validation; the
         model's FPS, production envelope and trained-range warnings remain.
         The native-codec constraints below describe unmodified checkpoints.
+        LTX H3-chunk codec swaps require an installed target-clock pipeline
+        sharing the loaded codec and transformer; missing or stale pipelines
+        are refused before generation.
 
         **LTX-2.3 constraints (validated before generation):**
         - `width` and `height` must both be divisible by 32.
@@ -2824,6 +2827,9 @@ paths:
         spatial alignment and continuation-overlap boundaries. Model production
         bounds, FPS and placement rules remain. LTX free placement validates the
         full output timeline against the loaded codec's lattice.
+        For H3-chunk targets, LTX moving conditions snap to matching chunk
+        phases. A moving input shorter than the codec's minimum is refused;
+        snapped offsets and omitted tail frames are reported in warnings.
 
         **Strict preservation guarantee:** the placed input frames in the
         returned video are BYTE-IDENTICAL to the (trimmed + preprocessed)

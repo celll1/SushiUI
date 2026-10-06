@@ -201,6 +201,15 @@ def resolve_wiring(handler,trainer):
     return getattr(trainer,"wiring",None) or handler.wiring
 
 
+def check_codec_compatibility(facts):
+    scale=facts.get("scale_factor")
+    if facts.get("ndim") not in (4,5) or type(scale) is not int or scale<1:
+        return False,"SD VAE swap requires declared image codec geometry"
+    if scale%8 and 8%scale:
+        return False,"SD VAE swap requires integer spatial scale relative to 8x"
+    return True,None
+
+
 def restore_swap_identity(trainer,resolved,*,handler,module=None):
     from dataclasses import replace
     from .latent_io import ResizeReport

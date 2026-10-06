@@ -20,11 +20,11 @@ def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima") else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima"):
-        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2 and Anima; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl"):
+        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5 and SDXL; select zero for this architecture")
     return mode
 
 
@@ -238,6 +238,8 @@ def preflight_vae_swap(
         raise ValueError("Legacy zero Flux2 swaps require a 4-D 8x VAE; use paired_spatial")
     if arch == "anima" and mode == "zero" and (facts.get("ndim") != 5 or facts.get("scale_factor") != 8):
         raise ValueError("Legacy zero Anima swaps require a 5-D 8x VAE; use paired_spatial")
+    if arch in ("sd15","sdxl") and mode=="zero" and (facts.get("ndim")!=4 or facts.get("scale_factor")!=8):
+        raise ValueError("Legacy zero SD swaps require a 4-D 8x VAE; use paired_spatial")
     compatible, reason = check_arch_vae_compatibility(
         facts, arch, base_model_path=base_model_path)
     if not compatible:

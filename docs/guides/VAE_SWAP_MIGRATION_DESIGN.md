@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Animaでpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Anima、SD1.5、SDXLでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
@@ -131,7 +131,16 @@ special token・最大長・padding設定、sampling schedulerのconfigを記録
 再校正しない学習再開を合成CPU検証した。欠損CLIP重みや復元情報のないexportは拒否する。
 pipeline/TE構築のstubを除いた関連回帰144件と、変更Pythonのpy_compile・実importが通過した。
 tokenizerは記録したlocatorへの依存を保持する。native/legacy exportの保存形式は維持する。
-公開初期化設定と公式全重みの学習・画質検証は未了。
+SD1.5/SDXLの新規初期化設定をAPI・UIへ公開した。`auto`はpaired_spatialを選び、
+候補判定は4D/5D画像codecと8xに対する整数縮小率比を扱う。明示的なlegacy zeroは4D/8xに限定する。
+既存宣言から読み戻すmoduleは、共有handlerでも新規初期化方式を適用せずzero互換のresizeを使用する。
+学習handlerを再構築しても、bucketの寸法整合性に交換先strideを保持する。
+公開初期化からの校正・保存復元・生成と共通swap回帰120件、他モデルの復元回帰64件、
+変更Pythonのpy_compile・CUDAを抑止した実importが通過した。
+API再起動後の`GET /training/vae-sources?arch=sd15`と`arch=sdxl`は、
+Qwen 2.1 original/int8 packageの64ch/16x/5D codecをcompatibleとして返す。
+frontendの型、既定値、候補取得のキャンセル・エラー処理、作成/編集/YAML保存経路は静的確認済み。
+owner buildと画面確認、公式全重みの学習・画質検証は未了。
 
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。

@@ -29025,7 +29025,7 @@ components:
           type: 'string'
           enum: ['auto', 'zero', 'paired_spatial']
           default: 'auto'
-          description: Auto selects paired spatial calibration for Ming, Qwen-Image 2.1, Z-Image, Krea 2, Lens, Flux2 and Anima using the target VAE's token grid. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing aligned checkpoints restore their weights without recalibration. Qwen, Z-Image, Krea, Lens, Flux2 and Anima initialize swaps from unquantized full checkpoints. Z-Image, Krea, Lens, Flux2 and Anima retain explicit legacy zero for same-scale swaps; Anima zero requires a native-rank 5-D 8x codec.
+          description: Auto selects paired spatial calibration for Ming, Qwen-Image 2.1, Z-Image, Krea 2, Lens, Flux2, Anima, SD1.5 and SDXL using the target VAE's token grid. Other architectures retain legacy zero initialization. RGB targets do not retain alpha. Existing checkpoints restore their saved latent structure without recalibration. Qwen, Z-Image, Krea, Lens, Flux2, Anima, SD1.5 and SDXL initialize swaps from unquantized full checkpoints. Explicit legacy zero is retained for same-scale swaps on Z-Image, Krea, Lens, Flux2, Anima, SD1.5 and SDXL; Anima zero requires a native-rank 5-D 8x codec, SD1.5 and SDXL zero require a 4-D 8x codec.
         vae_swap_calibration_samples:
           type: integer
           minimum: 2

@@ -200,6 +200,7 @@ def _build_ideogram4_transformer_from_state(
     state_dict: dict,
     torch_dtype: torch.dtype,
     label: str,
+    alignment: dict = None,
 ) -> Ideogram4Transformer2DModel:
     """Build an Ideogram4Transformer2DModel from an explicit config + state_dict.
 
@@ -208,6 +209,21 @@ def _build_ideogram4_transformer_from_state(
     nf4 (bitsandbytes) and weight-only FP8 layouts independently.
     """
     model = Ideogram4Transformer2DModel.from_config(config)
+    bridge = {key[len("vae_latent_bridge."):]:value for key,value in state_dict.items()
+        if key.startswith("vae_latent_bridge.")}
+    if bridge and alignment is None:
+        raise ValueError("Ideogram bridge weights require an alignment declaration")
+    state_dict = {key:value for key,value in state_dict.items() if not key.startswith("vae_latent_bridge.")}
+
+    def finish():
+        if alignment is not None:
+            from .vae_alignment import restore_model_alignment
+            from core.models.components.spatial_swap import validate_loaded
+            restore_model_alignment(model,alignment)
+            model.vae_latent_bridge.to(device=next(model.parameters()).device,dtype=torch_dtype)
+            model.vae_latent_bridge.load_state_dict(bridge,strict=True)
+            validate_loaded(model)
+        return model
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
 
     state_dict = _convert_fused_qkv_to_split(state_dict, hidden_size)
@@ -223,7 +239,7 @@ def _build_ideogram4_transformer_from_state(
         print(f"[Ideogram4Loader] {label}: swapped {swapped} Linear(s) to Linear4bit (nf4)")
         load_bnb4bit_state_dict(model, state_dict, device=device, dtype=torch_dtype)
         model.eval()
-        return model
+        return finish()
 
     # Weight-only quantized (int8 and/or e4m3, per-row ``.weight_scale``) is
     # DETECTED here and VERIFIED below. The report fires on either piece of
@@ -264,7 +280,7 @@ def _build_ideogram4_transformer_from_state(
 
     model.eval()
     model.to("cpu")
-    return model
+    return finish()
 
 
 def load_ideogram4_components(
@@ -453,6 +469,10 @@ def load_ideogram4_single_file(
     topology, saved_configs = preflight_checkpoint(file_path,load_unconditional=load_unconditional)
     raw, md = read_state_dict(file_path)
     md = md or {}
+    from core.models.components.spatial_swap import read_declaration,restored_image_codec
+    alignment = read_declaration(md)
+    if alignment is not None:
+        load_unconditional = True
     hint = base_dir_hint or md.get("component.base_dir") or md.get("sushi.base_model_path")
     base_dir = _resolve_ideogram4_base_dir(file_path, hint)
     print(f"[Ideogram4Loader] Combined single-file: {file_path}")
@@ -478,7 +498,7 @@ def load_ideogram4_single_file(
     print("[Ideogram4Loader] Building transformer (conditional) from single-file...")
     cond_cfg = saved_configs.get("transformer") or _config_for("transformer_config", "transformer")
     transformer = _build_ideogram4_transformer_from_state(
-        cond_cfg, cond_sd, torch_dtype, "transformer"
+        cond_cfg, cond_sd, torch_dtype, "transformer", alignment=alignment
     )
 
     unconditional_transformer = None
@@ -486,9 +506,11 @@ def load_ideogram4_single_file(
         print("[Ideogram4Loader] Building unconditional_transformer from single-file...")
         uncond_cfg = saved_configs.get("unconditional_transformer") or _config_for("unconditional_transformer_config", "unconditional_transformer")
         unconditional_transformer = _build_ideogram4_transformer_from_state(
-            uncond_cfg, uncond_sd, torch_dtype, "unconditional_transformer"
+            uncond_cfg, uncond_sd, torch_dtype, "unconditional_transformer", alignment=alignment
         )
     elif not uncond_sd:
+        if alignment is not None:
+            raise ValueError("Aligned Ideogram artifacts require the unconditional transformer")
         print("[Ideogram4Loader] No unconditional_transformer keys in single-file (skipping)")
 
     restore_topology(transformer,topology)
@@ -500,9 +522,14 @@ def load_ideogram4_single_file(
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(base_dir, "tokenizer"))
 
     print("[Ideogram4Loader] Loading VAE (AutoencoderKLFlux2) from base directory...")
-    vae = AutoencoderKLFlux2.from_pretrained(
-        base_dir, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True
-    )
+    from core.models.common.vae_source import load_declared_latent_io
+    resolved = load_declared_latent_io(file_path,arch="ideogram4")
+    if alignment is not None and resolved is None:
+        raise ValueError("Aligned Ideogram artifacts require their native codec declaration")
+    vae = (resolved.load_module(torch_dtype=torch_dtype) if resolved is not None else
+        AutoencoderKLFlux2.from_pretrained(base_dir,subfolder="vae",torch_dtype=torch_dtype,low_cpu_mem_usage=True))
+    if alignment is not None:
+        vae,resolved = restored_image_codec(vae,resolved,alignment)
     vae.eval()
     vae.to("cpu")
 
@@ -512,6 +539,7 @@ def load_ideogram4_single_file(
     print("[Ideogram4Loader] Combined single-file loaded successfully.")
     return {
         "base_dir": base_dir,
+        "declared_vae": resolved,
         "type": "ideogram4",
         "transformer": transformer,
         "unconditional_transformer": unconditional_transformer,

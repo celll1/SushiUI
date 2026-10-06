@@ -174,6 +174,9 @@ class Ideogram4FullParameterAdapter(BaseFullParameterAdapter):
             output_path = output_path / f"ideogram4_step_{step}.safetensors"
         elif output_path.suffix != ".safetensors":
             output_path = Path(str(output_path) + ".safetensors")
+        from core.training.vae_swap import swap_metadata
+        swapped,bundled,metadata = swap_metadata(trainer)
+        metadata.update({"component.base_dir":str(base_dir), "step":str(step), "epoch":str(epoch),
+            "training_method":"full_finetune"})
         return save_checkpoint(trainer.transformer, trainer.transformer_uncond, output_path,
-            metadata={"component.base_dir":str(base_dir), "step":str(step), "epoch":str(epoch),
-                "training_method":"full_finetune"})
+            metadata=metadata,vae=trainer.vae if swapped is not None and bundled else None)

@@ -17,7 +17,17 @@ Ideogramのtarget-native境界も追加した。元のpackingは`(patch_h,patch_
 入力biasと`x0_minus_eps`の出力biasを別々に適用し、text prefixを画像bridgeへ入れない。
 双DiTの学習済みIOはinner順序で拡張し、U-net接続とnative identityを保持する。
 FP32/BF16、チャネル増減、2段U-net併用、追加チャネル勾配を合成CPUモデルで確認した。
-共有正規化とKrea packed bridgeの回帰も通過した。まだ公開swap・codec復元には接続していない。
+共有正規化とKrea packed bridgeの回帰も通過した。
+内部swapは共有校正へ接続した。新規交換はFull FTと無条件DiTの学習も要求し、双方の
+IOと独立bridgeを拡張する。校正中は無条件DiTの各parameter/bufferとoptimizer stateも
+退避し、元のdevice配置へ戻す。校正初期値だけを両bridgeへ反映し、以後の重みは独立に保持する。
+Full exportはnative codecとalignment宣言を保存し、公開loaderは両bridgeを厳密復元する。
+native codecの正規化を二重適用せず、元のVAE格子へ戻さない。復元済みbridgeは再校正しない。
+実クラスの小型Flux2 VAE（2ch/8x）→AutoencoderKL（4ch/16x）、合成画像による校正、
+単一・分割保存、公開loader、encode/decode、DiT forward、再開非初期化を確認した。
+TE/tokenizer companionのみmockし、codec/body/bridgeの読込は実経路を使用した。
+宣言・bridge重み欠落と両branch宣言不一致の拒否、既存U-net保存復元を含む12件が通過した。
+公開API設定・周期サンプル・generation backendの格子更新・公式全重みの受け入れはまだ未了。
 
 本書のD3（新規チャネルzero）とD5（縮小率固定）は既存共通resize経路の
 契約であり、全モデルに共通する最終的な制約ではない。

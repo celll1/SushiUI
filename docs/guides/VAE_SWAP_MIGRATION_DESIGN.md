@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
+Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、
+交換後のnative gridで3×3 paired_spatialをfitした。生成は1024px、DDIM epsilon、
+CFG6、24steps、seed63で狐・果物・青い車の3promptを比較した。
+通常のpaired変換は単色へ崩れたが、inputの中心行列を直交化した固定Gaussianと
+output側のGaussian residualを合わせる候補では狐・果物・車の概形を認識できた。
+64反復の正則化逆写像も試したが、明確な改善はなく、車の色・形が変わった。
+通常codec側の生成とも対象の数・配置が異なり、果物promptの洋梨は維持できていない。
+従って3prompt・1seedの候補比較であり、汎用的な画質受入や本番noise policyの切替ではない。
+校正画像・kernel・生成比較・実験scriptはignored localにのみ保持し、commitしない。
+
+この比較で標準Diffusers SD pipelineがdecodeへ渡す`generator`をQwen codecが拒否する
+共有wrapperの不具合を修正した。offload decoratorが隠すnative signatureも確認し、
+非対応codecでは引数を除き、明示対応またはnative **kwargsでは同じgeneratorを維持する。
+image/frame facadeのdecorated/非decorated codecで引数とRNG stateを回帰検証し、
+実Qwen codecの9回の交換生成/decodeも完走した。API/default/checkpoint形式は変更しない。
+
 SD1.5公開ベース重み（以下の配布hashを照合したミラー）で、合成図形2枚のみを使い、
 Qwen 2.1 VAEへのpaired_spatial校正・Full更新・保存・中epoch再開・生成をAPI検証した。
 最初の実重み試験で、共有loaderがSDXLを先に試すため、DiffusersがSD1.5を

@@ -8,6 +8,12 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+共通source resolverはAutoencoderOobleckのconfigと実weight headerを照合し、rank3・identity正規化・
+sample rate・waveform channels・hop長を返す。画像のpixel channelsとは分離し、selectorも音声の
+sample/frame単位で表示する。source latent identityには音声geometryを含める。小型実codecの
+保存/読込・encode/decode一致、誤宣言拒否、allocationなしのinspection、画像resolver回帰を含む
+CPUテスト39件が通過した。新規音声swapの校正入口と公開gateはまだ接続完了ではない。
+
 音声swapの共通基盤を`components/audio_latent_adapter.py`へ追加した。これはまだACE-Stepの
 公開swapを開放する変更ではない。音声codecはBCT、sample rate、waveform channels、hop length、
 frame-count policyを画像/video契約から分離する。Oobleckの偶数strideでhopの整数倍の入力だけを

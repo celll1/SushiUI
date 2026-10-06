@@ -112,7 +112,7 @@ class ResolvedVAE:
 
     def facts(self) -> Dict[str, Any]:
         """The JSON-able structural subset (what a selector and §5.2 both want)."""
-        return {
+        facts = {
             "source": self.source,
             "form": self.form,
             "family": self.family,
@@ -134,6 +134,13 @@ class ResolvedVAE:
             "struct_native": self.struct_native,
             "identity_native": self.identity_native,
         }
+        if self.vae_class == "AutoencoderOobleck":
+            facts.update(domain="audio", sample_rate=self.config["sampling_rate"],
+                         waveform_channels=self.config["audio_channels"],
+                         hop_length=self.scale_temporal, frame_policy="aligned_hop_v1")
+            facts.pop("pixel_channels")
+            facts["output_channels"] = self.config["audio_channels"]
+        return facts
 
     def load_module(self, torch_dtype: Optional[torch.dtype] = None):
         """Materialise the diffusers VAE module for these weights.
@@ -401,7 +408,11 @@ def normalization_config(config) -> Dict[str, Any]:
 
 
 def latent_space_hash(weights_hash: str, config) -> str:
-    payload = json.dumps(normalization_config(config), sort_keys=True, separators=(",", ":"))
+    identity = normalization_config(config)
+    if config.get("_class_name") == "AutoencoderOobleck":
+        identity["audio_geometry"] = {key: config.get(key) for key in (
+            "sampling_rate", "audio_channels", "downsampling_ratios", "decoder_input_channels")}
+    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(f"{weights_hash}:{payload}".encode()).hexdigest()[:16]
 
 
@@ -491,6 +502,35 @@ def _resolve_facts(
     declared: Dict[str, Any],
     family: str,
 ) -> Dict[str, Any]:
+    if config.get("_class_name") == "AutoencoderOobleck":
+        from core.models.components.audio_latent_adapter import AudioCodecContract
+        from types import SimpleNamespace
+
+        try:
+            contract = AudioCodecContract.from_oobleck(SimpleNamespace(
+                config=config, hop_length=prod(config.get("downsampling_ratios", ()))))
+        except (ValueError, TypeError) as error:
+            raise VaeSourceError(f"{source}: {error}") from error
+        multiples = config.get("channel_multiples")
+        decoder_channels = config.get("decoder_channels")
+        if (not isinstance(multiples, (list, tuple)) or len(multiples) != len(config["downsampling_ratios"])
+                or any(type(n) is not int or n < 1 for n in multiples)
+                or type(decoder_channels) is not int or decoder_channels < 1):
+            raise VaeSourceError(f"{source}: Oobleck block geometry is incomplete")
+        expected = {
+            "encoder.conv1.weight_v": (2 * contract.latent_channels, contract.waveform_channels, 7),
+            "encoder.conv2.bias": (2 * contract.latent_channels,),
+            "decoder.conv1.weight_v": (decoder_channels * multiples[-1],
+                                      contract.latent_channels, 7),
+            "decoder.conv2.weight_v": (contract.waveform_channels, decoder_channels, 7),
+        }
+        if any(shapes.get(key) != shape for key, shape in expected.items()):
+            raise VaeSourceError(f"{source}: Oobleck codec headers disagree with its config")
+        if config.get("scaling_factor") not in (None, 1, 1.0) or config.get("shift_factor") not in (None, 0, 0.0):
+            raise VaeSourceError(f"{source}: Oobleck uses identity latent normalisation")
+        return dict(latent_channels=contract.latent_channels, ndim=3, scale_factor=1,
+                    scale_temporal=contract.hop_length, vae_class="AutoencoderOobleck",
+                    norm="identity", norm_pack=1, scaling_factor=None, shift_factor=None)
     observed = observe_vae(shapes)
     config = dict(config)
     if config.get("_class_name") == "AutoencoderKLQwenImage21":

@@ -37,8 +37,15 @@ const EMPTY: VaeSwapSourcesGroups = {
 const facts = (candidate: VaeSwapCandidate): string => {
   const parts: string[] = [];
   if (candidate.latent_channels != null) parts.push(`${candidate.latent_channels}ch`);
-  if (candidate.scale_factor != null) parts.push(`${candidate.scale_factor}x`);
-  if (candidate.scale_temporal != null && candidate.scale_temporal !== 1) parts.push(`${candidate.scale_temporal}x temporal`);
+  if (candidate.domain === "audio") {
+    parts.push("audio");
+    if (candidate.sample_rate != null) parts.push(`${candidate.sample_rate} Hz`);
+    if (candidate.waveform_channels != null) parts.push(`${candidate.waveform_channels} waveform channels`);
+    if (candidate.hop_length != null) parts.push(`${candidate.hop_length} samples/frame`);
+  } else {
+    if (candidate.scale_factor != null) parts.push(`${candidate.scale_factor}x`);
+    if (candidate.scale_temporal != null && candidate.scale_temporal !== 1) parts.push(`${candidate.scale_temporal}x temporal`);
+  }
   if (candidate.pixel_channels != null) parts.push(candidate.pixel_channels === 4 ? "RGBA" : `${candidate.pixel_channels} input channels`);
   if (candidate.ndim != null && candidate.ndim !== 4) parts.push(`${candidate.ndim}-D`);
   if (candidate.norm) parts.push(candidate.norm);

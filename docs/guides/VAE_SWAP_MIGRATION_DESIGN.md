@@ -91,6 +91,14 @@ real tiny U-Netで両モデルの条件付け、チャネル増減、非正方�
 FP32/BF16 train_stepの逆伝搬を合成CPU検証した。境界とREPA回帰87件、変更Pythonの
 py_compile・実importが通過した。公開swap初期化・校正・保存復元・生成schedulerへの配線はまだ未了で、
 SD1.5/SDXLのauto設定は既存zeroのまま。公式全重みでの学習・画質検証も未了。
+SDの内部初期化driverを共有画像codec・校正へ接続した。U-Net内部幅は`max(oldC,newC)`、
+学習入力とlossは交換先の外部チャネル・格子を維持する。SDXL wrapperのteacherは内部native VAEを使用し、
+同一codecのno-opでは元のwrapperを保持する。bucketの整合性は交換先縮小率に合わせる。
+trainerをrootとする既存SD IO specでも、U-Net内のbridgeを検出して内部幅を照合する。
+実AutoencoderKLの合成校正で8x→16x、チャネル増減、非正方形encode/decode、
+両モデルの実train_step/backwardと校正完了後のteacher解放を確認した。
+境界・初期化・共通swap/resume回帰72件、変更Pythonのpy_compile・実importが通過した。
+公開初期化設定・保存復元・生成schedulerへの接続と公式全重み検証は引き続き未了。
 
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。

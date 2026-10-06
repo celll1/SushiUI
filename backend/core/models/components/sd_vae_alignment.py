@@ -1,4 +1,45 @@
 """SD U-Net codec boundaries with explicit VP or flow noise coefficients."""
+def resolve_wiring(handler,trainer):
+    from .latent_adapter import NormalizedImageVAE
+    vae=getattr(trainer,"vae",None)
+    if isinstance(vae,NormalizedImageVAE):
+        handler.pixel_align=vae.spatial_scale_factor
+        return handler.wiring.replace(latent_channels=vae.config.latent_channels,
+            vae_scale_factor=vae.spatial_scale_factor,vae_norm="identity",vae_norm_pack=1)
+    return getattr(trainer,"wiring",None) or handler.wiring
+
+
+def initialize_swap(trainer,resolved,*,handler):
+    from .latent_io import resize_latent_io
+    from .spatial_swap import initialize_image_swap
+    from .vae_wrapper import SDXLVAEWrapper
+    from core.training.adapters.base_adapter import reject_quantized_base
+    model=trainer.unet
+    if model.config.in_channels!=model.config.out_channels:
+        raise ValueError("SD spatial swap requires symmetric image-only U-Net latent faces")
+    reject_quantized_base(model,model_label="SD U-Net VAE swap")
+    original=trainer.vae
+    if isinstance(original,SDXLVAEWrapper):
+        trainer.vae=original.vae
+    try:
+        report=initialize_image_swap(trainer,resolved,handler=handler,model=model,
+            old_channels=model.config.in_channels,source_wiring=handler.resolve_wiring(trainer),
+            patch_size=1,resize=lambda width:resize_latent_io(trainer,handler.wiring.latent_io,width),
+            pending_key="_sd_vae_calibration_source")
+        if isinstance(original,SDXLVAEWrapper) and trainer.vae is original.vae:
+            trainer.vae=original
+        return report
+    except Exception:
+        if isinstance(original,SDXLVAEWrapper) and trainer.vae is original.vae:
+            trainer.vae=original
+        raise
+
+
+def calibrate(trainer,datasets):
+    from .spatial_swap import calibrate_images
+    calibrate_images(trainer,datasets,model=trainer.unet,pending_key="_sd_vae_calibration_source")
+
+
 def training_coefficients(model,scheduler,timesteps,*,noise_process,reference,alphas_cumprod=None):
     if getattr(model,"vae_latent_bridge",None) is None:
         return None,None

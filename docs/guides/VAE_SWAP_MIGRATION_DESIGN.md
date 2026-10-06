@@ -29,8 +29,17 @@ H3 conditionのpixel開始点とclip切詰めはframe spansで求め、動画の
 通常causal codecの既存tie-breakは維持する。condition pipelineとbackendは共通のclip切詰めhelperを使う。
 実小型H3 VAE+U-net LTXのbackend outpaintで39pixel framesへdecodeし、pixel17..39に配置する
 合成22frame入力がbyte完全一致することを確認。API geometry・chain等を含むCPU回帰109件と
-変更Python compile/実importが通過。公開chainの非均一継続格子の受入は未完で、H3 targetの
-公開生成拒否は維持する。GPU・公式重みでの検証も未完。
+変更Python compile/実importが通過。
+chainは既存outpaint_placementsがfreeのみの場合、生成spanでなく出力全体をcodec格子へ乗せる。
+継続の追加spanがcap以下になる最大有効totalを選び、shot-aligned解法も同じ全体格子を使う。
+frontendの次total計算も合わせ、22→39→56→73→90→107の計画・queue用totalが一致する。
+実交換モデルのHTTP plan/validate・hash保持、古い/変更された計画の拒否、cap22/39/124を確認。
+H3 targetの一律公開拒否は撤去し、base/cached派生pipelineがCodecGeometryで同じVAE/DiTを
+共有することを事前検証する。未配線/古いclockは引き続き拒否し、モデル情報では生成不可を表示する。
+block swapの新wrapper/無効化でdense alignmentが外れる漏れも修正し、追加channelの外部幅を保持する。
+関連CPU109件、frontend pure-function/Syntax7件、Python compile/実import・OpenAPI parseが通過。
+実codecの39→56frame連続outpaintと前prefix39frameのbyte保持を含む追加10件も通過。
+GPU offloaderの実転送・公式重みでの学習/画質/速度・実UIの受入は未完。
 
 現在モデル情報へloaded_video_constraintsを追加し、校正済みbundled video codecの実frame格子、
 空間倍数、frame-group policy/temporal scale、モデル由来のFPS/範囲を返す。
@@ -38,7 +47,7 @@ H3 conditionのpixel開始点とclip切詰めはframe spansで求め、動画の
 codecの値に合わせ、元architecture channelのstale値を表示しない。
 codec_contractsを明示してvideo_constraints_payloadを再利用し、H3 chunkはcyclic pattern、
 独立frameは[1]、causalは空pattern+先頭1/以後scaleのpolicyで表す。
-LTXの未配線H3 chunk時計もモデル情報は取得でき、generation_available=falseとして表示する。
+LTXのH3 chunk時計はpipeline配線が未完/古い状態でもモデル情報を取得でき、generation_available=falseとして表示する。
 chain planの格子とcontinuation-overlap resolverは、要求architectureが現在モデルと一致する場合
 同じloaded契約を使う。他architectureのoffline planとunload後は元の標準契約を保つ。
 frontend StartupContextはモデル情報の契約を標準capabilitiesへimmutableにoverlayする。
@@ -59,7 +68,7 @@ wire復元で明示anchor_countを配列長で上書きせず、矛盾を検出�
 確認dialogはcodec geometry変更後の再検証を必須とし、閉じた後や新planへの古い応答を捨てる。
 編集中のprompt/referenceはgeometry変更だけでは再planで置き換えない。
 HTTP経由のCPU回帰103件、frontend pure-function/Syntax確認6件、Python compile/実importが通過。
-prompt/cache、LTX chain継続時計、校正/Full owner、
+prompt/cacheと実chain queueのGPU受入、校正/Full owner、
 公式全重みでの学習・画質・速度、実UI確認は引き続き未完。
 
 公開txt2vid/img2vid/ref2vid/inpaint-video/outpaint-videoの事前検証へloaded codec契約を接続した。
@@ -72,7 +81,7 @@ inpaint/outpaint/continuation-overlap plannerへ同じ契約を渡す。LTX free
 固定8k+1ではなくloaded codec格子で検査する。route/backendが別のcodec格子で検証する差を除去した。
 共通TemporalSpecへlatent_spatial_patchを追加し、必要空間倍数は元policyとtarget scale*patchのLCMとする。
 H3はpatch2、LTXはpatch1なので、LTXに不要な2倍制約を課さない。
-LTX pipelineのH3非一様chunk時計は未実装のため、当該codecを公開生成へ通さず400で明示する。
+LTX pipelineのH3非一様chunk時計はinstalled target-clock pipelineを検証し、未配線/古い場合400で明示する。
 これは残作業の保護ゲートであり、アーキテクチャ間交換の要求を満たしたことにはしない。
 OpenAPIの既存video endpoint説明を更新し、request/response/defaultのfieldは変更しない。
 既存geometry/editingと実小型H3/LTX paired codecのCPU回帰168件が通過した。

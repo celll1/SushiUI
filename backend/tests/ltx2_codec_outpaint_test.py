@@ -57,3 +57,8 @@ def test_actual_outpaint_decodes_and_pastes_the_physical_preserved_span(monkeypa
     assert frames.shape == (39,32,32,3) and seed == 7
     np.testing.assert_array_equal(frames[17:39],source)
     assert audio is not None
+    continued,_,_,_ = owner._generate_vidoutpaint_ltx2(dict(prompt="synthetic",width=32,height=32,
+        total_frames=56,input_offset_frames=0,num_inference_steps=2,guidance_scale=1,frame_rate=24,seed=9,
+        outpaint_video_audio_mode="regenerate"),frames,fps=24,input_audio=None)
+    assert continued.shape == (56,32,32,3)
+    np.testing.assert_array_equal(continued[:39],frames)

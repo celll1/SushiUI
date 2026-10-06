@@ -10488,7 +10488,10 @@ async def get_current_model():
             info["latent_channels"] = _codec.image.latent_channels
             info["loaded_video_constraints"] = video_constraints_payload(codec_contracts={_arch:_codec})[_arch]
             if _arch == "ltx2" and _codec.temporal_policy == "minimax_h3_chunks_v1":
-                info["generation_available"] = False
+                try:
+                    loaded_video_codec_contract(pipeline_manager,_arch)
+                except CustomValidationError:
+                    info["generation_available"] = False
         # Enrich with the loaded model's latent_channels so the frontend's
         # compatible-only VAE-override filter can match on latent channels instead
         # of hardcoding an arch->channels map. `_sushi_wiring` is the loaded

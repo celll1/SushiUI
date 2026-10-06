@@ -153,6 +153,7 @@ class VideoGridSpec:
     min_frames: int
     min_decodable_frames: int
     max_frames: Optional[int] = None
+    outpaint_placements: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.frame_multiple <= 0:
@@ -168,7 +169,15 @@ class VideoGridSpec:
             max_frames=(
                 None if constraints.get("max_frames") is None else int(constraints["max_frames"])
             ),
+            outpaint_placements=tuple(constraints.get("outpaint_placements") or ()),
         )
+
+    @property
+    def continuation_uses_total_grid(self) -> bool:
+        return self.outpaint_placements == ("free",)
+
+    def snap_down(self, frames: int) -> int:
+        return ((frames-self.frame_offset)//self.frame_multiple)*self.frame_multiple+self.frame_offset
 
     @property
     def floor_frames(self) -> int:
@@ -224,6 +233,10 @@ def next_chain_total_frames(
     remaining = target_frames - accumulated_frames
     if remaining <= 0:
         return None
+    if spec.continuation_uses_total_grid:
+        limit = spec.snap_down(accumulated_frames+cap-VIDEO_CHAIN_ANCHOR_FRAMES)
+        total = min(limit,spec.snap_up(accumulated_frames+remaining))
+        return total if total > accumulated_frames else None
     requested_generated = min(remaining, cap)
     generated_span = spec.snap_up(requested_generated)
     if generated_span <= VIDEO_CHAIN_ANCHOR_FRAMES:
@@ -248,6 +261,8 @@ def continuation_generated_span(
     frames land in the OUTPUT (design §7.2b defect 2).
     """
     overlap = max(1, int(overlap_frames))
+    if spec.continuation_uses_total_grid:
+        return spec.snap_up(int(requested_total_frames))-int(accumulated_frames)+overlap
     return spec.snap_up(max(1, int(requested_total_frames) - int(accumulated_frames) + overlap))
 
 
@@ -553,6 +568,8 @@ def _shot_aligned_cuts(
         return a >= target_frames and a > last_boundary
 
     def step_of(a: int, g: int) -> int:
+        if a and spec.continuation_uses_total_grid:
+            return spec.snap_down(a+g-overlap)-a
         return g if a == 0 else g - overlap
 
     seen = {0}

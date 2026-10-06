@@ -1744,7 +1744,12 @@ def loaded_video_codec_contract(manager, arch, *, for_generation=True):
                 or pair is None or not pair.ready):
             raise ValueError("Loaded video codec requires its calibrated aligned backbone")
         if for_generation and arch == "ltx2" and contract.temporal_policy == "minimax_h3_chunks_v1":
-            raise ValueError("LTX generation does not yet implement the H3 chunk frame clock")
+            from core.models.ltx2.codec_pipelines.geometry import CodecGeometry
+            pipes = [components.get("pipeline")]
+            pipes.extend(components[key] for key in ("i2v_pipeline","cond_pipeline") if components.get(key) is not None)
+            if any(not isinstance(pipe,CodecGeometry) or pipe.vae is not vae or pipe.transformer is not model
+                   for pipe in pipes):
+                raise ValueError("Loaded LTX H3 chunk frame clock is missing or stale")
         expected = (contract.temporal_scale,contract.image.spatial_scale,contract.image.spatial_scale)
         if (model.config.in_channels != contract.image.latent_channels
                 or tuple(model.config.vae_scale_factors) != expected

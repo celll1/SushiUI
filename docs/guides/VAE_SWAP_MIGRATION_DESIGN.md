@@ -8,6 +8,35 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+画質の完了条件は元画像の完全復元ではなく、主要な物体・概形・配置を認識できること。
+codec間の差が大きくても、変換行列・畳み込み・noise整合を比較せずに検証を打ち切らない。
+学習・保存復元の機能受入と、未学習生成の画質受入は別に記録する。
+
+公式Qwen全重みの比較を、リンゴと洋梨、青い車の生成promptへ広げた。512pxではseed64/65、
+1024pxではseed64、CFG1・24stepsで、独立に校正したA/Bと直交化noiseの候補を確認した。
+果物の色・配置は一部残るが、車体の分裂と周期的な模様があり、先の狐1例を汎用受入にはできない。
+pool座標を元セルの中心へ移す候補と外側低解像度区間の短縮も、既定2段U-netの画質を安定させなかった。
+
+独立fitのinput Aとoutput Bには`A B = I`の保証がない。outputの中心行列Wについて
+`A = pinv(W)`とし、Bの隣接kernelを`(I-W A) B_neighbors`へ投影する候補では、
+BF16保存kernelの往復RMSEが0.00346となり、1024pxの果物・車の概形は改善した。
+一方、output畳み込みの変更で強い周期模様が出たため、本番の校正方法へは採用しない。
+
+出力Bを変更しない候補では、各stepの入力をFP32の正則化共役勾配法で逆写像した。
+`x_t = (1-sigma) x0_target + sigma eps_target`、Bは元channelからtargetへのbiasなし3×3畳み込み、
+bはoutput bias、`eps_source = Q eps_target`（Qはinput中心kernelの行直交化）として、
+`z = argmin ||B z - (x_t - sigma eps_target - (1-sigma)b)||² + lambda ||z||²`、
+native入力を`z + sigma eps_source`、target velocityを
+`B v_source + eps_target - B eps_source - b`とした（eps-minus-x0 flow限定）。
+lambda=1e-5・64反復のローカル試験で、1024px・seed64/65のU-netなしではリンゴ・洋梨の輪郭と
+左右配置、車体・窓・車輪を識別できた。周期的な質感の崩れは残る。
+両seedの全8条件ずつがreturncode 0で完走した。既定2段U-netでは概形は残っても細部が崩れ、
+併用の画質受入は未完了。
+生成結果は実画像ではなくpromptから生成した診断画像で、全画像・全codecへの保証ではない。
+入力bridgeの学習可能な補正、noise所有権、snapshot保存復元、他の予測形式・参照画像・
+channel減少時の非可逆性、反復演算の費用を扱う本番契約が未検証のため、runtime既定値は変更しない。
+校正kernel・診断画像・ログはignored localだけに保持する。
+
 Qwen→LTXの画質切り分けを追加した。現在のdataset itemのpath・generalタグと
 sensitive/questionable/explicitがないことをAPIで確認した40枚だけで512px校正を行った。
 公式全DiT・TE、狐と青い本のprompt、seed63、CFG1、24steps、512pxで比較した。

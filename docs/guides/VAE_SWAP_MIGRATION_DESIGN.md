@@ -64,6 +64,24 @@ FP32はH2D 499,200/D2H 374,400 bytes、BF16は353,280/264,960 bytes（各3更新
 GPU4件が通過。合成tensorのみで既存runは変更していない。
 公式全モデル、実caption encoder、Full optimizer/resume、画質/速度の受入と公開Full gate解除は残る。
 
+共通encoder refillのmain復帰でモデル全体へ`.to(cuda)`していた漏れを修正した。
+`training/mutable_model_residency.py`をBaseTrainerのmain CPU/GPU移動へ接続し、mutable
+conductorのCPU masterは移動対象から除外、CPU退避時にidle slotをpark、復帰時に再確保する。
+resident weightsのparameter identity/gradは維持し、conductorが別ownerに跨る場合は移動前に拒否。
+Ming/SenseNovaの専用経路は維持する。共通mutable経路を使うH3/LTX等に適用される。
+実小型H3 GPU4条件で3更新の間にBaseTrainerのCPU/GPU往復を挟み、master pointer維持、
+全slot解放/再確保、bit一致の書戻し、次更新の継続を確認した。関連CPU21件、compile/実import通過。
+保存復元テストはstateのbit一致を確認し、forward比較は両側no_gradで同じ実行モードに揃えた。
+
+公式LTX VAEのみを`M:\model\vae\ltx2_3_official\vae`へ取得した（1,452,233,194 bytes）。
+repo `diffusers/LTX-2.3-Distilled-Diffusers`、revision `432e0d3c2d1769aaa4d295f9243f7062bf6b47ee`。
+公式H3全DiTのstrict読込は20,111,430,528 parameters、RSS約31.74GiBで成功。
+公式H3 VAE/LTX VAEの読込、/16→/32・24→128channel・最深4層の2段U-net構造適用まで成功した。
+resident初期配置はCUDA allocated 2.24GiB。ただし49層CPU master構築でavailable RAMが
+0.60GiBまで低下し、検証プロセスだけをmemory guardが終了した。校正/学習更新は未実行。
+これは公式Full学習の受入ではない。次はmaster構築時のcheckpoint/CPU plane二重保持の削減。
+既存run/DBと既存modelファイルは変更していない。検証入力は合成画像のみ。
+
 LTX学習のRoPE bounds、dummy audio用clip実時間、training bucketのframe格子を
 VideoCodecContractへ接続した。independent/causal/H3 chunkを同じ座標helperで扱い、
 通常codecの座標は従来と一致する。H3 chunkの校正clipはsource LTX8と共通の最短73frameを選ぶ。

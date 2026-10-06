@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 import os
-from types import SimpleNamespace
+from types import SimpleNamespace, MethodType
 
 import pytest
 import torch
@@ -40,6 +40,11 @@ def test_actual_h3_full_updates_match_resident_fused_optimizer(rewired, dtype):
         layer_offload_conductor=None, device=torch.device("cuda"), log_prefix="[H3 GPU verification]")
     setup_block_swap(trainer)
     conductor = trainer.layer_offload_conductor
+    from core.training.base_trainer import BaseTrainer
+    trainer.is_sensenova = False
+    trainer.transformer_original = swapped.transformer
+    trainer._main_model_module = lambda: trainer.transformer_original
+    trainer._layer_offload_conductors = MethodType(BaseTrainer._layer_offload_conductors, trainer)
     optimizers, handles = [], []
     updated = {}
     # Match the autograd view nodes introduced by the conductor's module hooks.
@@ -79,6 +84,16 @@ def test_actual_h3_full_updates_match_resident_fused_optimizer(rewired, dtype):
                     for i in conductor.swappable:
                         for parameter in swapped.transformer_blocks[i].parameters():
                             torch.testing.assert_close(parameter, updated[id(parameter)].cpu(), rtol=0, atol=0)
+                    pointers = {id(p):p.data_ptr() for i in conductor.swappable
+                                for p in swapped.transformer_blocks[i].parameters()}
+                    BaseTrainer.move_main_model_to_cpu(trainer)
+                    assert conductor.engine.slots_parked and not conductor.engine.slots
+                    assert all(p.device.type == "cpu" for p in swapped.parameters())
+                    BaseTrainer.move_main_model_to_gpu(trainer)
+                    assert not conductor.engine.slots_parked
+                    for i in conductor.swappable:
+                        for p in swapped.transformer_blocks[i].parameters():
+                            assert p.device.type == "cpu" and p.data_ptr() == pointers[id(p)]
             tolerance = (1e-5, 1e-7) if dtype == torch.float32 else (8e-3, 5e-5)
             torch.testing.assert_close(*losses, rtol=tolerance[0], atol=tolerance[1])
             for (name, expected), (actual_name, actual) in zip(resident.named_parameters(), swapped.named_parameters()):

@@ -165,6 +165,10 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
         bundle_vae = (swap_bundled if swapped is not None else resolve_bundle_vae(
             getattr(trainer, "bundle_vae", None), "krea2"))
         vae_to_bundle = trainer.vae if (bundle_vae and getattr(trainer, "vae", None) is not None) else None
+        if vae_to_bundle is not None:
+            from core.models.components.latent_adapter import NormalizedImageVAE
+            if isinstance(vae_to_bundle, NormalizedImageVAE):
+                vae_to_bundle = vae_to_bundle.inner
         if swapped is not None and not swap_bundled:
             print(f"[Krea2FullParameterAdapter] Swapped VAE ({swapped.provenance}) "
                   f"not bundled; resolved on load via {swapped.locator}")

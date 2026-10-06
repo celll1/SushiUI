@@ -530,6 +530,12 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
 
         batch_size, image_seq_len, _ = hidden_states.shape
         text_seq_len = encoder_hidden_states.shape[1]
+        pair = getattr(self, "vae_latent_bridge", None)
+        if pair is not None:
+            from ..vae_alignment import image_grid
+            from core.models.components.spatial_swap import map_packed_image
+            grid = image_grid(position_ids, text_seq_len, image_seq_len)
+            hidden_states = map_packed_image(pair, hidden_states, grid, sigma=timestep)
         self._stamp_style_context(text_seq_len, image_seq_len)
 
         temb = self.time_embed(timestep, dtype=hidden_states.dtype)
@@ -576,6 +582,8 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
 
         hidden_states = hidden_states[:, text_seq_len:]
         output = self.final_layer(hidden_states, temb)
+        if pair is not None:
+            output = map_packed_image(pair, output, grid, output=True)
 
         if not return_dict:
             return (output,)

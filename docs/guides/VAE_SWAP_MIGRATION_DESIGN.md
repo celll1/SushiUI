@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Imageでpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2でpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
@@ -39,6 +39,16 @@ Z-ImageのCPU合成検証はnative/dense/U-netの勾配、実AutoencoderKLの校
 API再起動後の`GET /training/vae-sources?arch=zimage`で、Qwen 2.1の64ch/16x codecを
 交換候補として選択可能であることを確認した。frontendの型・既定値・保存経路は静的確認済み、
 ownerのbuildと画面操作による最終確認は別途必要。
+Krea 2は同じ画像codec・初期化・校正driverを使い、双方向bridgeをlatent画像格子で適用してから
+nativeのouter-channel 2x2形式へpackする。内部幅は`max(oldC,newC)`、格子は交換先のまま。
+時刻はモデルへ渡す実sigmaを使用する。native生成のnoise幅、学習cache・非正方形grid、
+定期sample、VAEのrankとnorm、単一/sharded checkpoint復元を交換先codecに合わせる。
+nativeの位置IDを生成する際に格子とtensor versionを記録し、未変更ならbridgeでGPU同期せず再利用する。
+2段U-netの校正後resizeではregionを維持して新IOのmodel identityを作り直す。
+`backend/tests/krea_spatial_swap_test.py`はfp32/bf16・チャネル増減・dense/U-netの勾配、
+実causal Qwen-Image VAEからAutoencoderKLへの校正、生成用encode/decode、公開loaderの復元、
+学習済みbridgeを再校正しない再開とsharded保存をCPU合成データで検証する。
+Kreaの公式全重みによるswap学習・画質・optimizer付きrun再開は未検証。
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 

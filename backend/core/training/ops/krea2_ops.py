@@ -426,10 +426,11 @@ def generate_sample(
 
     print(f"{trainer.log_prefix} Generating Krea 2 sample: {prompt[:50]}...")
     patch_size = int(getattr(trainer, "krea2_patch_size", 2))
-    width = max(16, (width // 16) * 16)
-    height = max(16, (height // 16) * 16)
-    grid_h = height // 16
-    grid_w = width // 16
+    stride = int(getattr(trainer.vae,"spatial_scale_factor",8)) * 2
+    width = max(stride, (width // stride) * stride)
+    height = max(stride, (height // stride) * stride)
+    grid_h = height // stride
+    grid_w = width // stride
     select_layers = getattr(trainer, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
     is_distilled = bool(getattr(trainer, "krea2_is_distilled", False))
     guidance = 0.0 if is_distilled else max(0.0, float(guidance_scale) - 1.0)

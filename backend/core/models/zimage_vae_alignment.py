@@ -1,15 +1,12 @@
 """Z-Image boundaries for target-native shared spatial VAE alignment."""
 from dataclasses import replace
 
-from core.models.components.spatial_swap import NAME, install, calibrate_images
-from core.models.components.latent_adapter import ImageCodecContract, SpatialSwapPlan, NormalizedImageVAE
+from core.models.components.spatial_swap import NAME, calibrate_images, initialize_image_swap
 
 
 def apply_swap(trainer, resolved, module=None, *, handler):
     from core.models.components.latent_io import resize_latent_io, ResizeReport
     from core.models.components.wiring import ZIMAGE_LATENT_IO
-    from core.models.common.module_identity import module_fingerprint
-    from core.models.common.vae_source import normalization_config
     from core.models.zimage_residual_unet import native_config, restore_topology
     from core.rewiring.spec import build_spec
     from core.training.vae_swap import initialization_mode
@@ -42,31 +39,18 @@ def apply_swap(trainer, resolved, module=None, *, handler):
         raise ValueError("Z-Image spatial alignment requires the image 2-1 patch bank")
     from core.training.adapters.base_adapter import reject_quantized_base
     reject_quantized_base(model, model_label="Z-Image VAE swap")
-    old = trainer.vae
     source_spec = handler.resolve_wiring(trainer)
-    target = resolved.load_module(torch_dtype=trainer.vae_dtype).requires_grad_(False).eval()
-    identity = module_fingerprint(old)
-    if identity == module_fingerprint(target) and normalization_config(old.config) == normalization_config(target.config):
-        return ResizeReport((), model.in_channels, model.out_channels, model.in_channels, 0, 0)
-    codec = ImageCodecContract.from_resolved(resolved)
-    declaration = codec.declaration(source=resolved.source, source_identity=identity,
-        target_identity=resolved.latent_hash, old_channels=model.in_channels, old_scale=source_spec.vae_scale_factor)
-    plan = SpatialSwapPlan.build(declaration, patch_size=2)
-    topology = getattr(model, "_residual_unet_spec", None)
-    report = resize_latent_io(model, ZIMAGE_LATENT_IO, plan.backbone_channels)
-    model.in_channels = model.out_channels = plan.backbone_channels
-    trainer.transformer.in_channels = trainer.transformer.out_channels = plan.backbone_channels
-    if topology is not None:
-        restore_topology(model, build_spec("zimage", [{"name": "main", "block_count":len(model.layers)}],
-            topology["regions"], native_config(model)))
-    install(model, declaration)
-    getattr(model, NAME).to(dtype=trainer.weight_dtype)
-    trainer._zimage_vae_calibration_source = (old.to("cpu").requires_grad_(False).eval(), source_spec)
-    trainer.vae = NormalizedImageVAE(target, declaration)
-    trainer.vae_identity = replace(resolved, state_dict=None)
-    trainer.vae_latent_channels = codec.latent_channels
-    trainer.wiring = handler.resolve_wiring(trainer)
-    return report
+    def resize(channels):
+        topology = getattr(model, "_residual_unet_spec", None)
+        report = resize_latent_io(model, ZIMAGE_LATENT_IO, channels)
+        model.in_channels = model.out_channels = channels
+        trainer.transformer.in_channels = trainer.transformer.out_channels = channels
+        if topology is not None:
+            restore_topology(model, build_spec("zimage", [{"name": "main", "block_count":len(model.layers)}],
+                topology["regions"], native_config(model)))
+        return report
+    return initialize_image_swap(trainer, resolved, handler=handler, model=model, old_channels=model.in_channels,
+        source_wiring=source_spec, patch_size=2, resize=resize, pending_key="_zimage_vae_calibration_source")
 
 
 def calibrate(trainer, datasets):

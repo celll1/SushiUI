@@ -165,7 +165,13 @@ def prepare_position_ids(text_seq_len: int, grid_height: int, grid_width: int, d
     image_ids[..., 1] = torch.arange(grid_height, device=device)[:, None]
     image_ids[..., 2] = torch.arange(grid_width, device=device)[None, :]
     image_ids = image_ids.reshape(grid_height * grid_width, 3)
-    return torch.cat([text_ids, image_ids], dim=0)
+    positions = torch.cat([text_ids, image_ids], dim=0)
+    # Reuse the known grid without a GPU sync until positions are modified.
+    try:
+        positions._krea_grid = (grid_height, grid_width, positions._version)
+    except RuntimeError:
+        pass
+    return positions
 
 
 def prepare_latents_txt2img(
@@ -213,6 +219,9 @@ def vae_pixel_ndim(vae) -> int:
     """Rank of the pixel tensor this VAE's encoder takes: 5 for the Qwen-Image
     VAE's causal 3-D convolutions, 4 for a replacement 2-D image VAE (§7.4 only
     admits one whose LATENT is 4-D, and Krea 2 works on a 4-D latent either way)."""
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if isinstance(vae, NormalizedImageVAE):
+        return 4
     for module in getattr(vae, "encoder", vae).modules():
         if isinstance(module, torch.nn.modules.conv._ConvNd):
             return int(module.weight.ndim)

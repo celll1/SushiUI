@@ -268,7 +268,9 @@ def load_krea2_components(
     if declared_vae is not None:
         # in_channels is the PACKED width (C * patch^2), which is what
         # Krea2Transformer2DModel's config means and what the resize wrote back.
-        expected = declared_vae.latent_channels * 4
+        pair = getattr(transformer,"vae_latent_bridge",None)
+        expected = (max(pair.declaration["old_channels"],pair.declaration["new_channels"])
+            if pair is not None else declared_vae.latent_channels) * 4
         built = int(getattr(transformer.img_in, "in_features", 0))
         if built != expected:
             raise ValueError(
@@ -280,6 +282,8 @@ def load_krea2_components(
               f"{declared_vae.latent_channels}ch, {declared_vae.vae_class})")
 
     scheduler = _load_scheduler(model_path)
+    if getattr(transformer,"vae_latent_bridge",None) is not None and declared_vae is None:
+        raise ValueError("Aligned Krea checkpoint is missing its codec declaration")
 
     resolved_te = _resolve_te_dir(model_path, te_dir)
     resolved_vae = _resolve_vae_dir(model_path, vae_dir)
@@ -311,6 +315,10 @@ def load_krea2_components(
         # The declared VAE carries its own class and config; the Qwen-Image
         # rebuild above only knows how to reattach Qwen-Image weights.
         vae = declared_vae.load_module(torch_dtype=torch_dtype)
+        pair = getattr(transformer,"vae_latent_bridge",None)
+        if pair is not None:
+            from core.models.components.spatial_swap import restored_image_codec
+            vae,declared_vae = restored_image_codec(vae,declared_vae,pair.declaration)
         vae.to("cpu")
         vae_embedded = bool(embedded_vae_sd is not None)
         vae_source, vae_path = declared_vae.provenance, declared_vae.path
@@ -324,7 +332,8 @@ def load_krea2_components(
     if declared_vae is None:
         from core.models.common.vae_store import vae_identity
         vae_source, vae_path = vae_identity(vae, embedded=vae_embedded)
-    vae_scale_factor = 2 ** len(vae.temperal_downsample) if hasattr(vae, "temperal_downsample") else 8
+    vae_scale_factor = (declared_vae.scale_factor if declared_vae is not None else
+        (2 ** len(vae.temperal_downsample) if hasattr(vae, "temperal_downsample") else 8))
 
     select_layers = config.get("text_encoder_select_layers") or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
 

@@ -16581,6 +16581,13 @@ def list_vae_sources(arch: str, base_model_path: Optional[str] = None,
         if _key(os.path.dirname(path)) in accepted_dirs:
             return
         try:
+            if os.path.isdir(path) and os.path.isfile(os.path.join(path, "manifest.json")):
+                with open(os.path.join(path, "manifest.json"), encoding="utf-8") as handle:
+                    package_type = json.load(handle).get("model_type")
+                if package_type in {"qwen_image_21", "ming_image_01"}:
+                    extractable.append(_describe(f"model:{path}", _friendly_component_name(path)))
+                    accepted_dirs.add(_key(path))
+                    return
             candidate = classify_vae_candidate(path)
             if candidate is not None:
                 if candidate.get("kind") == "pid_decoder":

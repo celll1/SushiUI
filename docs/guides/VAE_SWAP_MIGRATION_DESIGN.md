@@ -31,6 +31,23 @@ optimizer再開後の次更新を合成画像で確認。関連CPU159件、最�
 変更Python compile・CUDA無し実importが通過。公開Full APIは引き続き未解放。
 公式全重みのdequant/実GPU residency、学習・画質・速度の受入は未完。
 
+H3公式scaled-FP8 DiTのFull用dequant変換をCPU streaming utilityとして追加した。
+元Comfyキーを保持し、QKV分割とSwiGLUの半分入替は既存loaderに任せる。
+既存dequantと同じcompute dtypeでscaleを乗算し、FP32指定headを維持する。
+`full_precision_matrix_mult`のbool宣言は対応、未知宣言・ConvRot/packed重みは拒否する。
+出力は既存ファイルを上書きせず、完了時のみ公開し、例外時は自分のpartialを除去する。
+provenanceはsource path・size・mtime・header digestであり、全内容hashではない。
+
+2026-10-06の公式fl2va（FP8 200行列）変換は123.11秒、出力40,225,724,624 bytes
+（37.46GiB）、観測RSS最大0.787GiB、CUDA未初期化。
+出力は`M:\model\minimax_h3\diffusion_models\minimax_h3_fl2va_pruned_dequant_bf16.safetensors`。
+全200行列の先頭/中央/末尾600行はdequant値とbit一致し、meta上の実50層モデルへ
+既存mapperを適用して全635キー/形状が一致した（parameter census: 20,111,430,528）。
+これは全tensorの数値比較や実モデルのFull GPU学習・画質受入ではない。
+CPU回帰11件、変更Python compile/実importが通過。公開Full APIは未解放。
+再生成はrepo venvで`tools/convert_minimax_h3_full_base.py SOURCE OUTPUT --official-dir DIR`を
+実行して計画確認後、`--execute`を付ける。実GPU residency/optimizer退避の検証が次の段階。
+
 LTX学習のRoPE bounds、dummy audio用clip実時間、training bucketのframe格子を
 VideoCodecContractへ接続した。independent/causal/H3 chunkを同じ座標helperで扱い、
 通常codecの座標は従来と一致する。H3 chunkの校正clipはsource LTX8と共通の最短73frameを選ぶ。

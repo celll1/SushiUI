@@ -104,3 +104,69 @@ converts channel-major `pixel_unshuffle` features to Ming's position-major
 patch ordering. On the real saved projection, FP64 fold equivalence has max
 absolute error 1.24e-14. The artifact is only an input initialization, not a
 loadable full model, and retains the original token count.
+
+## Training integration contract (2026-10-06)
+
+The requested default for a new VAE swap is **paired_spatial**, not the
+per-cell linear probe. This is a target for the integration, not a shipped
+API default: `vae_swap_new_channel_init` still accepts only `zero` until the
+backbone, checkpoint reader and generation paths can restore the new layers.
+
+`core/models/components/vae_alignment.py::SpatialLatentBridge` implements the
+shared trainable 3x3 operator. It imports the probe's channel-major `unfold`
+coefficients, supports channel expansion/reduction and lossless spatial
+packing in either direction, and handles independent ordered image frames.
+It does not implement temporal alignment or install itself on a backbone.
+CPU tests check fp32/bf16, non-square grids, gradients, frame independence,
+state restoration and flow-state/velocity semantics against independent
+oracles. The operator refuses execution without calibration.
+The state includes versioned method/packing geometry and rejects loading a
+same-width projection from a different spatial domain. The streaming fitter
+retains only float64 sufficient statistics; no image paths or pixels.
+
+Calibration is a **one-time preparation for a particular pair of VAE weights
+and normalization domains**, not a dataset prerequisite on every start.
+Initializers can reuse the fitted matrices; a trained checkpoint must embed
+the bridge's learned weights and geometry. Resume and inference must load
+those weights without opening the calibration images or fitting again.
+The existing approved general-only Ming/Qwen matrices can seed this pair;
+they are not interchangeable with matrices for another VAE, even when the
+channel counts match. The general-only restriction applies to images the
+coding agent uses for validation or for producing fixed bundled matrices.
+Production calibration on a user's training dataset has no rating filter.
+At first swap, the training integration should sample the selected run's
+dataset and fit the bridges; subsequent resume/inference restores tensors.
+Calibration images themselves must not be included in checkpoints.
+
+The architecture-neutral integration must:
+
+1. Bind calibration to both VAEs' weight/normalization identities and packing
+   geometry. A missing or mismatched calibration must surface in preflight;
+   it must not silently use zero initialization or another pair's matrix.
+2. Use separately fitted new-to-old input and old-to-new output bridges.
+   A transpose or pseudoinverse is not the fitted reverse direction.
+3. Install bridges before optimizer construction and include them in full
+   fine-tune parameters, offload ownership, optimizer restoration and export.
+4. Apply the mean offset to clean states only. For
+   `x_s=(1-s)*clean+s*noise`, the mapped state is `A*x_s+(1-s)*b`.
+   `eps-clean` velocity maps to `A*v-b`; Ming's `clean-eps` maps to `A*v+b`.
+   Epsilon prediction maps without a clean bias. This does not whiten the
+   transformed noise: the measured 2.51x RMS gain still needs diffusion-level
+   validation, separate from reconstruction and fold-equivalence tests.
+5. Preserve the existing backbone token geometry initially. Ming/Qwen uses
+   a packed 16-channel Ming domain against Qwen's 64-channel domain; that
+   preserves Ming's original token count, not a fourfold token reduction.
+   Reference latents, U-Net scales, partition paths and sampling must obey
+   the same bridge geometry as the target stream.
+6. Store a versioned bridge declaration and tensors with the checkpoint,
+   restore before strict state loading, and load the declared target VAE in
+   generation as well as training. Existing checkpoints retain their saved
+   IO weights and must never be initialized again merely by Edit config.
+
+Other image VAE pairs can use the same operator after pair-specific
+calibration if their grids can be related by integer spatial packing and
+their pixel preprocessing is explicit (RGB/RGBA, alpha and normalization).
+The operator alone does not establish architecture-level compatibility.
+Non-integer grid relationships, real temporal compression, audio codecs,
+and pixel-space backbones require separate adapters and validation. Current
+production spatial/temporal compatibility refusals remain in force.

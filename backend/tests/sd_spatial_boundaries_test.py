@@ -124,11 +124,12 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     assert not hasattr(trainer,"_sd_vae_calibration_source")
     from core.training.adapters.sd15_adapter import SD15FullParameterAdapter
     from core.training.adapters.sdxl_adapter import SDXLFullParameterAdapter
-    from core.models.components.sd_vae_alignment import restore_alignment
+    from core.models.components.sd_vae_alignment import restore_alignment,load_unet_artifact
     from core.models.components.spatial_swap import read_declaration,restored_image_codec
     from core.models.common.single_file_format import read_state_dict,save_single_file_state
     from core.models.common.vae_source import load_declared_latent_io
     trainer.train_unet=True
+    trainer.trains_base_weights=True
     trainer.train_text_encoder=trainer.train_text_encoder_1=trainer.train_text_encoder_2=False
     trainer.bundle_vae=True
     trainer.config["vae_swap_source"]=resolved.source
@@ -143,6 +144,9 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
         if not key.startswith("vae_latent_bridge.")},strict=True)
     restore_alignment(rebuilt,metadata,state)
     assert rebuilt.vae_latent_bridge.ready
+    loaded=load_unet_artifact(str(path),dtype=torch.float32)
+    for key,tensor in model.state_dict().items():
+        torch.testing.assert_close(loaded.state_dict()[key],tensor,rtol=0,atol=0)
     for key,tensor in model.vae_latent_bridge.state_dict().items():
         torch.testing.assert_close(rebuilt.vae_latent_bridge.state_dict()[key],tensor,rtol=0,atol=0)
     declared=load_declared_latent_io(str(path),arch=arch)
@@ -152,8 +156,61 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
         torch.testing.assert_close(codec.inner.state_dict()[key],tensor,rtol=0,atol=0)
     sharded=save_single_file_state(state,metadata,str(tmp_path/"sharded.safetensors"),max_shard_bytes=32768)
     shard_state,shard_md=read_state_dict(str(sharded))
+    loaded_shards=load_unet_artifact(str(sharded),dtype=torch.float32)
+    for key,tensor in model.state_dict().items():
+        torch.testing.assert_close(loaded_shards.state_dict()[key],tensor,rtol=0,atol=0)
     restore_alignment(rebuilt,shard_md,shard_state)
     assert rebuilt.vae_latent_bridge.ready
+    from core.model_loader import ModelLoader
+    pipeline_class="StableDiffusionXLPipeline" if arch=="sdxl" else "StableDiffusionPipeline"
+    def components_only(source,**kwargs):
+        assert "num_in_channels" not in kwargs
+        return SimpleNamespace(unet=kwargs["unet"],vae=kwargs["vae"])
+    with patch(f"core.model_loader.{pipeline_class}.from_single_file",side_effect=components_only):
+        pipeline=ModelLoader.reconstruct_sd_sdxl_pipeline(str(path),arch,torch.float32,"cpu")
+    assert pipeline.unet.vae_latent_bridge.ready
+    assert pipeline.vae.spatial_scale_factor==16
+    for key,tensor in model.state_dict().items():
+        torch.testing.assert_close(pipeline.unet.state_dict()[key],tensor,rtol=0,atol=0)
+    trainer.unet=pipeline.unet
+    trainer.vae=pipeline.vae
+    from core.training.vae_swap import apply_latent_space
+    with patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
+        apply_latent_space(trainer,declared)
+    assert trainer.unet.config.in_channels==max(old,new)
+    assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==16
+    from core.training.ops.sd_sdxl_ops import load_components
+    trainer.model_path=str(path)
+    trainer.dtype=torch.float32
+    trainer.use_flash_attention=trainer.gradient_checkpointing=trainer.debug_vram=False
+    def training_components(source,**kwargs):
+        parts=components_only(source,**kwargs)
+        parts.text_encoder=torch.nn.Linear(2,2)
+        parts.tokenizer=None
+        parts.text_encoder_2=torch.nn.Linear(2,2) if arch=="sdxl" else None
+        parts.tokenizer_2=None
+        parts.scheduler=trainer.noise_scheduler
+        return parts
+    xl_load=training_components if arch=="sdxl" else ValueError("not SDXL")
+    with patch("core.training.ops.sd_sdxl_ops.StableDiffusionXLPipeline.from_single_file",side_effect=xl_load), \
+         patch("core.training.ops.sd_sdxl_ops.StableDiffusionPipeline.from_single_file",side_effect=training_components), \
+         patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
+        load_components(trainer)
+    assert trainer.is_sdxl==(arch=="sdxl")
+    assert trainer.vae.config.latent_channels==trainer.vae_latent_channels==new
+    assert trainer.wiring.vae_scale_factor==16
+    for key,tensor in model.state_dict().items():
+        torch.testing.assert_close(trainer.unet.state_dict()[key],tensor,rtol=0,atol=0)
+    no_alignment=dict(metadata)
+    del no_alignment["component.vae.alignment"]
+    undeclared=save_single_file_state(state,no_alignment,str(tmp_path/"undeclared.safetensors"))
+    with pytest.raises(ValueError,match="alignment declaration"):
+        load_unet_artifact(str(undeclared),dtype=torch.float32)
+    no_body=dict(state)
+    del no_body["model.diffusion_model.input_blocks.0.0.weight"]
+    incomplete=save_single_file_state(no_body,metadata,str(tmp_path/"incomplete.safetensors"))
+    with pytest.raises(RuntimeError,match="Missing key"):
+        load_unet_artifact(str(incomplete),dtype=torch.float32)
     del shard_state["model.diffusion_model.vae_latent_bridge.input.projection.weight"]
     with pytest.raises(RuntimeError,match="Missing key"):
         restore_alignment(rebuilt,shard_md,shard_state)

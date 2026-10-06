@@ -64,6 +64,12 @@ def load_components(trainer) -> None:
         # default and cannot load the trained conv_in/conv_out.
         declared = load_declared_latent_io(trainer.model_path)
         sf_kwargs = {}
+        from safetensors import safe_open
+        from core.models.components.spatial_swap import read_declaration,restored_image_codec
+        with safe_open(trainer.model_path,framework="pt") as checkpoint:
+            alignment=read_declaration(checkpoint.metadata() or {})
+        if alignment is not None and declared is None:
+            raise ValueError("Aligned SD checkpoint is missing its codec declaration")
         if declared is not None:
             print(f"{trainer.log_prefix} Base declares a non-native VAE "
                   f"({declared.provenance}, {declared.latent_channels}ch, "
@@ -74,6 +80,13 @@ def load_components(trainer) -> None:
                 "out_channels": declared.latent_channels,
                 "vae": declared_module,
             }
+            if alignment is not None:
+                from core.models.components.sd_vae_alignment import load_unet_artifact
+                if declared.latent_channels!=alignment["new_channels"]:
+                    raise ValueError("Aligned SD codec declaration disagrees with its bridge")
+                declared_module,declared=restored_image_codec(declared_module,declared,alignment)
+                sf_kwargs={"unet":load_unet_artifact(trainer.model_path,dtype=trainer.dtype),
+                    "vae":declared_module}
         # Try SDXL first, fall back to SD1.5
         from core.transformers_clip_compat import install as install_clip_compat
         install_clip_compat()
@@ -195,18 +208,18 @@ def load_components(trainer) -> None:
 
     # The base's own declaration first (it defines the latent space the weights
     # already live in), then this run's swap on top of it.
-    trainer.base_vae_identity = declared
-    if declared is not None:
-        get_arch_handler(trainer).apply_vae_swap(trainer, declared,
-                                                 module=declared_module)
-        # from_single_file overrides conv_in reliably and conv_out only via the
-        # config update, so the two latent-facing convs are assigned from the
-        # file after the resize. Raises if the file cannot supply them.
-        from core.models.sdxl_custom_arch import load_custom_convs_from_single_file
-        load_custom_convs_from_single_file(trainer.unet, trainer.model_path)
-    if swap_source:
-        apply_configured_vae_swap(trainer, swap_source)
-
+    if getattr(trainer.unet,"vae_latent_bridge",None) is not None:
+        from core.training.vae_swap import apply_latent_space
+        apply_latent_space(trainer,declared)
+    else:
+        trainer.base_vae_identity = declared
+        if declared is not None:
+            get_arch_handler(trainer).apply_vae_swap(trainer,declared,module=declared_module)
+            # Legacy converters need the saved convolution weights after resizing.
+            from core.models.sdxl_custom_arch import load_custom_convs_from_single_file
+            load_custom_convs_from_single_file(trainer.unet,trainer.model_path)
+        if swap_source:
+            apply_configured_vae_swap(trainer,swap_source)
     trainer.sdxl_vae_type = legacy_vae_type_marker(
         getattr(trainer, "vae_identity", None))
     try:

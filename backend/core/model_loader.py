@@ -2500,6 +2500,9 @@ class ModelLoader:
         custom_vae_type = None    # legacy registry family, when that is what it is
         custom_in_channels = None  # set only when the backbone must be rebuilt
         custom_te = None  # dict(te_type, hidden_layer, max_len, dim, embedded) when custom TE
+        alignment_declaration=None
+        aligned_unet=None
+        _md={}
         if model_type in ("sd15", "sdxl"):
             from core.models.common.vae_source import (
                 VaeSourceError, arch_native_vae, load_declared_latent_io,
@@ -2536,6 +2539,17 @@ class ModelLoader:
             except Exception as _e:
                 print(f"[ModelLoader] custom-TE metadata read failed (standard load): {_e}")
 
+            from core.models.components.spatial_swap import read_declaration,restored_image_codec
+            alignment_declaration=read_declaration(_md)
+            if alignment_declaration is not None:
+                if declared_vae is None:
+                    raise ValueError("Aligned SD checkpoint is missing its codec declaration")
+                from core.models.components.sd_vae_alignment import load_unet_artifact
+                aligned_unet=load_unet_artifact(file_path,dtype=torch_dtype)
+                if declared_vae.latent_channels!=alignment_declaration["new_channels"]:
+                    raise ValueError("Aligned SD codec declaration disagrees with its bridge")
+                custom_in_channels=None
+
         # Check if VAE is embedded
         print(f"[ModelLoader] Checking if model has embedded VAE...")
         has_vae = ModelLoader.has_embedded_vae(file_path)
@@ -2549,6 +2563,8 @@ class ModelLoader:
             # the declared locator; either way the weights are already in hand.
             print(f"[ModelLoader] Loading declared VAE: {declared_vae.provenance}")
             external_vae = declared_vae.load_module(torch_dtype=torch_dtype)
+            if alignment_declaration is not None:
+                external_vae,declared_vae=restored_image_codec(external_vae,declared_vae,alignment_declaration)
             has_vae = False
             sushi_vae_source = declared_vae.provenance
         elif not has_vae:
@@ -2582,6 +2598,8 @@ class ModelLoader:
         # The custom path always sets external_vae, so out_channels does not reach the VAE.
         _sf_kw = ({"num_in_channels": custom_in_channels, "out_channels": custom_in_channels}
                   if custom_in_channels else {})
+        if aligned_unet is not None:
+            _sf_kw["unet"]=aligned_unet
 
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")

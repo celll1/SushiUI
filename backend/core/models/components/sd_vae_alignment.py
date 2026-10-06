@@ -41,6 +41,45 @@ def restore_alignment(model,metadata,state):
     validate_loaded(model)
 
 
+def load_unet_artifact(path,*,dtype):
+    import json
+    from accelerate import init_empty_weights
+    from diffusers import UNet2DConditionModel
+    from core.models.common.single_file_format import read_state_dict
+    from core.training.adapters.state_dict_converter import convert_unet_state_dict_to_original
+    from .spatial_swap import read_declaration
+    state,metadata=read_state_dict(str(path))
+    declaration=read_declaration(metadata)
+    if declaration is None:
+        raise ValueError("Aligned SD artifact requires an alignment declaration")
+    raw=metadata.get("unet_config")
+    if not isinstance(raw,str) or len(raw.encode("utf-8"))>65536:
+        raise ValueError("Aligned SD artifact requires bounded native U-Net config")
+    config=json.loads(raw)
+    if not isinstance(config,dict):
+        raise ValueError("Native U-Net config must be an object")
+    width=max(declaration["old_channels"],declaration["new_channels"])
+    if config.get("in_channels")!=width or config.get("out_channels")!=width:
+        raise ValueError("Aligned SD native config disagrees with internal latent width")
+    with init_empty_weights():
+        model=UNet2DConditionModel.from_config(config)
+        model.to(dtype=dtype)
+    names=convert_unet_state_dict_to_original({key:key for key in model.state_dict()})
+    if len(names)!=len(model.state_dict()):
+        raise ValueError("Saved SD key conversion aliases native U-Net parameters")
+    prefix="model.diffusion_model."
+    weights={native:state[prefix+saved].to(dtype=dtype) for saved,native in names.items()
+        if prefix+saved in state}
+    expected={prefix+saved for saved in names}
+    unexpected=[key for key in state if key.startswith(prefix) and key not in expected
+        and not key.startswith(prefix+"vae_latent_bridge.")]
+    if unexpected:
+        raise ValueError(f"Aligned SD artifact contains unexpected U-Net weights: {unexpected[:5]}")
+    model.load_state_dict(weights,strict=True,assign=True)
+    restore_alignment(model,metadata,state)
+    return model.eval()
+
+
 def resolve_wiring(handler,trainer):
     from .latent_adapter import NormalizedImageVAE
     vae=getattr(trainer,"vae",None)
@@ -49,6 +88,19 @@ def resolve_wiring(handler,trainer):
         return handler.wiring.replace(latent_channels=vae.config.latent_channels,
             vae_scale_factor=vae.spatial_scale_factor,vae_norm="identity",vae_norm_pack=1)
     return getattr(trainer,"wiring",None) or handler.wiring
+
+
+def restore_swap_identity(trainer,resolved,*,handler,module=None):
+    from dataclasses import replace
+    from .latent_io import ResizeReport
+    pair=trainer.unet.vae_latent_bridge
+    if module is None and resolved.source!=pair.declaration["source"]:
+        raise ValueError("Changing an aligned SD VAE requires a fresh base checkpoint")
+    trainer.vae_identity=replace(resolved,state_dict=None)
+    trainer.vae_latent_channels=pair.declaration["new_channels"]
+    trainer.wiring=handler.resolve_wiring(trainer)
+    width=trainer.unet.config.in_channels
+    return ResizeReport((),width,width,width,0,0)
 
 
 def initialize_swap(trainer,resolved,*,handler):

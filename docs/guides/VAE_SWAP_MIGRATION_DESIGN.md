@@ -106,7 +106,17 @@ aligned保存は共通shard writerを使い、native/legacy保存は従来の単
 共有restorerは内部幅・native configを照合してbridgeをstrict復元する。
 両モデル/チャネル増減で単一・分割artifactのbridge全重み一致、codec全重み一致と欠損拒否を
 合成CPU検証した。境界/保存/REPA回帰92件、最終保存形式変更後のswap/resume回帰72件が通過した。
-変更Pythonのpy_compile・実importも通過。公開ModelLoaderでの全U-Net復元・run再開への接続はまだ未了。
+変更Pythonのpy_compile・実importも通過。
+生成用ModelLoaderと学習用SD loaderの単一ファイル経路に、保存済みnative configからの
+全U-Net復元を接続した。CompVis名をnative名へ逆対応し、本体・bridgeをstrict loadする。
+内部幅と外部codec幅を分離して復元し、同じswap sourceでの再開は再校正しない。
+本体欠損・bridge欠損・alignment宣言欠損を拒否する。
+共通U-Net component readerは単一・sharded artifactの全重み一致を検証したが、
+公開SD pipelineと学習loaderのsharded入口はまだ未対応。
+公開loaderのCPU検証では外部pipeline/TE構築のみstubし、実U-Net・実VAEの復元を通した。
+実学習loaderの呼出し、共通swap/resume、REPAを含む回帰110件と、変更Pythonの
+py_compile・CUDAを抑止した実importが通過した。
+生成scheduler・定期sample・公開初期化設定への接続、公式全重みの学習・画質検証は未了。
 
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。

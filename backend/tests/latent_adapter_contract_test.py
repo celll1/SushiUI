@@ -62,6 +62,41 @@ def test_prediction_and_alpha_reject_ambiguous_contracts():
     with pytest.raises(ValueError): bridge.diffusion_state(x,alpha=torch.ones(2,1,1,1))
 
 
+@pytest.mark.parametrize("old,new", [(4,8), (8,4), (4,4)])
+@pytest.mark.parametrize("rank", [4,5])
+@pytest.mark.parametrize("convention", ["eps_minus_x0", "x0_minus_eps"])
+@pytest.mark.parametrize("dtype", [torch.float32,torch.bfloat16])
+def test_flow_noise_complement_restores_external_clean_endpoint(old,new,rank,convention,dtype):
+    pair = SpatialAlignmentPair(declaration(old,new,rank=rank))
+    pair.initialize_from_pair(identity(SpatialLatentBridge(new,old),.2),
+                              identity(SpatialLatentBridge(old,new),.3))
+    pair.to(dtype=dtype)
+    shape = (2,new,5,7) if rank==4 else (2,new,3,5,7)
+    noise = torch.randn(shape,dtype=dtype,requires_grad=True)
+    clean = pair.input(torch.randn(shape,dtype=dtype)).detach()
+    native_noise = pair.input.epsilon(noise).detach()
+    clean[:,old:] = native_noise[:,old:] = 0
+    native_velocity = native_noise-clean if convention=="eps_minus_x0" else clean-native_noise
+    corrected = pair.output.flow_velocity(native_velocity,convention=convention) + \
+        pair.untrained_flow_noise_residual(noise,convention=convention)
+    expected_clean = pair.output(clean)
+    expected = noise.float()-expected_clean.float() if convention=="eps_minus_x0" else expected_clean.float()-noise.float()
+    tolerance = .03 if dtype==torch.bfloat16 else 1e-5
+    torch.testing.assert_close(corrected,expected,atol=tolerance,rtol=tolerance)
+    assert not pair.untrained_flow_noise_residual(noise,convention=convention).requires_grad
+
+
+def test_flow_noise_complement_refuses_unfitted_or_wrong_geometry():
+    pair = SpatialAlignmentPair(declaration())
+    with pytest.raises(ValueError,match="convention"):
+        pair.untrained_flow_noise_residual(torch.randn(1,8,3,5),convention="epsilon")
+    with pytest.raises(RuntimeError,match="calibration"):
+        pair.untrained_flow_noise_residual(torch.randn(1,8,3,5),convention="eps_minus_x0")
+    identity(pair.input); identity(pair.output)
+    with pytest.raises(ValueError,match="declared channels"):
+        pair.untrained_flow_noise_residual(torch.randn(1,4,3,5),convention="eps_minus_x0")
+
+
 class ToyCodec(nn.Module):
     def __init__(self, rank):
         super().__init__()

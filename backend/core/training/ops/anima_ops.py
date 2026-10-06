@@ -668,7 +668,11 @@ def generate_sample(
     compute_dtype = torch.bfloat16
 
     # Snap to patch_spatial * vae_scale_factor (matches inference backend).
-    snap = trainer.transformer.patch_spatial * 8
+    from core.models.anima.vae_alignment import generation_token_stride
+    from core.models.components.latent_adapter import topology_alignment
+    import math
+    snap = generation_token_stride(trainer.transformer)*math.lcm(
+        *topology_alignment(getattr(trainer.transformer,"_residual_unet_spec",None)))
     height = max(snap, (height // snap) * snap)
     width = max(snap, (width // snap) * snap)
 

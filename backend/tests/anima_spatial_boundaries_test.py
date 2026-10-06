@@ -7,6 +7,7 @@ import torch
 
 from core.models.components.spatial_swap import install
 from core.models.components.vae_alignment import SpatialLatentBridge
+from core.models.anima.vae_alignment import noise_kwargs
 from backend.tests.latent_adapter_contract_test import declaration,identity
 
 
@@ -134,7 +135,7 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     assert latent.shape==(1,new_c,8,12)
     assert trainer.vae.decode(latent).sample.shape==(1,3,128,192)
     output=value(latent.unsqueeze(2),torch.tensor([.6]),torch.randn(1,5,32),
-        padding_mask=torch.zeros(1,1,8,12))
+        padding_mask=torch.zeros(1,1,8,12),**noise_kwargs(value,torch.randn_like(latent)))
     assert output.shape==(1,new_c,1,8,12)
     output.square().mean().backward()
     assert value.vae_latent_bridge.input.projection.weight.grad.abs().sum()>0
@@ -170,13 +171,18 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     trainer.config["vae_swap_source"]=resolved.source
     path=AnimaFullParameterAdapter(trainer).write_checkpoint(7,0,tmp_path/"full.safetensors")
     restored=anima_loader.load_anima_dit(str(path),dtype=torch.float32,latent_channels=new_c)
+    if hasattr(value.vae_latent_bridge,"noise_alignment"):
+        loaded_bf16=anima_loader.load_anima_dit(str(path),dtype=torch.bfloat16,latent_channels=new_c)
+        for key,tensor in value.vae_latent_bridge.noise_alignment.state_dict().items():
+            assert torch.equal(tensor,loaded_bf16.vae_latent_bridge.noise_alignment.state_dict()[key])
+        del loaded_bf16
     assert restored.vae_latent_bridge.ready
     assert restored.in_channels==max(old_c,new_c)
     assert restored._residual_unet_spec==value._residual_unet_spec
     for key,tensor in value.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[key],tensor,rtol=0,atol=0)
     assert restored(latent.unsqueeze(2),torch.tensor([.6]),torch.randn(1,5,32),
-        padding_mask=torch.zeros(1,1,8,12)).shape==output.shape
+        padding_mask=torch.zeros(1,1,8,12),**noise_kwargs(restored,torch.randn_like(latent))).shape==output.shape
     from core.models.common.single_file_format import read_state_dict,save_single_file_state
     state,metadata=read_state_dict(str(path))
     sharded=save_single_file_state(state,metadata,str(tmp_path/"sharded.safetensors"),max_shard_bytes=32768)

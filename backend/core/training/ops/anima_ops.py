@@ -408,6 +408,8 @@ def train_step(
 
     # Anima DiT requires a singleton temporal dim: [B, C, H, W] -> [B, C, 1, H, W].
     noisy_latents_5d = noisy_latents.unsqueeze(2)
+    from core.models.anima.vae_alignment import noise_kwargs
+    alignment_kwargs=noise_kwargs(trainer.transformer_original,noise)
 
     # Padding mask matches latent spatial resolution; all-valid (zeros).
     latent_h = noisy_latents.shape[-2]
@@ -462,6 +464,7 @@ def train_step(
         if trainer.mixed_precision:
             with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
                 model_pred = trainer.transformer(
+                    **alignment_kwargs,
                     x=noisy_latents_5d,
                     timesteps=timesteps,
                     context=prompt_embeds,
@@ -472,6 +475,7 @@ def train_step(
                 )
         else:
             model_pred = trainer.transformer(
+                **alignment_kwargs,
                 x=noisy_latents_5d,
                 timesteps=timesteps,
                 context=prompt_embeds,

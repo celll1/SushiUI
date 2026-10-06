@@ -1,21 +1,7 @@
-"""sd_sdxl_ops.py — SD1.5/SDXL loader + attention-backend free functions (P3a).
+"""Shared SD1.5/SDXL loading and attention setup.
 
-VERBATIM bodies of ``BaseTrainer._load_sd_sdxl_components`` and
-``BaseTrainer._setup_attention_backend_sd_sdxl`` (base_trainer.py), moved out of
-the spine with the mechanical ``self.`` -> ``trainer.`` receiver rename only.
-
-ONE loader serves BOTH archs: it SETS ``trainer.is_sdxl`` from the detected
-model layout (SDXL vs SD1.5). The arch handler is constructed at the END of
-``BaseTrainer.__init__`` (base_trainer.py:1115) — AFTER this runs (:1104) — so
-``is_sdxl`` is only final once this function returns. The load-time dispatcher
-therefore CANNOT route via ``trainer.arch``; both the base_trainer dispatcher
-AND ``arch/sd15.py`` / ``arch/sdxl.py`` call these free functions so the body is
-defined exactly once and stays byte-identical (plan P3a construction-order note).
-
-Module-level names used by the moved bodies are imported here (import adjustment,
-allowed by the plan); base_trainer helpers are imported lazily inside functions
-(this module is only ever imported LAZILY, after base_trainer has fully loaded,
-so there is no import cycle).
+Loading establishes is_sdxl before trainer.arch exists; base-trainer helpers
+are imported lazily to avoid the construction-time import cycle.
 """
 from __future__ import annotations
 
@@ -44,6 +30,19 @@ from core.training.vae_swap import (
 )
 
 from .training_method import is_full_finetune, resolve_training_method
+
+
+def _load_native_single_file(model_path, *, dtype, overrides):
+    from core.model_loader import ModelLoader
+    architecture = ModelLoader.detect_model_type(model_path)
+    if architecture not in ("sd15", "sdxl"):
+        raise ValueError(f"SD loader cannot load a {architecture} checkpoint")
+    is_sdxl = architecture == "sdxl"
+    pipeline_class = StableDiffusionXLPipeline if is_sdxl else StableDiffusionPipeline
+    # A wrong pipeline class can succeed with missing optional XL components.
+    pipeline = pipeline_class.from_single_file(
+        model_path, torch_dtype=dtype, use_safetensors=True, **overrides)
+    return pipeline, is_sdxl
 
 
 def load_components(trainer) -> None:
@@ -89,7 +88,6 @@ def load_components(trainer) -> None:
                 declared_module,declared=restored_image_codec(declared_module,declared,alignment)
                 sf_kwargs={"unet":load_unet_artifact(trainer.model_path,dtype=trainer.dtype),
                     "vae":declared_module}
-        # Try SDXL first, fall back to SD1.5
         from core.transformers_clip_compat import install as install_clip_compat
         install_clip_compat()
         if alignment is not None:
@@ -98,16 +96,9 @@ def load_components(trainer) -> None:
                 dtype=trainer.dtype,unet=sf_kwargs["unet"],vae=declared_module)
             is_sdxl_model=metadata["model_type"]=="sdxl"
         else:
-            try:
-                print(f"{trainer.log_prefix} Trying SDXL pipeline...")
-                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
-                    trainer.model_path,torch_dtype=trainer.dtype,use_safetensors=True,**sf_kwargs)
-                is_sdxl_model = True
-            except Exception as e:
-                print(f"{trainer.log_prefix} Not SDXL, trying SD1.5 pipeline...")
-                temp_pipeline = StableDiffusionPipeline.from_single_file(
-                    trainer.model_path,torch_dtype=trainer.dtype,use_safetensors=True,**sf_kwargs)
-                is_sdxl_model = False
+            temp_pipeline, is_sdxl_model = _load_native_single_file(
+                trainer.model_path, dtype=trainer.dtype, overrides=sf_kwargs)
+            print(f"{trainer.log_prefix} Loaded {'SDXL' if is_sdxl_model else 'SD1.5'} pipeline")
 
         trainer.vae = temp_pipeline.vae
         trainer.text_encoder = temp_pipeline.text_encoder

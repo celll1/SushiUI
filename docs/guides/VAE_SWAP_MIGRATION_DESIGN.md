@@ -8,6 +8,28 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+SD1.5公開ベース重み（以下の配布hashを照合したミラー）で、合成図形2枚のみを使い、
+Qwen 2.1 VAEへのpaired_spatial校正・Full更新・保存・中epoch再開・生成をAPI検証した。
+最初の実重み試験で、共有loaderがSDXLを先に試すため、DiffusersがSD1.5を
+第2conditioner/tokenizerのないSDXLとして読み込み、caption encodingと保存が失敗した。
+単一ファイルの構造を共通ModelLoaderで判定してから該当pipelineだけを呼ぶよう修正した。
+正しいSDXLの読込失敗もSD1.5へfallbackして隠さず、そのまま報告する。
+CPU回帰43件（誤pipelineの成功、破損XLの拒否、SDのspatial境界・保存復元）、
+compileとCUDA未初期化の実importを確認した。
+
+修正後はSD15FullParameterAdapterを選び、C4/8x→C64/16x、校正済みbridgeとcodec同梱の
+step 1保存からstep 2へ再開した。689個の有効optimizer stateを復元し、保存後の全counterが2、
+global_step=2、宣言の一致、returncode 0を確認。freshと表示された1個はepsilon予測が使わない
+output bridgeのclean biasで、step 1/2とも同じparameterだけがstateを持たない。
+GradNormは3.237422→1.826769、lossは1.349133→0.212161。保存された1128 tensorには
+凍結TE・codecも含み、1,320,741,376という保存要素数は学習parameter数ではない。
+保存済みstep 2を生成APIで読み、64channelと交換codecの情報、256px・2stepsの生成/decodeと
+HTTP 200を確認した。2枚の合成校正・2更新の機能試験であり、画質回復の受入ではない。
+生成APIは交換codecの互換性注意とlive preview非対応の注意を返す。
+frontendのModelInfoは数値channelを受け入れる既存契約を静的確認済みで、ownerのbuild/type-checkは未実行。
+使用済み専用run/datasetと検証出力をDB・diskから整理し、検証前のMing Layerモデル選択へ戻した。
+診断ログ・optimizer/state・合成生成画像はignored localだけに保持する。
+
 公式dense H3のAPI Full再開検証を追加した。元H3が生成した狐動画73frameと合成無音trackだけを
 使い、LTX交換codec・2段U-net・49層block swap・2slot・fused Adafactorで1step保存後に再開した。
 638 optimizer stateを復元（fresh 0）、step 2まで更新・codec同梱4shard保存を完走し、

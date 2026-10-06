@@ -307,7 +307,14 @@ def inspect_artifact(path):
             channels = int(vae.get("channels", ""))
         except (TypeError, ValueError) as exc:
             raise ValueError("SenseNova editor requires declared VAE channels") from exc
-        if type(scale) is not int or scale < 1 or channels != resolved["gen_in_channels"]:
+        from core.models.components.spatial_swap import read_declaration
+        alignment = read_declaration(metadata)
+        expected = channels
+        if alignment is not None:
+            if (channels, scale) != (alignment["new_channels"], alignment["new_scale"]):
+                raise ValueError("SenseNova editor VAE geometry disagrees with spatial alignment")
+            expected = max(alignment["old_channels"], channels)
+        if type(scale) is not int or scale < 1 or expected != resolved["gen_in_channels"]:
             raise ValueError("SenseNova editor requires matching VAE channels and positive spatial compression")
     return config, topology, resolved["gen_patch_size"] * scale
 

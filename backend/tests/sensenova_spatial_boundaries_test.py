@@ -255,3 +255,119 @@ def test_shared_calibration_and_native_codec_full_export_round_trip(tmp_path):
     install(incomplete, declaration)
     with pytest.raises(RuntimeError, match="incomplete"):
         install_sensenova_state_dict(incomplete, broken, {}, torch.float32, require_complete=True)
+
+
+@pytest.mark.parametrize("rewired", [False, True])
+def test_actual_composite_model_public_loader_training_and_sampling(tmp_path, monkeypatch, rewired):
+    import numpy as np
+    from PIL import Image
+    from diffusers import AutoencoderKL, AutoencoderKLQwenImage
+    from core.models.common.vae_source import resolve_vae_source
+    from core.models.sensenova.vendor.configuration_neo_chat import NEOChatConfig
+    from core.models.sensenova.vendor.modeling_qwen3 import create_block_causal_mask
+    from core.models.sensenova.vae_alignment import initialize_swap, calibrate
+    from core.models.sensenova.residual_unet import native_config, restore_topology, inspect_artifact
+    from core.models.sensenova.loader import save_sensenova_full_finetune_checkpoint, load_sensenova_from_path, SENSENOVA_BRANCH_LINEAR_COUNTS
+    from core.models.sensenova.sensenova_pipeline_ops import SenseNovaPrefix, denoise_loop
+    from core.training.arch.sensenova import SenseNovaArchHandler
+    from core.training.ops.sensenova_ops import forward_und_prefix_layers
+    from core.training.vae_swap import swap_metadata, apply_latent_space, preflight_vae_swap
+    from core.rewiring.spec import OPERATORS, build_spec
+    from dit_rewiring_sensenova_test import SenseNovaRuntimeContracts
+    raw_config = SenseNovaRuntimeContracts.full_native_config()
+    raw_config.update(vision_config=dict(patch_size=16, hidden_size=32, llm_hidden_size=64, downsample_ratio=.5),
+        llm_config=dict(architectures=["Qwen3ForCausalLM"], vocab_size=32, hidden_size=64,
+            intermediate_size=80, num_hidden_layers=7, num_attention_heads=2,
+            num_key_value_heads=1, head_dim=32, attention_dropout=0.))
+    config = NEOChatConfig(**raw_config)
+    model = NEOChatModel(config).float().eval()
+    if rewired:
+        restore_topology(model, build_spec("sensenova", [{"name":"main","block_count":7}], [
+            dict(id="outer", stream="main", parent=None, start_block=1, end_block=6,
+                 down_factor=[2,2], **OPERATORS),
+            dict(id="inner", stream="main", parent="outer", start_block=2, end_block=5,
+                 down_factor=[2,2], **OPERATORS)], native_config(config)))
+    target = (AutoencoderKLQwenImage(base_dim=4, z_dim=2, dim_mult=[1]*5, num_res_blocks=1,
+        temperal_downsample=[False]*4, latents_mean=[0.]*2, latents_std=[1.]*2)
+        if rewired else AutoencoderKL(in_channels=3, out_channels=3, latent_channels=2,
+            block_out_channels=(4,) * 5, down_block_types=("DownEncoderBlock2D",) * 5,
+            up_block_types=("UpDecoderBlock2D",) * 5, norm_num_groups=1, sample_size=128, scaling_factor=1.))
+    target.save_pretrained(tmp_path / "target")
+    resolved = resolve_vae_source(f"file:{tmp_path / 'target'}", arch="sensenova")
+    trainer = SimpleNamespace(transformer=model, vae=None, is_sensenova=True, config={"training_method":"full_finetune",
+        "vae_swap_source":f"file:{tmp_path / 'target'}",
+        "vae_swap_calibration_samples":2, "vae_swap_calibration_resolution":128},
+        sensenova_train_fm_modules=True, device=torch.device("cpu"), weight_dtype=torch.float32,
+        training_dtype=torch.float32, vae_dtype=torch.float32, gradient_checkpointing=False,
+        text_encoder=None, text_encoder_2=None, _check_stop_requested=lambda:None,
+        sensenova_config_dict=raw_config)
+    handler = SenseNovaArchHandler(trainer)
+    trainer.arch = handler
+    trainer._main_model_module = lambda: trainer.transformer
+    trainer.move_main_model_to_cpu = lambda: trainer.transformer.to("cpu")
+    trainer.move_main_model_to_gpu = lambda: trainer.transformer.to("cpu")
+    trainer.move_vae_to_cpu = lambda: trainer.vae.to("cpu")
+    preflight_vae_swap(trainer.config, arch="sensenova", method="full_finetune", bundle_vae_explicit_false=False)
+    apply_latent_space(trainer, None)
+    paths = []
+    for i in range(2):
+        image = tmp_path / f"synthetic{i}.png"
+        Image.fromarray(np.random.default_rng(i).integers(0, 256, (128,128,3), dtype=np.uint8)).save(image)
+        paths.append({"image_path":str(image)})
+    calibrate(trainer, [SimpleNamespace(items=paths)])
+    _, _, metadata = swap_metadata(trainer)
+    # Only the export census is narrowed; construction and weight loading stay native.
+    monkeypatch.setitem(SENSENOVA_BRANCH_LINEAR_COUNTS, "gen", 49)
+    monkeypatch.setitem(SENSENOVA_BRANCH_LINEAR_COUNTS, "und", 49)
+    path, _ = save_sensenova_full_finetune_checkpoint(model, str(tmp_path / "actual"),
+        branch="both", save_format="bf16", config=model.config,
+        raw_config=trainer.sensenova_config_dict,
+        extra_metadata=metadata, vae=trainer.vae, max_shard_bytes=100000 if rewired else None)
+    monkeypatch.setattr("core.models.sensenova.loader._load_sensenova_tokenizer", lambda directory: object())
+    components = load_sensenova_from_path(path, torch_dtype=torch.float32)
+    inspected, topology, stride = inspect_artifact(path)
+    assert inspected["gen_in_channels"] == 3 and stride == 64
+    assert topology == getattr(model, "_residual_unet_spec", None)
+    restored = components["transformer"]
+    assert restored.vae_latent_bridge.ready
+    assert components["wiring"].latent_channels == 2
+    assert components["wiring"].vae_scale_factor == 16
+    assert getattr(restored, "_residual_unet_spec", None) == getattr(model, "_residual_unet_spec", None)
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, restored.state_dict()[name]), name
+    for name, value in target.state_dict().items():
+        assert torch.equal(value, components["vae"].inner.state_dict()[name]), name
+
+    def prefix_cache(owner, generation=False):
+        indexes = torch.stack((torch.arange(4), torch.zeros(4), torch.zeros(4))).long()
+        if generation:
+            return owner.language_model.model(input_ids=torch.tensor([[2,5,7,3]]), indexes=indexes,
+                image_gen_indicators=torch.zeros(1,4,dtype=torch.bool),
+                attention_mask={"full_attention":create_block_causal_mask(indexes[0])},
+                use_cache=True).past_key_values
+        with torch.no_grad():
+            return forward_und_prefix_layers(owner.language_model.model, torch.tensor([[2,5,7,3]]),
+                indexes, {"full_attention":create_block_causal_mask(indexes[0])}, checkpoint_layers=False)
+
+    def sample(owner):
+        cache = prefix_cache(owner, generation=True)
+        prefix = SenseNovaPrefix(device=torch.device("cpu"), dtype=torch.float32, batch_size=1,
+            token_h=4, token_w=4, grid_h=8, grid_w=8, merge_size=2, image_size=(256,256),
+            gen_size=(16,16), cond_past_key_values=cache,
+            cond_indexes_image=owner._build_t2i_image_indexes(4,4,4,device="cpu"),
+            cond_attention_mask={"full_attention":None})
+        result = denoise_loop(owner, prefix, cfg_scale=1., timestep_shift=1., num_inference_steps=2, seed=25)
+        assert prefix.consumed
+        assert result.shape == (1,2,16,16) and torch.isfinite(result).all()
+        return result
+
+    torch.testing.assert_close(sample(model), sample(restored))
+    restored.requires_grad_(True)
+    owner = SimpleNamespace(transformer=restored, device=torch.device("cpu"),
+        training_dtype=torch.float32, gradient_checkpointing=False)
+    loss, _, _ = train_step(owner, images=torch.randn(1,2,16,16),
+        prefix=SenseNovaTrainingPrefix(prefix_cache(restored), text_length=4), timesteps=torch.tensor([.25]))
+    loss.backward()
+    assert torch.isfinite(loss)
+    for bridge in (restored.vae_latent_bridge.input, restored.vae_latent_bridge.output):
+        assert bridge.projection.weight.grad is not None and torch.isfinite(bridge.projection.weight.grad).all()

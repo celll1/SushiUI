@@ -253,22 +253,14 @@ class SenseNovaArchHandler(ArchHandler):
         )
 
     def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
-        """D13: any spatial compression is accepted, 4-D image latents only.
-
-        The shared gate already exempts SenseNova from the ratio check (it is
-        the one architecture whose swap CHANGES the ratio, from 1); what it
-        cannot see is that the destination is a 2-D image grid.
-        """
+        """The image facade owns independent frames; the denoiser stays BCHW."""
         ndim = facts.get("ndim")
-        if ndim is not None and int(ndim) != 4:
-            return False, (f"{ndim}-D latents cannot drive sensenova, whose "
-                           f"generation grid is a 2-D image token grid")
-        temporal = facts.get("scale_temporal")
-        if temporal is not None and int(temporal) != 1:
-            return False, (f"temporal compression {temporal}x cannot drive "
-                           f"sensenova, which generates stills")
-        return super().check_vae_compatibility(
-            facts, trainer=trainer, base_model_path=base_model_path)
+        if ndim not in (4, 5):
+            return False, "SenseNova requires a declared 4-D or independent-frame 5-D image codec"
+        scale = facts.get("scale_factor")
+        if type(scale) is not int or scale < 1:
+            return False, "SenseNova requires a declared positive integer spatial scale"
+        return True, None
 
     @staticmethod
     def _resolve_gen_patch(config, *, base_patch=None) -> int:
@@ -372,6 +364,13 @@ class SenseNovaArchHandler(ArchHandler):
         config = getattr(trainer, "config", None) or {}
         from core.training.vae_swap import initialization_mode
         init = initialization_mode(config, self.name)
+        if module is None and init == "paired_spatial":
+            from core.models.sensenova.vae_alignment import initialize_swap
+            report = initialize_swap(trainer, resolved, handler=self)
+            self._apply_noise_scale(trainer, config)
+            return report
+        if module is None and resolved.ndim != 4:
+            raise ValueError("Legacy zero SenseNova requires a 4-D still-image codec; use paired_spatial")
         geometry = gen_geometry(trainer.transformer)
         # 0 (INHERIT_GEN_PATCH, the served default) keeps a latent base's own
         # patch: update_training_run sends every Pydantic default, so editing a
@@ -420,7 +419,7 @@ class SenseNovaArchHandler(ArchHandler):
                 channels=resolved.latent_channels,
                 vae_scale_factor=resolved.scale_factor,
                 patch=patch,
-                head_init=init,
+                head_init="zero",
             )
         else:
             from core.models.components.latent_io import ResizeReport

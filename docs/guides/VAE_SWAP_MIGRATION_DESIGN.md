@@ -83,6 +83,15 @@ aligned exportはcodec宣言のない復元不能な保存を拒否する。fron
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 
+SD1.5/SDXLの共通train_stepには画像bridge境界を追加した。VP入力はschedulerの
+`sqrt(alpha_bar)`、flow入力は`1-t`で校正biasを補正する。予測はepsilon、VP v、flow velocity、
+x0のそれぞれでbiasの扱いを分け、loss・再構成・debug latentは外部codec空間のままにする。
+bridgeの畳み込みも混合精度autocast内で実行し、失敗時には既存REPA hookを除去する。
+real tiny U-Netで両モデルの条件付け、チャネル増減、非正方形格子、6種類のnoise/target組合せ、
+FP32/BF16 train_stepの逆伝搬を合成CPU検証した。境界とREPA回帰87件、変更Pythonの
+py_compile・実importが通過した。公開swap初期化・校正・保存復元・生成schedulerへの配線はまだ未了で、
+SD1.5/SDXLのauto設定は既存zeroのまま。公式全重みでの学習・画質検証も未了。
+
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。
 入力・出力とも同じ交換先格子を維持し、denseとU-netで同じ境界を通る。

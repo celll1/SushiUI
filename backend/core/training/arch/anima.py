@@ -1,10 +1,4 @@
-"""
-AnimaArchHandler — P0/P1 stub handler for arch "anima".
-
-Empty subclass: name + wiring spec are real; every canonical method raises
-NotImplementedError. Bodies are moved from base_trainer.py in phases P3-P7.
-Nothing calls these until a later phase flips the corresponding dispatcher.
-"""
+"""Anima training and native image-grid contracts."""
 
 from __future__ import annotations
 
@@ -42,6 +36,20 @@ class AnimaArchHandler(ArchHandler):
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
     supplies_predicted_latent = True
+
+    def resolve_wiring(self,trainer):
+        from core.models.components.latent_adapter import NormalizedImageVAE
+        vae=getattr(trainer,"vae",None)
+        if isinstance(vae,NormalizedImageVAE):
+            self.pixel_align=vae.spatial_scale_factor*2
+            return self.wiring.replace(latent_channels=vae.config.latent_channels,
+                latent_ndim=4,vae_scale_factor=vae.spatial_scale_factor,
+                vae_norm="identity",vae_norm_pack=1)
+        return getattr(trainer,"wiring",None) or self.wiring
+
+    def calibrate_before_training(self,trainer,datasets,bucket_manager):
+        from core.models.anima.vae_alignment import calibrate
+        calibrate(trainer,datasets)
 
     def lora_adapter_class(self):
         from core.training.adapters import AnimaLoRAAdapter

@@ -104,6 +104,138 @@ def test_reference_images_use_clean_bias_and_separate_spatial_boundaries():
     torch.testing.assert_close(mapped[:,8:,:3],values[:,8:]+.18)
 
 
+def gaussian_model():
+    from core.models.components.gaussian_alignment import POLICY
+    m=model()
+    install(m,dict(declaration(),old_channels=4,new_channels=8,new_scale=32,noise_policy=POLICY))
+    pair=m.vae_latent_bridge
+    identity(pair.input,.2);identity(pair.output,.3)
+    pair.noise_alignment.capture(pair.input,pair.output)
+    return m
+
+
+@pytest.mark.parametrize("rewired",[False,True])
+def test_gaussian_target_boundary_matches_native_forward_and_trains(rewired):
+    from core.models.qwen_image_21.vae_alignment import map_output,map_global_grid
+    m=gaussian_model();pair=m.vae_latent_bridge
+    if rewired:
+        regions=[dict(id="coarse",stream="main",parent=None,start_block=1,end_block=6,down_factor=[2,2],**OPERATORS),
+                 dict(id="deep",stream="main",parent="coarse",start_block=2,end_block=5,down_factor=[2,2],**OPERATORS)]
+        restore_topology(m,build_spec("qwen_image_21",[{"name":"main","block_count":7}],regions,native_config(dict(m.config))))
+    x=torch.randn(1,96,8,requires_grad=True);noise=torch.randn_like(x);sigma=torch.tensor([.4])
+    shapes=[[(1,8,12)]];mask=torch.cat([torch.zeros(1,3,dtype=torch.bool),torch.ones(1,24,dtype=torch.bool)],1)
+    args=dict(encoder_hidden_states=torch.randn(1,3,12),timestep=sigma,img_shapes=shapes,img_mask=mask,return_dict=False)
+    result=m(hidden_states=x,alignment_noise=noise,**args)[0]
+    mapped=map_input(m,x,sigma,shapes,noise=noise)
+    del m.vae_latent_bridge
+    try:native=m(hidden_states=mapped,**args)[0]
+    finally:m.add_module("vae_latent_bridge",pair)
+    torch.testing.assert_close(result,map_output(m,native,shapes,noise=noise))
+    torch.testing.assert_close(mapped.reshape(1,8,12,8),map_global_grid(m,x.reshape(1,8,12,8),sigma,
+        noise=noise.reshape(1,8,12,8)))
+    result.square().mean().backward()
+    assert pair.input.projection.weight.grad.abs().sum()>0
+    assert pair.output.projection.weight.grad.abs().sum()>0
+    assert all(value.grad is None for value in pair.noise_alignment.buffers())
+    with pytest.raises(ValueError,match="exposure's noise"):
+        m(hidden_states=x,**args)
+    refs=torch.randn(1,8,8)
+    joined=torch.cat([refs,x.detach()],1)
+    ref_shapes=[[(1,2,4),(1,8,12)]]
+    result=map_input(m,joined,sigma,ref_shapes,noise=noise)
+    expected=pair.input(refs.transpose(1,2).reshape(1,8,1,2,4)).flatten(2).transpose(1,2)
+    torch.testing.assert_close(result[:,:8],expected)
+    with pytest.raises(ValueError,match="only the target image tokens"):
+        map_input(m,joined,sigma,ref_shapes,noise=joined)
+
+
+@pytest.mark.parametrize("partitioned",[False,True])
+def test_gaussian_training_uses_same_noise_for_guidance_and_partition_global(partitioned):
+    from core.training.ops import qwen_image_21_ops as ops
+    from core.training.arch.qwen_image_21 import QwenImage21ArchHandler
+    from core.models.qwen_image_21.partition_global import QwenPartitionGlobalAdapter
+    m=gaussian_model();seen=[];original=m.forward
+    def forward(**kwargs):
+        seen.append(kwargs["alignment_noise"].detach().clone())
+        return original(**kwargs)
+    m.forward=forward
+    if partitioned:
+        m.add_module("qwen_partition_global_adapter",QwenPartitionGlobalAdapter(8,m.inner_dim,rank=4,summary_tokens=3))
+    noise=torch.randn(1,32,8)
+    trainer=SimpleNamespace(transformer=m,device=torch.device("cpu"),training_dtype=torch.float32,
+        mixed_precision=False,use_grad_scaler=False,arch=QwenImage21ArchHandler(),_active_mnt_noise=noise,
+        config={"dit_partition_fixed_count":2,"qwen_guidance_loss_weight":.25,"qwen_guidance_loss_scale":3.,
+            "qwen_guidance_loss_schedule":"sigma","qwen_guidance_loss_mix_mode":"blend"},
+        _qwen_guidance_blank_encoding=(torch.zeros(1,3,12),torch.ones(3,dtype=torch.bool)),log_extra_metric=lambda *a:None)
+    args=dict(latents=torch.randn_like(noise),encoder_features=torch.randn(1,2,12),encoder_mask=torch.ones(1,2,dtype=torch.bool),
+        timesteps=torch.tensor([.5]),latent_h=4,latent_w=8,cfg_drop_mask=torch.tensor([False]))
+    if partitioned:
+        ops.train_step_partitioned_backward(trainer,**args,backward_scale=1.)
+        assert len(seen)==4
+        assert torch.equal(seen[0],seen[1]) and torch.equal(seen[2],seen[3])
+        assert all(value.shape[1]<32 for value in seen)
+    else:
+        loss,*_=ops.train_step(trainer,**args);loss.backward()
+        assert len(seen)==2 and all(torch.equal(value,noise) for value in seen)
+    assert m.vae_latent_bridge.input.projection.weight.grad.abs().sum()>0
+    assert m.vae_latent_bridge.output.projection.weight.grad.abs().sum()>0
+
+
+def test_gaussian_pipeline_cfg_style_and_guide_keep_their_noise(monkeypatch):
+    from PIL import Image
+    from diffusers import AutoencoderKL,FlowMatchEulerDiscreteScheduler
+    from core.models.qwen_image_21.vendor.pipeline import QwenImage21Pipeline
+    m=gaussian_model().eval();seen=[];original=m.forward
+    def forward(**kwargs):
+        seen.append(kwargs["alignment_noise"].clone())
+        return original(**kwargs)
+    m.forward=forward
+    codec=AutoencoderKL(in_channels=3,out_channels=3,latent_channels=8,
+        block_out_channels=(4,)*6,down_block_types=("DownEncoderBlock2D",)*6,
+        up_block_types=("UpDecoderBlock2D",)*6,norm_num_groups=4)
+    vae=NormalizedFrameVAE(codec,m.vae_latent_bridge.declaration)
+    class Processor:
+        tokenizer=SimpleNamespace(encode=lambda _: [1])
+        def apply_chat_template(self,*args,**kwargs):return [[1]]
+    pipe=QwenImage21Pipeline(vae=vae,text_encoder=torch.nn.Linear(1,1),processor=Processor(),transformer=m,
+        scheduler=FlowMatchEulerDiscreteScheduler(use_dynamic_shifting=True))
+    monkeypatch.setattr(QwenImage21Pipeline,"_execution_device",property(lambda self:torch.device("cpu")))
+    features=torch.randn(1,3,12)
+    monkeypatch.setattr(pipe,"encode_prompt",lambda **kw:(features,None,torch.zeros(1,3,dtype=torch.bool)))
+    initial=torch.randn(1,64,8)
+    monkeypatch.setattr(pipe,"prepare_latents",lambda *args:(initial.clone(),None))
+    auxiliary=[]
+    def aux(*args):
+        noise=torch.full_like(initial,float(len(auxiliary)+1))
+        auxiliary.append(noise)
+        return torch.zeros_like(noise),noise
+    monkeypatch.setattr(pipe,"_prepare_auxiliary_latent",aux)
+    image=Image.new("RGBA",(16,16),(80,140,40,255))
+    result=pipe(prompt_embeds=features,negative_prompt="",true_cfg_scale=2.,width=256,height=256,
+        num_inference_steps=3,output_type="latent",use_kv_cache=False,
+        reference_guides=[{"image":image,"strength":.5}],style_transfers=[{"image":image,"ref_k_strength":.7}])
+    assert torch.isfinite(result.images).all() and len(seen)==9
+    expected=initial
+    for step in range(3):
+        assert torch.equal(seen[3*step],auxiliary[1])
+        torch.testing.assert_close(seen[3*step+1],expected)
+        torch.testing.assert_close(seen[3*step+2],expected)
+        expected=.5*expected+.5*auxiliary[0]
+
+
+def test_gaussian_artifact_preserves_frozen_coefficients_in_bf16(tmp_path):
+    from safetensors.torch import save_file
+    from core.models.qwen_image_21.artifact import artifact_metadata,load_transformer
+    m=gaussian_model();config=dict(m.config)
+    path=tmp_path/"gaussian.safetensors"
+    save_file(m.state_dict(),str(path),metadata=artifact_metadata("transformer",config))
+    restored,variant=load_transformer(str(path),config,torch.bfloat16)
+    assert variant=="bf16" and restored.vae_latent_bridge.ready
+    assert restored.vae_latent_bridge.declaration==m.vae_latent_bridge.declaration
+    for key,value in m.vae_latent_bridge.noise_alignment.state_dict().items():
+        assert torch.equal(value,restored.vae_latent_bridge.noise_alignment.state_dict()[key])
+
+
 def test_global_adapter_uses_internal_domain_and_preserves_coordinate_columns():
     from core.models.qwen_image_21.vae_alignment import map_global_grid,resize_global_payload
     m = initialize(model())
@@ -137,6 +269,8 @@ def test_calibration_is_one_time_and_restores_component_residency(tmp_path):
             value = torch.nn.functional.avg_pool2d(pixels.squeeze(2),self.scale)
             value = value.repeat(1,self.channels,1,1)[:,:self.channels].unsqueeze(2)
             return SimpleNamespace(latent_dist=SimpleNamespace(mode=lambda:value))
+        def decode(self,value,return_dict=False):
+            raise AssertionError("Calibration does not decode images")
     paths = []
     for i in range(2):
         path = tmp_path/f"synthetic_{i}.png"

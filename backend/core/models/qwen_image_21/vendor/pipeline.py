@@ -745,6 +745,8 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
             generator,
             latents,
         )
+        from ..vae_alignment import noise_kwargs
+        alignment_noise = (latents.clone() if noise_kwargs(self.transformer,latents) else None)
 
         seed_source = generator[0] if isinstance(generator, list) else generator
         base_seed = int(seed_source.initial_seed()) if seed_source is not None else 0
@@ -875,6 +877,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                         self.transformer._style_ctx = capture
                         try:
                             self.transformer(
+                                **noise_kwargs(self.transformer,style_noise),
                                 hidden_states=style_model_input,
                                 timestep=timestep / 1000,
                                 encoder_hidden_states=prompt_embeds,
@@ -912,6 +915,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                     with self.transformer.cache_context("cond"):
                         if partition_executor is None:
                             noise_pred = self.transformer(
+                                **noise_kwargs(self.transformer,alignment_noise),
                                 hidden_states=latent_model_input,
                                 timestep=timestep / 1000,
                                 encoder_hidden_states=prompt_embeds,
@@ -925,6 +929,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                             )[0]
                         else:
                             noise_pred = partition_executor.predict(
+                                **noise_kwargs(self.transformer,alignment_noise),
                                 branch="cond", hidden_states=latent_model_input,
                                 timestep=timestep / 1000, encoder_hidden_states=prompt_embeds,
                                 encoder_hidden_states_mask=prompt_embeds_mask,
@@ -939,6 +944,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                     with self.transformer.cache_context("uncond"):
                         if partition_executor is None:
                             neg_noise_pred = self.transformer(
+                                **noise_kwargs(self.transformer,alignment_noise),
                                 hidden_states=latent_model_input,
                                 timestep=timestep / 1000,
                                 encoder_hidden_states=negative_prompt_embeds,
@@ -952,6 +958,7 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                             )[0]
                         else:
                             neg_noise_pred = partition_executor.predict(
+                                **noise_kwargs(self.transformer,alignment_noise),
                                 branch="uncond", hidden_states=latent_model_input,
                                 timestep=timestep / 1000, encoder_hidden_states=negative_prompt_embeds,
                                 encoder_hidden_states_mask=negative_prompt_embeds_mask,
@@ -990,6 +997,8 @@ class QwenImage21Pipeline(DiffusionPipeline, QwenImageLoraLoaderMixin):
                                 + next_sigma * guide["noise"]
                             )
                             latents = (1.0 - weight) * latents + weight * reference_at_t
+                            if alignment_noise is not None:
+                                alignment_noise = (1.0-weight)*alignment_noise + weight*guide["noise"]
                             if pred_original_sample is not None:
                                 pred_original_sample = (
                                     (1.0 - weight) * pred_original_sample

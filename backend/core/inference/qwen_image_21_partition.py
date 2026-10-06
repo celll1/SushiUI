@@ -215,8 +215,13 @@ class PartitionExecutor:
         target_count = plan.height * plan.width
         prefix = hidden_states[:, :-target_count]
         grid = hidden_states[:, -target_count:].reshape(hidden_states.shape[0], plan.height, plan.width, -1)
+        alignment_noise = kwargs.pop("alignment_noise",None)
+        if alignment_noise is not None and alignment_noise.shape != (grid.shape[0],target_count,grid.shape[-1]):
+            raise ValueError("Qwen partition noise must match the full target-token grid")
+        noise_grid = (None if alignment_noise is None else
+                      alignment_noise.reshape(grid.shape[0],plan.height,plan.width,-1))
         from core.models.qwen_image_21.vae_alignment import map_global_grid
-        global_grid = map_global_grid(self.model, grid, kwargs.get("timestep"))
+        global_grid = map_global_grid(self.model, grid, kwargs.get("timestep"),noise=noise_grid)
         self._prepare_modules(global_grid)
         prediction = torch.empty_like(grid)
         def identity(tensor):
@@ -244,6 +249,9 @@ class PartitionExecutor:
                 raise RuntimeError("Generation cancelled between Qwen partitions")
             tile = grid[:, box.top:box.bottom, box.left:box.right].reshape(grid.shape[0], box.tokens, -1)
             states = torch.cat([prefix, tile], dim=1) if prefix.shape[1] else tile
+            from core.models.qwen_image_21.vae_alignment import noise_kwargs
+            tile_noise = (None if noise_grid is None else
+                          noise_grid[:,box.top:box.bottom,box.left:box.right].reshape(grid.shape[0],box.tokens,-1))
             residual = None
             for module, source in self.modules.values():
                 strength = self._strength(source)
@@ -259,6 +267,7 @@ class PartitionExecutor:
             tile_mask = torch.cat([img_mask[:, :-target_count // 4],
                                    img_mask.new_ones(img_mask.shape[0], box.tokens // 4)], dim=1)
             result = self.model(
+                **noise_kwargs(self.model,tile_noise),
                 hidden_states=states, img_shapes=[[*shapes[:-1], (1, box.height, box.width)] for shapes in img_shapes],
                 img_mask=tile_mask, target_spatial_position_ids=positions,
                 target_input_residual=residual, kv_cache=cache,

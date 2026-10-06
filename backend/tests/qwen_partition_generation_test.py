@@ -105,6 +105,40 @@ def payload(net):
     return read_partition_global_payload(net, state, global_adapter_metadata(adapter))
 
 
+def test_gaussian_partition_preserves_target_noise_and_cache(monkeypatch):
+    from core.models.qwen_image_21.vae_alignment import install
+    from core.models.components.gaussian_alignment import POLICY
+    from latent_adapter_contract_test import declaration,identity
+    net=model()
+    install(net,dict(declaration(4,8),noise_policy=POLICY))
+    pair=net.vae_latent_bridge
+    identity(pair.input,.2);identity(pair.output,.3)
+    pair.noise_alignment.capture(pair.input,pair.output)
+    args=inputs(True);noise=torch.randn(1,48,8)
+    args["alignment_noise"]=noise
+    seen=[];original=net.forward
+    def forward(**kwargs):
+        seen.append(kwargs["alignment_noise"].clone())
+        return original(**kwargs)
+    monkeypatch.setattr(net,"forward",forward)
+    plan=resolve_partition_plan(dict(mode="manual",layout=strips(3),halo_tokens=2),4,12)
+    uncached=PartitionExecutor(net,plan,payloads=[(payload(net),None)],use_cache=False)
+    cached=PartitionExecutor(net,plan,payloads=[(payload(net),None)],use_cache=True)
+    cached.payloads=uncached.payloads
+    with torch.no_grad():
+        expected=uncached.predict(branch="cond",**args)
+        torch.testing.assert_close(expected,cached.predict(branch="cond",**args))
+        args["timestep"]=torch.tensor([.2])
+        torch.testing.assert_close(uncached.predict(branch="cond",**args),cached.predict(branch="cond",**args))
+    for index,value in enumerate(seen):
+        box=plan.inputs[index%len(plan.inputs)]
+        tile=noise.reshape(1,4,12,8)[:,box.top:box.bottom,box.left:box.right].reshape(1,box.tokens,8)
+        assert torch.equal(value,tile)
+    with pytest.raises(ValueError,match="full target-token grid"):
+        uncached.predict(branch="cond",**{**args,"alignment_noise":noise.reshape(1,24,16)})
+    cached.close();uncached.close()
+
+
 def test_global_strength_step_gate_and_rng_isolation():
     net = model()
     plan = resolve_partition_plan(dict(mode="manual", layout=strips(3)), 4, 12)

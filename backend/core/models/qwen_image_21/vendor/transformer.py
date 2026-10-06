@@ -1092,6 +1092,7 @@ class QwenImage21Transformer2DModel(
         encoder_hidden_states_mask: torch.Tensor | None = None,
         target_spatial_position_ids: torch.Tensor | None = None,
         target_input_residual: torch.Tensor | None = None,
+        alignment_noise: torch.Tensor | None = None,
         attention_kwargs: dict[str, Any] | None = None,
         kv_cache: QwenImage21KVCache | None = None,
         kv_cache_mode: str | None = None,
@@ -1116,6 +1117,8 @@ class QwenImage21Transformer2DModel(
             target_spatial_position_ids (`torch.Tensor`, *optional*):
                 `(target_image_sequence_length, 2)` full-canvas height/width indices. Partitioned training passes a
                 rectangular subset; ordinary full-frame calls omit it and keep the centered grid.
+            alignment_noise (`torch.Tensor`, *optional*):
+                Actual target-token noise for a calibrated codec swap; excludes clean reference-image tokens.
             kv_cache (`QwenImage21KVCache`, *optional*):
                 Cache container. Pass together with `kv_cache_mode` to enable prefix KV caching.
             kv_cache_mode (`str`, *optional*):
@@ -1136,7 +1139,7 @@ class QwenImage21Transformer2DModel(
         alignment = getattr(self, "vae_latent_bridge", None)
         if alignment is not None:
             from ..vae_alignment import map_input
-            hidden_states = map_input(self, hidden_states, timestep, img_shapes)
+            hidden_states = map_input(self, hidden_states, timestep, img_shapes, noise=alignment_noise)
         batch_size = hidden_states.shape[0]
         if kv_cache is not None and not self.config.causal_condition:
             raise ValueError(
@@ -1305,7 +1308,7 @@ class QwenImage21Transformer2DModel(
         output = self.proj_out(joint_hidden_states)
         if alignment is not None:
             from ..vae_alignment import map_output
-            output = map_output(self, output, img_shapes)
+            output = map_output(self, output, img_shapes, noise=alignment_noise)
 
         if not return_dict:
             return (output,)

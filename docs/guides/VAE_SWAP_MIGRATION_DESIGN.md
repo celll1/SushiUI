@@ -83,6 +83,15 @@ aligned exportはcodec宣言のない復元不能な保存を拒否する。fron
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 
+Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
+実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。
+入力・出力とも同じ交換先格子を維持し、denseとU-netで同じ境界を通る。
+合成CPUテストはチャネル増減、非正方形格子、バッチ別時刻、mask付きnative対照、
+bridgeへの勾配、複数frame拒否を確認した。境界/既存resize39件とAnimaの
+U-net・注意機構・REPA回帰51件、変更Pythonのpy_compile・実importが通過した。
+Animaの公開初期化、VAE facade、生成の動的stride、artifact復元、UIはまだ未配線であり、
+`auto`の対応範囲には追加していない。公式全重みでの学習・画質検証も未了。
+
 MingのVAE swapとresidual U-net化は併用可能。IO変更時に同じregion宣言から
 新native configのtopology identityを再構成する。
 `backend/tests/ming_image_01_vae_alignment_test.py`は、U-net有/無の両方で

@@ -971,7 +971,7 @@ class AnimaMixin:
             base_cond = nag_wrapper if nag_wrapper is not None else transformer
             cond_driver = base_cond
             negpip_uncond = None
-            if use_negpip:
+            if self._anima_negpip_active(params):
                 cond_driver, negpip_uncond = self._anima_build_negpip(
                     params, base_cond, transformer, cond, uncond,
                     t5_tokenizer, device, compute_dtype,
@@ -1239,7 +1239,7 @@ class AnimaMixin:
             base_cond = nag_wrapper if nag_wrapper is not None else transformer
             cond_driver = base_cond
             negpip_uncond = None
-            if use_negpip:
+            if self._anima_negpip_active(params):
                 cond_driver, negpip_uncond = self._anima_build_negpip(
                     params, base_cond, transformer, cond, uncond,
                     t5_tokenizer, device, compute_dtype,
@@ -1515,7 +1515,7 @@ class AnimaMixin:
             base_cond = nag_wrapper if nag_wrapper is not None else transformer
             cond_driver = base_cond
             negpip_uncond = None
-            if use_negpip:
+            if self._anima_negpip_active(params):
                 cond_driver, negpip_uncond = self._anima_build_negpip(
                     params, base_cond, transformer, cond, uncond,
                     t5_tokenizer, device, compute_dtype,

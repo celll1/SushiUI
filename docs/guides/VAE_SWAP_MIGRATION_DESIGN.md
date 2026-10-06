@@ -8,6 +8,26 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Anima公式全重みの追加検証: 元16ch/8x codecをQwen 2.1の64ch/16xへpaired_spatialで
+交換し、デフォルト2段U-netと併用したAPI Full runを実行した。合成図形2枚のみで
+校正・TE/VAE encoding・2,091,929,216 parameterのAdafactor更新・codec同梱保存が通過。
+step 1の保存から中epoch再開し、689 optimizer tensorを復元（fresh 0）、step 2の更新・
+保存までreturncode 0で完走した。bridge calibrated flag、内部64ch、外部64ch/16xと
+2つのU-net regionのmetadataを確認。lossは3.161→14.300、別条件の2更新であり
+低下や画質回復を主張しない。合成2画像の校正は画質判定用として不十分。
+
+公式TE・seed63・512px・24 steps・CFG4で元codecと保存済み交換モデルの生成を比較した。
+latentは[1,16,1,64,64]→[1,64,1,32,32]、tokenは1024→256となり、単発denoise時間は
+6.83秒→3.27秒。U-net化と2更新も含むためVAE交換単独の速度差ではない。元codecでは
+狐と本を識別できたが、交換後は紫色の模様となり、画質未受入。次はgeneral限定で
+より多様な校正データを用い、未学習と追加学習の効果を分けて確認する。
+
+生成backendのtxt2img/img2img/inpaintが、conditioning helper内だけで定義された
+`use_negpip`を参照する不具合を修正した。各入口で共通のsigned-prompt判定を使う。
+3経路×NegPip有無でsampler到達・wrapper解除を検証し、swap/U-net/API capabilityを含むCPU回帰28件、
+変更Pythonのcompile・CUDAを初期化しない実importが通過した。生成画像・校正行列は
+tracked artifactに含めない。専用smoke run/datasetは診断ログ保持後にDB・diskから整理済み。
+
 最新API検証: 専用run #173で公式dense H3のaligned bundleを読み込み、配布INT8
 ConvRot TEでcaption encoding（39.76秒）、交換先LTX VAEでlatent encoding（2.80秒）、
 Fullの1更新と4 shardのcodec同梱保存まで完走した。入力は元H3が生成した狐動画と

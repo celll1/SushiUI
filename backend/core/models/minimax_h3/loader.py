@@ -1153,6 +1153,9 @@ def keys_look_minimax_h3(keys) -> bool:
 def is_minimax_h3_safetensors(path: str) -> bool:
     """``keys_look_minimax_h3`` against a file's header. Never raises."""
     try:
+        from .video_artifact import native_metadata
+        if native_metadata(path) is not None:
+            return True
         header = read_safetensors_header(path)
         header.pop("__metadata__", None)
         return keys_look_minimax_h3(header.keys())
@@ -3379,6 +3382,12 @@ def load_minimax_h3_from_path(
     dict reports ``variant="hybrid"`` instead of the base's. ``None`` is the
     base-only load, unchanged in every respect.
     """
+    from .video_artifact import native_metadata
+    if native_metadata(model_path) is not None:
+        from .native_loader import load_native_bundle
+        return load_native_bundle(model_path,torch_dtype,load_text_encoder=load_text_encoder,
+            te_override=te_override,te_projection_override=te_projection_override,
+            video_vae_dtype=video_vae_dtype,hybrid=hybrid)
     # ``te_override is None`` calls with the ORIGINAL one-argument signature,
     # not with an explicit ``te_override=None`` -- callers (including existing
     # tests) that monkeypatch ``detect_minimax_h3_layout`` with a single-arg

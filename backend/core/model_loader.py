@@ -531,6 +531,9 @@ class ModelLoader:
             from core.models.minimax_h3.loader import (
                 MINIMAX_H3_PIPELINE_CLASS, is_minimax_h3_safetensors,
             )
+            from core.models.minimax_h3.video_artifact import native_metadata
+            if native_metadata(model_path) is not None:
+                return True
 
             if os.path.isdir(model_path):
                 index = os.path.join(model_path, "model_index.json")
@@ -606,7 +609,7 @@ class ModelLoader:
             return "sd15"
         if mt in ("zimage", "z-image"):
             return "zimage"
-        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera", "ltx2"):
+        if mt in ("minit2i", "krea2", "qwen_image_21", "anima", "lens", "ideogram4", "sensenova", "sensenova_sdxl_chimera", "ltx2", "minimax_h3"):
             return mt
         if mt == "siglip2_vision_encoder":
             return "vision_encoder"

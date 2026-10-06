@@ -139,6 +139,7 @@ class BatchedZImageWrapper(nn.Module):
         cap_mask: torch.Tensor,
         patch_size: int = 2,
         f_patch_size: int = 1,
+        alignment_noise: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, dict]:
         """
         Forward pass with batched tensor input.
@@ -165,9 +166,12 @@ class BatchedZImageWrapper(nn.Module):
 
         # Call original Z-Image Transformer
         alignment_kwargs = {"alignment_sigma": t} if getattr(self.transformer, "vae_latent_bridge", None) is not None else {}
+        if alignment_noise is not None:
+            alignment_kwargs["alignment_noise"] = list(alignment_noise.unbind(0))
         output_list, info = self.transformer(
             x=x_list,
-            t=t,
+            # Model time runs toward clean; the training argument is the noise fraction.
+            t=1-t,
             cap_feats=cap_list,
             patch_size=patch_size,
             f_patch_size=f_patch_size,
@@ -335,6 +339,7 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
         cap_mask: torch.Tensor,
         patch_size: int = 2,
         f_patch_size: int = 1,
+        alignment_noise: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, dict]:
         """
         Fully batched forward pass - bypasses Transformer's List[Tensor] processing entirely.
@@ -354,13 +359,15 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
             output: [B, C, F, H, W] - Batched output latents
             info: dict - Additional information
         """
-        if getattr(self.transformer, "_residual_unet_spec", None) is not None:
+        if (getattr(self.transformer, "_residual_unet_spec", None) is not None
+                or getattr(getattr(self.transformer, "vae_latent_bridge", None), "noise_alignment", None) is not None):
             # Rewired training uses the same learned padding and coordinates as inference.
-            return super().forward(x, t, cap_feats, cap_mask, patch_size, f_patch_size)
+            return super().forward(x, t, cap_feats, cap_mask, patch_size, f_patch_size,
+                                   alignment_noise=alignment_noise)
 
         pair = getattr(self.transformer, "vae_latent_bridge", None)
         if pair is not None:
-            x = pair.input.flow_state(x, t)
+            x = pair.flow_state(x, t, noise=alignment_noise)
         B, C, F, H, W = x.shape
         device = x.device
 
@@ -372,7 +379,7 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
         # cap_feats_padded: [B, cap_padded_len, 2560]
 
         # Step 2: Timestep embedding
-        t_scaled = t * self.transformer.t_scale
+        t_scaled = (1-t) * self.transformer.t_scale
         t_emb = self.transformer.t_embedder(t_scaled)  # [B, dim]
         adaln_input = t_emb.type_as(x_patches)
 
@@ -496,6 +503,6 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
         output = self.batched_unpatchify(x_output, sizes, patch_size, f_patch_size)
 
         if pair is not None:
-            output = pair.output.flow_velocity(output, convention="x0_minus_eps")
+            output = pair.flow_velocity(output, convention="x0_minus_eps", noise=alignment_noise)
 
         return output, {}

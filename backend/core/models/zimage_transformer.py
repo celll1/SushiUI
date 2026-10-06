@@ -664,6 +664,7 @@ class ZImageTransformer2DModel(nn.Module):
         patch_size=2,
         f_patch_size=1,
         alignment_sigma=None,
+        alignment_noise=None,
     ):
         assert patch_size in self.all_patch_size
         assert f_patch_size in self.all_f_patch_size
@@ -671,7 +672,10 @@ class ZImageTransformer2DModel(nn.Module):
         pair = getattr(self, "vae_latent_bridge", None)
         if pair is not None:
             sigma = 1 - t if alignment_sigma is None else alignment_sigma
-            x = [pair.input.flow_state(image.unsqueeze(0), sigma[i:i+1]).squeeze(0)
+            if alignment_noise is not None and len(alignment_noise) != len(x):
+                raise ValueError("Z-Image alignment noise batch differs")
+            x = [pair.flow_state(image.unsqueeze(0), sigma[i:i+1],
+                 noise=None if alignment_noise is None else alignment_noise[i].unsqueeze(0)).squeeze(0)
                  for i, image in enumerate(x)]
 
         rewiring = getattr(self, "_residual_unet_spec", None)
@@ -890,6 +894,7 @@ class ZImageTransformer2DModel(nn.Module):
         x = self.unpatchify(unified, x_size, patch_size, f_patch_size)
 
         if pair is not None:
-            x = [pair.output.flow_velocity(image.unsqueeze(0), convention="x0_minus_eps").squeeze(0)
-                 for image in x]
+            x = [pair.flow_velocity(image.unsqueeze(0), convention="x0_minus_eps",
+                 noise=None if alignment_noise is None else alignment_noise[i].unsqueeze(0)).squeeze(0)
+                 for i, image in enumerate(x)]
         return x, {}

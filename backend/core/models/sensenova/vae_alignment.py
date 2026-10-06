@@ -18,6 +18,7 @@ def initialize_swap(trainer, resolved, *, handler):
     from core.models.components.spatial_swap import initialize_image_swap
     from core.models.components.pixel_codec import RGBPixelCodec
     from .latent_space import gen_geometry, latent_config_dict
+    from .residual_unet import native_config
     from core.training.arch.sensenova import _fm_modules_trained
     from core.training.ops.training_method import is_full_finetune
     if not is_full_finetune(trainer) or not _fm_modules_trained(trainer):
@@ -40,7 +41,8 @@ def initialize_swap(trainer, resolved, *, handler):
     try:
         return initialize_image_swap(trainer, resolved, handler=handler, model=model,
             old_channels=geometry.channels, source_wiring=wiring, patch_size=patch,
-            resize=resize, pending_key="_sensenova_vae_calibration_source")
+            resize=resize, pending_key="_sensenova_vae_calibration_source",
+            topology_config=lambda:native_config(model.config))
     except Exception:
         trainer.vae = old_vae
         raise

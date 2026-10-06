@@ -53,7 +53,8 @@ def apply_swap(trainer,resolved,*,handler,module=None):
         return report
     report=initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.x_embedder.in_features//4,source_wiring=handler.resolve_wiring(trainer),
-        patch_size=2,resize=resize,pending_key="_flux2_vae_calibration_source")
+        patch_size=2,resize=resize,pending_key="_flux2_vae_calibration_source",
+        topology_config=lambda:native_config(model))
     if getattr(model,"vae_latent_bridge",None) is not None:bind_boundaries(model)
     return report
 

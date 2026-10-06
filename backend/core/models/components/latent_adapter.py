@@ -74,6 +74,10 @@ def validate_declaration(value):
         raise ValueError("VAE alignment normalization is missing")
     if value["norm_pack"] not in (1, 2) or (value["norm_pack"] != 1 and value["norm"] != "batchnorm"):
         raise ValueError("Only BatchNorm codecs use the supported 2x2 normalization packing")
+    source_hash = value.get("rewiring_source_config_sha256")
+    if source_hash is not None and (not isinstance(source_hash,str) or len(source_hash)!=64
+                                  or any(c not in "0123456789abcdef" for c in source_hash)):
+        raise ValueError("Invalid VAE alignment source topology identity")
     return value
 
 

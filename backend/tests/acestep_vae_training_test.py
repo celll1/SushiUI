@@ -32,6 +32,9 @@ def setup(tmp_path, new=4, rewired=True):
         events=[], checks=0, stop_at=None, optimizer=None, log_prefix="[CPU]",
         acestep_dit_config=model.config, acestep_source_vae=None)
     trainer.arch = AceStepArchHandler(trainer)
+    if rewired:
+        from copy import deepcopy
+        trainer.config.update(dit_rewiring_mode="configure", dit_rewiring_spec=deepcopy(graph))
     return trainer, resolved, source
 
 
@@ -54,9 +57,15 @@ def test_new_swap_calibration_export_restore(new, rewired, tmp_path):
     from core.training.adapters.acestep_adapter import AceStepFullParameterAdapter
     from core.training.ops.acestep_ops import _build_silence_latent, vae_encode_audio
     trainer, resolved, source = setup(tmp_path, new, rewired)
+    from copy import deepcopy
+    original_config = deepcopy(trainer.config)
     _build_silence_latent(trainer)
     source_state = {k: v.clone() for k, v in source.state_dict().items()}
     report = trainer.arch.apply_vae_swap(trainer, resolved)
+    if rewired:
+        from core.models.acestep.residual_unet import configure_training_topology
+        configure_training_topology(trainer.transformer, trainer.config)
+        configure_training_topology(trainer.transformer, deepcopy(original_config), resuming=True)
     pair = trainer.transformer.decoder._audio_latent_alignment
     assert report.changed and not pair.ready
     assert trainer.wiring.latent_channels == new
@@ -79,6 +88,8 @@ def test_new_swap_calibration_export_restore(new, rewired, tmp_path):
     restored, _ = _build_dit(str(path), torch.float32)
     assert restored.decoder._audio_latent_alignment.ready
     assert getattr(restored, "_residual_unet_spec", None) == getattr(trainer.transformer, "_residual_unet_spec", None)
+    if rewired:
+        configure_training_topology(restored, original_config, resuming=True)
     actual = vae_encode_audio(trainer, torch.randn(2, 389))
     assert actual.shape == (1, 49, new)
     trainer.arch.apply_vae_swap(trainer, resolved, module=trainer.vae)

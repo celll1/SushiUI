@@ -58,6 +58,8 @@ def setup(tmp_path,new):
         vae_dtype=torch.float32,device=torch.device('cpu'),events=[],checks=0,stop_at=None,
         text_encoder=None,connectors=None,optimizer=None,is_ltx2=True)
     trainer.transformer_original = model
+    from copy import deepcopy
+    trainer.config.update(dit_rewiring_mode='configure', dit_rewiring_spec=deepcopy(graph))
     trainer.arch = Ltx2ArchHandler(trainer)
     codec = AutoencoderKL(in_channels=3,out_channels=3,latent_channels=new,block_out_channels=(4,8),
         down_block_types=('DownEncoderBlock2D',)*2,up_block_types=('UpDecoderBlock2D',)*2,
@@ -84,7 +86,12 @@ def test_setup_calibration_and_real_training_step(tmp_path,new):
     from core.training.ops.ltx2_ops import vae_encode,train_step
     from core.training.arch.ltx2 import Ltx2ArchHandler
     trainer,resolved = setup(tmp_path,new)
+    from copy import deepcopy
+    original_config = deepcopy(trainer.config)
     report = trainer.arch.apply_vae_swap(trainer,resolved)
+    from core.models.ltx2.residual_unet import configure_training_topology
+    configure_training_topology(trainer.transformer, trainer.config)
+    configure_training_topology(trainer.transformer, original_config, resuming=True)
     assert report.new_elements > 0
     assert trainer.wiring.latent_channels == new and trainer.wiring.vae_norm == 'identity'
     assert trainer.arch.pixel_align == 4

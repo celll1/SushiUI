@@ -50,6 +50,8 @@ def setup(tmp_path, channels, scale, rewired=True, dtype=torch.float32):
         training_dtype=torch.float32, minimax_h3_components={"audio_latent_channels":6},
         log_extra_metric=lambda name,value:None)
     trainer.arch = MiniMaxH3ArchHandler(trainer)
+    if rewired:
+        trainer.config.update(dit_rewiring_mode="configure", dit_rewiring_spec=deepcopy(graph))
     return trainer, resolved
 
 
@@ -63,7 +65,12 @@ def test_calibration_optimizer_ownership_and_saved_continuation(tmp_path, channe
     from core.models.minimax_h3.video_artifact import load_checkpoint
     trainer, resolved = setup(tmp_path, channels, scale, rewired, dtype)
     trainer.config["vae_swap_source"] = resolved.source
+    original_config = deepcopy(trainer.config)
     apply_latent_space(trainer, None)
+    if rewired:
+        from core.models.minimax_h3.residual_unet import configure_training_topology
+        configure_training_topology(trainer.transformer, trainer.config)
+        configure_training_topology(trainer.transformer, deepcopy(original_config), resuming=True)
     assert trainer.vae.dtype == dtype
     assert trainer.vae_identity.latent_hash == resolved.latent_hash
     assert trainer.wiring.latent_channels == channels and trainer.wiring.vae_scale_factor == scale
@@ -105,6 +112,8 @@ def test_calibration_optimizer_ownership_and_saved_continuation(tmp_path, channe
     trainer.optimizer.step()
     path = adapter.save_checkpoint(1, 1, tmp_path/"full")
     restored, vae, identity = load_checkpoint(path, torch.float32)
+    if rewired:
+        configure_training_topology(restored, original_config, resuming=True)
     assert vae.dtype == dtype and identity.latent_hash == resolved.latent_hash
     for key, value in trainer.transformer.transformer.state_dict().items():
         torch.testing.assert_close(value, restored.transformer.state_dict()[key], rtol=0, atol=0)

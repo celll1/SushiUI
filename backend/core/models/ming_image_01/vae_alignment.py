@@ -113,8 +113,13 @@ def configure_swap(trainer):
         source=source, source_identity=source_identity, target_identity=resolved.latent_hash,
         old_channels=model.in_channels, old_scale=trainer.arch.wiring.vae_scale_factor)
     plan = SpatialSwapPlan.build(declaration, patch_size=2)
+    from core.rewiring.training import prepare_topology_io_rebase
+    from .residual_unet import native_config
+    finish_topology = prepare_topology_io_rebase(trainer.config,"ming_image_01",native_config(model),declaration=declaration)
     alignment = MingVAEAlignment(declaration).to(dtype=trainer.weight_dtype)
     resize_backbone(model, plan.backbone_channels)
+    if finish_topology is not None:
+        finish_topology(native_config(model))
     model.add_module(NAME, alignment)
     model.register_to_config(vae_alignment=declaration)
     trainer._ming_vae_calibration_source = old.to("cpu").requires_grad_(False).eval()

@@ -51,7 +51,7 @@ def apply_swap(trainer, resolved, *, handler, module=None):
         return report
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.img_in.in_features//4,source_wiring=source_spec,patch_size=2,resize=resize,
-        pending_key="_krea_vae_calibration_source")
+        pending_key="_krea_vae_calibration_source",topology_config=lambda:native_config(dict(model.config)))
 
 
 def calibrate(trainer,datasets):

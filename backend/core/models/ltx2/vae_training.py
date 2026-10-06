@@ -56,6 +56,9 @@ def apply_swap(trainer, resolved, *, handler, module=None):
         return ResizeReport((), channels, channels, channels, 0, 0)
     declaration = image.declaration(source=resolved.source, source_identity=identity,
         target_identity=resolved.latent_hash, old_channels=channels, old_scale=source.vae_scale_factor)
+    from core.rewiring.training import prepare_topology_io_rebase
+    from .residual_unet import native_config
+    finish_topology = prepare_topology_io_rebase(trainer.config,"ltx2",native_config(inner.config))
     with torch.random.fork_rng(devices=[]):
         alignment = SpatialAlignmentPair(declaration)
     wrapper = install_video_alignment(model, alignment, contract)
@@ -64,6 +67,8 @@ def apply_swap(trainer, resolved, *, handler, module=None):
     trainer.ltx2_block_loop_wrapper = wrapper
     if getattr(inner, "_residual_unet_spec", None) is not None:
         trainer.config["dit_rewiring_spec"] = inner._residual_unet_spec
+    if finish_topology is not None:
+        finish_topology(native_config(inner.config))
     pipeline = trainer.ltx2_pipeline
     pipeline.transformer = wrapper
     trainer.vae = NormalizedVideoVAE(target, contract)

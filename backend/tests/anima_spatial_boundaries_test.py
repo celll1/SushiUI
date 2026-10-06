@@ -62,7 +62,8 @@ def test_native_grid_sigma_mask_and_gradients(old,new,rewired):
 
 
 @pytest.mark.parametrize("old_c,new_c",[(4,8),(8,4)])
-def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,new_c):
+@pytest.mark.parametrize("explicit_topology",[False,True])
+def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,new_c,explicit_topology):
     from types import SimpleNamespace
     import numpy as np
     from PIL import Image
@@ -96,6 +97,11 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
         text_encoder=None,text_encoder_2=None,log_prefix="[SyntheticAnima]",is_anima=True,
         _check_stop_requested=lambda:None)
     trainer.arch=AnimaArchHandler(trainer)
+    if explicit_topology:
+        trainer.config.update(dit_rewiring_mode="configure",
+            dit_rewiring_spec=deepcopy(value._residual_unet_spec))
+        trainer.config["dit_rewiring_spec"]["regions"][0]["down"]="rms_pool"
+    original_requested=deepcopy(trainer.config.get("dit_rewiring_spec"))
     trainer._main_model_module=lambda:value
     trainer.move_main_model_to_cpu=lambda:value.to("cpu")
     trainer.move_main_model_to_gpu=lambda:value.to("cpu")
@@ -103,6 +109,16 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     assert initialization_mode(trainer.config,"anima")=="paired_spatial"
     preflight_vae_swap(trainer.config,arch="anima",method="full_finetune",bundle_vae_explicit_false=False)
     apply_latent_space(trainer,None)
+    from core.models.anima.residual_unet import configure_training_topology
+    configured=configure_training_topology(value,trainer.config)
+    if explicit_topology:
+        assert configured["regions"][0]["down"]=="rms_pool"
+        resume_config=dict(trainer.config,dit_rewiring_spec=original_requested)
+        assert configure_training_topology(value,resume_config,resuming=True)==configured
+        edited=deepcopy(original_requested)
+        edited["regions"][0]["down"]="avg_pool"
+        with pytest.raises(ValueError):
+            configure_training_topology(value,dict(resume_config,dit_rewiring_spec=edited),resuming=True)
     assert trainer.wiring.vae_scale_factor==16 and trainer.wiring.latent_channels==new_c
     assert BaseTrainer._arch_pixel_align(trainer)==64
     assert value._residual_unet_spec["regions"][0]["id"]=="s"
@@ -178,6 +194,9 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
         torch.testing.assert_close(components["vae"].inner.state_dict()[key],tensor,rtol=0,atol=0)
     trainer.transformer=components["transformer"]
     trainer.vae=components["vae"]
+    if explicit_topology:
+        restored_config=dict(trainer.config,dit_rewiring_spec=original_requested)
+        assert configure_training_topology(trainer.transformer,restored_config,resuming=True)==configured
     from core.training.vae_swap import apply_latent_space
     with patch("core.training.vae_swap.apply_configured_vae_swap",side_effect=AssertionError("must not recalibrate")):
         apply_latent_space(trainer,components["declared_vae"])

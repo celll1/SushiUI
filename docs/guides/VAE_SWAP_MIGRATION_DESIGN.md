@@ -8,6 +8,20 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+明示したU-net specとVAE swapを併用する場合、入出力チャネル変更前に元構造のhashを
+検証し、変更後のnative configに対して同じ層区間・skip・pool operatorを再識別する。
+画像bridgeの宣言には元config hashを保存する。LTX/H3は保存済みsource config、ACEは
+source owner configを使用する。保存済みcheckpointの読み込み時に元のUI/YAML specを受け入れるのは、元hashが
+一致し、hash以外の構造が保存済みspecと完全一致する場合だけ。ユーザーの保存設定は
+書き換えず、実行中のspecとcheckpointは変更後のhashを持つ。元hashを記録しない旧成果物は
+この別名解決を使用しない。新規学習と再開の両方で同じ規則を使う。
+画像CPU回帰180件、追加動画・音声47件で確認した。
+公式Anima全DiT・TEとQwen交換VAEで、明示2段RMS specを指定したFull学習1step、
+保存、元のUI/YAML specからstep2への再開・保存を公開APIで完走した。
+689個のoptimizer stateを復元（fresh 0）、C16→64・空間/8→/16、校正済みbridgeと
+RMS operatorを確認した。合成画像2枚のみを使用し、使用済みsmokeはDB/diskから整理する。
+この機能検証は、以下の未学習生成の画質受入を満たしたことを意味しない。
+
 U-net併用の画質切り分けを継続した。Animaの元VAEでは局所RMSを保つpoolにより
 模様から橙色の動物・青い本の概形へ改善したが、Qwen交換VAEとの併用は未受入。
 noise残差＋RMS、3×3 noise写像のSVD白色化、noiseのみ1×1直交化して空間相関を

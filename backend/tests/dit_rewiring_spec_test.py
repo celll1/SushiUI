@@ -92,6 +92,42 @@ class TopologyContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_model_identity(value, "krea2", value["streams"], {})
 
+    def test_io_rebase_preserves_explicit_regions_and_resume_identity(self):
+        from types import SimpleNamespace
+        from core.rewiring.training import prepare_topology_io_rebase, resolve_training_topology
+        from core.rewiring.spec import digest
+        source = {"num_layers": 32, "hidden_size": 4096}
+        target = dict(source, in_channels=64)
+        for architecture in ("qwen_image_21", "anima", "ltx2", "minimax_h3", "acestep"):
+            requested = build_spec(architecture, spec()["streams"], spec()["regions"], source)
+            requested["regions"][0]["down"] = "rms_pool"
+            config = dict(dit_rewiring_mode="configure", dit_rewiring_spec=deepcopy(requested))
+            declaration = {}
+            finish = prepare_topology_io_rebase(config, architecture, source, declaration=declaration)
+            self.assertEqual(config["dit_rewiring_spec"], requested)
+            finish(target)
+            saved = config["dit_rewiring_spec"]
+            self.assertEqual(saved["regions"], requested["regions"])
+            self.assertEqual(declaration["rewiring_source_config_sha256"], digest(source))
+            self.assertNotEqual(saved["base_config_sha256"], requested["base_config_sha256"])
+            owner = SimpleNamespace(config=target, _residual_unet_spec=saved,
+                _rewiring_source_config_sha256=digest(source))
+            original = dict(dit_rewiring_mode="configure", dit_rewiring_spec=deepcopy(requested))
+            validate = lambda graph, native: validate_model_identity(graph, architecture, saved["streams"], native)
+            resolved = resolve_training_topology(owner, original, architecture, validate,
+                lambda *args: None, resuming=True)
+            self.assertEqual(resolved, saved)
+            fresh_config = dict(dit_rewiring_mode="configure", dit_rewiring_spec=deepcopy(requested))
+            self.assertEqual(resolve_training_topology(owner, fresh_config, architecture, validate,
+                lambda *args: None), saved)
+            changed = deepcopy(requested); changed["regions"][0]["down"] = "avg_pool"
+            with self.assertRaises(ValueError):
+                resolve_training_topology(owner, dict(dit_rewiring_mode="configure", dit_rewiring_spec=changed),
+                    architecture, validate, lambda *args: None, resuming=True)
+            with self.assertRaises(ValueError):
+                prepare_topology_io_rebase(dict(dit_rewiring_mode="configure", dit_rewiring_spec=requested),
+                    architecture, target)
+
 
     def test_multiple_stream_preview_and_cross_stream_parent_refusal(self):
         from collections import Counter

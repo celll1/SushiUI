@@ -66,7 +66,7 @@ def restored_image_codec(module, resolved, declaration):
 
 
 def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
-                          source_wiring, patch_size, resize, pending_key):
+                          source_wiring, patch_size, resize, pending_key, topology_config=None):
     """Install target-native bridges before optimizer construction; geometry stays arch-owned."""
     from core.models.common.module_identity import module_fingerprint
     from core.models.common.vae_source import normalization_config
@@ -80,7 +80,16 @@ def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
     declaration = codec.declaration(source=resolved.source, source_identity=identity,
         target_identity=resolved.latent_hash, old_channels=old_channels, old_scale=source_wiring.vae_scale_factor)
     plan = SpatialSwapPlan.build(declaration, patch_size=patch_size)
+    finish_topology = None
+    if trainer.config.get("dit_rewiring_spec") is not None:
+        if topology_config is None:
+            raise ValueError("Explicit VAE-swap topology requires an architecture native-config provider")
+        from core.rewiring.training import prepare_topology_io_rebase
+        finish_topology = prepare_topology_io_rebase(
+            trainer.config, handler.name, topology_config(), declaration=declaration)
     report = resize(plan.backbone_channels)
+    if finish_topology is not None:
+        finish_topology(topology_config())
     install(model, declaration)
     getattr(model, NAME).to(dtype=trainer.weight_dtype)
     setattr(trainer, pending_key, (old.to("cpu").requires_grad_(False).eval(), source_wiring))

@@ -45,12 +45,14 @@ def initialize_swap(trainer,resolved,*,handler):
     from copy import deepcopy
     from core.models.components.spatial_swap import initialize_image_swap
     from core.training.ops.training_method import is_full_finetune
+    from .residual_unet import native_config
     if not is_full_finetune(trainer) or not getattr(trainer,"ideogram4_train_uncond",False):
         raise ValueError("Ideogram spatial swaps require full_finetune with both DiTs trained")
     model, twin = trainer.transformer, trainer.transformer_uncond
     report = initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.in_channels//4,source_wiring=handler.resolve_wiring(trainer),patch_size=2,
-        resize=lambda channels:resize_pair(model,twin,channels),pending_key="_ideogram_vae_calibration_source")
+        resize=lambda channels:resize_pair(model,twin,channels),pending_key="_ideogram_vae_calibration_source",
+        topology_config=lambda:native_config(dict(model.config)))
     if hasattr(model,"vae_latent_bridge"):
         twin.add_module("vae_latent_bridge",deepcopy(model.vae_latent_bridge))
     return report

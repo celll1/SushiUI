@@ -123,14 +123,19 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     else:
         transformer = load_quantized_transformer(quantized_transformer, artifact, dtype)
     restore_topology(transformer, topology)
+    from .vae_alignment import restore as restore_alignment, load_saved_vae
+    alignment = restore_alignment(transformer, artifact, dtype)
     from .partition_global import payload_from_directory
     global_payload = payload_from_directory(artifact.root, latent_channels=transformer.in_channels, hidden_dim=transformer.dim)
     if global_payload is not None:transformer._ming_partition_global_payload = global_payload
-    vae, info = AutoencoderKLQwenImage.from_pretrained(
-        str(artifact.components["vae"]), torch_dtype=torch.float32, local_files_only=True,
-        low_cpu_mem_usage=True, output_loading_info=True)
-    _strict_loading_info(info, "vae")
-    vae.input_channels = artifact.configs["vae"]["input_channels"]
+    if alignment is not None:
+        vae = load_saved_vae(artifact.components["vae"], alignment, torch.float32)
+    else:
+        vae, info = AutoencoderKLQwenImage.from_pretrained(
+            str(artifact.components["vae"]), torch_dtype=torch.float32, local_files_only=True,
+            low_cpu_mem_usage=True, output_loading_info=True)
+        _strict_loading_info(info, "vae")
+        vae.input_channels = artifact.configs["vae"]["input_channels"]
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         str(artifact.components["scheduler"]), local_files_only=True)
     transformer.requires_grad_(False).eval()

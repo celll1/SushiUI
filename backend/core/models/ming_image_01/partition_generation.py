@@ -47,12 +47,14 @@ class MingPartitionExecutor:
             raise ValueError("Ming generation latents disagree with the patch canvas")
         output=torch.empty_like(grid)
         adapter=MingPartitionAdapter()
+        alignment=getattr(self.model,"vae_latent_bridge",None)
+        global_grid=grid if alignment is None else alignment.input.flow_state(grid,1-timestep)
         for core,box in zip(self.plan.cores,self.plan.inputs):
             check()
             native_box=PartitionBox(box.top,box.left,box.bottom,box.right)
-            residual=generation_global_residual(self.model,grid,native_box)
+            residual=generation_global_residual(self.model,global_grid,native_box)
             if self.base_global is not None:
-                base=self.base_global.to(device=grid.device)(grid,native_box)
+                base=self.base_global.to(device=grid.device)(global_grid,native_box)
                 residual=base if residual is None else base+residual
             prediction=self.model(list(grid[...,box.top*2:box.bottom*2,box.left*2:box.right*2].unbind()),
                 timestep,encoder_hidden_states,ref_x=ref_hidden_states,cap_feats_2=encoder_hidden_states_2,

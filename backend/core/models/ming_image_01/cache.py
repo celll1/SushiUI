@@ -50,7 +50,7 @@ def conditioning_identity(*, pixels, captions, artifact_config, conditioner_weig
         layout="native_queries_direct_v1", execution=execution))
 
 
-def _validate(kind, tensors):
+def _validate(kind, tensors, channels):
     if kind not in KINDS or not tensors:
         raise ValueError("Unknown or empty Ming tensor cache")
     if any(not isinstance(value, torch.Tensor) or not value.is_floating_point()
@@ -64,21 +64,22 @@ def _validate(kind, tensors):
             raise ValueError("Ming conditioning cache requires aligned dual streams")
     else:
         clean = tensors.get("clean")
-        if clean is None or clean.ndim != 5 or clean.shape[1] != 16:
-            raise ValueError("Ming latent cache requires [B, 16, F, H, W]")
+        if clean is None or clean.ndim != 5 or clean.shape[1] != channels:
+            raise ValueError("Ming latent cache requires [B, C, F, H, W]")
         for name, value in tensors.items():
             if name == "clean": continue
             if not name.startswith("reference_") or not name[10:].isdigit():
                 raise ValueError("Unknown Ming latent cache tensor role")
             index = int(name[10:])
             if (name != f"reference_{index}" or index >= clean.shape[0] or value.ndim != 4
-                    or value.shape[0] != 16 or value.shape[-2:] != clean.shape[-2:]):
+                    or value.shape[0] != clean.shape[1] or value.shape[-2:] != clean.shape[-2:]):
                 raise ValueError("Ming cache references disagree with their native batch/grid")
 
 
 class MingTensorCache:
-    def __init__(self, root):
+    def __init__(self, root, *, channels=16):
         self.root = Path(root)
+        self.channels = channels
 
     def _path(self, kind, key):
         if kind not in KINDS or not isinstance(key, str) or len(key) != 64 or any(c not in "0123456789abcdef" for c in key):
@@ -92,7 +93,7 @@ class MingTensorCache:
 
     def write(self, kind, key, tensors, *, conditioner=None, cancelled=None):
         self._frozen(kind, conditioner)
-        _validate(kind, tensors)
+        _validate(kind, tensors, self.channels)
         tensors = {name: value.detach().contiguous().clone() for name, value in tensors.items()}
         path = self._path(kind, key)
         metadata = {"version": str(VERSION), "kind": kind, "identity": key,
@@ -123,7 +124,7 @@ class MingTensorCache:
                     return None
                 spec = json.loads(metadata["tensors"])
                 tensors = {name: handle.get_tensor(name) for name in handle.keys()}
-            _validate(kind, tensors)
+            _validate(kind, tensors, self.channels)
             if set(spec) != set(tensors): return None
             for name, value in tensors.items():
                 shape, dtype = expected[name]
@@ -235,8 +236,8 @@ def attach_startup_snapshot(trainer, *, latent_mode, text_mode):
 
 
 class MingDatasetTensorCache(MingTensorCache):
-    def __init__(self, vae_root, text_root, *, stamp):
-        super().__init__(vae_root)
+    def __init__(self, vae_root, text_root, *, stamp, channels=16):
+        super().__init__(vae_root, channels=channels)
         self.text_root, self.stamp = Path(text_root), dict(stamp)
 
     def _path(self, kind, key):
@@ -271,7 +272,7 @@ def dataset_cache_context(context, *, base_cache_dir, dataset_unique_id):
             or any(char in dataset_unique_id for char in ("/", "\\", ":", "\x00"))):
         raise ValueError("Invalid Ming dataset cache identity")
     base = Path(base_cache_dir).resolve()
-    namespace = build_cache_namespace("ming_image_01", latent_channels=16, latent_dtype=context["vae_dtype"])
+    namespace = build_cache_namespace("ming_image_01", latent_channels=int(context["vae_config"].get("z_dim", 16)), latent_dtype=context["vae_dtype"])
     arch_root = base / dataset_unique_id / namespace
     latent_hash = (identity_key({"implementation": "ming_rgba_independent_frames_v1",
         "weights": context["vae_weights"], "config": context["vae_config"],
@@ -282,6 +283,7 @@ def dataset_cache_context(context, *, base_cache_dir, dataset_unique_id):
     if any(not path.resolve().is_relative_to(base) for path in (vae_root, text_root)):
         raise ValueError("Ming dataset cache path escapes its owned base")
     cache = MingDatasetTensorCache(vae_root, text_root,
+        channels=int(context["vae_config"].get("z_dim",16)),
         stamp={"format": "ming_native_v1", "model_type": "ming_image_01",
                "vae_latent_hash": latent_hash, "vae_family": "ming_rgba",
                "artifact_config": context["artifact_config"]})

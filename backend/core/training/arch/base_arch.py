@@ -721,7 +721,8 @@ class ArchHandler(ABC):
                 f"be swapped")
 
         config = getattr(trainer, "config", None) or {}
-        init = str(config.get("vae_swap_new_channel_init") or "zero")
+        from core.training.vae_swap import initialization_mode
+        init = initialization_mode(config, self.name)
 
         trainer.vae = module if module is not None else resolved.load_module(
             torch_dtype=getattr(trainer, "vae_dtype", None))

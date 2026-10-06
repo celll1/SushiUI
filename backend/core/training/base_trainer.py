@@ -17612,7 +17612,11 @@ class BaseTrainer(ABC):
         self._warn_fused_clip_ignored()
 
         # Needs the datasets, so it cannot live in load_components.
-        self.arch.calibrate_before_training(self, datasets, bucket_manager)
+        self._vae_alignment_progress_callback = progress_callback
+        try:
+            self.arch.calibrate_before_training(self, datasets, bucket_manager)
+        finally:
+            del self._vae_alignment_progress_callback
 
         try:
             # resume_seq: 0 for a fresh run, one past the highest recorded seq when

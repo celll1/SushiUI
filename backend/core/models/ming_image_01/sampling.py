@@ -22,7 +22,8 @@ class MingTransformerBridge(torch.nn.Module):
         super().__init__()
         self.transformer = transformer
         self.config = transformer.config
-        self.in_channels = transformer.in_channels
+        alignment = getattr(transformer, "vae_latent_bridge", None)
+        self.in_channels = transformer.in_channels if alignment is None else alignment.declaration["new_channels"]
         self.partition_executor = None
         self.style_executor = None
 
@@ -65,7 +66,7 @@ class MingSampler:
             "schema_version": 1, "inference_profile": components.artifact.profile,
             "alignment_padding_mode": config["alignment_padding_mode"],
             "multi_frame_output": config["multi_frame_output"],
-            "vae_input_channels": components.artifact.configs["vae"]["input_channels"],
+            "vae_input_channels": 4,
             "vae_sample_mode": "argmax"})
 
     @torch.no_grad()

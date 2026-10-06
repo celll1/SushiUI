@@ -52,7 +52,9 @@ def prepare_styles(vae, entries, *, width, height, batch, seed, check_cancel):
         pixels = np.asarray(image.convert("RGBA").resize((width, height), Image.Resampling.BILINEAR)).copy()
         pixels = (torch.from_numpy(pixels).permute(2,0,1).float()/127.5-1)[None,:,None].expand(batch,-1,-1,-1,-1)
         clean = encode_frames(vae, pixels).squeeze(2).float()
-        if clean.shape != (batch,16,height//8,width//8) or not torch.isfinite(clean).all():
+        channels=int(vae.config.z_dim)
+        scale=int(getattr(vae,"spatial_scale_factor",8))
+        if clean.shape != (batch,channels,height//scale,width//scale) or not torch.isfinite(clean).all():
             raise ValueError("Ming style VAE latent geometry/value disagrees with native grid")
         generator = torch.Generator(device="cpu").manual_seed((seed+29023+index) % (2**63))
         noise = torch.randn(clean.shape, generator=generator, dtype=torch.float32).to(clean.device)
@@ -103,7 +105,7 @@ class MingStyleExecutor:
                     raise ValueError("Ming style requires a finite native scheduler sigma within [0, 1]")
                 for style in active:
                     self.check_cancel()
-                    if style.clean.shape != style.noise.shape or style.clean.shape[:2] != (self.batch,16) or style.clean.shape[-2:] != positive[0].shape[-2:]:
+                    if style.clean.shape != style.noise.shape or style.clean.shape[:2] != (self.batch,positive[0].shape[0]) or style.clean.shape[-2:] != positive[0].shape[-2:]:
                         raise ValueError("Ming prepared style disagrees with target latent geometry")
                     if style.clean.device != positive[0].device or style.noise.device != positive[0].device:
                         raise ValueError("Ming style latents must share the target execution device")

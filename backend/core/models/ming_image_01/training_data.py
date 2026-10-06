@@ -99,10 +99,13 @@ def prepare_latent_batch(components, *, prompts, references, target_pixels, fram
     prepared = prepare_inputs(components.processor, prompts, references=references,
                               width=width, height=height, resolution=resolution)
     any_reference = any(value is not None for value in prepared.references)
-    expected = {"clean": ((batch, 16, frames, height//8, width//8), components.vae.dtype)}
+    latent_channels = int(components.vae.config.z_dim)
+    spatial_scale = int(getattr(components.vae, "spatial_scale_factor", 8))
+    expected = {"clean": ((batch, latent_channels, frames, height//spatial_scale, width//spatial_scale), components.vae.dtype)}
     for index, pixels in enumerate(prepared.references):
         if pixels is not None:
-            expected[f"reference_{index}"] = ((16, pixels.shape[0]//4, height//8, width//8), components.vae.dtype)
+            expected[f"reference_{index}"] = ((latent_channels, pixels.shape[0]//4,
+                height//spatial_scale, width//spatial_scale), components.vae.dtype)
     cached = (tensor_cache.read("latents", latent_key, expected=expected)
               if tensor_cache is not None and latent_key is not None else None)
     if cached is not None:

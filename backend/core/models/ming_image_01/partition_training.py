@@ -51,7 +51,11 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
         context=torch.autocast(device_type=clean.device.type,dtype=trainer.training_dtype) if trainer.mixed_precision else nullcontext()
         with timing.measure("forward"),context:
             global_adapter=getattr(trainer.transformer,"ming_partition_global_adapter",None)
-            residual=None if global_adapter is None else global_adapter(noisy if indices is None else noisy[indices],region.input)
+            global_source=noisy if indices is None else noisy[indices]
+            alignment=getattr(trainer.transformer,"vae_latent_bridge",None)
+            if global_adapter is not None and alignment is not None:
+                global_source=alignment.input.flow_state(global_source,1-step_time)
+            residual=None if global_adapter is None else global_adapter(global_source,region.input)
             output=trainer.transformer(list(x.unbind()),step_time,list(queries.unbind()),
                 cap_feats_2=list(direct.unbind()),ref_x=refs,return_dict=False,
                 target_input_residual=residual,

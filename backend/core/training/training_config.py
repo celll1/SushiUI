@@ -237,6 +237,8 @@ def _build_train_section(
         "vae_swap_source": p.get("vae_swap_source", _TD["vae_swap_source"]),
         "vae_swap_new_channel_init": p.get("vae_swap_new_channel_init",
                                            _TD["vae_swap_new_channel_init"]),
+        "vae_swap_calibration_samples": p.get("vae_swap_calibration_samples", _TD["vae_swap_calibration_samples"]),
+        "vae_swap_calibration_resolution": p.get("vae_swap_calibration_resolution", _TD["vae_swap_calibration_resolution"]),
         "sensenova_gen_patch": p.get("sensenova_gen_patch",
                                      _TD["sensenova_gen_patch"]),
         "sensenova_latent_refiner": p.get(

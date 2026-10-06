@@ -195,8 +195,9 @@ class MingImage01Mixin:
             def preview(index,total,timestep,latents,prediction):
                 if progress_callback is not None:
                     from core.models.ming_image_01.generation_preview import primary_latent
-                    progress_callback(index,total,primary_latent(latents,profile),None,
-                        None if prediction is None else primary_latent(prediction,profile))
+                    channels=generator.components.vae.config.z_dim
+                    progress_callback(index,total,primary_latent(latents,profile,channels),None,
+                        None if prediction is None else primary_latent(prediction,profile,channels))
             preview.wants_predicted_x0=getattr(progress_callback,"wants_predicted_x0",None)
 
             try:

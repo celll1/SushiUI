@@ -4384,7 +4384,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   )}
 
-                  {(baseModelArch === "ming_image_01" || baseModelArch === "qwen_image_21") && trainingMethod === "full_finetune"
+                  {(["ming_image_01", "qwen_image_21", "zimage"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
@@ -4395,12 +4395,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         Initialization
                         <select value={params.vae_swap_new_channel_init ?? ""}
                           onChange={(e) => updateParam("vae_swap_new_channel_init",
-                            e.target.value === "" ? undefined : e.target.value as "auto" | "paired_spatial")}
+                            e.target.value === "" ? undefined : e.target.value as "auto" | "zero" | "paired_spatial")}
                           className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1">
                           <option value="">Default (paired spatial)</option>
                           <option value="auto">Auto (paired spatial)</option>
                           <option value="paired_spatial">Paired spatial</option>
-                          <option value="zero" disabled>Legacy zero — choose paired spatial</option>
+                          <option value="zero" disabled={baseModelArch !== "zimage"}>Legacy zero</option>
                         </select>
                       </label>
                       <label className="block text-xs text-gray-400">

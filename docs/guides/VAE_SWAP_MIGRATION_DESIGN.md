@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在MingとQwen-Image 2.1でpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Imageでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
@@ -27,6 +27,14 @@ global adapterの入力も同じ内部latent領域へ変換し、拡張時には
 posteriorの`mode`とgenerator付き`sample`を別々に保持し、RGB decoderには不透明alphaを補う。
 拡散状態のbiasはalpha係数、予測biasはepsilon/x0/VP-v/flowの宣言から補正する。
 共有化だけでは、他バックボーンの保存復元や生成接続が完了したことにはならない。
+Z-ImageはBCHW/RGBの正規化codec facadeと共有の校正・artifact処理を使う。
+native推論は`1-t`、batched学習は`t`をbridgeのsigmaとして明示し、既存の時刻埋め込みは維持する。
+dense optimizedと2段階U-netの双方に接続し、内部幅は`max(oldC,newC)`、外部格子は交換先のまま。
+full checkpointは`component.vae.alignment`に宣言、DiT内にbridge、`vae.`にnative codecを保存する。
+再開時は校正を繰り返さず学習済みbridgeを復元する。初回校正はunquantizedの2-1 image patch bankに限定する。
+明示的なlegacy zeroは4D/8x交換だけに対応する。
+Z-ImageのCPU合成検証はnative/dense/U-netの勾配、実AutoencoderKLの校正・保存復元・再開を含む。
+公式全重みを用いたZ-Imageのswap学習、画質、optimizer付きrun再開は未検証。
 親モデル名に依存しないVAE契約・バックボーン契約による全面共通化は、
 既存機能の完了宣言とは区別して扱う。
 

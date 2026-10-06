@@ -248,6 +248,9 @@ def encode_prompt(trainer, prompt: str, max_sequence_length: int = 512):
 def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
                vae_device=None, debug_preprocessing=False):
     """Encode inside the caller's no-grad context; caller handles dtype/device."""
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    if isinstance(trainer.vae, NormalizedImageVAE):
+        return trainer.vae.encode(image_tensor).latent_dist.sample()
     h = trainer.vae.encoder(image_tensor)
     if trainer.vae.quant_conv is not None:
         h = trainer.vae.quant_conv(h)
@@ -643,8 +646,9 @@ def generate_sample(
 
         log_verbose(f"{trainer.log_prefix} [Sample] Running denoising loop (Transformer on GPU)")
 
-        latent_height = height // 8
-        latent_width = width // 8
+        scale = getattr(trainer.vae, "spatial_scale_factor", 8)
+        latent_height = height // scale
+        latent_width = width // scale
         generator = None
         if seed >= 0:
             generator = torch.Generator(device=trainer.device).manual_seed(seed)
@@ -884,9 +888,13 @@ def _decode_zimage_latents(trainer, latents: torch.Tensor) -> Image.Image:
     # Decode (convert to VAE dtype to match decoder weights)
     with torch.no_grad():
         latents = latents.to(trainer.vae.dtype)
-        if trainer.vae.post_quant_conv is not None:
-            latents = trainer.vae.post_quant_conv(latents)
-        image = trainer.vae.decoder(latents)
+        from core.models.components.latent_adapter import NormalizedImageVAE
+        if isinstance(trainer.vae, NormalizedImageVAE):
+            image = trainer.vae.decode(latents, return_dict=False)[0]
+        else:
+            if trainer.vae.post_quant_conv is not None:
+                latents = trainer.vae.post_quant_conv(latents)
+            image = trainer.vae.decoder(latents)
 
     image = (image / 2 + 0.5).clamp(0, 1)
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()

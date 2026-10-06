@@ -233,7 +233,8 @@ def lens_base(monkeypatch, tmp_path):
     (base_dir / "transformer" / "config.json").write_text("{}", encoding="utf-8")
 
     def _components(model_path, torch_dtype=torch.float32, **kwargs):
-        return {"transformer": _lens(128, 32), "vae": _tiny_vae(32),
+        transformer = kwargs.get("transformer_override")
+        return {"transformer": transformer if transformer is not None else _lens(128, 32), "vae": _tiny_vae(32),
                 "text_encoder": nn.Linear(2, 2), "tokenizer": object(),
                 "scheduler": object(), "base_dir": str(model_path),
                 "vae_source": str(model_path), "vae_path": None}

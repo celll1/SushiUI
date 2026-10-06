@@ -255,3 +255,45 @@ class NormalizedFrameVAE(nn.Module):
 
     def save_pretrained(self, path, **kwargs):
         return self.inner.save_pretrained(path, **kwargs)
+
+
+class _ImagePosterior:
+    def __init__(self, frames):
+        self.frames = frames
+
+    def mode(self):
+        return self.frames.mode().squeeze(2)
+
+    @property
+    def mean(self):
+        return self.mode()
+
+    def sample(self, generator=None):
+        return self.frames.sample(generator=generator).squeeze(2)
+
+
+class NormalizedImageVAE(NormalizedFrameVAE):
+    """BCHW/RGB boundary for backbones that do not expose a frame axis."""
+    def __init__(self, module, declaration):
+        super().__init__(module, declaration)
+        self.config.input_channels = self.config.in_channels = 3
+        self.input_channels = 3
+        scale = self.spatial_scale_factor
+        if scale & (scale - 1) == 0:
+            # Diffusers pipelines infer the spatial ratio from this configuration.
+            self.config.block_out_channels = [1] * scale.bit_length()
+
+    def encode(self, pixels, **kwargs):
+        if pixels.ndim != 4 or pixels.shape[1] not in (3, 4):
+            raise ValueError("Aligned image VAE requires BCHW RGB/RGBA pixels")
+        if pixels.shape[1] == 3:
+            pixels = torch.cat((pixels, torch.ones_like(pixels[:, :1])), dim=1)
+        result = super().encode(pixels.unsqueeze(2), **kwargs)
+        return SimpleNamespace(latent_dist=_ImagePosterior(result.latent_dist))
+
+    def decode(self, latents, return_dict=True, **kwargs):
+        if latents.ndim != 4:
+            raise ValueError("Aligned image VAE decode requires BCHW latents")
+        result = super().decode(latents.unsqueeze(2), return_dict=False, **kwargs)[0]
+        rgb = result[:, :3, 0]
+        return SimpleNamespace(sample=rgb) if return_dict else (rgb,)

@@ -325,7 +325,7 @@ def test_only_the_landed_waves_can_swap_and_only_by_full_finetune():
         TRAINING_DECLARED_ARCHS, training_feature_unsupported_reason,
     )
     landed = {"sd15", "sdxl", "zimage", "krea2",
-              "anima", "flux2", "lens", "minit2i", "sensenova"}
+              "anima", "flux2", "lens", "minit2i", "sensenova", "ming_image_01", "qwen_image_21"}
     for arch in sorted(landed):
         assert training_feature_unsupported_reason(
             arch, "vae_swap", "full_finetune") is None

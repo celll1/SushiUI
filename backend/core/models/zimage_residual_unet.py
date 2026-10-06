@@ -181,4 +181,5 @@ def default_topology(config):
 
 def generation_token_stride(vae):
     blocks = getattr(getattr(vae, "config", None), "block_out_channels", None)
-    return (2 ** (len(blocks) - 1) if blocks else 8) * 2
+    scale = getattr(vae, "spatial_scale_factor", None)
+    return (scale if scale is not None else (2 ** (len(blocks) - 1) if blocks else 8)) * 2

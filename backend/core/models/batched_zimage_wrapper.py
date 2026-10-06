@@ -164,12 +164,14 @@ class BatchedZImageWrapper(nn.Module):
         x_list, cap_list = self.batched_to_list(x, cap_feats, cap_mask)
 
         # Call original Z-Image Transformer
+        alignment_kwargs = {"alignment_sigma": t} if getattr(self.transformer, "vae_latent_bridge", None) is not None else {}
         output_list, info = self.transformer(
             x=x_list,
             t=t,
             cap_feats=cap_list,
             patch_size=patch_size,
-            f_patch_size=f_patch_size
+            f_patch_size=f_patch_size,
+            **alignment_kwargs,
         )
 
         # Convert List output back to batched tensor
@@ -356,6 +358,9 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
             # Rewired training uses the same learned padding and coordinates as inference.
             return super().forward(x, t, cap_feats, cap_mask, patch_size, f_patch_size)
 
+        pair = getattr(self.transformer, "vae_latent_bridge", None)
+        if pair is not None:
+            x = pair.input.flow_state(x, t)
         B, C, F, H, W = x.shape
         device = x.device
 
@@ -436,6 +441,9 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
 
         # Create attention mask for captions (based on cap_mask)
         cap_attn_mask = cap_mask[:, :cap_padded_len]  # [B, cap_padded_len]
+        if cap_attn_mask.shape[1] < cap_padded_len:
+            cap_attn_mask = torch.nn.functional.pad(cap_attn_mask,
+                (0, cap_padded_len-cap_attn_mask.shape[1]), value=False)
 
         # Step 8: Apply context_refiner layers (caption processing)
         for layer in self.transformer.context_refiner:
@@ -486,5 +494,8 @@ class BatchedZImageWrapperOptimized(BatchedZImageWrapper):
 
         # Step 13: Batched unpatchify (NO LOOPS)
         output = self.batched_unpatchify(x_output, sizes, patch_size, f_patch_size)
+
+        if pair is not None:
+            output = pair.output.flow_velocity(output, convention="x0_minus_eps")
 
         return output, {}

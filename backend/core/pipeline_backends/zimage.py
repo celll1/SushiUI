@@ -1160,20 +1160,9 @@ class ZImageMixin:
             image_tensor = image_tensor.to(device=self.device, dtype=vae.dtype)
 
             # Encode to latent space
-            # Z-Image VAE uses encoder -> quant_conv -> sample (not encode method)
             with torch.no_grad():
-                h = vae.encoder(image_tensor)
-                if vae.quant_conv is not None:
-                    h = vae.quant_conv(h)
-                mean, logvar = torch.chunk(h, 2, dim=1)
-                std = torch.exp(0.5 * logvar)
-
-                noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
-                init_latents = mean + std * noise
-
-                init_latents = normalize(init_latents, vae)
-
-                del h, mean, logvar, std
+                from core.models.components.spatial_swap import encode_image
+                init_latents = encode_image(vae, image_tensor, generator=generator)
 
             print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
 
@@ -1201,7 +1190,9 @@ class ZImageMixin:
 
             device = torch.device(self.device)
 
-            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+            if getattr(vae, "spatial_scale_factor", None) is not None:
+                vae_scale_factor = vae.spatial_scale_factor
+            elif hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
             else:
                 vae_scale_factor = 8
@@ -1547,20 +1538,9 @@ class ZImageMixin:
 
             # Encode input image to latent space
             with torch.no_grad():
-                h = vae.encoder(image_tensor)
-                if vae.quant_conv is not None:
-                    h = vae.quant_conv(h)
-                mean, logvar = torch.chunk(h, 2, dim=1)
-                std = torch.exp(0.5 * logvar)
-
-                noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
-                init_latents = mean + std * noise
-
-                init_latents = normalize(init_latents, vae)
-
+                from core.models.components.spatial_swap import encode_image
+                init_latents = encode_image(vae, image_tensor, generator=generator)
                 original_latents = init_latents.clone()
-
-                del h, mean, logvar, std
 
             # Resize mask to latent dimensions (downsample by VAE scale factor)
             # Z-Image VAE: 8x downsampling -> latent is 1/8 of image size
@@ -1597,7 +1577,9 @@ class ZImageMixin:
 
             device = torch.device(self.device)
 
-            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+            if getattr(vae, "spatial_scale_factor", None) is not None:
+                vae_scale_factor = vae.spatial_scale_factor
+            elif hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
             else:
                 vae_scale_factor = 8
@@ -1975,15 +1957,8 @@ class ZImageMixin:
         image_tensor = image_tensor.to(device=device, dtype=vae.dtype)
 
         with torch.no_grad():
-            h = vae.encoder(image_tensor)
-            if vae.quant_conv is not None:
-                h = vae.quant_conv(h)
-            mean, logvar = torch.chunk(h, 2, dim=1)
-            std = torch.exp(0.5 * logvar)
-            noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
-            ref_x0 = mean + std * noise
-            ref_x0 = normalize(ref_x0, vae)
-            del h, mean, logvar, std
+            from core.models.components.spatial_swap import encode_image
+            ref_x0 = encode_image(vae, image_tensor, generator=generator)
         return ref_x0.float()
 
     def _zimage_style_triple(self, style_dict: Dict[str, Any], vae, height: int, width: int,
@@ -2310,7 +2285,9 @@ class ZImageMixin:
         print(f"[Z-Image] Starting denoising loop on {device}")
 
         vae = self.zimage_components["vae"]
-        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+        if getattr(vae, "spatial_scale_factor", None) is not None:
+            vae_scale_factor = vae.spatial_scale_factor
+        elif hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
             vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
         else:
             vae_scale_factor = 8
@@ -2319,7 +2296,9 @@ class ZImageMixin:
         height_latent = 2 * (int(height) // vae_scale)
         width_latent = 2 * (int(width) // vae_scale)
         batch_size = len(prompt_embeds_list)
-        shape = (batch_size, transformer.in_channels, height_latent, width_latent)
+        channels = (vae.config.latent_channels if getattr(transformer, "vae_latent_bridge", None) is not None
+                    else transformer.in_channels)
+        shape = (batch_size, channels, height_latent, width_latent)
 
         # Initialize latents (use init_latents if provided for img2img, otherwise random for txt2img)
         if init_latents is not None:

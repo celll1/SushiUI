@@ -71,10 +71,11 @@ def test_init_image_normalization_block(name):
     assignments = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
                    and any(isinstance(t, ast.Name) and t.id == "init_latents" for t in node.targets)
                    and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
-                   and node.value.func.id == "normalize"]
+                   and node.value.func.id == "encode_image"]
     assert len(assignments) == 1
     vae = Vae("batchnorm", torch.float32)
-    namespace = dict(vae=vae, init_latents=vae.raw, normalize=normalize)
+    from core.models.components.spatial_swap import encode_image
+    namespace = dict(vae=vae, image_tensor=torch.zeros(1,3,4,4), generator=None, encode_image=encode_image)
     exec(compile(ast.Module(body=assignments, type_ignores=[]), "<encode block>", "exec"), namespace)
     torch.testing.assert_close(namespace["init_latents"], normalize(vae.raw, vae), rtol=0, atol=0)
 

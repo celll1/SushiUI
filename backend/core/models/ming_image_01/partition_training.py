@@ -7,6 +7,7 @@ from .flow import flow_training_pair
 from .partition import MingPartitionAdapter,core_result,image_guidance_scale
 from .conditioning import MingConditioning
 from .guidance import prepare_guidance,guidance_loss,frame_error
+from .vae_alignment import forward_with_noise
 
 
 def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=None,
@@ -44,19 +45,21 @@ def _backward_regions(trainer,batch,*,sigma,noise,plan,backward_scale,drop_mask=
         x=crop(noisy,region.input)
         queries,direct=conditioning.queries,conditioning.direct
         refs=references;step_time=time
+        exposure=crop(noise,region.input)
         if indices is not None:
             x=x[indices];queries=torch.zeros_like(queries[indices]);direct=torch.zeros_like(direct[indices])
             refs=None if references is None else [references[i] for i in indices.tolist()]
             step_time=time[indices]
+            exposure=exposure[indices]
         context=torch.autocast(device_type=clean.device.type,dtype=trainer.training_dtype) if trainer.mixed_precision else nullcontext()
         with timing.measure("forward"),context:
             global_adapter=getattr(trainer.transformer,"ming_partition_global_adapter",None)
             global_source=noisy if indices is None else noisy[indices]
             alignment=getattr(trainer.transformer,"vae_latent_bridge",None)
             if global_adapter is not None and alignment is not None:
-                global_source=alignment.input.flow_state(global_source,1-step_time)
+                global_source=alignment.flow_state(global_source,1-step_time,noise=noise if indices is None else noise[indices])
             residual=None if global_adapter is None else global_adapter(global_source,region.input)
-            output=trainer.transformer(list(x.unbind()),step_time,list(queries.unbind()),
+            output=forward_with_noise(trainer.transformer,exposure,list(x.unbind()),step_time,list(queries.unbind()),
                 cap_feats_2=list(direct.unbind()),ref_x=refs,return_dict=False,
                 target_input_residual=residual,
                 target_spatial_position_ids=adapter.position_ids(plan.full_height,plan.full_width,region.input,device=clean.device))[0]

@@ -3,8 +3,9 @@ import pytest
 import torch
 
 @pytest.mark.parametrize('profile',['generation_edit','layer_decompose'])
+@pytest.mark.parametrize('swapped',[False,True])
 
-def test_public_global_full_training_updates_and_restores_bundle(tmp_path,profile):
+def test_public_global_full_training_updates_and_restores_bundle(tmp_path,profile,swapped):
     method="full_finetune"
     from ming_image_01_conditioner_quantized_test import source
     from ming_image_01_conditioner_full_quantized_test import dataset
@@ -15,12 +16,21 @@ def test_public_global_full_training_updates_and_restores_bundle(tmp_path,profil
     from core.training.lora_trainer import LoRATrainer
     import yaml
     root=source(tmp_path,profile)
+    swap_options={}
+    if swapped:
+        from diffusers import AutoencoderKL
+        target=AutoencoderKL(in_channels=4,out_channels=4,latent_channels=24,block_out_channels=(8,)*5,
+            down_block_types=("DownEncoderBlock2D",)*5,up_block_types=("UpDecoderBlock2D",)*5,
+            norm_num_groups=4,layers_per_block=1,scaling_factor=.7,shift_factor=.2)
+        target.save_pretrained(tmp_path/"target_codec")
+        swap_options=dict(vae_swap_source=f"file:{tmp_path/'target_codec'}",vae_swap_calibration_samples=2,
+            vae_swap_calibration_resolution=128)
     request=TrainingRunCreateRequest(training_method=method,base_model_path=str(root),train_text_encoder=False,
         ming_conditioner_groups=[],dit_partition_global_adapter_enabled=True,dit_partition_global_rank=8,dit_partition_global_tokens=3,
         dit_gradient_checkpointing_blocks=2,dit_partition_gradient_checkpointing_blocks=1,
         dit_partition_training_enabled=True,dit_partition_mode="fixed",
         dit_partition_fixed_count=4,dit_partition_split_ratio_min=.5,dit_partition_split_ratio_max=.5,
-        qwen_full_kv_query_chunk_tokens=17,qwen_guidance_loss_weight=1.,total_steps=2,seed=17)
+        qwen_full_kv_query_chunk_tokens=17,qwen_guidance_loss_weight=1.,total_steps=2,seed=17,**swap_options)
     _check_ming_conditioner_params(request)
     factory=TrainingConfigGenerator.generate_full_finetune_config if method=='full_finetune' else TrainingConfigGenerator.generate_lora_config
     serialized=factory(request.model_dump(),run_name='run',base_model_path=str(root),output_dir=str(tmp_path/'run'))
@@ -35,9 +45,18 @@ def test_public_global_full_training_updates_and_restores_bundle(tmp_path,profil
     def record(k,v):metrics[k]=v;original_metric(k,v)
     value.log_extra_metric=record
     branch=value.transformer.ming_partition_global_adapter
+    if swapped:
+        assert value.arch.pixel_align==32 and value.arch.wiring.latent_channels==24
     assert all(p.requires_grad for p in branch.parameters())
     before={k:p.detach().clone() for k,p in value.transformer.named_parameters() if p.requires_grad}
-    value.train([dataset(tmp_path,profile)],num_epochs=1,total_steps=2,batch_size=1,multi_noise_timesteps=2,gradient_accumulation_steps=2,
+    data=dataset(tmp_path,profile)
+    if swapped:
+        from PIL import Image
+        import numpy as np
+        for index,name in enumerate(("target.png","layer.png") if profile=="layer_decompose" else ("target.png",)):
+            Image.fromarray(np.random.default_rng(index).integers(0,256,(128,128,4),dtype=np.uint8)).save(tmp_path/name)
+        data.items[0].update(width=128,height=128)
+    value.train([data],num_epochs=1,total_steps=2,batch_size=1,multi_noise_timesteps=2,gradient_accumulation_steps=2,
         save_every_n_steps=2,sample_every_n_steps=0,enable_bucketing=False,base_resolutions=[128],
         latent_encoding_mode='swap_onthefly',text_encoding_mode='swap_onthefly')
     assert value.transformer._ming_full_kv_query_chunk_tokens==17
@@ -52,6 +71,13 @@ def test_public_global_full_training_updates_and_restores_bundle(tmp_path,profil
     from core.models.ming_image_01.checkpoint import save_bundle
     saved=value.output_dir/"run_step_000002"
     loaded=load_components(saved,dtype=torch.float32,conditioner_attention="eager")
+    if swapped:
+        pair=value.transformer.vae_latent_bridge
+        assert pair.ready and loaded.transformer.vae_latent_bridge.ready
+        assert loaded.vae.spatial_scale_factor==16 and loaded.vae.config.z_dim==24
+        assert pair.declaration["noise_policy"]=="gaussian_row_orthogonal_v1"
+        for key,buffer in pair.noise_alignment.state_dict().items():
+            assert torch.equal(buffer,loaded.transformer.vae_latent_bridge.noise_alignment.state_dict()[key])
     payload=loaded.transformer._ming_partition_global_payload
     assert payload["metadata"]==branch.metadata()
     assert all(torch.equal(v,payload["state"][k]) for k,v in branch.export_tensors().items())

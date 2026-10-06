@@ -84,7 +84,8 @@ def flow_loss(transformer, *, clean: torch.Tensor, noise: torch.Tensor,
                     or reference.shape[1] < 1 or reference.shape[2:] != (height, width)):
                 raise ValueError("Ming references must preserve native channel/frame/grid axes")
     noisy, target, time = flow_training_pair(clean, noise, sigma)
-    outputs = transformer(x=list(noisy.to(clean.dtype).unbind()), t=time,
+    from .vae_alignment import forward_with_noise
+    outputs = forward_with_noise(transformer, noise, x=list(noisy.to(clean.dtype).unbind()), t=time,
         cap_feats=list(conditioning.queries.unbind()), cap_feats_2=list(conditioning.direct.unbind()),
         ref_x=reference_latents, return_dict=False)[0]
     prediction = torch.stack([value[:, :frames] for value in outputs])

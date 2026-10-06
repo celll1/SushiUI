@@ -52,7 +52,7 @@ from .base_adapter import (
 class MiniMaxH3AlignedFullParameterAdapter(BaseFullParameterAdapter):
     """Train an unquantized aligned DiT and save its native video bundle."""
 
-    def _validate(self):
+    def _validate(self, *, allow_pending=False):
         from core.models.components.video_latent_adapter import NormalizedVideoVAE
         from core.models.minimax_h3.video_alignment import AlignedMiniMaxH3BlockLoopWrapper
         model = self.trainer.transformer
@@ -61,15 +61,17 @@ class MiniMaxH3AlignedFullParameterAdapter(BaseFullParameterAdapter):
         pair = getattr(inner, "_video_latent_alignment", None)
         vae = self.trainer.vae
         identity = getattr(self.trainer, "vae_identity", None)
+        from core.models.minimax_h3.vae_training import PENDING
+        pending = allow_pending and getattr(self.trainer, PENDING, None) is not None
         if (not isinstance(model, AlignedMiniMaxH3BlockLoopWrapper)
-                or pair is None or not pair.ready or not isinstance(vae, NormalizedVideoVAE)
+                or pair is None or (not pair.ready and not pending) or not isinstance(vae, NormalizedVideoVAE)
                 or identity is None or identity.latent_hash != pair.declaration["target_identity"]
                 or vae.contract != getattr(inner, "_video_codec_contract", None)):
             raise ValueError("H3 aligned Full training requires a calibrated matching video codec")
         return model
 
     def prepare_models_for_training(self):
-        model = self._validate()
+        model = self._validate(allow_pending=True)
         enabled = bool(getattr(self.trainer, "train_unet", True))
         model.requires_grad_(enabled)
         model.train(enabled)
@@ -79,7 +81,7 @@ class MiniMaxH3AlignedFullParameterAdapter(BaseFullParameterAdapter):
                 module.requires_grad_(False).eval()
 
     def arch_param_groups(self):
-        model = self._validate()
+        model = self._validate(allow_pending=True)
         parameters = [p for p in model.parameters() if p.requires_grad]
         if not parameters:
             return []

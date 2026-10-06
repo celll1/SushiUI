@@ -11,6 +11,16 @@ from .latent_adapter import ImageCodecContract, _Config, PairedSpatialCalibratio
 from .vae_registry import normalize, denormalize
 
 
+def codec_temporal_policy(rank, codec_class):
+    if rank == 4:
+        return "independent_frames_v1"
+    if rank == 5 and codec_class in ("AutoencoderKLLTX2Video", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"):
+        return "causal_first_frame_v1"
+    if rank == 5 and codec_class == "AutoencoderKLMiniMaxH3":
+        return "minimax_h3_chunks_v1"
+    raise ValueError(f"Video calibration needs an explicit temporal policy for {codec_class}")
+
+
 @dataclass(frozen=True)
 class VideoCodecContract:
     image: ImageCodecContract
@@ -98,6 +108,21 @@ def temporal_spec_for_codec(spec, contract):
     return replace(spec,frame_multiple=multiple,frame_offset=offset,min_decodable_frames=floor,
         latent_frames=contract.latent_frames,
         pixel_align=lcm(spec.pixel_align,spec.latent_spatial_patch*contract.image.spatial_scale))
+
+
+def paired_calibration_frames(source, target):
+    """Shortest moving clip accepted by both declared codec clocks."""
+    contracts = (source, target)
+    periods = [17 if c.temporal_policy == "minimax_h3_chunks_v1" else c.temporal_scale for c in contracts]
+    floor = 22 if any(c.temporal_policy == "minimax_h3_chunks_v1" for c in contracts) else 2
+    for frames in range(floor, floor+lcm(*periods)+1):
+        try:
+            for contract in contracts:
+                contract.latent_frames(frames)
+        except ValueError:
+            continue
+        return frames
+    raise ValueError("Source and target video frame lattices have no common moving clip")
 
 
 class _VideoPosterior:

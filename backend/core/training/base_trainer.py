@@ -4499,6 +4499,13 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} ACE-Step checkpoint loaded successfully as base model")
             return
 
+        if self.is_minimax_h3:
+            self.model_path = checkpoint_path
+            from core.training.ops import minimax_h3_ops
+            minimax_h3_ops.load_components(self, resuming=True)
+            print(f"{self.log_prefix} MiniMax-H3 checkpoint loaded successfully as base model")
+            return
+
         if self.is_yue2:
             self.model_path = checkpoint_path
             from core.training.ops import yue2_ops

@@ -76,6 +76,8 @@ class AlignedMiniMaxH3BlockLoopWrapper(MiniMaxH3BlockLoopWrapper):
                 timestep, timestep_indices, token_tags, position_ids, video_indices, audio_indices, text_indices,
                 attention_kwargs=None, return_dict=True, *, residual_video_grid=None, video_codec_grids=None):
         pair = self.transformer._video_latent_alignment
+        if not pair.ready:
+            raise ValueError("H3 video alignment must be calibrated before a training or generation forward")
         total = token_tags.numel()
         indices = (video_indices,audio_indices,text_indices)
         if (token_tags.ndim != 1 or token_tags.dtype != torch.long
@@ -122,7 +124,7 @@ class AlignedMiniMaxH3BlockLoopWrapper(MiniMaxH3BlockLoopWrapper):
         return result
 
 
-def install_video_alignment(model, alignment, contract):
+def install_video_alignment(model, alignment, contract, *, defer_calibration=False):
     from core.models.components.latent_io import resize_latent_io
     from core.models.components.wiring import LatentIOSpec
     from core.rewiring.spec import build_spec
@@ -130,7 +132,7 @@ def install_video_alignment(model, alignment, contract):
     inner = getattr(model,"transformer",model)
     if getattr(inner,"_video_latent_alignment",None) is not None:
         raise ValueError("H3 video alignment is already installed")
-    if not alignment.ready:
+    if not alignment.ready and not defer_calibration:
         raise ValueError("H3 video alignment requires fitted calibration directions")
     for name in ("_fbcache","_skip_blocks","_residual_probe","_block_offloader"):
         if getattr(model,name,None) is not None:

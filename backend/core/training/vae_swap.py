@@ -40,11 +40,11 @@ def initialization_mode(config, arch):
             raise ValueError("ACE audio swap requires auto or paired_temporal initialization")
         return "paired_temporal"
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2") else "zero"
+        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "minimax_h3") else "zero"
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2"):
-        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, Chimera, Ideogram and LTX; select zero for this architecture")
+    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "minimax_h3"):
+        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, Chimera, Ideogram, LTX and H3; select zero for this architecture")
     return mode
 
 
@@ -132,8 +132,8 @@ def check_inherited_bundling(base_model_path: Optional[str], arch: Optional[str]
         # An unresolvable declaration is the loader's refusal to make, with the
         # weights in hand; this check only answers the bundling question.
         return
-    if declared is not None and arch == "ltx2" and declared.identity_native is not True:
-        raise ValueError("Aligned LTX full checkpoints require a bundled video codec")
+    if declared is not None and arch in ("ltx2", "minimax_h3") and declared.identity_native is not True:
+        raise ValueError(f"Aligned {'LTX' if arch == 'ltx2' else 'H3'} full checkpoints require a bundled video codec")
     if declared is not None and not declared.locator:
         raise ValueError(
             f"{base_model_path} carries its own swapped VAE and no reference to "
@@ -227,14 +227,15 @@ def preflight_vae_swap(
         count = config.get("vae_swap_calibration_samples", TRAINING_DEFAULTS["vae_swap_calibration_samples"])
         if type(count) is not int or not 2 <= count <= 256:
             raise ValueError("ACE audio calibration sample count must be an integer from 2 to 256")
-    if arch in ("ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2") and mode != "paired_spatial":
+    if arch in ("ming_image_01", "qwen_image_21", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "minimax_h3") and mode != "paired_spatial":
         raise ValueError(f"{arch} VAE swaps require paired_spatial initialization")
-    if arch == "ltx2":
+    if arch in ("ltx2", "minimax_h3"):
         from api.param_defaults import TRAINING_DEFAULTS
+        label = "LTX" if arch == "ltx2" else "H3"
         if bundle_vae_explicit_false:
-            raise ValueError("LTX VAE swaps require a bundled target codec")
+            raise ValueError(f"{label} VAE swaps require a bundled target codec")
         if not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]):
-            raise ValueError("LTX VAE swaps require train_unet=true")
+            raise ValueError(f"{label} VAE swaps require train_unet=true")
     if arch == "sensenova_sdxl_chimera":
         if bundle_vae_explicit_false:
             raise ValueError("Chimera VAE swaps require a bundled target codec")

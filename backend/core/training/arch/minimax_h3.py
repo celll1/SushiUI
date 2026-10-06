@@ -32,6 +32,37 @@ from core.training.ops.minimax_h3_ops import (
 
 
 class MiniMaxH3ArchHandler(ArchHandler):
+    def __init__(self, trainer=None):
+        super().__init__(trainer)
+        if trainer is not None:
+            self.resolve_wiring(trainer)
+
+    def apply_vae_swap(self, trainer, resolved, module=None):
+        from core.models.minimax_h3.vae_training import apply_swap
+        return apply_swap(trainer, resolved, handler=self, module=module)
+
+    def check_vae_compatibility(self, facts, *, trainer=None, base_model_path=None):
+        from core.models.components.video_latent_adapter import codec_temporal_policy
+        if facts.get("pixel_channels", 3) != 3 or facts.get("output_channels", 3) != 3:
+            return False, "H3 VAE swap requires RGB encode and decode channels"
+        scale, temporal, rank = facts.get("scale_factor"), facts.get("scale_temporal"), facts.get("ndim")
+        if (rank not in (4, 5) or type(scale) is not int or scale < 1
+                or type(temporal) is not int or temporal < 1):
+            return False, "H3 VAE swap requires declared RGB video/image codec geometry"
+        if rank == 4 and temporal != 1:
+            return False, "A 2D H3 target codec must preserve independent frames"
+        try:
+            codec_temporal_policy(rank, facts.get("vae_class"))
+        except ValueError as exc:
+            return False, str(exc)
+        if scale % self.wiring.vae_scale_factor and self.wiring.vae_scale_factor % scale:
+            return False, "H3 VAE swap requires integer spatial scale relative to its native codec"
+        return True, None
+
+    def calibrate_before_training(self, trainer, datasets, bucket_manager):
+        from core.models.minimax_h3.vae_training import calibrate
+        calibrate(trainer, datasets)
+
     def resolve_wiring(self, trainer):
         from dataclasses import replace
         from math import lcm

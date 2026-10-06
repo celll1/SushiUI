@@ -34,7 +34,7 @@ def test_text_encoder_is_mapped_before_transformer_and_vaes(tmp_path, monkeypatc
     monkeypatch.setattr(loader, "_build_text_encoder",
                         lambda *_args: (calls.append("text_encoder") or object(), object()))
     monkeypatch.setattr(loader, "_build_transformer",
-                        lambda *_args: (calls.append("transformer") or object(), object()))
+                        lambda *_args: (calls.append("transformer") or torch.nn.Linear(1, 1), object()))
 
     def _fake_build_video_vae(vae_path, *_rest, label="video VAE", **_kwargs):
         calls.append("image_vae" if label == "image VAE" else "video_vae")
@@ -60,6 +60,11 @@ def test_text_encoder_is_mapped_before_transformer_and_vaes(tmp_path, monkeypatc
         (layout["image_vae"], "image VAE"),
     ]
     assert result["image_vae"] is not None
+    sources = result["transformer"]._h3_component_sources
+    assert sources["source_vae"] == layout["vae"]
+    assert sources["text_encoder"] == layout["text_encoder"]
+    assert sources["variant"] == "ref2va"
+    assert sources["te_projection"] is None
 
 
 def test_geometry_only_load_still_skips_text_encoder(tmp_path, monkeypatch):

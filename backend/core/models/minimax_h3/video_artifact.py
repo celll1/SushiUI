@@ -104,12 +104,14 @@ def save_checkpoint(trainer,path,*,step,epoch,max_shard_bytes=None):
     from core.training.adapters.base_adapter import reject_quantized_base
     from core.models.common.single_file_format import save_single_file_state
     from .residual_unet import model_topology_metadata
+    from .component_sources import export_sources
     inner = getattr(trainer.transformer,"transformer",trainer.transformer)
     reject_quantized_base(inner,model_label="MiniMax H3")
     resolved,bundled,metadata = swap_metadata(trainer)
     if resolved is None or not bundled:
         raise ValueError("H3 aligned Full checkpoint requires a bundled codec")
     metadata.update(export_record(inner,trainer.vae,metadata))
+    metadata.update(export_sources(inner))
     metadata.update(model_topology_metadata(inner))
     metadata.update(model_type="minimax_h3",**{"modelspec.architecture":"minimax_h3"},
         format=FORMAT,transformer_config=json.dumps(canonical_config(inner.config),allow_nan=False),step=str(step),epoch=str(epoch))
@@ -179,6 +181,8 @@ def preflight_checkpoint(path):
     if config != canonical_config(config):
         raise ValueError("H3 Full checkpoint requires an explicit canonical native configuration")
     record = read_record(metadata,config)
+    from .component_sources import read_sources
+    read_sources(metadata)
     graph = read_checkpoint_metadata(metadata)
     if graph is not None:
         graph = validate_topology_identity(graph,config)
@@ -258,6 +262,10 @@ def load_checkpoint(path,torch_dtype=torch.bfloat16):
         raise ValueError("H3 restored backbone left meta tensors")
     model.register_to_config(**{VIDEO_CODEC_KEY:asdict(codec_contract(record)),VIDEO_POSITION_POLICY_KEY:VIDEO_POSITION_POLICY})
     restore_topology(model,graph)
+    from .component_sources import read_sources
+    sources = read_sources(metadata)
+    if sources is not None:
+        model._h3_component_sources = sources
     wrapper = AlignedMiniMaxH3BlockLoopWrapper(model)
     wrapper.config = _Config(dict(model.config),in_channels=record["declaration"]["new_channels"])
     return wrapper.eval().requires_grad_(False),codec,identity

@@ -71,6 +71,12 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
         target = Path(output_path)
         if target.suffix:
             target = target.with_suffix("")
+        vae_metadata = None
+        if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
+            from core.training.vae_swap import swap_metadata
+            resolved, bundled, vae_metadata = swap_metadata(trainer)
+            if resolved is None or not bundled:
+                raise ValueError("Chimera aligned checkpoints require their bundled target codec")
         return save_chimera_checkpoint(
             target,
             base_manifest=trainer.chimera_manifest,
@@ -79,6 +85,9 @@ class SenseNovaSDXLChimeraFullParameterAdapter(BaseFullParameterAdapter):
             unet=trainer.unet,
             vae=trainer.vae,
             frozen_vae_state=trainer.chimera_frozen_vae_state,
+            vae_metadata=vae_metadata,
+            prediction=getattr(trainer, "chimera_prediction", None),
+            vae_calibration=getattr(trainer, "chimera_vae_calibration", None),
             stage=training_stage(trainer),
             step=step,
             epoch=epoch,

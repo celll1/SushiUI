@@ -104,7 +104,8 @@ def build_chimera_artifact_from_components(
         donor_unet,
         initialization=unet_initialization,
         seed=initialization_seed,
-        output_initialization="default" if is_polar else "zero",
+        output_initialization=("default" if is_polar else
+                               "preserve" if unet_initialization == "sdxl_transplant" else "zero"),
     )
     radial_head_config = None
     if is_polar:

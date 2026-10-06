@@ -153,6 +153,10 @@ def load_components(trainer) -> None:
     trainer.unet = components["unet"]
     trainer.vae = components["vae"].to(dtype=trainer.vae_dtype)
     trainer.chimera_frozen_vae_state = components["frozen_vae_state"]
+    if components.get("vae_identity") is not None:
+        trainer.vae_identity = components["vae_identity"]
+        trainer.vae_latent_channels = components["vae_identity"].latent_channels
+        trainer.chimera_vae_calibration = components["manifest"]["vae_alignment"]["calibration"]
     trainer.condition_bridge = components["condition_bridge"]
     trainer.chimera_understanding = components["understanding"]["transformer"]
     trainer.text_encoder = trainer.chimera_understanding
@@ -171,7 +175,10 @@ def load_components(trainer) -> None:
 
     config = getattr(trainer, "config", None) or {}
     flow_version = str(config.get("chimera_flow_version", "v1"))
-    if flow_version == "v2":
+    if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
+        # Saved source/target contracts must survive config defaults on resume.
+        trainer.chimera_prediction = components["prediction"]
+    elif flow_version == "v2":
         from core.models.sensenova_sdxl_chimera.artifact import (
             FORMAT_VERSION,
             migrate_manifest_prediction,

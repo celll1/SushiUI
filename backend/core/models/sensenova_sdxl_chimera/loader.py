@@ -21,7 +21,7 @@ from .artifact import (
 )
 from .conditioning_bridge import ChimeraBridgeConfig, ConditioningBridge
 from .flow import FLOW_V3_PREDICTION, FLOW_V4_PREDICTION
-from .unet import install_polar_radial_head, parameter_census
+from .unet import install_polar_radial_head
 
 
 def preflight_chimera_artifact(
@@ -56,6 +56,8 @@ def preflight_chimera_artifact(
         raise ChimeraArtifactError("U-Net config hash differs from chimera.json")
     if config_hash(config["vae"]) != manifest["vae"]["config_hash"]:
         raise ChimeraArtifactError("VAE config hash differs from chimera.json")
+    from .vae_artifact import validate_metadata
+    declaration = validate_metadata(manifest, config, metadata)
     return {
         "root": root,
         "manifest": manifest,
@@ -64,6 +66,7 @@ def preflight_chimera_artifact(
         "weights_path": weights_path,
         "shapes": shapes,
         "prediction": prediction,
+        "vae_alignment": declaration,
     }
 
 
@@ -100,6 +103,11 @@ def load_chimera_artifact(
     from diffusers import AutoencoderKL, UNet2DConditionModel
 
     unet = UNet2DConditionModel.from_config(config["unet"])
+    declaration = preflight["vae_alignment"]
+    if declaration is not None:
+        from core.models.components.spatial_swap import install
+        install(unet, declaration)
+        unet._chimera_source_prediction = manifest["vae_alignment"]["source_prediction"]
     if prediction["type"] in {FLOW_V3_PREDICTION, FLOW_V4_PREDICTION}:
         radial_config = config["polar_radial_head"]
         install_polar_radial_head(
@@ -113,7 +121,7 @@ def load_chimera_artifact(
     bridge_dict = dict(config["conditioning_bridge"])
     bridge_dict["selected_layers"] = tuple(bridge_dict["selected_layers"])
     bridge = ConditioningBridge(ChimeraBridgeConfig(**bridge_dict))
-    vae = AutoencoderKL.from_config(config["vae"])
+    vae = AutoencoderKL.from_config(config["vae"]) if declaration is None else None
 
     state, _ = read_state_dict(weights_path)
     _strict_component(bridge, strip_prefix(state, "condition_bridge."), "conditioning bridge")
@@ -121,8 +129,19 @@ def load_chimera_artifact(
     vae_state = strip_prefix(state, "vae.")
     if content_hash_for_state_dict(vae_state) != manifest["vae"]["content_hash"]:
         raise ChimeraArtifactError("bundled VAE content hash differs from chimera.json")
-    _strict_component(vae, vae_state, "VAE")
-    if parameter_census(unet) != {
+    if declaration is None:
+        _strict_component(vae, vae_state, "VAE")
+    else:
+        from dataclasses import replace
+        from core.models.common.vae_source import load_declared_latent_io
+        from core.models.components.spatial_swap import restored_image_codec, validate_loaded
+        resolved = load_declared_latent_io(weights_path, arch="sensenova_sdxl_chimera", load_weights=False)
+        if resolved is None:
+            raise ChimeraArtifactError("Aligned Chimera artifact has no restorable target codec")
+        resolved = replace(resolved, state_dict=vae_state, path=None)
+        vae, resolved = restored_image_codec(resolved.load_module(), resolved, declaration)
+        validate_loaded(unet)
+    if {name: tuple(value.shape) for name, value in unet.state_dict().items()} != {
         key[len("unet.") :]: shape for key, shape in shapes.items() if key.startswith("unet.")
     }:
         raise ChimeraArtifactError("loaded U-Net census differs from weight headers")
@@ -154,5 +173,6 @@ def load_chimera_artifact(
         "manifest": manifest,
         "config": config,
         "prediction": prediction,
+        "vae_identity": resolved if declaration is not None else None,
         "model_path": str(root),
     }

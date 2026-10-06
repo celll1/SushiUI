@@ -58,21 +58,22 @@ def build_donor_equal_unet(
     *,
     initialization: str = "scratch",
     seed: int = 0,
-    output_initialization: str = "zero",
+    output_initialization: str | None = None,
 ) -> tuple[torch.nn.Module, ChimeraUNetBuildReport]:
     """Build an exact-shape U-Net from a donor and initialize it explicitly.
 
-    ``scratch`` retains normal diffusers/PyTorch initialization.
-    ``sdxl_transplant`` strict-loads every donor tensor. The output convolution
-    is either zeroed or reset to its default initialization explicitly.
+    Scratch zeros the output by default; transplant preserves the donor unless
+    its output initialization is explicitly overridden.
     """
     if initialization not in {"scratch", "sdxl_transplant"}:
         raise ValueError(
             f"unknown Chimera U-Net initialization {initialization!r}; "
             "expected 'scratch' or 'sdxl_transplant'"
         )
-    if output_initialization not in {"zero", "default"}:
-        raise ValueError("output_initialization must be 'zero' or 'default'")
+    if output_initialization is None:
+        output_initialization = "zero" if initialization == "scratch" else "preserve"
+    if output_initialization not in {"zero", "default", "preserve"}:
+        raise ValueError("output_initialization must be 'zero', 'default' or 'preserve'")
     from diffusers import UNet2DConditionModel
 
     config = _config_dict(donor_unet.config)
@@ -88,9 +89,9 @@ def build_donor_equal_unet(
             f"Chimera format v2 requires SDXL cross_attention_dim=2048, got {cross_dim!r}"
         )
 
-    devices = [] if not torch.cuda.is_available() else list(range(torch.cuda.device_count()))
-    with torch.random.fork_rng(devices=devices):
-        torch.manual_seed(int(seed))
+    # Construction is CPU-only; do not initialize CUDA just to save its RNG.
+    with torch.random.fork_rng(devices=[]), torch.device("cpu"):
+        torch.random.default_generator.manual_seed(int(seed))
         built = UNet2DConditionModel.from_config(config)
     if initialization == "sdxl_transplant":
         built.load_state_dict(donor_unet.state_dict(), strict=True)
@@ -102,8 +103,10 @@ def build_donor_equal_unet(
             conv_out.weight.zero_()
             if conv_out.bias is not None:
                 conv_out.bias.zero_()
-    elif initialization == "sdxl_transplant":
-        conv_out.reset_parameters()
+    elif output_initialization == "default" and initialization == "sdxl_transplant":
+        with torch.random.fork_rng(devices=[]):
+            torch.random.default_generator.manual_seed(int(seed))
+            conv_out.reset_parameters()
 
     donor_census = parameter_census(donor_unet)
     built_census = parameter_census(built)

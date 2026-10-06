@@ -67,6 +67,7 @@ def prediction_contract(
     radius_floor: float = 1e-8,
     angular_singularity_threshold: float = 1e-6,
     angular_step_limit: float | None = None,
+    latent_channels: int = 4,
 ) -> dict[str, Any]:
     """Build and validate one explicit Chimera prediction contract."""
     kind = str(prediction_type).strip().lower()
@@ -88,8 +89,11 @@ def prediction_contract(
         0.0 if latent_centered_second_moment is None
         else latent_centered_second_moment
     )
-    if len(mean) != 4 or not all(math.isfinite(value) for value in mean):
-        raise ChimeraArtifactError("Chimera v2-v4 latent_mean must contain four finite values")
+    if type(latent_channels) is not int or latent_channels < 1:
+        raise ChimeraArtifactError("Invalid Chimera latent channel count")
+    if len(mean) != latent_channels or not all(math.isfinite(value) for value in mean):
+        count = "four" if latent_channels == 4 else str(latent_channels)
+        raise ChimeraArtifactError(f"Chimera v2-v4 latent_mean must contain {count} finite values")
     if not math.isfinite(q) or q <= 0.0:
         raise ChimeraArtifactError(
             "Chimera v2-v4 latent_centered_second_moment must be finite and > 0"
@@ -200,6 +204,13 @@ def validated_prediction_contract(
     if version not in {FORMAT_VERSION, V3_FORMAT_VERSION, V4_FORMAT_VERSION}:
         raise ChimeraArtifactError(f"unsupported Chimera format version: {version}")
     kind = str(declared.get("type") or "")
+    alignment = manifest.get("vae_alignment")
+    channels = 4
+    if alignment is not None:
+        from core.models.components.latent_adapter import validate_declaration
+        if not isinstance(alignment, dict):
+            raise ChimeraArtifactError("Invalid Chimera VAE alignment record")
+        channels = validate_declaration(alignment.get("declaration"))["new_channels"]
     if version == V3_FORMAT_VERSION and kind != FLOW_V3_PREDICTION:
         raise ChimeraArtifactError(
             "Chimera format v4 requires polar_tangent_flow prediction"
@@ -218,6 +229,7 @@ def validated_prediction_contract(
         )
     validated = prediction_contract(
         kind,
+        latent_channels=channels,
         latent_mean=declared.get("latent_mean"),
         latent_centered_second_moment=declared.get(
             "latent_centered_second_moment"
@@ -492,6 +504,8 @@ def read_artifact_documents(directory: str | os.PathLike[str]) -> tuple[dict[str
         raise ChimeraArtifactError(f"manifest/config format version mismatch at {root}")
     version = versions.pop()
     prediction = validated_prediction_contract(manifest, artifact_format=version)
+    from .vae_artifact import validate_documents
+    validate_documents(manifest, config)
     radial_head = config.get("polar_radial_head")
     if prediction["type"] in {FLOW_V3_PREDICTION, FLOW_V4_PREDICTION}:
         expected_head = {"version": 1, "source": "conditioned_mid_block"}
@@ -568,6 +582,9 @@ def save_chimera_checkpoint(
     stage_plan: Iterable[str] | None = None,
     bridge_align_steps: int = 0,
     max_shard_bytes: int = 10 * 1024**3,
+    vae_metadata: Mapping[str, str] | None = None,
+    prediction: Mapping[str, Any] | None = None,
+    vae_calibration: Mapping[str, Any] | None = None,
 ) -> Path:
     """Atomically save a production-loadable Chimera training checkpoint."""
     from core.models.common.single_file_format import dedup_tensors, save_single_file_state
@@ -582,7 +599,21 @@ def save_chimera_checkpoint(
     temporary = Path(tempfile.mkdtemp(prefix=f".{target.name}.saving-", dir=str(target.parent)))
     try:
         manifest = json.loads(json.dumps(dict(base_manifest)))
-        vae_state = dict(frozen_vae_state or vae.state_dict())
+        runtime = json.loads(json.dumps(dict(runtime)))
+        from .vae_artifact import prepare_export
+        aligned = prepare_export(manifest, runtime, unet, vae,
+            metadata=vae_metadata, prediction=prediction, calibration=vae_calibration)
+        if aligned:
+            frozen_target = frozen_vae_state if base_manifest.get("vae_alignment") else None
+            vae_state = dict(frozen_target or vae.inner.state_dict())
+            if frozen_target and content_hash_for_state_dict(vae_state) != base_manifest["vae"]["content_hash"]:
+                raise ValueError("Frozen target VAE differs from the loaded Chimera artifact")
+            if {key: value.shape for key, value in vae_state.items()} != {key: value.shape for key, value in vae.inner.state_dict().items()}:
+                raise ValueError("Bundled target VAE tensor geometry disagrees with its codec")
+        else:
+            vae_state = dict(frozen_vae_state or vae.state_dict())
+        if aligned:
+            manifest["vae"]["content_hash"] = content_hash_for_state_dict(vae_state)
         if content_hash_for_state_dict(vae_state) != manifest["vae"]["content_hash"]:
             raise ValueError("checkpoint VAE state differs from the pinned donor VAE")
         metrics = {key: float(value) for key, value in (alignment_metrics or {}).items()}
@@ -612,6 +643,8 @@ def save_chimera_checkpoint(
             "training_epoch": str(int(epoch)),
             "tied_weights_dropped": json.dumps(dropped),
         }
+        if aligned:
+            metadata.update(aligned)
         save_single_file_state(
             tensors,
             metadata,

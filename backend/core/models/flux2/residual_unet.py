@@ -79,6 +79,8 @@ def default_topology(config):
 
 
 def generation_token_stride(vae):
+    if hasattr(vae,"spatial_scale_factor"):
+        return int(vae.spatial_scale_factor)*2
     blocks = getattr(getattr(vae, "config", None), "block_out_channels", None)
     return (2 ** (len(blocks) - 1) if blocks else 8) * 2
 

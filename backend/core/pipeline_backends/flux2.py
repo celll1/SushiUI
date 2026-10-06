@@ -965,6 +965,10 @@ class Flux2Mixin:
             negative_prompt = params.get("negative_prompt", "")
             height = params.get("height", 1024)
             width = params.get("width", 1024)
+            from core.models.flux2.residual_unet import generation_token_stride
+            stride=generation_token_stride(vae)
+            height=max(stride,(int(height)//stride)*stride)
+            width=max(stride,(int(width)//stride)*stride)
             num_inference_steps = params.get("steps", 50)
             guidance_scale = params.get("cfg_scale", 4.0)
             max_sequence_length = 512  # FLUX.2 uses Qwen3 with max 512 tokens
@@ -1068,7 +1072,8 @@ class Flux2Mixin:
             print("[FLUX.2] Stage 2: Preparing latents...")
 
             # VAE scale factor (8) * patch size (2) = 16
-            vae_scale_factor = 8
+            from core.models.flux2.residual_unet import generation_token_stride
+            vae_scale_factor = generation_token_stride(vae)//2
             patch_size = 2
 
             # Ensure height/width divisible by vae_scale_factor * patch_size
@@ -1076,7 +1081,7 @@ class Flux2Mixin:
             latent_width = 2 * (int(width) // (vae_scale_factor * patch_size))
 
             # FLUX.2 has 32 latent channels, but patchified to 128
-            num_channels_latents = transformer.config.in_channels // 4  # 32
+            num_channels_latents = int(vae.config.latent_channels)
 
             latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
             latents = torch.randn(latent_shape, generator=generator, device=self.device, dtype=prompt_embeds.dtype)
@@ -2408,8 +2413,10 @@ class Flux2Mixin:
 
             # Crop to multiple of 16
             w, h = img.size
-            new_w = (w // 16) * 16
-            new_h = (h // 16) * 16
+            from core.models.flux2.residual_unet import generation_token_stride
+            stride = generation_token_stride(vae)
+            new_w = max(stride,(w // stride) * stride)
+            new_h = max(stride,(h // stride) * stride)
             left = (w - new_w) // 2
             top = (h - new_h) // 2
             img = img.crop((left, top, left + new_w, top + new_h))
@@ -2586,7 +2593,8 @@ class Flux2Mixin:
             width, height = init_image.size
 
             # VAE scale factor
-            vae_scale_factor = 8
+            from core.models.flux2.residual_unet import generation_token_stride
+            vae_scale_factor = generation_token_stride(vae)//2
             patch_size = 2
             multiple_of = vae_scale_factor * patch_size
 
@@ -3399,7 +3407,8 @@ class Flux2Mixin:
 
             width, height = init_image.size
 
-            vae_scale_factor = 8
+            from core.models.flux2.residual_unet import generation_token_stride
+            vae_scale_factor = generation_token_stride(vae)//2
             patch_size = 2
             multiple_of = vae_scale_factor * patch_size
 

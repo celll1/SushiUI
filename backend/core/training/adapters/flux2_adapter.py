@@ -368,7 +368,9 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
             if swap_bundled and trainer.vae is not None:
                 print(f"[FLUX2FullParameterAdapter] Bundling swapped VAE "
                       f"({swapped.provenance}) under 'vae.' ...")
-                for key, value in trainer.vae.state_dict().items():
+                from core.models.components.latent_adapter import NormalizedImageVAE
+                codec=trainer.vae.inner if isinstance(trainer.vae,NormalizedImageVAE) else trainer.vae
+                for key, value in codec.state_dict().items():
                     combined_state_dict[f"vae.{key}"] = value.cpu()
             else:
                 print(f"[FLUX2FullParameterAdapter] Swapped VAE ({swapped.provenance}) "
@@ -397,6 +399,8 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
             "model_type": "flux2",
             "format": "pt",
         }
+        from core.models.components.spatial_swap import artifact_metadata
+        metadata.update(artifact_metadata(trainer.transformer))
 
         if base_model_repo:
             metadata["base_model_repo"] = base_model_repo

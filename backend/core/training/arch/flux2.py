@@ -1,10 +1,4 @@
-"""
-Flux2ArchHandler — P0/P1 stub handler for arch "flux2".
-
-Empty subclass: name + wiring spec are real; every canonical method raises
-NotImplementedError. Bodies are moved from base_trainer.py in phases P3-P7.
-Nothing calls these until a later phase flips the corresponding dispatcher.
-"""
+"""Flux2 training and target-native image codec contracts."""
 
 from __future__ import annotations
 
@@ -41,6 +35,31 @@ class Flux2ArchHandler(ArchHandler):
     consumes_reconstruction_loss_weight = True
     consumes_crop_decode_loss = True
     supplies_predicted_latent = True
+
+    def resolve_wiring(self,trainer):
+        from core.models.components.latent_adapter import NormalizedImageVAE
+        vae=getattr(trainer,"vae",None)
+        if isinstance(vae,NormalizedImageVAE):
+            self.pixel_align=vae.spatial_scale_factor*2
+            return self.wiring.replace(latent_channels=vae.config.latent_channels,
+                vae_scale_factor=vae.spatial_scale_factor,vae_norm="identity",vae_norm_pack=1)
+        return getattr(trainer,"wiring",None) or self.wiring
+
+    def apply_vae_swap(self,trainer,resolved,module=None):
+        from core.models.flux2.vae_alignment import apply_swap
+        return apply_swap(trainer,resolved,handler=self,module=module)
+
+    def check_vae_compatibility(self,facts,*,trainer=None,base_model_path=None):
+        scale=facts.get("scale_factor")
+        if facts.get("ndim") not in (4,5) or type(scale) is not int or scale<1:
+            return False,"Flux2 VAE swap requires declared image codec geometry"
+        if scale%8 and 8%scale:
+            return False,"Flux2 VAE swap requires integer spatial scale relative to 8x"
+        return True,None
+
+    def calibrate_before_training(self,trainer,datasets,bucket_manager):
+        from core.models.flux2.vae_alignment import calibrate
+        calibrate(trainer,datasets)
 
     def lora_adapter_class(self):
         from core.training.adapters import FLUX2LoRAAdapter

@@ -434,6 +434,7 @@ def _trainer(arch, transformer, vae, config, **extra):
 def test_a_flux2_run_swaps_its_latent_space_through_the_arch_handler(tmp_path):
     directory = _standalone_vae_dir(tmp_path, 16, "vae16")
     trainer = _trainer("flux2", _flux2(128), _tiny_vae(32), _swap_config(directory))
+    trainer.config["vae_swap_new_channel_init"] = "zero"
 
     apply_latent_space(trainer, None)
 

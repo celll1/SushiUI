@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lensでpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2でpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
@@ -65,8 +65,18 @@ native・KV extract/cached・U-net・dense block swapで同じ射影hookを使�
 hookはEMAコピーと射影moduleの置換に追従し、例外後にforward contextを残さない。
 dense wrapperの旧diffusers引数名・single modulationの不正slice・先頭batchだけの時刻適用も修正した。
 `backend/tests/flux2_spatial_boundaries_test.py`と関連CPU回帰38件が通過した。
-**Flux2の公開swap配線は未完**。初期化/校正、loader/export、動的stride、UIの接続が残るため、
-`auto`はまだlegacy zeroであり、公式全重みでの学習・画質は未検証。
+Flux2の初期化/校正、loader/full export、動的stride、UIも接続した。`auto`はpaired_spatialへ解決する。
+VAEはnativeの重み・configを保存し、bridgeと拡張IOの内部幅は`max(oldC,newC)`のまま復元する。
+保存したnative `out_channels=None`も保持し、チャネル縮小でU-net identityが変わることを防ぐ。
+txt2img/img2img/inpaint、reference crop、定期sample、packed cache検査は交換先の格子を使用する。
+明示的なlegacy zeroは4D/8xの交換に限定する。
+`backend/tests/flux2_spatial_swap_test.py`は、チャネル増減の両方向・dense/U-net・実VAEの校正とencode/decode、
+単一/sharded full checkpointの公開loader・再校正しない再開・欠損bridge拒否を合成画像で検証する。
+関連CPU回帰は315件通過後、None宣言の修正を含むFlux2復元・U-net16件が通過した。
+変更Pythonのpy_compile・CUDAを抑止した実importが通過し、fixture追加後の復元4件も通過した。
+API反映後の`GET /training/vae-sources?arch=flux2`はQwen 2.1の64ch/16x/5D codecをcompatibleとして返す。
+frontendの型・既定値・設定更新と保存経路は静的確認済み。ownerのbuildと画面確認は未了。
+公式全重みでの学習・画質・optimizer付きrun再開は未検証。
 2026-10-06の関連CPU回帰テスト338件、変更Pythonのpy_compileとCUDAを抑止した実importが通過した。
 再起動後の`GET /training/vae-sources?arch=krea2`でもQwen 2.1の64ch/16x codecが選択可能。
 aligned exportはcodec宣言のない復元不能な保存を拒否する。frontendは静的確認済みで、ownerのbuild・画面確認は未了。
@@ -1299,7 +1309,7 @@ std ではなく RMS を採るのは、平均が 0 でない（+0.236）一方�
 - **minimax_music3**: 学習非対応。
 - **acestep**: 変形自体は §6.4 で定義できるが、凍結 RVQ・`silence_latent`・`chunk_masks` の再設計を
   含むため本書では保留。
-- **縮小率の変更**（8× → 16× 等）: D5 で拒否。SenseNova のみ例外で、任意の空間縮小率を受理する（§10.2）。
+- **縮小率の変更**（8× → 16× 等）: legacy zero はD5で拒否。現在のpaired_spatial対応範囲は冒頭に記載。SenseNovaのpixel → latent経路は§10.2を参照。
 - **生成側 override でのフルモデル抽出**: 提供しない（§7.2）。
 - **重みスケール補正・warmup/freeze スケジュール**: 行わない（D4）。効果の主張は実測後に限る。
 - **SenseNova の `encoder_pinv` ヘッド初期化**: 実験結果待ち（§10.3）。

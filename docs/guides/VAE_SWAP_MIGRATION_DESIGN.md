@@ -20,6 +20,18 @@ ancestral更新、CFG/NAGのbatch展開、style別noise、guide/inpaint混合を
 後者は固定補正bufferがBF16ロード後もbit一致することを確認した。変更したbackendの
 `py_compile`と実importも通過し、CUDA contextは未作成。実画像は使用していない。
 
+SD生成の追加noise追跡には`SDNoiseTrajectory`を追加した。schedulerを別に複製し、
+clean=0のnoise-only履歴を同じstep乱数で更新する。generatorの状態は複製し、
+本体の乱数を二重に消費しない。DDIM（eta=0.7）、DDPM、Euler ancestral、KDPM2 ancestral、
+SDE DPM++を含む実schedulerで、既知cleanを持つ合成oracleとnoise分解を照合した。
+追跡・拒否テスト31件、既存SD sampling回帰34件が通過。backend compile/importも通過。
+このクラスはまだ生成loopへ接続していない。CFG/NAG展開、style別noise、guide/inpaintの
+noise-only state混合と、本体stepと同じ明示generatorを渡す接続が残る。
+PNDMのv-predictionは合成oracleで約0.014の分解誤差があり、この追跡方式では拒否する。
+clip/thresholding・learned variance・churn・per-token timestepも現段階では拒否する。
+Flowの`stochastic_sampling`は実装がgeneratorを無視するため拒否し、無条件に同じ乱数と見なさない。
+これらの拒否は追跡クラス内だけの契約で、既存の非Gaussian生成の選択肢を変更しない。
+
 Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く、channel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。校正した3×3入力/出力kernelと、中心行列のSVD行直交射影を
 固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが

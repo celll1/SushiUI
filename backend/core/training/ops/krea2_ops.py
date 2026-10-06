@@ -287,6 +287,8 @@ def train_step(
     position_ids = prepare_position_ids(text_seq_len, latent_h, latent_w, trainer.device)
 
     t_dtype = trainer.transformer.dtype
+    from core.models.krea2.vae_alignment import noise_kwargs
+    alignment_kwargs = noise_kwargs(trainer.transformer, noise)
 
     def _fwd():
         return trainer.transformer(
@@ -296,6 +298,7 @@ def train_step(
             position_ids=position_ids,
             encoder_attention_mask=encoder_mask,
             return_dict=False,
+            **alignment_kwargs,
         )[0]
 
     if trainer.mixed_precision:

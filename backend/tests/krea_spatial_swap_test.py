@@ -39,6 +39,59 @@ def model(channels, rewired=False):
     return value
 
 
+@pytest.mark.parametrize("rewired", [False,True])
+def test_gaussian_packed_model_gradients_and_sampler_noise(rewired):
+    from core.models.components.gaussian_alignment import POLICY
+    from core.models.krea2.krea2_pipeline_ops import prepare_position_ids, denoise_loop, denoise_loop_img2img, denoise_loop_inpaint
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    value=model(8,rewired);install(value,dict(declaration(4,8),noise_policy=POLICY))
+    pair=value.vae_latent_bridge
+    identity(pair.input,.2);identity(pair.output,.3)
+    pair.noise_alignment.capture(pair.input,pair.output)
+    from core.models.krea2.vendor.single_file import build_krea2_transformer
+    expected_noise={k:v.clone() for k,v in pair.noise_alignment.state_dict().items()}
+    loaded=build_krea2_transformer(value.state_dict(),dict(value.config),torch.bfloat16,
+                                   alignment_declaration=pair.declaration)
+    for key,tensor in expected_noise.items():
+        assert torch.equal(tensor,loaded.vae_latent_bridge.noise_alignment.state_dict()[key])
+    del loaded
+    x=torch.randn(1,64,32,requires_grad=True);noise=torch.randn_like(x)
+    caption=torch.randn(1,3,2,12);mask=torch.ones(1,3,dtype=torch.bool)
+    sigma=torch.tensor([.6]);positions=prepare_position_ids(3,8,8,"cpu")
+    output=value(x,caption,sigma,positions,alignment_noise=noise,return_dict=False)[0]
+    del value.vae_latent_bridge
+    try:
+        native=value(map_packed_image(pair,x,(8,8),sigma=sigma,noise=noise),caption,sigma,positions,return_dict=False)[0]
+        expected=map_packed_image(pair,native,(8,8),output=True,noise=noise)
+    finally:value.add_module("vae_latent_bridge",pair)
+    torch.testing.assert_close(output,expected)
+    output.square().mean().backward()
+    assert pair.input.projection.weight.grad.abs().sum()>0
+    assert pair.output.projection.weight.grad.abs().sum()>0
+    assert all(b.grad is None for b in pair.noise_alignment.buffers())
+    recorded=[];original=value.forward
+    def forward(*a,**kw):
+        recorded.append((kw['hidden_states'].detach().clone(),kw['alignment_noise'].detach().clone()))
+        return original(*a,**kw)
+    value.forward=forward
+    common=dict(transformer=value,scheduler=FlowMatchEulerDiscreteScheduler(),prompt_embeds=caption,
+        prompt_embeds_mask=mask,neg_prompt_embeds=caption,neg_prompt_embeds_mask=mask,guidance=2.,
+        num_inference_steps=3,grid_h=8,grid_w=8,patch_size=2,is_distilled=False,device="cpu")
+    result=denoise_loop(latents=noise.clone(),**common)
+    assert torch.isfinite(result).all() and len(recorded)==6
+    assert all(torch.equal(n,noise) for _,n in recorded)
+    for inpaint in (False,True):
+        recorded.clear();common['scheduler']=FlowMatchEulerDiscreteScheduler()
+        fn=denoise_loop_inpaint if inpaint else denoise_loop_img2img
+        extra=dict(mask_latent=torch.ones(1,64,1)) if inpaint else {}
+        result=fn(init_latents=x.detach(),denoising_strength=.8,seed=63,**extra,**common)
+        actual_noise=recorded[0][1]
+        first_sigma=float(common['scheduler'].timesteps[1])/1000
+        torch.testing.assert_close(recorded[0][0],(1-first_sigma)*x.detach()+first_sigma*actual_noise)
+        assert all(torch.equal(n,actual_noise) for _,n in recorded)
+        assert torch.isfinite(result).all()
+
+
 @pytest.mark.parametrize("old,new",[(4,8),(8,4)])
 @pytest.mark.parametrize("rewired",[False,True])
 @pytest.mark.parametrize("dtype",[torch.float32,torch.bfloat16])

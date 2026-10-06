@@ -84,6 +84,25 @@ def test_noise_required_and_legacy_pair_remains_explicitly_uncorrected():
     with pytest.raises(ValueError,match='target channels'):SpatialAlignmentPair(dict(declaration(5,3),noise_policy=POLICY))
 
 
+@pytest.mark.parametrize("order", ["outer","inner"])
+@pytest.mark.parametrize("output", [False,True])
+def test_packed_gaussian_noise_uses_the_same_pixel_order(order, output):
+    from core.models.components.spatial_swap import map_packed_image
+    value=pair();noise=torch.randn(2,5,8,12);image=torch.randn_like(noise)
+    def pack(x):
+        x=x.reshape(2,x.shape[1],4,2,6,2).permute(0,2,4,1,3,5)
+        if order=='inner':x=x.permute(0,1,2,4,5,3)
+        return x.reshape(2,24,-1)
+    sigma=torch.tensor([.2,.8])
+    actual=map_packed_image(value,pack(image),(4,6),sigma=sigma,output=output,
+                            noise=pack(noise),channel_order=order)
+    expected=(value.flow_velocity(image,convention='eps_minus_x0',noise=noise) if output
+              else value.flow_state(image,sigma,noise=noise))
+    torch.testing.assert_close(actual,pack(expected))
+    with pytest.raises(ValueError,match='external image grid'):
+        map_packed_image(value,pack(image),(4,6),sigma=sigma,noise=pack(noise)[:,:23])
+
+
 def test_calibration_cannot_capture_a_singular_center_projection():
     value=pair()
     with torch.no_grad():value.input.projection.weight[:3,:,1,1].zero_()

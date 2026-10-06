@@ -12,7 +12,23 @@ def install(model, declaration):
         model.register_to_config(vae_alignment=declaration)
 
 
-def map_input(model, states, timestep, shapes):
+def noise_kwargs(model, noise):
+    if getattr(getattr(model,NAME,None),"noise_alignment",None) is None:
+        return {}
+    if noise is None or noise.ndim != 3:
+        raise ValueError("Aligned Qwen requires this exposure's target-token noise")
+    return {"alignment_noise":noise}
+
+
+def _noise_grid(noise, frames, h, w):
+    if noise is None:
+        return None
+    if noise.ndim != 3 or noise.shape[1] != frames*h*w:
+        raise ValueError("Aligned Qwen noise must contain only the target image tokens")
+    return noise.transpose(1,2).reshape(noise.shape[0],noise.shape[-1],frames,h,w)
+
+
+def map_input(model, states, timestep, shapes, *, noise=None):
     pair = getattr(model, NAME)
     if not pair.ready:
         raise RuntimeError("Qwen VAE swap requires paired calibration")
@@ -25,26 +41,28 @@ def map_input(model, states, timestep, shapes):
     for i,(frames,h,w) in enumerate(layout):
         count = frames*h*w
         grid = states[:,offset:offset+count].transpose(1,2).reshape(states.shape[0],states.shape[-1],frames,h,w)
-        grid = pair.input.flow_state(grid,timestep) if i == len(layout)-1 else pair.input(grid)
+        grid = pair.flow_state(grid,timestep,noise=_noise_grid(noise,frames,h,w)) if i == len(layout)-1 else pair.input(grid)
         chunks.append(grid.flatten(2).transpose(1,2))
         offset += count
     return torch.cat(chunks,dim=1)
 
 
-def map_output(model, output, shapes):
+def map_output(model, output, shapes, *, noise=None):
     frames,h,w = shapes[0][-1]
     count = frames*h*w
     grid = output[:,-count:].transpose(1,2).reshape(output.shape[0],output.shape[-1],frames,h,w)
-    mapped = getattr(model,NAME).output.flow_velocity(grid,convention="eps_minus_x0").flatten(2).transpose(1,2)
+    mapped = getattr(model,NAME).flow_velocity(grid,convention="eps_minus_x0",
+        noise=_noise_grid(noise,frames,h,w)).flatten(2).transpose(1,2)
     # Text/reference outputs are discarded by native Qwen callers.
     return torch.cat((mapped.new_zeros(output.shape[0],output.shape[1]-count,mapped.shape[-1]),mapped),dim=1)
 
 
-def map_global_grid(model, grid, sigma):
+def map_global_grid(model, grid, sigma, *, noise=None):
     pair = getattr(model,NAME,None)
     if pair is None:
         return grid
-    return pair.input.flow_state(grid.permute(0,3,1,2),sigma).permute(0,2,3,1)
+    return pair.flow_state(grid.permute(0,3,1,2),sigma,
+        noise=None if noise is None else noise.permute(0,3,1,2)).permute(0,2,3,1)
 
 
 def resize_global_payload(model, old_channels, new_channels):
@@ -101,6 +119,9 @@ def configure_swap(trainer, components):
             return
     declaration = codec.declaration(source=source,source_identity=identity,target_identity=resolved.latent_hash,
                                    old_channels=int(model.config.in_channels),old_scale=16)
+    if codec.spatial_scale > declaration["old_scale"] and codec.latent_channels >= declaration["old_channels"]:
+        from core.models.components.gaussian_alignment import POLICY
+        declaration["noise_policy"] = POLICY
     plan = SpatialSwapPlan.build(declaration,patch_size=2)
     from core.rewiring.training import prepare_topology_io_rebase
     finish_topology = prepare_topology_io_rebase(trainer.config,"qwen_image_21",native_config(dict(model.config)),declaration=declaration)

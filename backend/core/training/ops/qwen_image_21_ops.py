@@ -729,6 +729,7 @@ def train_step(
     selection, guided_mask = _guidance_selection(trainer, sigma, guidance) if guidance is not None else (None, None)
 
     def forward(features, mask, indices=None):
+        from core.models.qwen_image_21.vae_alignment import noise_kwargs
         states = noisy if indices is None else noisy[indices]
         step_sigma = sigma if indices is None else sigma[indices]
         forward_batch = states.shape[0]
@@ -738,6 +739,7 @@ def train_step(
         ], dim=1)
         return trainer.transformer(
             hidden_states=states,
+            **noise_kwargs(trainer.transformer,noise if indices is None else noise[indices]),
             timestep=step_sigma,
             encoder_hidden_states=features,
             encoder_hidden_states_mask=mask,
@@ -845,6 +847,7 @@ def train_step_partitioned_backward(
     noisy = (1 - sigma_view) * latents + sigma_view * noise
     target = noise - latents
     noisy_grid = noisy.reshape(batch, int(latent_h), int(latent_w), channels)
+    noise_grid = noise.reshape_as(noisy_grid)
     clean_grid = latents.reshape_as(noisy_grid)
     target_grid = target.reshape_as(noisy_grid)
     guidance = _guidance_condition(
@@ -885,10 +888,14 @@ def train_step_partitioned_backward(
     positions_by_box = {}
 
     def forward_region(region, features, mask, indices=None, states=None):
+        from core.models.qwen_image_21.vae_alignment import noise_kwargs
+        region_noise = flatten_region(noise_grid, region.input) if noise_kwargs(trainer.transformer,noise) else None
         if states is None:
             states = flatten_region(noisy_grid, region.input)
         if indices is not None:
             states = states[indices]
+            if region_noise is not None:
+                region_noise = region_noise[indices]
         step_sigma = sigma if indices is None else sigma[indices]
         image_mask = torch.cat([
             torch.zeros(features.shape[:2], dtype=torch.bool, device=trainer.device),
@@ -899,12 +906,15 @@ def train_step_partitioned_backward(
         if global_adapter is not None:
             from core.models.qwen_image_21.vae_alignment import map_global_grid
             global_grid = noisy_grid if indices is None else noisy_grid[indices]
-            residual = global_adapter(map_global_grid(trainer.transformer, global_grid, step_sigma), region.input)
+            global_noise = noise_grid if indices is None else noise_grid[indices]
+            residual = global_adapter(map_global_grid(trainer.transformer, global_grid, step_sigma,
+                noise=global_noise), region.input)
         box = region.input
         key = (box.top, box.left, box.bottom, box.right)
         if key not in positions_by_box:
             positions_by_box[key] = partition_adapter.position_ids(plan.full_height, plan.full_width, box)
         return trainer.transformer(
+            **noise_kwargs(trainer.transformer,region_noise),
             hidden_states=states, timestep=step_sigma,
             encoder_hidden_states=features, encoder_hidden_states_mask=mask,
             img_shapes=[[(1, region.input.height, region.input.width)]] * states.shape[0],

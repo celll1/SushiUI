@@ -13,7 +13,24 @@ Z-Imageの新規paired_spatial交換では、targetの空間縮小率が強く�
 固定FP32 bufferとして保存する。各露出の実noiseを入力へ補正し、出力velocityに元headが
 表せないnoise残差を補う。学習・定期sample・txt2img/img2img/inpaint・CFG/NAG/style参照へ配線した。
 bufferはoptimizer対象外。既存checkpointは宣言されたpolicyを維持し、再校正や自動変更をしない。
-Z-Image/Krea/Anima以外のnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+Z-Image/Krea/Anima/Qwen 2.1以外のnoise補正境界は未配線で、全architectureの画質受入を意味しない。
+
+Qwen 2.1も同じ新規交換条件で固定Gaussian補正を選ぶ。生成対象のtarget-token noiseを
+入力/出力へ渡し、cleanな参照画像tokenは補正しない。通常/partition学習、guidance lossのnull条件、
+global adapter、生成CFG、KV cache、style参照へ配線した。guide混合後はnoiseも同じ比率で混ぜる。
+partitionは領域noiseを切り出し、global adapterへ全画像noiseを渡す。旧policyは維持する。
+公式全DiT・TEと、現在のgeneral ratingを再確認した既存40枚由来の係数で、本番pipelineの
+3prompt×2seed（63/64）を生成した。試験用の数値monkeypatchや実画像の追加読込はない。
+C64/16x→LTX C128/32x、1024px・24steps・CFG1・U-netなし、target tokenは1024。
+狐/青い本、赤いリンゴ/黄色い洋梨は概形・色を保ち、青い車も識別できるが輪郭の重像が強い。
+6出力で強いblur/格子状textureは残る。完全復元・細部品質・U-net併用の画質受入ではない。
+比較画像/scriptはignored `local/verification/qwen_gaussian_production_quality/`のみ。
+新policyの公式Full学習・optimizer付き保存再開の実GPU受入は未実施で、旧policyでの既存試験を
+その代わりにしない。固定FP32係数のBF16 artifact保存復元と、通常/partition・global adapter・
+CFG/style/guide/cacheの境界はCPU回帰で確認した。公開parameter/defaultは変更していない。
+関連回帰は171件pass、CUDA専用2件skip。compileとCUDA未初期化の実importも通過した。
+frontendは既存VAE交換フォーム・型/API・保存復元の静的確認を行い、補正の適用範囲説明へ
+Qwenを追加した。ownerのfrontend build/type-checkは未実施。
 
 Animaも同じ新規交換条件で固定Gaussian補正を選ぶ。padding-mask channelは補正対象外で、
 eps_minus_x0の出力残差符号を使う。学習・定期sample・CFG・txt2img/img2img/inpaint・

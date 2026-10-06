@@ -441,6 +441,8 @@ def train_step(
     # FLUX.2 uses Flow Matching with velocity prediction
     noise_process = getattr(trainer, 'noise_process', 'flow')  # FLUX.2 default: flow
     prediction_target = getattr(trainer, 'prediction_target', 'velocity')  # FLUX.2 default: velocity
+    from core.models.flux2.vae_alignment import forward_with_noise, validate_noise_contract
+    validate_noise_contract(trainer.transformer, noise_process=noise_process, prediction_target=prediction_target)
 
     # Move latents to GPU with correct dtype
     latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
@@ -547,7 +549,7 @@ def train_step(
     fwd = trainer.flux2_transformer_wrapper if getattr(trainer, "flux2_transformer_wrapper", None) is not None else trainer.transformer
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-            output = fwd(
+            output = forward_with_noise(fwd, noise,
                 hidden_states=noisy_latents,
                 encoder_hidden_states=prompt_embeds,
                 timestep=timesteps,
@@ -558,7 +560,7 @@ def train_step(
             )
             model_pred = output[0]
     else:
-        output = fwd(
+        output = forward_with_noise(fwd, noise,
             hidden_states=noisy_latents,
             encoder_hidden_states=prompt_embeds,
             timestep=timesteps,
@@ -827,6 +829,7 @@ def generate_sample(
     if getattr(trainer.transformer, "_residual_unet_spec", None) is not None and reference_image_path:
         raise ValueError("Flux2 residual training samples do not support reference image grids")
     from core.training.base_trainer import log_verbose
+    from core.models.components.vae_registry import normalize
 
     import random
     import numpy as np
@@ -942,12 +945,14 @@ def generate_sample(
 
         # Pack latents: (B, C, H, W) -> (B, H*W, C)
         latents = _flux2_pack_latents_for_sample(latents)
+        from core.models.flux2.vae_alignment import forward_with_noise, validate_noise_contract
+        validate_noise_contract(trainer.transformer, scheduler=trainer.scheduler)
+        exposure_noise = (latents.clone() if getattr(getattr(trainer.transformer, "vae_latent_bridge", None),
+            "noise_alignment", None) is not None else None)
 
-        # Concatenate reference latents with noise latents (if provided)
+        model_latent_ids = latent_ids
         if packed_reference_latents is not None and ref_img_ids is not None:
-            latents = torch.cat([latents, packed_reference_latents], dim=1)
-            latent_ids = torch.cat([latent_ids, ref_img_ids], dim=1)
-            print(f"{trainer.log_prefix} [Sample] Latents after reference concat: {latents.shape}")
+            model_latent_ids = torch.cat([latent_ids, ref_img_ids], dim=1)
 
         log_verbose(f"{trainer.log_prefix} [Sample] Running denoising loop")
 
@@ -991,6 +996,8 @@ def generate_sample(
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
                 latent_model_input = latents.to(trainer.transformer.dtype)
+                if packed_reference_latents is not None:
+                    latent_model_input = torch.cat([latent_model_input, packed_reference_latents], dim=1)
 
                 # Batch CFG: Concatenate unconditional and conditional for single forward pass
                 if do_classifier_free_guidance:
@@ -999,10 +1006,10 @@ def generate_sample(
                     timestep_doubled = torch.cat([timestep, timestep], dim=0)
                     prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                     text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
-                    latent_ids_doubled = torch.cat([latent_ids, latent_ids], dim=0)
+                    latent_ids_doubled = torch.cat([model_latent_ids, model_latent_ids], dim=0)
 
                     # Single forward pass for both unconditional and conditional
-                    noise_pred_combined = trainer.transformer(
+                    noise_pred_combined = forward_with_noise(trainer.transformer, exposure_noise,
                         hidden_states=latent_model_input_doubled,
                         timestep=timestep_doubled / 1000,
                         guidance=None,
@@ -1023,15 +1030,18 @@ def generate_sample(
                         device=latent_model_input.device,
                         dtype=latent_model_input.dtype
                     )
-                    noise_pred = trainer.transformer(
+                    noise_pred = forward_with_noise(trainer.transformer, exposure_noise,
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=guidance_vec,
                         encoder_hidden_states=prompt_embeds,
                         txt_ids=text_ids,
-                        img_ids=latent_ids,
+                        img_ids=model_latent_ids,
                         return_dict=False,
                     )[0]
+
+                # Only target tokens evolve; references remain clean conditioning.
+                noise_pred = noise_pred[:, :latents.shape[1]]
 
                 # Scheduler step
                 latents_dtype = latents.dtype

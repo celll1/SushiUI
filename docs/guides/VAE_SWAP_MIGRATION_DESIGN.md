@@ -8,6 +8,23 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+FLUX.2のGaussian補正は、共通投影境界・学習・定期sampleまでの部分配線段階。
+native forward、block swapの直接投影、CFG/NAG、参照prefix/suffix、KV抽出/再利用で
+target tokenだけの実noiseを渡す。clean参照にはゼロnoiseを使い、非ゼロ参照時刻は
+参照noiseを受け取る契約がないため拒否する。contextは例外時も解除し、legacy演算は維持する。
+Gaussian学習はflow/velocity、sampleはdeterministic flowに限定し、未追跡のVP/stochasticを拒否する。
+CFG+NAGでtext batchが3行、modulationが2行となる既存不一致も修正し、
+text/single modulationを同じNAG順序へ展開した。Gaussian/legacy双方のCFG/NAGで確認した。
+定期sampleの参照encodeはnormalize import漏れを修正し、参照tokenをscheduler更新・decode対象から除外した。
+参照は毎step固定入力へ追加し、生成対象だけを更新・decodeする。
+実小型DiTの投影oracle・FP32/BF16・native/swap/U-net・CFG/NAG・KV・保存復元29件、
+U-net等を加えた実行では41件が通過し、追加の合成参照付きsample2条件、実学習opsの
+標準/混合精度×block swap4条件も通過した。backend compile/importはCUDA未初期化で通過。
+直接noise keyword・EMAコピーの独立性・KV失敗時context解除の追加2条件も通過した。
+生成backendのtxt2img/img2img/inpaint・style参照への配線は残るため、
+新規swapの既定Gaussian選択はまだ有効にしていない。公式全重みの学習・画質受入も未検証。
+実画像・GPU・API runは使わず、ignored `local/verification/flux2_gaussian_*`へ診断を保持する。
+
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、
 CFG/NAGのbatch展開、single/multi style各参照の個別noiseを入力/velocity出力へ渡す。

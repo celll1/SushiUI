@@ -1604,9 +1604,8 @@ def encode_presentation(
         )
         position_ids = position_ids.to(device)
     else:
-        # Qwen3-VL's rotary expands a 2-D `position_ids` to its three mrope
-        # sections, so a text-only presentation gets ordinary RoPE.
-        position_ids = torch.arange(sequence_length, device=device).unsqueeze(0)
+        # Qwen3-VL expands this text clock before calling its three-axis rotary.
+        position_ids = torch.arange(sequence_length, device=device).view(1, 1, -1).expand(3, 1, -1)
 
     # The rotary module is moved for the length of this call and PUT BACK: it is
     # the one submodule this function would otherwise mutate, and leaving it on

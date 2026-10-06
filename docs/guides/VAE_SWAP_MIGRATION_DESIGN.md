@@ -13,6 +13,14 @@ Full更新、native bundle保存復元、optimizer精度保持と次更新まで
 公式TE/audio条件付け・生成画質受入と公開Full経路の解放は未完。
 以下は段階別の検証記録であり、途中の未完事項は後続の結果で更新する。
 
+生成側も`cpu_master_layout.py`を共用し、frozen hook conductorとforward-only block
+offloaderでpageable CPU masterを借用する。H2D-onlyのpinning指定無視と初期配置時の
+GPU→CPU往復を修正。CPU回帰17件、生成GPU4条件・H3学習GPU8条件（別途CPU2件）通過。
+公式32B BF16 Qwen3-VLのtext-only RoPEに3軸position IDsを渡す修正を加え、小型実
+Qwen3-VL text stackとのCPU出力一致を確認。公式50層の2prompt（各25tokens×5120）も
+有限値で符号化・保存できた。実画像は未使用。最初のcaption 34.62秒、次14.80秒、
+観測RSS最大48.138GiB。これは符号化受入であり、生成画質や公式条件付き学習の受入ではない。
+
 共通mutable conductorの`use_pinned_memory=false`では、連続したCPU tensorをmasterとして
 借用し、dense全重みをpacked planeへ複製しない。pinned指定・非連続tensorは従来経路を維持する。
 CPU master/source file不変の回帰5件、関連VAE/U-net回帰を含む63件、compile/実importが通過。

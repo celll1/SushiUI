@@ -276,6 +276,9 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
         alignment_md=checkpoint_metadata(trainer.unet) if trainer.unet is not None else {}
         if alignment_md and (swapped is None or not trainer.train_unet):
             raise ValueError("Aligned SD export requires its trained U-Net and codec declaration")
+        if alignment_md:
+            from core.models.components.sd_vae_alignment import pipeline_metadata
+            alignment_md.update(pipeline_metadata(trainer,arch="sd15"))
         bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sd15")
         vae_embedded = bundle_vae and trainer.vae is not None and swapped is None
         if swapped is not None:
@@ -298,7 +301,7 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             for key, value in converted_vae.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
 
-        if trainer.train_text_encoder and trainer.text_encoder is not None:
+        if (trainer.train_text_encoder or alignment_md) and trainer.text_encoder is not None:
             print(f"[SD15FullParameterAdapter] Collecting Text Encoder weights...")
             te_state = trainer.text_encoder.state_dict()
             converted_te = convert_openai_text_enc_to_original(te_state)

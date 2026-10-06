@@ -1,4 +1,25 @@
 """SD U-Net codec boundaries with explicit VP or flow noise coefficients."""
+def resolve_checkpoint_path(path):
+    from pathlib import Path
+    source=Path(path)
+    index=source.with_suffix(".safetensors.index.json")
+    if source.name.endswith(".safetensors") and not source.exists() and index.is_file():
+        return str(index)
+    return str(source)
+
+
+def read_checkpoint_metadata(path):
+    import json
+    from pathlib import Path
+    from safetensors import safe_open
+    source=Path(resolve_checkpoint_path(path))
+    if source.name.endswith(".safetensors.index.json"):
+        with source.open(encoding="utf-8") as file:
+            return dict(json.load(file).get("metadata",{}) or {})
+    with safe_open(str(source),framework="pt") as file:
+        return dict(file.metadata() or {})
+
+
 def checkpoint_metadata(model):
     import json
     from .spatial_swap import artifact_metadata
@@ -12,6 +33,36 @@ def split_unet_state(model):
     state=model.state_dict()
     bridge={key:value for key,value in state.items() if key.startswith("vae_latent_bridge.")}
     return {key:value for key,value in state.items() if key not in bridge},bridge
+
+
+def pipeline_metadata(trainer,*,arch):
+    import json
+    metadata={}
+    names=[("text_encoder","tokenizer")]
+    if arch=="sdxl":names.append(("text_encoder_2","tokenizer_2"))
+    for encoder_name,tokenizer_name in names:
+        encoder=getattr(trainer,encoder_name,None)
+        tokenizer=getattr(trainer,tokenizer_name,None)
+        if encoder is None or not hasattr(encoder,"config"):
+            raise ValueError(f"Aligned {arch} export requires its native {encoder_name}")
+        source=getattr(tokenizer,"name_or_path",None)
+        if not isinstance(source,str) or not source.strip():
+            raise ValueError(f"Aligned {arch} export requires a restorable {tokenizer_name} source")
+        metadata[encoder_name+"_config"]=json.dumps(encoder.config.to_dict(),sort_keys=True,allow_nan=False)
+        metadata["component."+tokenizer_name+".source"]=source
+        tokenizer_config={key:getattr(tokenizer,key) for key in
+            ("model_max_length","padding_side","truncation_side")}
+        for key in ("bos_token","eos_token","pad_token","unk_token"):
+            value=getattr(tokenizer,key,None)
+            if value is not None:tokenizer_config[key]=str(value)
+        metadata[tokenizer_name+"_config"]=json.dumps(tokenizer_config,sort_keys=True,allow_nan=False)
+    scheduler=getattr(trainer,"original_scheduler",None) or getattr(trainer,"noise_scheduler",None)
+    if scheduler is None:
+        raise ValueError("Aligned SD export requires its sampling scheduler config")
+    config=json.loads(scheduler.to_json_string())
+    config["_class_name"]=type(scheduler).__name__
+    metadata["scheduler_config"]=json.dumps(config,sort_keys=True,allow_nan=False)
+    return metadata
 
 
 def restore_alignment(model,metadata,state):
@@ -78,6 +129,66 @@ def load_unet_artifact(path,*,dtype):
     model.load_state_dict(weights,strict=True,assign=True)
     restore_alignment(model,metadata,state)
     return model.eval()
+
+
+def load_pipeline_artifact(path,*,arch,dtype,unet=None,vae=None):
+    import json
+    import diffusers
+    from accelerate import init_empty_weights
+    from transformers import CLIPTextConfig,CLIPTextModel,CLIPTextModelWithProjection,CLIPTokenizer
+    from diffusers.loaders.single_file_utils import convert_open_clip_checkpoint
+    from core.models.common.single_file_format import read_state_dict
+    from core.models.common.vae_source import load_declared_latent_io
+    from .spatial_swap import read_declaration,restored_image_codec
+    path=resolve_checkpoint_path(path)
+    state,metadata=read_state_dict(str(path))
+    declaration=read_declaration(metadata)
+    if declaration is None or metadata.get("model_type")!=arch or arch not in ("sd15","sdxl"):
+        raise ValueError("Aligned SD pipeline requires its matching architecture declaration")
+
+    def config(name):
+        raw=metadata.get(name+"_config")
+        if not isinstance(raw,str) or len(raw.encode("utf-8"))>65536:
+            raise ValueError(f"Aligned SD pipeline requires bounded {name} config")
+        value=json.loads(raw)
+        if not isinstance(value,dict):raise ValueError(f"Invalid {name} config")
+        return value
+
+    def encoder(name,cls,prefix,open_clip=False):
+        with init_empty_weights():
+            model=cls(CLIPTextConfig.from_dict(config(name)))
+            model.to(dtype=dtype)
+        weights=(convert_open_clip_checkpoint(model,state,prefix=prefix) if open_clip else
+            {key[len(prefix):]:value for key,value in state.items() if key.startswith(prefix)})
+        model.load_state_dict({key:value.to(dtype=dtype) for key,value in weights.items()},strict=True,assign=True)
+        return model.eval()
+
+    def tokenizer(name):
+        source=metadata.get("component."+name+".source")
+        if not isinstance(source,str) or not source.strip():
+            raise ValueError(f"Aligned SD pipeline requires its {name} source")
+        return CLIPTokenizer.from_pretrained(source,**config(name))
+
+    if unet is None:unet=load_unet_artifact(path,dtype=dtype)
+    if vae is None:
+        resolved=load_declared_latent_io(str(path),arch=arch)
+        if resolved is None:raise ValueError("Aligned SD pipeline is missing its codec declaration")
+        vae,_=restored_image_codec(resolved.load_module(torch_dtype=dtype),resolved,declaration)
+    scheduler_config=config("scheduler")
+    from core.inference.schedulers import SAMPLER_MAP
+    schedulers={cls.__name__:cls for cls in SAMPLER_MAP.values()}
+    scheduler_class=schedulers.get(scheduler_config.get("_class_name"))
+    if scheduler_class is None:raise ValueError("Unsupported saved SD sampling scheduler")
+    kwargs=dict(unet=unet,vae=vae,scheduler=scheduler_class.from_config(scheduler_config),
+        text_encoder=encoder("text_encoder",CLIPTextModel,
+            "conditioner.embedders.0.transformer." if arch=="sdxl" else "cond_stage_model.transformer."),
+        tokenizer=tokenizer("tokenizer"))
+    if arch=="sdxl":
+        kwargs.update(text_encoder_2=encoder("text_encoder_2",CLIPTextModelWithProjection,
+            "conditioner.embedders.1.model.",open_clip=True),tokenizer_2=tokenizer("tokenizer_2"))
+        return diffusers.StableDiffusionXLPipeline(**kwargs)
+    return diffusers.StableDiffusionPipeline(**kwargs,safety_checker=None,feature_extractor=None,
+        requires_safety_checker=False)
 
 
 def resolve_wiring(handler,trainer):

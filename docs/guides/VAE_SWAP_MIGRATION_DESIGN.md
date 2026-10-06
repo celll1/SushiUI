@@ -112,8 +112,7 @@ aligned保存は共通shard writerを使い、native/legacy保存は従来の単
 内部幅と外部codec幅を分離して復元し、同じswap sourceでの再開は再校正しない。
 本体欠損・bridge欠損・alignment宣言欠損を拒否する。
 共通U-Net component readerは単一・sharded artifactの全重み一致を検証したが、
-公開SD pipelineと学習loaderのsharded入口はまだ未対応。
-公開loaderのCPU検証では外部pipeline/TE構築のみstubし、実U-Net・実VAEの復元を通した。
+初回の公開loader検証では外部pipeline/TE構築だけをstubした。
 実学習loaderの呼出し、共通swap/resume、REPAを含む回帰110件と、変更Pythonの
 py_compile・CUDAを抑止した実importが通過した。
 生成のtxt2img/img2img/inpaintは呼出し中だけ共通codec境界hookを設置し、例外時も除去する。
@@ -124,7 +123,15 @@ DDIM/DDPM/PNDMはalpha累積表から係数を求める。KarrasとKDPM中間ste
 実tiny U-Net、実AutoencoderKL、合成画像による両モデルの3生成経路・既存12samplerを確認し、
 scheduler/REPAを含むCPU回帰210件と変更Pythonのpy_compile・実importが通過した。
 flow sigmaの共通境界もCPU検証したが、SDの公開flow sampler選択は追加していない。
-公開初期化設定、分割checkpointのpipeline入口、公式全重みの学習・画質検証は未了。
+aligned exportは凍結したnative CLIPも保存し、両CLIPのconfig、tokenizerのlocatorと
+special token・最大長・padding設定、sampling schedulerのconfigを記録する。
+生成・学習loaderの分割checkpoint入口も接続した。shard indexと元basenameの参照を解決し、
+一時的な巨大ファイルへ再結合せず、実CLIP・tokenizer・schedulerからpipelineを構築する。
+単一/分割/basename復元ではU-Net・codec・CLIPの全重み一致、prompt encode、
+再校正しない学習再開を合成CPU検証した。欠損CLIP重みや復元情報のないexportは拒否する。
+pipeline/TE構築のstubを除いた関連回帰144件と、変更Pythonのpy_compile・実importが通過した。
+tokenizerは記録したlocatorへの依存を保持する。native/legacy exportの保存形式は維持する。
+公開初期化設定と公式全重みの学習・画質検証は未了。
 
 Animaのnative forwardにも画像bridge境界を追加した。padding maskを連結する前に
 実sigmaで入力を変換し、unpatchify後のflow velocityを外部チャネルへ戻す。

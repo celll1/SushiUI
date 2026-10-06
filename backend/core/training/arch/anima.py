@@ -54,6 +54,21 @@ class AnimaArchHandler(ArchHandler):
     def apply_vae_swap(self,trainer,resolved,module=None):
         pair=getattr(trainer.transformer,"vae_latent_bridge",None)
         if pair is None:
+            if module is not None:
+                from core.models.components.latent_io import resize_latent_io
+                from dataclasses import replace
+                trainer.vae=module
+                trainer.vae_identity=replace(resolved,state_dict=None)
+                trainer.vae_latent_channels=resolved.latent_channels
+                trainer.wiring=self.wiring.replace(latent_channels=resolved.latent_channels,
+                    vae_scale_factor=resolved.scale_factor,vae_norm=resolved.norm,vae_norm_pack=resolved.norm_pack)
+                return resize_latent_io(trainer.transformer,self.wiring.latent_io,resolved.latent_channels)
+            from core.training.vae_swap import initialization_mode
+            if module is None and initialization_mode(trainer.config,"anima")=="paired_spatial":
+                from core.models.anima.vae_alignment import initialize_swap
+                return initialize_swap(trainer,resolved,handler=self)
+            if module is None and (resolved.ndim!=5 or resolved.scale_factor!=8):
+                raise ValueError("Legacy zero Anima swaps require a 5-D 8x VAE; use paired_spatial")
             return super().apply_vae_swap(trainer,resolved,module=module)
         if module is None and resolved.source!=pair.declaration["source"]:
             raise ValueError("Changing an aligned Anima VAE requires a fresh base checkpoint")
@@ -64,6 +79,14 @@ class AnimaArchHandler(ArchHandler):
         trainer.wiring=self.resolve_wiring(trainer)
         width=trainer.transformer.in_channels
         return ResizeReport((),width,width,width,0,0)
+
+    def check_vae_compatibility(self,facts,*,trainer=None,base_model_path=None):
+        scale=facts.get("scale_factor")
+        if facts.get("ndim") not in (4,5) or type(scale) is not int or scale<1:
+            return False,"Anima VAE swap requires declared image codec geometry"
+        if scale%8 and 8%scale:
+            return False,"Anima VAE swap requires integer spatial scale relative to 8x"
+        return True,None
 
     def lora_adapter_class(self):
         from core.training.adapters import AnimaLoRAAdapter

@@ -476,13 +476,13 @@ def test_a_minit2i_run_swaps_its_latent_space_through_the_arch_handler(tmp_path)
     assert trainer.wiring.latent_channels == 4
 
 
-def test_an_anima_run_keeps_its_five_dimensional_latent(tmp_path):
-    """A 2-D image VAE is refused for anima at the same gate the frontend
-    reads, so the fold never reaches the resize."""
+def test_an_anima_legacy_zero_run_keeps_its_five_dimensional_latent(tmp_path):
+    """Legacy zero keeps its native-rank contract; spatial swaps accept image codecs."""
     directory = _standalone_vae_dir(tmp_path, 16, "vae16")
     trainer = _trainer("anima", _anima(16), _tiny_vae(16), _swap_config(directory))
+    trainer.config["vae_swap_new_channel_init"]="zero"
 
-    with pytest.raises(ValueError, match="cannot drive anima"):
+    with pytest.raises(ValueError, match="Legacy zero Anima"):
         apply_latent_space(trainer, None)
 
 

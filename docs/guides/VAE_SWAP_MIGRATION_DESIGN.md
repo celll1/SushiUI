@@ -12,7 +12,7 @@ LoRA 系での拒否は他 arch と同様に残る。
 契約であり、全モデルに共通する最終的な制約ではない。
 Mingには、交換先VAEの格子を使う`paired_spatial`、拡張IOと双方向bridge、
 独立frameの正規化wrapper、保存復元が追加されている。
-`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2でpaired_spatial、それ以外は既存zeroへ解決する。
+`auto`は現在Ming、Qwen-Image 2.1、Z-Image、Krea 2、Lens、Flux2、Animaでpaired_spatial、それ以外は既存zeroへ解決する。
 実装と測定範囲は[校正ノート](../experiments/VAE_SWAP_ALIGNMENT.md)を参照。
 他バックボーンへのpaired_spatialや縮小率変更は、未配線のものを含む。
 共有実装は`core/models/components/latent_adapter.py`に置く。
@@ -89,14 +89,13 @@ Animaのnative forwardにも画像bridge境界を追加した。padding maskを�
 合成CPUテストはチャネル増減、非正方形格子、バッチ別時刻、mask付きnative対照、
 bridgeへの勾配、複数frame拒否を確認した。境界/既存resize39件とAnimaの
 U-net・注意機構・REPA回帰51件、変更Pythonのpy_compile・実importが通過した。
-Animaの公開swap設定、UIはまだ未配線であり、
-`auto`の対応範囲には追加していない。公式全重みでの学習・画質検証も未了。
+Animaの公式全重みでの学習・画質検証は未了。
 内部初期化driverは共有の画像codec・校正処理に接続した。native Qwen系5D teacherを
 校正時のみ使い、交換先は正規化済みBCHW facadeとして学習encodeへ渡す。
 拡張IOはmaskの位置を保持し、U-netのregionsを維持したままnative identityを更新する。
 bucketの寸法整合性は交換先縮小率とU-net深度の両方から計算する。
 実VAEの合成画像校正では8x→16x、チャネル増減、非正方形encode/decode、
-U-netのforward/backwardを確認した。公開swap設定の有効化はまだ未了。
+U-netのforward/backwardを確認した。
 内部校正を含む境界・U-net・既存resize回帰48件と、変更Pythonのpy_compile・実importが通過した。
 Animaのfull exportはbridge宣言・native VAE重みを保存し、大きなcheckpointは共通writerで分割する。
 loaderは外部VAEチャネルと内部`max(oldC,newC)`を分けて構築し、codec facadeを復元する。
@@ -109,6 +108,13 @@ txt2img/img2img/inpaint backend、U-net preflight、定期sampleの寸法計算�
 画像codec facadeのencode/decodeはnative側の単一frame形式へ接続し、style referenceも同じ格子になる。
 チャネル増減・16x交換でCFG付き3種類のsamplerと画像encode/decodeを合成CPU検証した。
 境界・U-net・debug latent回帰18件、変更Pythonのpy_compile・実importが通過した。
+Animaの公開swap設定・UIを接続し、autoはpaired_spatialへ解決する。候補は4D/5D画像codecと
+8xに対する整数比の縮小率を受け入れる。明示的legacy zeroは5D/8xのみ。
+旧checkpointのmodule復元はautoの新規初期化へ入らず、保存済みIOを維持する。
+公開preflightからの校正・生成・保存復元と既存swap全関連CPU回帰249件が通過した。
+変更Pythonのpy_compile・実importも通過し、frontendの型・既定値・保存経路は静的確認済み。
+ownerのbuildと画面操作の最終確認は未了。
+API反映後の`GET /training/vae-sources?arch=anima`はQwen 2.1の64ch/16x/5D codecをcompatibleとして返した。
 
 MingのVAE swapとresidual U-net化は併用可能。IO変更時に同じregion宣言から
 新native configのtopology identityを再構成する。

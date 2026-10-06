@@ -651,8 +651,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // or undefined when it is offered. Read from GET /schema/arch-capabilities
   // (`training_unsupported`), so the disabled control, its tooltip and the
   // trainer's exception all come from ONE table instead of the UI carrying a
-  // second copy of the policy. Ideogram 4's full-FT block below predates this
-  // table and keeps its hardcoded check; new entries need no UI change at all.
+  // second copy of the policy.
   const unsupportedTrainingMethod = (method: string): string | undefined =>
     trainingMethodUnsupportedReason(
       archCapabilities, getModelArchitecture(baseModelPath), method
@@ -722,6 +721,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       archCapabilities, getModelArchitecture(baseModelPath), feature, trainingMethod
     );
   const textEncoderTrainingAdvisory = featureAdvisory("text_encoder_training");
+  const vaeSwapAdvisory = featureAdvisory("vae_swap");
   const motEvictionAdvisory = featureAdvisory("sensenova_mot_eviction");
   const motEvictionUnsupported = unsupportedTrainingFeature("sensenova_mot_eviction");
   // fm_modules is generation-side, so the flag does nothing on an
@@ -4385,7 +4385,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     />
                   )}
 
-                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
+                  {!vaeSwapUnsupported && trainingMethod === "full_finetune" && vaeSwapAdvisory && (
+                    <p className="text-xs text-amber-400">{vaeSwapAdvisory.reason}</p>
+                  )}
+
+                  {(["ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4"].includes(baseModelArch || "")) && trainingMethod === "full_finetune"
                     && !!params.vae_swap_source && (
                     <div className="border border-gray-700 rounded p-2 space-y-2">
                       <p className="text-xs text-gray-400">
@@ -7046,10 +7050,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {/* Ideogram 4 (flow-matching DiT) LoRA options */}
-            {isIdeogram4Model(baseModelPath) && trainingMethod === "lora" && (
+            {/* Ideogram 4 dual-DiT options */}
+            {isIdeogram4Model(baseModelPath) && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
               <>
-                {(() => {
+                {trainingMethod === "lora" && (() => {
                   const scopeCsv: string = (params.ideogram4_lora_scope ?? "attn,mlp");
                   const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
                   const toggle = (tok: string) => {
@@ -7099,6 +7103,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     Also train unconditional transformer (asymmetric-CFG branch)
                   </label>
                 </div>
+
+                {trainingMethod === "full_finetune" && !!params.vae_swap_source && !params.ideogram4_train_uncond && (
+                  <p className="text-xs text-amber-400">VAE swap requires both DiTs to train. Enable the unconditional transformer above.</p>
+                )}
 
                 {params.ideogram4_train_uncond && (
                   <div>

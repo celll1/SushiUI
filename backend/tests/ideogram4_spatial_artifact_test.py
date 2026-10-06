@@ -12,7 +12,7 @@ from PIL import Image
 def test_shared_calibration_and_public_native_codec_round_trip(tmp_path,monkeypatch,sharded):
     from diffusers import AutoencoderKL,AutoencoderKLFlux2,FlowMatchEulerDiscreteScheduler
     from core.models.common.vae_source import resolve_vae_source
-    from core.models.ideogram4.vae_alignment import initialize_swap,pair_metadata
+    from core.models.ideogram4.vae_alignment import pair_metadata
     from core.training.arch.ideogram4 import Ideogram4ArchHandler
     from core.training.adapters.ideogram4_adapter import Ideogram4FullParameterAdapter
     from core.models.ideogram4.residual_unet import native_config,save_checkpoint
@@ -20,7 +20,7 @@ def test_shared_calibration_and_public_native_codec_round_trip(tmp_path,monkeypa
     from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode,vae_decode,_prepare_ids
     from core.models.common.single_file_format import read_state_dict,strip_prefix
     from core.models.components.spatial_swap import read_declaration
-    from core.training.vae_swap import swap_metadata,apply_latent_space
+    from core.training.vae_swap import swap_metadata,apply_latent_space,preflight_vae_swap,apply_configured_vae_swap
     from ideogram4_full_training_test import _trainer
     trainer=_trainer(True)
     trainer.is_ideogram4=True
@@ -42,7 +42,9 @@ def test_shared_calibration_and_public_native_codec_round_trip(tmp_path,monkeypa
     trainer.move_main_model_to_cpu=lambda:trainer.transformer.to("cpu")
     trainer.move_main_model_to_gpu=lambda:trainer.transformer.to("cpu")
     trainer.move_vae_to_cpu=lambda:trainer.vae.to("cpu")
-    initialize_swap(trainer,resolved,handler=handler)
+    trainer.config.update(vae_swap_source=resolved.source,ideogram4_train_uncond=True)
+    preflight_vae_swap(trainer.config,arch="ideogram4",method="full_finetune",bundle_vae_explicit_false=False)
+    apply_configured_vae_swap(trainer,resolved.source)
     assert trainer.wiring.latent_channels == 4 and trainer.wiring.vae_scale_factor == 16
     assert handler.pixel_align == 32
     assert trainer.transformer.vae_latent_bridge is not trainer.transformer_uncond.vae_latent_bridge

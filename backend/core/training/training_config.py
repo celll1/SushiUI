@@ -652,10 +652,10 @@ def _build_train_section(
     train["lens_img_lr_factor"] = p.get("lens_img_lr_factor", 1.0)
     train["lens_txt_lr_factor"] = p.get("lens_txt_lr_factor", 1.0)
 
-    train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")
-    train["ideogram4_train_uncond"] = p.get("ideogram4_train_uncond", False)
-    train["ideogram4_uncond_loss_weight"] = p.get("ideogram4_uncond_loss_weight", 1.0)
-    train["ideogram4_lr_factor"] = p.get("ideogram4_lr_factor", 1.0)
+    train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", TRAINING_DEFAULTS["ideogram4_lora_scope"])
+    train["ideogram4_train_uncond"] = p.get("ideogram4_train_uncond", TRAINING_DEFAULTS["ideogram4_train_uncond"])
+    train["ideogram4_uncond_loss_weight"] = p.get("ideogram4_uncond_loss_weight", TRAINING_DEFAULTS["ideogram4_uncond_loss_weight"])
+    train["ideogram4_lr_factor"] = p.get("ideogram4_lr_factor", TRAINING_DEFAULTS["ideogram4_lr_factor"])
 
     # ---- Aligned CFG unconditional training — arch-agnostic key. ----
     # Run the resolver for its VALIDATION and its refusals (a hand-authored YAML

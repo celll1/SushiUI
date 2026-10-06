@@ -25,8 +25,16 @@ C64/16x→LTX C128/32x、1024px・24steps・CFG1・U-netなし、target tokenは
 狐/青い本、赤いリンゴ/黄色い洋梨は概形・色を保ち、青い車も識別できるが輪郭の重像が強い。
 6出力で強いblur/格子状textureは残る。完全復元・細部品質・U-net併用の画質受入ではない。
 比較画像/scriptはignored `local/verification/qwen_gaussian_production_quality/`のみ。
-新policyの公式Full学習・optimizer付き保存再開の実GPU受入は未実施で、旧policyでの既存試験を
-その代わりにしない。固定FP32係数のBF16 artifact保存復元と、通常/partition・global adapter・
+新policyの公式Full学習・保存再開は専用合成2枚、2段/deep4 U-netで検証した。
+step1保存→step2再開が両方exit0で完走し、301 optimizer状態がすべてcounter1→2、fresh 0。
+固定補正の5 bufferがbit一致し、codec宣言・U-net構造も維持された。白色射影の行直交性と
+FP32係数も保存後に確認した。lossは2.142110→9.872595で、少数stepの機能確認であり、
+収束や追加学習による画質回復を証明しない。詳細training DBを保持して検証した。
+保存sharded indexのAPI読込でC128・2段/deep4を復元し、256px・2steps・CFG1の生成HTTP200を確認。
+専用run/datasetのDB・diskと一時生成PNGを整理し、選択モデルをMing Layerへ戻した。
+optimizer・固定係数・ログ・詳細DB・生成画像はignored
+`local/verification/qwen_gaussian_api_full_results/`のみ。
+交換VAEのlive preview非対応警告は残る。固定FP32係数のBF16 artifact保存復元と、通常/partition・global adapter・
 CFG/style/guide/cacheの境界はCPU回帰で確認した。公開parameter/defaultは変更していない。
 関連回帰は171件pass、CUDA専用2件skip。compileとCUDA未初期化の実importも通過した。
 frontendは既存VAE交換フォーム・型/API・保存復元の静的確認を行い、補正の適用範囲説明へ

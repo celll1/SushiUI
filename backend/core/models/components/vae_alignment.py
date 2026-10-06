@@ -126,6 +126,11 @@ class SpatialLatentBridge(nn.Module):
         sign = -1 if convention == "eps_minus_x0" else 1
         return self._project(velocity, bias=False) + sign * self._bias_like(velocity)
 
+    def diffusion_velocity(self, velocity, *, clean_derivative):
+        """For x_t=alpha(t)*x0+sigma(t)*noise, bias contributes alpha'(t)*b."""
+        coefficient = self._sigma(clean_derivative, velocity)
+        return self._project(velocity, bias=False) + coefficient * self._bias_like(velocity)
+
     def epsilon(self, noise):
         """Noise prediction has no clean-latent mean offset."""
         return self._project(noise, bias=False)

@@ -8,6 +8,18 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+Chimeraのlinear-state境界（v1、v2 direct velocity、v2 residual）の内部基盤を追加した。
+`x_t=alpha(t)*x0+sigma(t)*noise`では入側biasを`alpha(t)`、出側velocityのbiasを
+`alpha'(t)`で掛ける。v2 cubic scheduleでは固定±1のflow境界を流用しない。
+residualは元のmean/moment契約でvelocityへ復元し、出側map後に交換先のanalytic driftを
+引いて戻す。3×3境界・チャネル変更・独立frameで、trajectoryの有限差分との一致と勾配を確認した。
+この段階ではChimeraの公開VAE交換ゲートは維持する。校正・targetのmean/moment統計、
+学習と生成のdispatch、codec/bridge同梱とmanifest更新、再開復元を接続してから解除する。
+v3/v4 polarではtarget directionとradiusからcentered stateを作り、入側map後にsourceの
+direction/radiusを再計算する。source tangent/radial出力をfull velocityへ復元し、出側map後に
+target tangent/radialへ分解する必要がある。v4のdestruction-coordinate微分も変換に含める。
+sourceとtargetのmean/momentを別々に保存し、target統計でsource headを解釈してはならない。
+
 Ideogram4にはplain dual-DiT Full FTの内部基盤を追加した。条件付きと任意の無条件DiTを
 学習対象にし、TE/VAEは固定する。非学習の無条件DiTはCPUに保持し、推論に必要な双方を保存する。
 実native小型DiTのoptimizer更新・両branch復元、量子化branchの事前拒否、adapter dispatchをCPUで検証した。

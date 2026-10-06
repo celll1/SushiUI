@@ -3363,15 +3363,15 @@ class ModelLoader:
     def load_acestep_from_path(
         path: str,
         torch_dtype: torch.dtype = torch.bfloat16,
+        *, for_training: bool = False,
     ) -> dict:
         """Load ACE-Step 1.5 from its flat ComfyUI-style model tree
         (diffusion_models/ + vae/ + text_encoders/, no diffusers subfolders).
 
-        Returns a component dict consumed by PipelineManager.load_model()
-        (type == "acestep"). Phase 0+1: components load; no sampler yet.
+        Returns CPU-resident components; for_training enables restored audio swaps.
         """
         from core.models.acestep.loader import load_acestep_from_path as _load_acestep
-        return _load_acestep(model_path=path, torch_dtype=torch_dtype)
+        return _load_acestep(model_path=path, torch_dtype=torch_dtype, for_training=for_training)
 
     @staticmethod
     def load_minimax_h3_from_path(

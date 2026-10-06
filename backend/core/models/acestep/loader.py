@@ -374,6 +374,7 @@ def _build_text_encoder(te_path: str, torch_dtype: torch.dtype):
 def load_acestep_from_path(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
+    *, for_training: bool = False,
 ) -> dict:
     """Load ACE-Step 1.5 (2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B text
     encoder) from the flat ComfyUI-style model tree.
@@ -422,9 +423,20 @@ def load_acestep_from_path(
     print(f"[AceStepLoader] Text encoder: {te_path}")
 
     dit, dit_config = _build_dit(dit_path, torch_dtype)
-    if getattr(dit, "_audio_restored_codec", None) is not None:
-        raise NotImplementedError("ACE bundled audio swap requires target/source codec staging in the generation and training owners")
-    vae = _build_vae(vae_path, torch_dtype)
+    restored_codec = getattr(dit, "_audio_restored_codec", None)
+    if restored_codec is not None and not for_training:
+        raise NotImplementedError("ACE bundled audio swap requires target/source codec staging in the generation owner")
+    source_vae = None
+    if restored_codec is not None:
+        from .audio_artifact import source_dtype, verify_source_codec
+        source_vae = _build_vae(vae_path, source_dtype(dit))
+        verify_source_codec(dit, source_vae)
+        source_vae.requires_grad_(False).eval()
+        vae = restored_codec
+        from .vae_boundary import bind_encoding_contract
+        bind_encoding_contract(vae, dit.decoder._audio_latent_alignment)
+    else:
+        vae = _build_vae(vae_path, torch_dtype)
     text_encoder, te_config = _build_text_encoder(te_path, torch_dtype)
 
     tokenizer_source = layout.get("tokenizer_source") or _resolve_qwen3_tokenizer_source(root)
@@ -442,7 +454,7 @@ def load_acestep_from_path(
         vae=str(Path(vae_path).resolve()), text_encoder=str(Path(te_path).resolve()), tokenizer=tokenizer_source)
 
     # Keep everything on CPU after load (VRAM discipline; GPU staging is Phase 2).
-    for comp in (dit, vae, text_encoder):
+    for comp in (dit, vae, source_vae, text_encoder):
         if comp is not None and hasattr(comp, "to"):
             try:
                 comp.to("cpu")
@@ -451,21 +463,23 @@ def load_acestep_from_path(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    print("[AceStepLoader] Loaded ACE-Step 1.5 components (CPU-resident; no sampler wired yet).")
+    print("[AceStepLoader] Loaded ACE-Step 1.5 components (CPU-resident).")
 
+    contract = getattr(getattr(dit, "decoder", None), "_audio_latent_alignment", None)
     return {
         "type": "acestep",
         "is_audio": True,
         "dit": dit,
         "dit_config": dit_config,
         "vae": vae,
+        "source_vae": source_vae,
         "text_encoder": text_encoder,
         "text_encoder_config": te_config,
         "tokenizer": tokenizer,
         "tokenizer_source": tokenizer_source,
-        "sample_rate": SAMPLE_RATE,
-        "latent_frame_rate": LATENT_FRAME_RATE,
-        "latent_channels": LATENT_CHANNELS,
+        "sample_rate": SAMPLE_RATE if contract is None else contract.target.sample_rate,
+        "latent_frame_rate": LATENT_FRAME_RATE if contract is None else contract.target.sample_rate/contract.target.hop_length,
+        "latent_channels": LATENT_CHANNELS if contract is None else contract.target.latent_channels,
         "dit_path": dit_path,
         "vae_path": vae_path,
         "text_encoder_path": te_path,

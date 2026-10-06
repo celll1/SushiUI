@@ -377,6 +377,12 @@ def module_latent_hash(module) -> Optional[str]:
             # Identical tensors can implement different video frame-count contracts.
             geometry = json.dumps(asdict(module.contract), sort_keys=True, separators=(",", ":"))
             identity = sha256(f"{identity}:{geometry}".encode()).hexdigest()[:16]
+        audio = getattr(module, "_sushi_audio_encoding_contract", None)
+        if audio is not None:
+            from hashlib import sha256
+            import json
+            geometry = json.dumps(audio, sort_keys=True, separators=(",", ":"), allow_nan=False)
+            identity = sha256(f"{identity}:{geometry}".encode()).hexdigest()[:16]
         return identity
     except Exception as e:
         print(f"[VAESwap] VAE latent hash unavailable ({type(e).__name__}: {e}); "

@@ -46,6 +46,7 @@ def _trainer(vae, model_path="M:/model/sdxl/base_a.safetensors"):
     stub = SimpleNamespace(
         log_prefix="[Trainer]", model_path=model_path, vae=vae,
         training_dtype=torch.float16, arch=SimpleNamespace(name="sdxl"),
+        is_qwen_image_21=False,
     )
     stub._build_cache_namespace = lambda: NAMESPACE
     stub._run_vae_identity = MethodType(BaseTrainer._run_vae_identity, stub)

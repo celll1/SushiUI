@@ -75,6 +75,26 @@ CPUテスト37件・26subtest、変更Pythonのpy_compile・CUDAを抑止した�
 共通component loaderはtarget/source codecのstagingが接続されるまでaligned artifactの生成/学習ロードを
 明示的に拒否する。DiT単体の保存復元が通っても、公開生成・学習・音質・公式全重みの受け入れ完了とはしない。
 
+復元済みartifactの**学習owner**へcodecのstagingを接続した。内部の`for_training=True`でtarget codecを
+latent encodingへ、保存dtypeで照合した元codecを無音/RVQ条件の初期作成へ渡す。無音のframe数は
+元conditioning configのtimbre_fix_frameを使う。作成後は元codecのCPU参照も解放し、identityだけで再保存する。
+aligned Full adapterはRVQ・condition encoder/detokenizer・null embeddingを凍結し、decoder/bridgeを学習する。
+元の未交換モデルのFull adapterは変更しない。
+latentはtarget hopまでの最小zero-tail paddingでencodeし、元/先hopの最小公倍数には拡張しない。
+後者は非整数hop比で短い音声のtoken数を余分に増やすため不採用とした。target frame数をprepare_conditionへ
+明示し、RVQにはその時間範囲を覆うceilの元frame数、decoderにはtarget frame数を渡す。
+末尾の時間範囲差は元hop未満で、conditioningのteacher補間は近似である。音質回復を保証しない。
+target codec geometryとencoding padding policyをlive VAE hashへ加え、未交換/別padding cacheと分離する。
+同target codecで元codecのhopだけが違う場合は、同じtarget latent cacheを再利用できる。
+小型実Oobleck/ACEでC減少・C増加＋U-net、非整数hop比、無音条件の元codec一致、target最小padding、
+実RVQ/condition encoder/train_step、有限loss・decoder/bridge勾配・optimizer更新をCPU検証した。
+codec読込と外部TE/tokenizerはfixtureを使用しており、公式ファイルや正式run起動の受け入れ検証ではない。
+元codecの改変はTE読込前に拒否する。source解放・RVQ凍結後の保存も通過した。
+最終の学習/境界/共有cacheテスト32件とpy_compile・CUDAを抑止した実importが通過した。
+既存の共有cache fixtureは現在のQwen flagが欠けていたため補完し、回帰18件も通過した。
+生成ownerは引き続き拒否する。新規swapの実waveform校正入口、sampler全分岐、公開API/UI、
+公式重みの学習/optimizer再開/音質・速度測定はまだ未完である。
+
 LTX-2.3の動画target-native境界を追加し、Full fine-tuneの公開VAE swap設定をexperimentalとして配線した。
 unquantized DiT・train_unet=true・paired_spatial・bundled RGB codecを必須とし、LoRA系は拒否する。
 API preflightは新規交換の保存不能設定と、復元済み交換codecのbundling無効もモデルロード前に拒否する。

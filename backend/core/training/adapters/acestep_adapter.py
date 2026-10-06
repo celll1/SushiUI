@@ -247,20 +247,25 @@ class AceStepFullParameterAdapter(BaseFullParameterAdapter):
             output_path = Path(str(output_path) + ".safetensors")
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        dit_state = trainer.transformer.state_dict()
-        combined: Dict[str, torch.Tensor] = {}
-        for k, v in dit_state.items():
-            combined[f"net.{k}"] = v.detach().to("cpu").contiguous()
-
         from core.models.acestep.residual_unet import export_metadata
+        audio_metadata = None
+        codec_state = {}
+        decoder = getattr(trainer.transformer, "decoder", trainer.transformer)
+        if getattr(decoder, "_audio_latent_alignment", None) is not None:
+            from core.models.acestep.audio_artifact import export_bundle
+            audio_metadata, codec_state = export_bundle(trainer.transformer,
+                getattr(trainer, "vae", None), getattr(trainer, "acestep_source_vae", None))
         metadata = {
-            **export_metadata(trainer.transformer),
+            **export_metadata(trainer.transformer, audio_metadata=audio_metadata),
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "acestep",
             "modelspec.architecture": "acestep",
             "format": "pt",
         }
+        combined: Dict[str, torch.Tensor] = dict(codec_state)
+        for k, v in trainer.transformer.state_dict().items():
+            combined[f"net.{k}"] = v.detach().to("cpu").contiguous()
         print(f"[AceStepFullParameterAdapter] Saving to {output_path}...")
         save_file(combined, str(output_path), metadata=metadata)
         print(f"[AceStepFullParameterAdapter] Saved {len(combined)} tensors -> {output_path}")

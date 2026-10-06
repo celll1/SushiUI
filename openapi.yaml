@@ -20267,6 +20267,8 @@ components:
       required: [frame_rate, patch_size, preview_frames, grid_policy]
       description: >-
         Native audio latent frames per second and frames per decoder token.
+        For aligned audio checkpoints, frame_rate is the target codec's sample
+        rate divided by its hop length, not the source codec's latent rate.
         Use ceil(frames/patch_size) tokens on the time axis and width 1.
         zero_token_tail_v1 and zero_hidden_tail_v1 round tokens up to the least
         common multiple of cumulative region factors. YuE2 zero_hidden_tail_v1

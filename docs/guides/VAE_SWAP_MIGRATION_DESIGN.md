@@ -164,9 +164,16 @@ local pathまたはhub IDとscheduler configを保持し、生成・再開とも
 local参照のconfig消失は重み読込前に拒否し、hubへ黙って切り替えない。参照は重みの同梱や
 hash検証ではなく、元packageの保持が必要。hub由来ならネットワーク/cache依存は残る。
 宣言のない旧checkpointは既存補完を維持する。単一/分割保存・再保存・schedulerの非標準設定・
-欠損/不正宣言の拒否をCPUで検証した。この参照追加後の公式全重みGPU再試験は未実施。
+欠損/不正宣言の拒否をCPUで検証した。参照追加後も公式全重みから専用合成2枚でFull学習
+step1→保存→step2再開をGPUで再試験し、両方exit0、434 optimizer状態がcounter1→2、fresh 0で継続した。
+Gaussian固定bufferはbit一致し、C64/16xと2段/deep4 U-net構造も保持した。
+`krea2_companions`のlocal TE/tokenizer参照とscheduler configは再保存後も一致し、
+scheduler全項目を元公式packageと照合した。再開ログでも保存したlocal tokenizer参照の使用を確認した。
+新sharded checkpointの公開API読込・256px/2steps/CFG1生成もHTTP200で完了した。
+この試験は機能受入であり、追加学習による画質回復の受入ではない。診断はignored
+`local/verification/krea_companion_api_full_results/`に保持する。
 専用run/datasetのDB・diskを整理し、選択モデルをMing Layerへ戻した。
-optimizer・診断・生成画像はignored `local/verification/krea_gaussian_api_full_results/`のみ。
+参照追加前のoptimizer・診断・生成画像はignored `local/verification/krea_gaussian_api_full_results/`に保持する。
 初回step1→2の機能試験は完走したが、dense loaderが固定FP32係数もBF16へ丸めていたため
 buffer一致を満たさず不合格とした。dense/quantized双方の読込後に元stateから係数を厳密復元し、
 BF16 loaderのbit一致をCPU回帰へ追加。初回診断をignored localへ残し、専用DB/diskを整理して

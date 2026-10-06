@@ -8,6 +8,15 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-06: 現在の対応範囲
 
+ACE native samplerのnoisy state、cover初期混合、retake、repaint clean/mask、decoder attention maskを
+target codecの時間系列へ接続した。RVQ/tokenize/LM hintsの入力は元codecの系列を保持する。
+U-netのgeneration preflightにはtarget frame数を渡し、repaint crossfade幅はhop比で実時間を保持する。
+cover→非cover切替の無音条件は短いassetを元系列長までtileする。小型実ACEによるEuler/Heun/SDE・
+cover/repaint・U-net・追加/削減channelのCPU検証5件と、既存native/U-net/boundary回帰21件・20subtestが
+通過した。clean projectionとmask変換は独立conv/interpolation参照でも確認した。
+ここではgenerator backendの元codec staging、時間位置表現、decode/時間crop、公開gateは未接続である。
+公式重みの品質・速度・学習再開の受け入れ検証も未完であり、sampler単体の成功では代替しない。
+
 ACEの学習component入口から新規Oobleck交換をsetupし、optimizer構築前にdecoder境界を配置する。
 autoは3タップpaired_temporalであり、RVQ/timbreは元codecの無音・条件を使う。校正は既存の
 timbre_fix_frameまでの音声窓をlibsndfileで部分読込し、全ファイルをRAMに展開しない。

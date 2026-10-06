@@ -1941,7 +1941,13 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         **kwargs,
     ):
         from ..residual_unet import generation_metadata
-        generation_metadata(self, src_latents.shape[1])
+        alignment = getattr(self.decoder, "_audio_latent_alignment", None)
+        target_sampler = None
+        if alignment is not None:
+            from ..vae_boundary import sampler_target_inputs
+            target_sampler = sampler_target_inputs(alignment, src_latents, attention_mask,
+                clean_src_latents, repaint_mask, repaint_crossfade_frames)
+        generation_metadata(self, src_latents.shape[1] if target_sampler is None else target_sampler["source"].shape[1])
 
         if diffusion_guidance_scale != 1.0 or use_adg or cfg_interval_start != 0.0 or cfg_interval_end != 1.0:
             logger.info(
@@ -2053,7 +2059,8 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         if audio_cover_strength < 1.0:
             non_is_covers = torch.zeros_like(is_covers, device=is_covers.device, dtype=is_covers.dtype)
             # Use silence_latent for non-cover condition to simulate text2music mode (no reference audio)
-            silence_latent_expanded = silence_latent[:, :src_latents.shape[1], :].expand(src_latents.shape[0], -1, -1)
+            repeats = (src_latents.shape[1] + silence_latent.shape[1]-1) // silence_latent.shape[1]
+            silence_latent_expanded = silence_latent.repeat(1, repeats, 1)[:, :src_latents.shape[1], :].expand(src_latents.shape[0], -1, -1)
             encoder_hidden_states_non_cover, encoder_attention_mask_non_cover, context_latents_non_cover = self.prepare_condition(
             text_hidden_states=non_cover_text_hidden_states,
             text_attention_mask=non_cover_text_attention_mask,
@@ -2075,6 +2082,15 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
         time_costs["encoder_time_cost"] = end_time - start_time
         start_time = end_time
         
+        diffusion_src_latents = src_latents
+        if target_sampler is not None:
+            diffusion_src_latents = target_sampler["source"]
+            clean_src_latents, repaint_mask = target_sampler["clean"], target_sampler["mask"]
+            repaint_crossfade_frames = target_sampler["crossfade"]
+            attention_mask = target_sampler["attention"]
+            if attention_mask is None:
+                attention_mask = torch.ones(context_latents.shape[:2], device=context_latents.device, dtype=context_latents.dtype)
+
         noise = self.prepare_noise(context_latents, seed)
         # Retake mixing: variance-preserving blend with an independent noise draw.
         # v=0 -> noise unchanged; v=1 -> equivalent to using retake_seed as the main seed.
@@ -2093,7 +2109,7 @@ class AceStepConditionGenerationModel(AceStepPreTrainedModel):
             # Find nearest valid timestep from t_schedule
             nearest_t = min(t_schedule_list, key=lambda x: abs(x - effective_noise_level))
             # xt = nearest_t * noise + (1 - nearest_t) * src_latents
-            xt = self.renoise(src_latents, nearest_t, noise)
+            xt = self.renoise(diffusion_src_latents, nearest_t, noise)
             # Truncate t_schedule to start from nearest_t
             start_idx = t_schedule_list.index(nearest_t)
             t_schedule_list = t_schedule_list[start_idx:]

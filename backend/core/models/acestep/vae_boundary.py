@@ -63,6 +63,30 @@ def decoder_output(alignment, velocity):
     return alignment.output.flow_velocity(velocity.transpose(1, 2)).transpose(1, 2)
 
 
+def sampler_target_inputs(alignment, source, attention, clean, mask, crossfade):
+    """Map sampler state and intervals while RVQ inputs stay on the source grid."""
+    if source.ndim != 3 or source.shape[-1] != alignment.source.latent_channels or min(source.shape) < 1:
+        raise ValueError("ACE sampler source geometry differs from its conditioning codec")
+    frames = (source.shape[1] * alignment.source.hop_length + alignment.target.hop_length-1) // alignment.target.hop_length
+    def latent(value):
+        if value.shape != source.shape:
+            raise ValueError("ACE sampler clean source geometry differs")
+        teacher = calibration_audio_grid(value.transpose(1, 2), frames)
+        teacher = torch.nn.functional.pad(teacher, (0, 0, 0, alignment.backbone_channels-alignment.source.latent_channels))
+        return alignment.output(teacher).transpose(1, 2)
+    def interval(value):
+        if value.shape != source.shape[:2]:
+            raise ValueError("ACE sampler interval geometry differs from the source grid")
+        return torch.nn.functional.interpolate(value[:, None].float(), size=frames, mode="nearest")[:, 0].to(value.dtype)
+    if (clean is None) != (mask is None):
+        raise ValueError("ACE repaint requires both clean source and interval mask")
+    if type(crossfade) is not int or crossfade < 0:
+        raise ValueError("ACE repaint crossfade must contain nonnegative source frames")
+    return dict(source=latent(source), attention=None if attention is None else interval(attention),
+                clean=None if clean is None else latent(clean), mask=None if mask is None else interval(mask),
+                crossfade=(crossfade*alignment.source.hop_length+alignment.target.hop_length-1)//alignment.target.hop_length)
+
+
 def install_decoder_alignment(model, alignment):
     """Install before optimizer creation; outer RVQ config is not rewritten."""
     from .residual_unet import native_config, restore_topology, model_topology_metadata, decoder_identity_config, AUDIO_CODEC_KEY

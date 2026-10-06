@@ -48,8 +48,15 @@ seed63で元codec1024px、通常paired、SVD行直交Gaussian＋velocity残差�
 同じ狐に既定2段/deep4 U-netを併用するとavg/RMS双方で顔・耳・手・本の輪郭が強く乱れた。
 17生成がfinite/decodeまで完走。denoise観測は元codec約43.5〜45.9秒、
 交換U-netなし約9.5〜10.1秒、U-net併用約5.0秒。読込・校正・decode込みの速度ではない。
-U-netなしの3prompt/1seedに限る回復候補で、本番noise policyは変更しない。
-校正kernelを固定し、general ratingを再確認したseed64比較を実行中。併用画質・複数seed受入は未了。
+同じ校正kernelを使ったseed64も17生成がexit0で完走し、合計34出力を検証した。
+両seedのkernel全tensorがbit一致、各画像shape・token数・固定shift6をCPUで確認。
+seed64でも通常pairedは3promptとも紫のノイズ状に崩れた。両補正候補は3promptすべてで
+主要対象・色・概形を認識でき、同じ内部グリッドの元codecと近い構図になった。
+seed64の反復逆写像は狐の姿勢・本の開き方を変え、局所的な輪郭は改善したが、
+3prompt/2seedを通じた明確な鮮明さの優位までは確認できない。
+既定2段/deep4 U-netはseed64でも顔・耳・本・手に強い重複輪郭が残り、併用画質は未受入。
+U-netなしの3prompt/2seedに限る概形回復を確認した。本番noise policyは変更せず、
+学習時・保存復元・生成時を通じた補正候補の本番配線は未了。追加学習の画質回復も未検証。
 専用DB run/datasetは作成せず、画像・kernel・conditioning・比較scriptは
 ignored `local/verification/zimage_official_quality/`等にのみ保持する。
 

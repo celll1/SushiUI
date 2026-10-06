@@ -140,8 +140,9 @@ export default function VaeSwapSourceSelector({
       </select>
       <p className="text-xs text-gray-500 mt-1">
         Replaces the VAE and resizes the backbone&apos;s latent input/output
-        layers to the new channel count, copying the channels the two VAEs share
-        and zeroing the rest. The result is a checkpoint that only loads with
+        layers to the new channel count. Ming uses paired spatial calibration
+        on the target grid; other models copy overlapping channels and zero
+        the rest. The result is a checkpoint that only loads with
         this VAE; it is bundled into every save.
         {loading && " Listing candidates…"}
         {error && ` Candidates could not be listed: ${error}`}

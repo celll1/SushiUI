@@ -645,8 +645,10 @@ def resolve_vae_source(
             item = load_manifest(value)
             config = dict(item.vae_config)
             config["_class_name"] = "AutoencoderKLQwenImage21"
-            with open(item.vae, "rb") as handle:
-                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            digest = ""
+            if load_weights:
+                with open(item.vae, "rb") as handle:
+                    digest = hashlib.file_digest(handle, "sha256").hexdigest()
             weights = _WeightFile(item.vae)
             return ResolvedVAE(source, form, "custom", int(config["z_dim"]),
                 int(config["scale_factor_spatial"]), int(config["scale_factor_temporal"]),

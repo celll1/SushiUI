@@ -216,3 +216,20 @@ def test_artifact_requires_portable_bridge_and_expanded_io(package):
     (package/WEIGHTS).unlink()
     with pytest.raises((ValueError,FileNotFoundError)):
         inspect_artifact(package)
+
+
+def test_vae_selector_lists_native_component_packages(tmp_path,monkeypatch):
+    import json
+    import api.routes as routes
+    from core.models.common import vae_source
+    path = tmp_path/"original"
+    path.mkdir()
+    (path/"manifest.json").write_text(json.dumps({"model_type":"qwen_image_21"}))
+    monkeypatch.setattr(routes,"_override_scan_dirs",lambda db:[str(tmp_path)])
+    monkeypatch.setattr(routes,"_training_vae_export_dirs",lambda:[])
+    monkeypatch.setattr(vae_source,"describe_vae_source",lambda source,**kw:
+        {"source":source,"ndim":5,"scale_factor":16,"latent_channels":64,"norm":"per_channel"})
+    result = routes.list_vae_sources(arch="ming_image_01",db=None)
+    entries = result["sources"]["extract_from_model"]
+    assert len(entries) == 1 and entries[0]["source"] == f"model:{path}"
+    assert entries[0]["compatible"] is True

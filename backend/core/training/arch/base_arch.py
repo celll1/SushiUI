@@ -722,7 +722,8 @@ class ArchHandler(ABC):
 
         config = getattr(trainer, "config", None) or {}
         from core.training.vae_swap import initialization_mode
-        init = initialization_mode(config, self.name)
+        requested_init = initialization_mode(config, self.name)
+        init = "zero" if module is not None else requested_init
 
         trainer.vae = module if module is not None else resolved.load_module(
             torch_dtype=getattr(trainer, "vae_dtype", None))

@@ -15,6 +15,24 @@ def no_cuda():
         yield
 
 
+@pytest.mark.parametrize("arch",["sd15","sdxl"])
+def test_public_swap_modes_and_codec_candidate_contract(arch):
+    from core.training.arch import ARCH_REGISTRY
+    from core.training.vae_swap import initialization_mode,preflight_vae_swap
+    handler=ARCH_REGISTRY[arch]()
+    assert initialization_mode({},arch)=="paired_spatial"
+    for rank in (4,5):
+        for scale in (4,8,16,32):
+            assert handler.check_vae_compatibility({"ndim":rank,"scale_factor":scale})==(True,None)
+    for rank,scale in ((3,8),(4,12),(4,None),(4,True)):
+        assert not handler.check_vae_compatibility({"ndim":rank,"scale_factor":scale})[0]
+    assert preflight_vae_swap({"vae_swap_source":"registry:qwen_image"},arch=arch,
+        method="full_finetune",bundle_vae_explicit_false=False)=="registry:qwen_image"
+    with pytest.raises(ValueError,match="Legacy zero SD"):
+        preflight_vae_swap({"vae_swap_source":"registry:qwen_image","vae_swap_new_channel_init":"zero"},
+            arch=arch,method="full_finetune",bundle_vae_explicit_false=False)
+
+
 @pytest.mark.parametrize("xl",[False,True])
 @pytest.mark.parametrize("old,new",[(4,8),(8,4)])
 @pytest.mark.parametrize("noise_process,target",[("ddpm","epsilon"),("ddpm","velocity"),("ddpm","sample"),
@@ -100,9 +118,11 @@ def test_native_codec_calibration_coarse_grid_and_training(tmp_path,arch,old,new
     trainer.move_main_model_to_gpu=lambda:model.to("cpu")
     trainer.move_vae_to_cpu=lambda:trainer.vae.to("cpu")
     trainer._check_stop_requested=lambda:None
-    initialize_swap(trainer,resolved,handler=trainer.arch)
+    trainer.arch.apply_vae_swap(trainer,resolved)
     assert model.config.in_channels==model.config.out_channels==max(old,new)
     assert trainer.wiring.latent_channels==new and trainer.wiring.vae_scale_factor==16
+    assert BaseTrainer._arch_pixel_align(trainer)==16
+    trainer.arch=get_arch_handler(trainer)
     assert BaseTrainer._arch_pixel_align(trainer)==16
     assert validate_latent_io(trainer)==[]
     images=[]

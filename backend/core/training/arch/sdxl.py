@@ -10,6 +10,10 @@ from core.training.components.wiring import SDXL_WIRING
 
 
 class SDXLArchHandler(ArchHandler):
+    def __init__(self,trainer=None):
+        super().__init__(trainer)
+        self.pixel_align=getattr(getattr(trainer,"vae",None),"spatial_scale_factor",self.pixel_align)
+
     cfg_null_stage = "caption"
     name = "sdxl"
     wiring = SDXL_WIRING
@@ -45,7 +49,18 @@ class SDXLArchHandler(ArchHandler):
         if getattr(trainer.unet,"vae_latent_bridge",None) is not None:
             from core.models.components.sd_vae_alignment import restore_swap_identity
             return restore_swap_identity(trainer,resolved,handler=self,module=module)
+        if module is None:
+            from core.training.vae_swap import initialization_mode
+            if initialization_mode(trainer.config,self.name)=="paired_spatial":
+                from core.models.components.sd_vae_alignment import initialize_swap
+                return initialize_swap(trainer,resolved,handler=self)
+            if resolved.ndim!=4 or resolved.scale_factor!=8:
+                raise ValueError("Legacy zero SD swaps require a 4-D 8x VAE; use paired_spatial")
         return super().apply_vae_swap(trainer,resolved,module=module)
+
+    def check_vae_compatibility(self,facts,*,trainer=None,base_model_path=None):
+        from core.models.components.sd_vae_alignment import check_codec_compatibility
+        return check_codec_compatibility(facts)
 
     def resolve_timestep_convention(self, trainer=None) -> str:
         # Same dual convention as SD15ArchHandler -- see that docstring; the

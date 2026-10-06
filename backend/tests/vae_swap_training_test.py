@@ -269,9 +269,9 @@ def test_preflight_answers_a_registry_source_without_the_file_being_present():
 
 
 def test_preflight_refuses_a_structurally_incompatible_family():
-    # A 5-D video VAE cannot drive SDXL's 4-D latent path (§7.4).
-    with pytest.raises(ValueError, match="cannot drive sdxl"):
-        preflight_vae_swap({"vae_swap_source": "registry:qwen_image"}, arch="sdxl",
+    # The legacy path has no independent-frame codec facade.
+    with pytest.raises(ValueError, match="Legacy zero SD"):
+        preflight_vae_swap({"vae_swap_source": "registry:qwen_image","vae_swap_new_channel_init":"zero"}, arch="sdxl",
                            method="full_finetune", bundle_vae_explicit_false=False)
     # A BatchNorm VAE on sdxl is accepted since P7: P5's shared normalisation
     # layer handles the domain and custom_sampling now renders through it.

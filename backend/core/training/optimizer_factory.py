@@ -105,6 +105,8 @@ class OptimizerFactory:
                     relative_step=False,
                     warmup_init=False,
                 )
+                from .optimizers.adafactor_fused import patch_adafactor_state_loading
+                patch_adafactor_state_loading(optimizer)
                 print(f"[OptimizerFactory] Created Adafactor optimizer (transformers)")
                 return optimizer
             except ImportError:

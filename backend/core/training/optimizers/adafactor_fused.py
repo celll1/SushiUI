@@ -152,6 +152,29 @@ def adafactor_step(self, closure=None):
     return loss
 
 
+def adafactor_load_state_dict(self, state_dict):
+    result = self._sushi_adafactor_load_state_dict(state_dict)
+    fields = ("exp_avg", "exp_avg_sq", "exp_avg_sq_row", "exp_avg_sq_col", "RMS")
+    for saved_group, group in zip(state_dict["param_groups"], self.param_groups):
+        for saved_id, parameter in zip(saved_group["params"], group["params"]):
+            saved = state_dict["state"].get(saved_id, {})
+            live = self.state.get(parameter, {})
+            for field in fields:
+                value, destination = saved.get(field), live.get(field)
+                if not isinstance(value, torch.Tensor) or not isinstance(destination, torch.Tensor):
+                    continue
+                # PyTorch casts moments to the parameter dtype; Adafactor needs FP32 for half weights.
+                dtype = torch.float32 if parameter.dtype in {torch.float16, torch.bfloat16} else value.dtype
+                live[field] = value.to(device=destination.device, dtype=dtype).clone()
+    return result
+
+
+def patch_adafactor_state_loading(optimizer: Adafactor):
+    if not hasattr(optimizer, "_sushi_adafactor_load_state_dict"):
+        optimizer._sushi_adafactor_load_state_dict = optimizer.load_state_dict
+    optimizer.load_state_dict = adafactor_load_state_dict.__get__(optimizer)
+
+
 def patch_adafactor_fused(optimizer: Adafactor):
     """
     Patch Adafactor optimizer to support per-parameter updates.
@@ -180,4 +203,5 @@ def patch_adafactor_fused(optimizer: Adafactor):
     """
     optimizer.step_param = adafactor_step_param.__get__(optimizer)
     optimizer.step = adafactor_step.__get__(optimizer)
+    patch_adafactor_state_loading(optimizer)
     print("[AdafactorFused] Optimizer patched with fused backward support")

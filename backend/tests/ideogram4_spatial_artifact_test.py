@@ -113,6 +113,14 @@ def test_shared_calibration_and_public_native_codec_round_trip(tmp_path,monkeypa
     monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained",lambda *a,**k:object())
     restored=load_ideogram4_single_file(str(path),torch_dtype=torch.float32,load_unconditional=False)
     assert restored["unconditional_transformer"] is not None
+    from core.pipeline import DiffusionPipelineManager
+    manager=DiffusionPipelineManager.__new__(DiffusionPipelineManager)
+    manager._sushi_load_warnings=[]
+    fields=manager._fold_component_latent_identity(restored,"ideogram4")
+    assert fields["latent_channels"] == 4
+    assert fields["vae_hash"] == restored["declared_vae"].latent_hash
+    assert fields["vae_identity_native"] is False
+    assert manager._sushi_wiring.vae_scale_factor == 16
     for name,model in (("transformer",trainer.transformer),("unconditional_transformer",trainer.transformer_uncond)):
         for key,value in model.state_dict().items():assert torch.equal(value,restored[name].state_dict()[key])
     for key,value in target.state_dict().items():assert torch.equal(value,restored["vae"].inner.state_dict()[key])

@@ -807,6 +807,21 @@ U-netなし、73frame・256px・seed63・32指定steps（31 denoise更新）でd
 未更新DiT同士の比較ではない。静止画像clipによる校正で、動くclipの分布は未検証。
 noise候補は本番に切り替えない。次の検証では静止校正と時間軸の整合を分けて調べる。
 
+LTX側の公式全重み検証に向け、Lightricks/LTX-2.3の未量子化dev原本
+`ltx-2.3-22b-dev.safetensors`（46,149,344,974 bytes）の取得を開始した。
+revisionは`3c6a4e66e5d0a684231950b9c74dd4ded7b6fadc`に固定し、完了時に公式LFS SHAを照合する。
+成分config/TE/codec等は`diffusers/LTX-2.3-Diffusers`のrevision
+`8eee8edcf067e838b843f926ec4d4cc9b2be1aaf`、42ファイル/56,989,593,945 bytesを取得対象とする。
+重複connectorの単一ファイルと変換済みDiT shardは取得せず、DiTはdev原本から変換する。
+取得先はignored `local/verification/ltx_official_original/`と`ltx_official_converted/`。
+後者は`transformer_pending=true`で、未完成ディレクトリを全重み受入済みとは扱わない。
+現venvで公式configの全DiT（18,988,838,144 parameters/4,186 tensor）とconnector
+（3,172,227,584 parameters/262 tensor）をmeta構築でき、CUDA未初期化を確認した。
+これは実重みのロード・学習・生成を証明しない。公式converterはcommit
+`82e309a2b1b1748e0148efd65743a27092c59dcd`の検証用コピーを保持するが、
+未導入の2.5用クラスもimportするため、そのまま実行せず2.3用依存を分離して確認する。
+取得完了・原本変換・実Full保存再開・生成のGPU検証は未完。
+
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、
 交換後のnative gridで3×3 paired_spatialをfitした。生成は1024px、DDIM epsilon、

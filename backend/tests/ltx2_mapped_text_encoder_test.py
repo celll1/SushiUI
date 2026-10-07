@@ -24,7 +24,9 @@ def _package(tmp_path):
 
 
 def test_exact_native_weights_and_tied_embedding_forward(tmp_path):
-    original = _package(tmp_path)
+    from transformers import Gemma3ForConditionalGeneration
+    _package(tmp_path)
+    original = Gemma3ForConditionalGeneration.from_pretrained(str(tmp_path), dtype=torch.bfloat16)
     loaded = load_matching_mapped_encoder(tmp_path, torch.bfloat16)
     assert loaded is not None
     assert loaded.lm_head.weight is loaded.model.language_model.embed_tokens.weight
@@ -83,3 +85,17 @@ def test_shard_index_missing_tensor_is_rejected(tmp_path):
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": mapping}))
     with pytest.raises(ValueError, match="index has missing tensors"):
         load_matching_mapped_encoder(tmp_path, torch.bfloat16)
+
+
+def test_runtime_buffers_match_native_from_pretrained(tmp_path):
+    from transformers import Gemma3ForConditionalGeneration
+    _package(tmp_path)
+    native = Gemma3ForConditionalGeneration.from_pretrained(str(tmp_path), dtype=torch.bfloat16)
+    loaded = load_matching_mapped_encoder(tmp_path, torch.bfloat16)
+    for name, expected in native.named_buffers():
+        actual = dict(loaded.named_buffers())[name]
+        assert actual.dtype == expected.dtype, name
+        assert torch.equal(actual, expected), name
+    tokens = torch.arange(29).remainder(32)[None]
+    with torch.no_grad():
+        assert torch.equal(native(input_ids=tokens).logits, loaded(input_ids=tokens).logits)

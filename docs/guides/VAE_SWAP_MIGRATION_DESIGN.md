@@ -71,7 +71,38 @@ U-net再配線は重みを減らさず、64ch交換の入出力層・bridgeで86
 VRAM peakは学習更新区間、host RSSは読込・校正・encodingを含むprocess観測で、測定範囲が異なる。
 結果と再現scriptはignored `local/verification/anima_training_cost/`と`anima_training_cost_probe.py`に保持。
 専用DB run/datasetは作らず、終了後に元Ming LayerをAPIで復元した。
-Ming/SDXLの同条件コスト比較は残る。優先対象以外の高い初期再現性の追求は後回しにする。
+Mingの同条件コスト比較は残る。優先対象以外の高い初期再現性の追求は後回しにする。
+
+#### SDXLの実Full学習コスト比較
+
+公式SDXL base revision `462165984030d82259a11f4367a4eed129e94a7b`の全重みを使った。
+測定前に6,938,078,334 bytes・SHA256
+`31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b`が配布provenanceと一致した。
+Anima比較と同じRTX 6000 Ada・1024px・batch1・BF16・Adafactor stochastic rounding・
+gradient checkpointing・block swap無し・合成8枚で、公開config変換を経た実Full trainerを使った。
+各8更新、先頭2更新を除外。checkpoint I/Oのみ省いた測定で、交換校正は合成2枚。
+
+| 構成 | 更新中央値（秒） | 学習更新peak allocated（GiB） | process peak RSS（GiB） | 学習全体（秒） |
+|---|---:|---:|---:|---:|
+| 通常4ch/8x | 1.1090 | 11.169 | 14.44 | 15.641 |
+| Qwen 2.1の64ch/16xへ交換 | 1.1010 | 11.203 | 14.35 | 17.891 |
+
+約0.7%の更新時間差では速度改善を主張しない。VRAM削減も確認できず、
+encoding・校正込みの学習全体は交換側が長かった。
+実入力をhookで確認すると、latentは4ch/128×128→64ch/64×64、
+down0/down1/down2/midの空間格子は128/64/32/32→64/32/16/16。
+up側も対応する格子へ縮小しており、交換先の縮小率は配線済み。
+SDXLはnative U-Netであり、DiTのresidual再配線を追加した試験ではない。
+trainable parameter数は2,567,463,684→2,567,883,200で、419,516増えた。
+格子縮小はparameter削減を意味せず、今回のFull設定ではstep速度/VRAMの効果が出なかった。
+固定費が原因である可能性はあるが、原因別profileの証拠はまだない。
+
+16更新のlossが有限で、両processはexit0。CPU auditでsource SHA・交換宣言・全7block格子・
+保存I/O無しを照合した。8枚がswap bufferに収まる単発試験で、長期runや品質回復は未証明。
+VRAMは更新区間のpeak、host RSSは読込・校正・encodingを含む観測である。
+Animaとの基本条件は揃えたが、conditioning長はAnima512/SDXL77で、予測形式も異なる。
+結果はignored `local/verification/sdxl_training_cost/`、scriptは`image_training_cost_probe.py`に保持。
+DB run/datasetは作らず、完了後にAPI経由で元Ming Layerへ戻した。
 
 Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
 実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し

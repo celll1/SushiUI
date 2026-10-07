@@ -14,6 +14,57 @@ def output_x0(model, image):
     return image if pair is None else pair.output.prediction(image, kind="x0")
 
 
+def validate_patch_alignment(model):
+    pair = getattr(model, "vae_latent_bridge", None)
+    correction = getattr(pair, "patch_noise", None)
+    if correction is None:
+        return
+    stride = pair.declaration.get("patch_noise_source_stride")
+    if type(stride) is not int or stride < 1:
+        raise ValueError("SenseNova patch noise checkpoint is missing its source token stride")
+    projection = model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding
+    declaration = correction.declaration
+    if (declaration["hidden_channels"] != projection.out_channels
+            or declaration["bridge_channels"] != projection.in_channels
+            or projection.kernel_size != (declaration["patch_size"],) * 2):
+        raise ValueError("SenseNova patch correction disagrees with its generation projection")
+
+
+def patch_projection_transform(model, image, t, noise_scale, noise):
+    pair = getattr(model, "vae_latent_bridge", None)
+    correction = getattr(pair, "patch_noise", None)
+    if correction is None:
+        return None
+    from .sensenova_pipeline_ops import compute_noise_scale
+    validate_patch_alignment(model)
+    stride = pair.declaration["patch_noise_source_stride"]
+    if noise is None or noise.shape != image.shape or image.ndim != 4:
+        raise ValueError("SenseNova patch correction requires this exposure's scaled BCHW noise")
+    batch, _, height, width = image.shape
+    patch = correction.declaration["patch_size"]
+    if height % patch or width % patch:
+        raise ValueError("SenseNova patch correction requires complete latent patches")
+    scale = pair.declaration["new_scale"]
+    source_scale = compute_noise_scale(model, height * scale / stride, width * scale / stride, 1)
+    if not isinstance(noise_scale, (int, float)) or not 0 < noise_scale < float("inf"):
+        raise ValueError("SenseNova patch correction requires a finite positive noise scale")
+    gain = torch.full((batch,), source_scale / noise_scale, device=image.device, dtype=torch.float32)
+    sigma = 1 - torch.as_tensor(t, device=image.device, dtype=torch.float32).reshape(-1)
+    if sigma.numel() == 1:
+        sigma = sigma.expand(batch)
+    if sigma.shape != (batch,):
+        raise ValueError("SenseNova patch correction requires one timestep per image")
+
+    def transform(output):
+        gh, gw = height // patch, width // patch
+        if output.shape != (batch * gh * gw, correction.declaration["hidden_channels"], 1, 1):
+            raise ValueError("SenseNova patch projection disagrees with the exposure grid")
+        value = output.reshape(batch, gh, gw, -1).permute(0, 3, 1, 2)
+        value = correction.correct(value, noise, sigma, desired_noise_gain=gain)
+        return value.permute(0, 2, 3, 1).reshape_as(output)
+    return transform
+
+
 def initialize_swap(trainer, resolved, *, handler):
     from core.models.components.spatial_swap import initialize_image_swap
     from core.models.components.pixel_codec import RGBPixelCodec
@@ -29,7 +80,9 @@ def initialize_swap(trainer, resolved, *, handler):
     patch = handler._resolve_gen_patch(trainer.config,
         base_patch=geometry.patch if geometry.is_latent else None)
     old_vae = trainer.vae
+    native_weight = None
     if not geometry.is_latent:
+        native_weight = model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding.weight.detach().cpu().clone()
         trainer.vae = RGBPixelCodec()
 
     def resize(channels):
@@ -39,10 +92,23 @@ def initialize_swap(trainer, resolved, *, handler):
         return report
 
     try:
-        return initialize_image_swap(trainer, resolved, handler=handler, model=model,
+        report = initialize_image_swap(trainer, resolved, handler=handler, model=model,
             old_channels=geometry.channels, source_wiring=wiring, patch_size=patch,
             resize=resize, pending_key="_sensenova_vae_calibration_source",
             topology_config=lambda:native_config(model.config))
+        if native_weight is not None:
+            from core.models.components.patch_noise_alignment import POLICY, PatchNoiseAlignment
+            pair = model.vae_latent_bridge
+            projection = model.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding
+            declaration = dict(policy=POLICY, channels=pair.declaration["new_channels"],
+                bridge_channels=pair.input.projection.out_channels,
+                hidden_channels=projection.out_channels, patch_size=projection.kernel_size[0])
+            pair.declaration["patch_noise"] = declaration
+            pair.declaration["patch_noise_source_stride"] = geometry.token_pixel_width
+            pair.add_module("patch_noise", PatchNoiseAlignment(declaration))
+            validate_patch_alignment(model)
+            trainer._sensenova_patch_noise_source = native_weight
+        return report
     except Exception:
         trainer.vae = old_vae
         raise
@@ -50,8 +116,15 @@ def initialize_swap(trainer, resolved, *, handler):
 
 def calibrate(trainer, datasets):
     from core.models.components.spatial_swap import calibrate_images
+    def capture():
+        native = getattr(trainer, "_sensenova_patch_noise_source", None)
+        if native is not None:
+            pair = trainer.transformer.vae_latent_bridge
+            pair.patch_noise.capture(native, pair.input.projection,
+                trainer.transformer.fm_modules["vision_model_mot_gen"].embeddings.patch_embedding)
+            delattr(trainer, "_sensenova_patch_noise_source")
     return calibrate_images(trainer, datasets, model=trainer.transformer,
-                           pending_key="_sensenova_vae_calibration_source")
+                           pending_key="_sensenova_vae_calibration_source", on_complete=capture)
 
 
 def _spatial_weights(value, size, *, sum_preserving=False):

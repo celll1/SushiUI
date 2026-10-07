@@ -2424,7 +2424,7 @@ def train_step(
     )
     z, image_embeds, _ = _build_step_context(
         transformer, shape, z_image, t if batch > 1 else t[0], noise_scale,
-        enable_grad=fm_trainable,
+        enable_grad=fm_trainable, exposure_noise=noise * noise_scale,
     )
     packed_gen = None
     if prefix.packed is None:

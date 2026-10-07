@@ -187,7 +187,7 @@ class NEOVisionEmbeddings(nn.Module):
         ).to(self.patch_embedding.weight.dtype)
         return embeddings
         
-    def forward(self, pixel_values: torch.FloatTensor, grid_hw=None) -> torch.Tensor:
+    def forward(self, pixel_values: torch.FloatTensor, grid_hw=None, patch_projection_transform=None) -> torch.Tensor:
         
         pixel_values = pixel_values.view(  #
             -1,
@@ -195,7 +195,10 @@ class NEOVisionEmbeddings(nn.Module):
             self.patch_size,
             self.patch_size,
         )   #  [28072, 768] -> [28072, 3, 16, 16]
-        patch_embeds = self.gelu(self.patch_embedding(pixel_values)).view(-1, self.embed_dim)
+        projected = self.patch_embedding(pixel_values)
+        if patch_projection_transform is not None:
+            projected = patch_projection_transform(projected)
+        patch_embeds = self.gelu(projected).view(-1, self.embed_dim)
         self._ensure_rope_cache(patch_embeds.device)
         patch_embeds = self._apply_2d_rotary_pos_emb(patch_embeds, grid_hw) # [28072, 1024]
         assert (grid_hw[:,0] * grid_hw[:,1]).sum() == patch_embeds.shape[0]
@@ -238,7 +241,8 @@ class NEOVisionModel(PreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
             pixel_embeds: Optional[torch.FloatTensor] = None,
-            grid_hw: Optional[torch.Tensor] = None
+            grid_hw: Optional[torch.Tensor] = None,
+            patch_projection_transform=None,
     ) -> Union[Tuple, BaseModelOutputWithPooling]:
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -249,10 +253,13 @@ class NEOVisionModel(PreTrainedModel):
             raise ValueError('You have to specify pixel_values or pixel_embeds')
 
         if pixel_embeds is not None:
+            if patch_projection_transform is not None:
+                raise ValueError("Patch correction requires actual pixel projections")
             hidden_states = pixel_embeds
         else:
             assert pixel_values.dim() == 2, f"pixel_values must be 2D for native resolution, got: {pixel_values.dim()}"
-            hidden_states = self.embeddings(pixel_values, grid_hw=grid_hw)
+            extra = {} if patch_projection_transform is None else dict(patch_projection_transform=patch_projection_transform)
+            hidden_states = self.embeddings(pixel_values, grid_hw=grid_hw, **extra)
 
         return BaseModelOutputWithPooling(
             last_hidden_state=hidden_states,

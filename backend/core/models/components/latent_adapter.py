@@ -70,6 +70,9 @@ def validate_declaration(value):
         if type(value.get(key)) is not int or value[key] < 1:
             raise ValueError(f"Invalid VAE alignment {key}")
     patch_noise = value.get("patch_noise")
+    source_stride = value.get("patch_noise_source_stride")
+    if source_stride is not None and (patch_noise is None or type(source_stride) is not int or source_stride < 1):
+        raise ValueError("Patch noise source stride requires captured patch noise and a positive integer")
     if patch_noise is not None:
         from .patch_noise_alignment import validate_declaration as validate_patch_noise
         validate_patch_noise(patch_noise)

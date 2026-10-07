@@ -4441,6 +4441,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           preserve calibrated Gaussian noise. Saved checkpoints keep their own noise policy.
                         </p>
                       )}
+                      {(pixelSpaceMiniT2I || baseModelArch === "sensenova") && (
+                        <p className="text-xs text-gray-400">
+                          Fresh paired swaps from pixel space also calibrate the input noise response.
+                          Saved checkpoints keep their own noise policy.
+                        </p>
+                      )}
                       <label className="block text-xs text-gray-400">
                         {baseModelArch === "acestep" ? "Calibration audio clips" : (baseModelArch === "ltx2" || baseModelArch === "minimax_h3") ? "Calibration images/clips" : "Calibration images"}
                         <input type="number" min={2} max={256}

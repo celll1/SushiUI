@@ -284,16 +284,36 @@ outer `[28,40)`・inner `[34,38)`の狭い2段も6枚を比較した。元解像
 `patch_narrow_comparison_{63,64}.png`に全6枚を保持する。生成平均23.28秒・peak allocated34.13GiBで、
 初回準備・caption・decodeを含む。層数配分だけで併用画質が回復するという仮説は支持しない。
 
-SenseNovaへの本番noise補正は未配線。元入力Convの共分散はgainなしで保存し、各露出の
+SenseNovaの新規pixel→VAE交換にも本番noise補正を配線した。元入力Convの共分散はgainなしで保存し、各露出の
 元pixel gridと交換先latent gridについて同じresolution/dynamic設定・上限から求めた
-noise scaleの比を、入力embeddingのdesired noise応答だけへ掛ける設計とする。
+noise scaleの比を、GELU直前の入力embeddingのdesired noise応答だけへ掛ける。
 512pxで得た比2を固定しない。共通`PatchNoiseAlignment.correct`は画像ごとの正の有限gainを
 受け取れる。省略時のMiniT2I演算と保存係数は維持する。
 gainの独立投影oracle、露出ごとの倍率、勾配、無効値拒否と既存MiniT2I配線を含むCPU回帰28件、
 compile・CUDA未初期化の実importが通過した。
-配線の受入にはFull学習の実noise、定期sample、txt2img/img2img/inpaint、CFG/style/参照の
-noise所有権と例外時解放、checkpoint保存・再開・生成復元の検証が必要である。
-試作の一時forward hookやsamplerの関数差替えを本番の代わりにはしない。
+元token幅を`patch_noise_source_stride`としてmetadataに保持し、ロード時に投影の幅・patchと照合する。
+Full学習とtxt2img/img2img/inpaintは各露出のscaled noiseを明示的に渡す。
+CFGは補正済みembeddingを再利用し、style単独/複数参照はそれぞれの固定noiseを渡す。
+本番には一時forward hook・sampler関数差替え・共有noise状態を持たせない。
+新規pixel交換だけに適用し、既存の補正なしcheckpointやlatent→latent交換の演算は維持する。
+実小型ViTの独立投影oracle・FP32/BF16・B2・gain/上限、実train_step、生成3経路、
+CFG共有・参照noise・例外、U-net/refiner・保存復元を含むCPU回帰204件が通過した。
+既存LoRA、packed batch、参照、Full契約とBF16 base、定期sampleを加えた最終回帰も
+472件＋12 subtestが通過し、compile・CUDA未初期化の実importが通過した。
+
+本番生成経路でも同じ公式全BF16重み・512px/50step/CFG4・3prompt×2seedの6枚を比較し、
+狐/青い本、赤いリンゴ/黄色い洋梨、青い車を識別できた。試作と同程度の概形回復で、ぼけと細部欠落は残る。
+U-net併用の画質未達をこの結果で解除しない。比較図は`patch_production_comparison_{63,64}.png`に保持した。
+生成平均22.61秒、peak allocated34.13GiBで、初回準備・caption・decodeを含む。
+校正は既存general40枚の係数を再利用し、DiTの追加学習はしていない。
+別の合成2枚では公開request/config→実Full trainerの1更新→保存→再開→2更新も通過した。
+Qwen 2.1の64ch/16x・標準2段U-netを併用し、optimizer567件を復元、新規0、固定patch buffer7個がbit一致した。
+保存bundleの公開API読込と256px/2step生成はHTTP200だった。この2更新は画質受入には使わない。
+専用checkpoint/optimizer66.68GiBは成功後に整理し、元公式重み・係数・JSON・診断画像を保持した。
+run/dataset/gallery DB行は作成していない。frontendは説明追加と既存型・保存経路の静的確認のみ。
+APIでMing Layerへ戻した後もRSS38.9GiBが残ったため、待機確認後にAPI再起動で解放した。
+再起動後のAPI RSSは4.65GiBでMing Layer・学習停止・生成待機を確認した。
+モデル切替時のnative RAM残留の根治とはしない。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、

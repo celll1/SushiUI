@@ -336,7 +336,8 @@ def _dispatch_stub(**flags):
     for name in (
         "is_zimage", "is_flux2", "is_anima", "is_lens", "is_minit2i", "is_krea2",
         "is_ltx2", "is_minimax_h3", "is_acestep", "is_sdxl", "is_sensenova",
-        "is_yue2",
+        "is_yue2", "is_ideogram4", "is_qwen_image_21", "is_sensenova_sdxl_chimera",
+        "is_ming_image_01",
     ):
         setattr(stub, name, False)
     for name, value in flags.items():

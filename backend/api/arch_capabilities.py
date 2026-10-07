@@ -761,7 +761,7 @@ _add("sensenova", "cpu_text_encoding",
 _add("sensenova", "attention_impl",
      "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
 _add("sensenova", "unet_quantization",
-     "the released SenseNova checkpoint already ships weight-only int8-quantized (this repo's own conversion: 588 Int8Linear modules), so there is no unquantized transformer for the per-generation converter to convert")
+     "SenseNova quantization is selected by checkpoint format; native BF16 and converted int8 are supported, but per-generation conversion is not wired")
 # Quantization. NOTE WHAT IS *NOT* DECLARED HERE: `quantized_gemm`, same
 # reason as minimax_h3 above -- `sensenova` is in `QUANTIZED_LINEAR_ARCHS`
 # (its loader really does swap 588 `nn.Linear` for `Int8Linear`), so an

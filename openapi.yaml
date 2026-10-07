@@ -28809,7 +28809,7 @@ components:
           default: 'mixed'
           description: >-
             SenseNova full fine-tuning only: on-disk format of the saved model.
-            The trained MoT half is dequantized from INT8 to bf16 at load, so a
+            The trained MoT half uses native BF16 or is dequantized from INT8 at load, so a
             save decides what to write for the untrained half and whether to put
             the trained half back on the INT8 grid.
 
@@ -28821,17 +28821,21 @@ components:
             `bf16`: both halves bf16. Same measurement: 32.66 GiB on disk, 32.99
             GiB peak VRAM, output bitwise identical to the INT8 base.
 
-            `int8`: the trained half is requantized to per-output-row INT8, so
+            `int8`: floating decoder weights in both trained and frozen halves
+            are quantized to per-output-row INT8 without mutating the live model, so
             the file matches the distribution format at 17.58 GiB (inference VRAM
             not measured).
 
             WHICH FORMAT TO PICK depends on which of two separate gates you need,
-            and they reach opposite conclusions. Handing the file to a NEW run as
+            with separate contracts. Handing the file to a NEW run as
             `model_path` goes through
             `_assert_supported_quantized_training_base`, which requires all 588
-            decoder Linears to be one quantized flavour: `int8` is the only one of
-            the three that satisfies it, because `mixed` has 294 dequantized and
-            `bf16` has none quantized. RESTARTING the run that wrote the file goes
+            decoder Linears to be one supported quantized flavour, or all 588
+            native BF16 Parameters. Full fine-tuning accepts plain-int8 or a
+            complete BF16 base; a partially mixed base remains refused. Official
+            native shard indices preserve their floating weights. `mixed` on an
+            all-floating model is written losslessly as `bf16`, including a
+            single-half run with a BF16 frozen half. RESTARTING the run that wrote the file goes
             through `accept_resume_shaped_base` instead, which requires the layout
             that run was already training in: a single-half run (`train_unet` xor
             `train_text_encoder`) resumes losslessly from `mixed`, and a

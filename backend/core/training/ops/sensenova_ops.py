@@ -598,19 +598,7 @@ def _census_quantized_linears(
 
 
 def _own_save_format_remedy(source_metadata: Any) -> str:
-    """The extra sentence a checkpoint THIS REPO wrote earns on refusal.
-
-    A full fine-tune's own output is the natural thing to resume from, and at
-    the shipped defaults it is exactly what a restart selects:
-    ``TRAINING_DEFAULTS["resume_from_checkpoint"] = "latest"`` and
-    ``_build_train_section`` always writes it. But only the ``int8`` format
-    keeps all 588 decoder Linears in one quantized flavour, so the default
-    ``mixed`` and the ``bf16`` option are both refused here -- correctly, and
-    with a message that otherwise asks the user to "select the plain-int8
-    checkpoint" without saying that the file they are pointing at was shaped by
-    a setting they chose when they created the run. The file says which one, so
-    the message can too.
-    """
+    """Explain why mixed-half outputs need the run's resume path."""
     metadata = source_metadata or {}
     effective = str(metadata.get("sensenova_save_format") or "").strip()
     if not effective:
@@ -625,13 +613,12 @@ def _own_save_format_remedy(source_metadata: Any) -> str:
         f" This checkpoint was written by this repo's own full fine-tune as "
         f"sensenova_full_finetune_save_format='{effective}'{requested_note}"
         + (f", branch '{branch}'" if branch else "")
-        + ". Of the three formats only 'int8' keeps all 588 decoder Linears in "
-        "one quantized flavour, so only 'int8' can be handed to a NEW run as "
-        "model_path -- 'mixed' and 'bf16' are outputs, not distributable bases, "
-        "and 'int8' is lossy on save (see its API description). RESUMING the run "
+        + ". A NEW run needs all 588 decoder targets in one supported quantized "
+        "flavour or all native BF16 Parameters; a mixed floating/int8 half is "
+        "not a fresh base. Explicit 'int8' is lossy on save. RESUMING the run "
         "that wrote this file is a different question and does not go through "
         "this gate: see accept_resume_shaped_base, which takes 'mixed' on a "
-        "single-half run and 'bf16' on a both-halves run losslessly, but only "
+        "single-half run and 'bf16' with verified frozen weights losslessly, but only "
         "for a checkpoint the resume path selected out of that run's own "
         "output_dir."
     )
@@ -1041,25 +1028,17 @@ def _assert_supported_quantized_training_base(
     *,
     training_method: str = "lora",
     source_metadata: Any = None,
-) -> None:
-    """Require all 588 decoder Linears to be ONE supported quantized flavour.
-
-    LoRA (the default, and every method that is not full fine-tuning) accepts
-    the plain-int8 and the ConvRot-int8 checkpoints: the adapters wrap the
-    quantized module and never differentiate its weight.
-
-    Full fine-tuning accepts the plain-int8 base ONLY, because the trainable
-    half is dequantized to real Parameters at load
-    (``materialize_int8_decoder_linears``, SENSENOVA_TRAINING_DESIGN.md 6.4
-    route (a)) and a ConvRot base cannot be dequantized without inverting its
-    rotation.
-
-    Both refuse a mixed base, an off-count base, an unrecognized subclass of a
-    known quantized Linear, and an unquantized bf16 base. Fp8/W4A8 are censused
-    for the diagnostic but not accepted: no such SenseNova base exists, so
-    accepting one would ship an untested path.
-    """
+) -> Optional[str]:
+    """Accept complete native BF16 or a supported uniform quantized decoder."""
     counts, unknown = _census_quantized_linears(transformer)
+    if not any(counts.values()) and not unknown:
+        from core.models.sensenova.sensenova_lora import iter_sensenova_lora_targets
+        targets = list(iter_sensenova_lora_targets(transformer, branch="both"))
+        if (len(targets) == _SENSENOVA_QUANT_LINEAR_COUNT and all(
+                type(module) is nn.Linear and isinstance(module.weight, nn.Parameter)
+                and module.weight.dtype is torch.bfloat16 and not module.weight.is_meta
+                for _, _, _, module in targets)):
+            return "bf16"
     present = [label for label, n in counts.items() if n]
     pure = (
         not unknown
@@ -1078,9 +1057,8 @@ def _assert_supported_quantized_training_base(
                 f"whose {_SENSENOVA_QUANT_LINEAR_COUNT} decoder Linears are all plain "
                 f"Int8Linear; got {census}. A ConvRot-int8 base is refused because "
                 "dequantizing it would require inverting its Hadamard rotation; an "
-                "unquantized bf16 base is refused because none exists for this repo and "
-                "the other two supply routes are undecided (see "
-                "docs/guides/SENSENOVA_TRAINING_DESIGN.md 6.4). Remedy: select the "
+                "incomplete unquantized bf16 base is refused unless every decoder target "
+                "is a native BF16 Parameter. Remedy: select a complete native BF16 or "
                 "plain-int8 checkpoint, or set training_method='lora', which trains on "
                 "either quantized base."
                 + _own_save_format_remedy(source_metadata)
@@ -1094,7 +1072,7 @@ def _assert_supported_quantized_training_base(
             f"{_SENSENOVA_QUANT_LINEAR_COUNT} decoder Linears are all ONE supported "
             f"quantized flavour (all Int8Linear, or all ConvRotInt8Linear); got {census}. "
             "A mixed or partially quantized base is refused, and so is an unquantized "
-            "bf16 base -- no bf16 SenseNova checkpoint exists for this repo to train on yet."
+            "bf16 base unless all 588 native decoder targets are BF16 Parameters."
             + _own_save_format_remedy(source_metadata)
         )
 
@@ -1268,15 +1246,16 @@ def load_components(trainer: Any) -> None:
             trainer, trainer.transformer, components.get("metadata"), branch=branch
         )
     trainer.sensenova_resumed_save_format = resumed_format
+    native_base_format = None
     if resumed_format is None and refiner_mode != "refiner_only":
-        _assert_supported_quantized_training_base(
+        native_base_format = _assert_supported_quantized_training_base(
             trainer.transformer,
             training_method=training_method,
             source_metadata=components.get("metadata"),
         )
     _assert_pixel_head_fm_decoder(trainer.transformer)
     if (branch not in (None, "none") and resumed_format is None
-            and refiner_mode != "refiner_only"):
+            and native_base_format != "bf16" and refiner_mode != "refiner_only"):
         from core.models.sensenova.loader import materialize_int8_decoder_linears
 
         materialize_int8_decoder_linears(

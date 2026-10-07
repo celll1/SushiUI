@@ -6231,16 +6231,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               onChange={(e) => updateParam("sensenova_full_finetune_save_format", e.target.value)}
               className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
             >
-              <option value="mixed">Mixed (trained half BF16, untrained half INT8)</option>
+              <option value="mixed">Mixed (preserve frozen INT8; BF16 for a BF16 base)</option>
               <option value="bf16">BF16 (both halves)</option>
-              <option value="int8">INT8 (trained half requantized)</option>
+              <option value="int8">INT8 (quantize floating decoder weights)</option>
             </select>
             <p className="text-xs text-gray-500">
               Measured on the distributed checkpoint with the generation half trained:
               mixed 25.12 GiB on disk / 25.43 GiB peak VRAM at inference; BF16 32.66 GiB / 32.99 GiB.
               On an untrained model both reproduce the INT8 base bitwise.
-              INT8 is 17.58 GiB (inference VRAM not measured) and matches the distributed layout,
-              so it is the only one of the three that can be selected again as a training base.
+              These measurements use the INT8 base. Complete native BF16 bases keep floating weights;
+              mixed saves from them are written as BF16. Complete BF16 or uniform supported INT8 can
+              start a new run; a mixed BF16/INT8 half uses the original run&apos;s resume path.
             </p>
             <p className="text-xs text-gray-500">
               INT8 discards weight updates below half a grid step. Measured over all 294 generation

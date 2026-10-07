@@ -8,9 +8,9 @@ Two structural facts separate it from everything else in this repo: (1) **MoT** 
 layer carries a `_mot_gen`-suffixed twin of its q/k/v/o projections, qk-norms, MLP and both
 layernorms, and a per-token boolean `image_gen_indicators` mask selects which half runs
 (`Qwen3DecoderLayer.forward_und` / `forward_gen`); the two halves are never mixed (the mixed path
-raises). (2) It is **pixel-space and quantization-mandatory** — no VAE (`ConvDecoder` upsamples the
-last hidden state straight to RGB) and the only distribution this repo reads is its own weight-only
-**int8** conversion; there is no bf16 base to load.
+raises). (2) Its native checkpoint is **pixel-space** — no VAE (`ConvDecoder` upsamples the
+last hidden state straight to RGB). The loader accepts official native BF16 shard indices
+and the repo's weight-only int8 conversion; paired_spatial can migrate generation into a VAE codec.
 
 ## Components
 
@@ -46,11 +46,13 @@ last hidden state straight to RGB) and the only distribution this repo reads is 
 Entry: `core/models/sensenova/loader.py::load_sensenova_from_path(model_path, torch_dtype)`,
 reached from `core/model_loader.py::ModelLoader.load_sensenova_from_path`.
 
-Accepted layout — exactly one: **this repo's own single-file / shard-index format**
+Accepted layouts: **official native BF16 shard indices** with unprefixed keys, and
+**this repo's own single-file / shard-index format**
 (`core/models/common/single_file_format.py::read_state_dict` + `strip_prefix`,
 `TRANSFORMER_PREFIX = "transformer."`), with sibling tokenizer files and a sibling `config.json`.
 `SENSENOVA_SIBLING_FILES` lists what must travel with a checkpoint. There is no upstream
 single-file distribution and no diffusers-directory arm; `model_path` must be a file.
+Native BF16 loading requires every model tensor and preserves the original values without quantization.
 
 Geometry: `_load_sensenova_config` prefers the checkpoint's own `sensenova_config` metadata and
 falls back to the sibling `config.json`; both are fed to `NEOChatConfig(**cfg_dict)`. The raw dict

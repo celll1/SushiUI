@@ -2,16 +2,15 @@
 
 DISTRIBUTION FORMAT
 --------------------
-This loader reads exactly the sushiUI shard index Unit 1's converter writes
+This loader reads the native BF16 shard index and the sushiUI converter format
 (``core.models.common.single_file_format``): a ``<stem>.safetensors.index.json``
 + shard files, all tensor keys prefixed ``transformer.``, plus sibling
 tokenizer files (``tokenizer_config.json``, ``vocab.json``, ``merges.txt``,
 ``special_tokens_map.json``, ``added_tokens.json``) and a sibling
 ``config.json`` (the upstream ``NEOChatConfig`` dict, also embedded verbatim
-in the checkpoint's own metadata as ``sensenova_config`` -- see below). There
-is no other on-disk shape this loader accepts: unlike Krea 2/Ideogram 4/Lens,
-SenseNova has no upstream single-file distribution to complete siblings
-against, because Unit 1's conversion IS the only distribution this repo reads.
+in the checkpoint's own metadata as ``sensenova_config`` -- see below). The
+native format uses unprefixed model keys and the original sibling config.
+Native loads require every model state tensor; they do not quantize weights.
 
 Geometry (``NEOChatConfig``) comes from the checkpoint's own
 ``sensenova_config`` metadata FIRST -- mirroring how MiniMax-H3's pruned DiT
@@ -75,8 +74,7 @@ pin is the safe default.
 Full-parameter TRAINING is the one caller that will undo this: see
 ``materialize_int8_decoder_linears`` below, which dequantizes one MoT half's
 294 Linears (or both halves' 588) back to real ``nn.Parameter`` weights.
-Inference never calls it, and nothing does yet -- SenseNova full FT is still
-refused by ``arch_capabilities`` and ``train_runner`` until U-2-2.
+Inference never calls it. Native BF16 training skips this materialization.
 
 The model is built under ``accelerate.init_empty_weights()`` (meta device,
 mirroring the Anima loader) because it is 18.7 GB and this repo's other
@@ -752,17 +750,9 @@ def restore_sensenova_frozen_half_from_base(
     base_path: str,
     compute_dtype: torch.dtype,
 ) -> int:
-    """Restore ``frozen_half``'s decoder Linears to ``Int8Linear`` from ``base_path``.
+    """Verify frozen weights against their BF16 or int8 base; retain its format.
 
-    Bf16 single-half resume fallback (``sensenova_ops.accept_resume_shaped_base``):
-    verifies each frozen Linear against ``base_path`` before swapping it, so a
-    wrong or changed base is refused by name rather than silently substituted.
-    Per-Linear order is load-bearing exactly as in
-    ``materialize_int8_decoder_linears``: each replaced float module's
-    reference is dropped before the next one is read, so the peak stays the
-    resident tree plus one Linear, not both halves' worth of both dtypes.
-
-    Returns the number of Linears restored.
+    Verify one Linear at a time to bound temporary memory; native BF16 is not quantized.
     """
     from .sensenova_lora import iter_sensenova_lora_targets
 
@@ -785,7 +775,27 @@ def restore_sensenova_frozen_half_from_base(
             weight_key = f"{TRANSFORMER_PREFIX}{module_path}.weight"
             scale_key = f"{TRANSFORMER_PREFIX}{module_path}.weight_scale"
             try:
-                codes = source.get(weight_key)
+                try:
+                    codes = source.get(weight_key)
+                except KeyError:
+                    weight_key = f"{module_path}.weight"
+                    scale_key = f"{module_path}.weight_scale"
+                    codes = source.get(weight_key)
+                if codes.dtype is torch.bfloat16:
+                    if codes.shape != weight.shape or not torch.equal(codes, weight.detach().cpu()):
+                        raise RuntimeError(f"SenseNova frozen {frozen_half} half's {module_path} differs from native BF16 base")
+                    try:
+                        source.get(scale_key)
+                    except KeyError:
+                        pass
+                    else:
+                        raise RuntimeError("SenseNova native BF16 base must not carry quantization scales")
+                    if module.bias is not None:
+                        base_bias = source.get(weight_key[:-len('weight')] + 'bias')
+                        if not torch.equal(base_bias, module.bias.detach().cpu()):
+                            raise RuntimeError(f"SenseNova frozen {module_path} bias differs from native BF16 base")
+                    restored += 1
+                    continue
                 scale = source.get(scale_key)
             except KeyError as exc:
                 raise RuntimeError(
@@ -1007,17 +1017,9 @@ def save_sensenova_full_finetune_checkpoint(
     ``save_format`` is one of ``param_defaults.SENSENOVA_FULL_FINETUNE_SAVE_FORMATS``
     (SENSENOVA_TRAINING_DESIGN.md 6.4):
 
-    * ``mixed`` -- trained half bf16, untrained half's int8 codes and scales
-      passed through untouched. With BOTH halves trained there is no int8 half
-      left, so this degenerates into ``bf16``; the effective format is returned
-      and recorded in metadata rather than silently mislabelled.
-    * ``bf16``   -- both halves floating point. The untrained half is dequantized
-      here, by the same spelling ``materialize_int8_decoder_linears`` uses, so it
-      computes the function the int8 half computed at this dtype.
-    * ``int8``   -- the trained half is requantized with the repo's own
-      ``quantize_weight_to_int8``, giving back the distributed layout. LOSSY:
-      any update below half a grid step is discarded, and an untouched weight is
-      re-rounded too.
+    * ``mixed`` keeps frozen int8 unchanged, or writes ``bf16`` for an all-floating tree.
+    * ``bf16`` keeps floating weights and dequantizes a frozen int8 half.
+    * ``int8`` quantizes every floating decoder weight without mutating the live tree.
 
     Streamed, never assembled: one shard buffer plus one tensor of host cost,
     not a second copy of a 16.2 B-parameter model.
@@ -1057,6 +1059,9 @@ def save_sensenova_full_finetune_checkpoint(
     for half in frozen_halves:
         for path, _parent, _attr, module in iter_sensenova_lora_targets(transformer, branch=half):
             frozen[path] = module
+    if save_format == "mixed" and frozen and all(
+            type(module) is nn.Linear and module.weight.dtype is torch.bfloat16 for module in frozen.values()):
+        effective = "bf16"
 
     expected_trained = sum(SENSENOVA_BRANCH_LINEAR_COUNTS[h] for h in trained_halves)
     expected_frozen = sum(SENSENOVA_BRANCH_LINEAR_COUNTS[h] for h in frozen_halves)
@@ -1084,7 +1089,7 @@ def save_sensenova_full_finetune_checkpoint(
         if not (
             type(module) is Int8Linear
             or (
-                effective == "bf16"
+                effective in ("bf16", "int8")
                 and isinstance(getattr(module, "weight", None), nn.Parameter)
                 and module.weight.dtype.is_floating_point
             )
@@ -1094,7 +1099,7 @@ def save_sensenova_full_finetune_checkpoint(
         raise RuntimeError(
             f"SenseNova save expects the untrained half's {len(frozen)} decoder "
             f"Linear(s) to be plain Int8Linear, or already-floating nn.Linear "
-            f"when writing bf16, but {len(invalid_frozen)} is/are neither "
+            f"when writing bf16/int8, but {len(invalid_frozen)} is/are neither "
             f"(first: {invalid_frozen[0]})."
         )
 
@@ -1169,6 +1174,14 @@ def save_sensenova_full_finetune_checkpoint(
                     census["trained_bf16"] += 1
                     continue
             elif stem in frozen:
+                if effective == "int8" and type(frozen[stem]) is nn.Linear and leaf == "weight":
+                    codes, scale = quantize_weight_to_int8(tensor)
+                    writer.add(f"{TRANSFORMER_PREFIX}{key}", codes.cpu().contiguous())
+                    writer.add(f"{TRANSFORMER_PREFIX}{stem}.weight_scale", scale.cpu().contiguous())
+                    weight_dtypes[stem] = torch.int8
+                    scale_stems.add(stem)
+                    census["frozen_int8"] += 1
+                    continue
                 if effective == "bf16":
                     if leaf == "weight_scale":
                         continue  # meaningless beside the dequantized weight
@@ -1407,10 +1420,13 @@ def load_sensenova_from_path(
     print(f"[SenseNovaLoader] Reading state dict: {model_path}")
     raw_sd, metadata = read_state_dict(model_path)
     sd = strip_prefix(raw_sd, TRANSFORMER_PREFIX)
+    native_source = not sd and is_sensenova_state_dict_keys(raw_sd)
+    if native_source:
+        sd = raw_sd
     if not sd:
         raise ValueError(
-            f"SenseNova checkpoint at {model_path!r} carries no '{TRANSFORMER_PREFIX}'-prefixed "
-            f"tensors; this loader only reads the sushiUI single-file/shard-index format."
+            f"SenseNova checkpoint at {model_path!r} has neither native model keys nor "
+            f"'{TRANSFORMER_PREFIX}'-prefixed model tensors."
         )
 
     config, config_dict = _load_sensenova_config(metadata, model_dir)
@@ -1455,7 +1471,7 @@ def load_sensenova_from_path(
 
     swapped = install_sensenova_state_dict(
         model, sd, int8_convrot_source_layers, torch_dtype, path=model_path,
-        require_complete=topology is not None or alignment is not None,
+        require_complete=native_source or topology is not None or alignment is not None,
     )
     validate_loaded(model)
     if topology is not None:

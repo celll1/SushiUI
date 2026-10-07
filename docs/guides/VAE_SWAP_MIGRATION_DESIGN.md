@@ -47,6 +47,21 @@ SD/SDXLのsafe_openが分割index JSONを読んで失敗する漏れも発見し
 校正宣言・U-net spec/hashはstep 1と一致し、stateのglobal_stepも2。
 検証画像は合成図形のみ。初期値の画質や学習による画質回復をこの2更新で受け入れない。
 Full成果物と監査結果はignored `local/verification/ideogram_official_full/`に保持する。
+公式全重みのAPI生成検証で、専用loaderが`declared_vae`だけを返し、共有モデル情報が読む
+`vae_identity`を返さない漏れを発見した。交換codecは復元済みでも`/models/current`が
+nativeの32chを表示し、交換VAE warningやadapter互換性に必要なidentityが欠けていた。
+専用loaderへidentity factsを追加し、実codec artifactと共有表示/preview/互換性のCPU回帰50件、
+compile/実import（CUDA未初期化）が通過。API実読込で64ch・hash・出所・両native=falseを確認した。
+frontendのModelInfo型、StartupContext、ModelLoadSectionの交換VAE表示経路を静的確認した。
+owner build/typecheckは未実施。本変更は既存response fieldsの復元で、API parameter/defaultは変更しない。
+
+公式FP8実効BF16のnativeとFull step 2の交換＋既定U-netを、赤い玩具車の同じprompt、
+512px・28step・CFG4・seed63・両DiT32block swapでAPI生成した。両要求はHTTP200で完了し、
+nativeは車体・タイヤ・台面を認識できたが、交換＋U-netは紫色の斑点へ崩れて車の概形を保てない。
+所要123.672/93.015秒。この1組の比較を一般的なthroughput保証とは扱わない。
+このcheckpointの校正は合成2枚で、40枚general校正やU-net無しの対照とは区別する。
+API結果と画像はignored `api_native_quality_*` / `api_swap_unet_quality_*`へ保存し、
+検証galleryを整理して元MingをAPI経由で復元した。交換側の画質は未合格を維持する。
 
 LTX公式nativeと交換済みFull step 5を、同一prompt/seed 63・384px・73frame・
 24fps・30step・CFG3で比較した。nativeは赤い玩具車を認識できるposterを生成したが、

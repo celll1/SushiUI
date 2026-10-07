@@ -549,6 +549,7 @@ def load_ideogram4_single_file(
     return {
         "base_dir": base_dir,
         "declared_vae": resolved,
+        "vae_identity": None if resolved is None else resolved.facts(),
         "type": "ideogram4",
         "transformer": transformer,
         "unconditional_transformer": unconditional_transformer,

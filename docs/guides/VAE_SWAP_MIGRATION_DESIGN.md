@@ -16,8 +16,8 @@ Ideogram/Krea2等は共通機能の配線と保存復元・有限な学習更新
 置換直後の高い再現性を求める追加GPU画質検証は後回しにする。
 動画VAEの画質も深追いしない。過去の測定は参考値として保持する。
 
-VAEのchannel数と空間圧縮率を区別する。現行Qwen 2.1は64ch・縦横16倍圧縮・RGBA、
-旧Qwen-Image系は16ch・縦横8倍圧縮・RGBであり、「16ch Qwen 2.1」は現在の登録codecと一致しない。
+想定する交換先はQwen 2.1の64ch・縦横16倍圧縮・RGBA VAE（ユーザーのchannel表記訂正を反映）。
+VAEのchannel数と空間圧縮率を区別する。旧Qwen-Image系は16ch・縦横8倍圧縮・RGB。
 同じ空間圧縮率のchannel変更だけではtoken数は減らない。
 8倍から16倍圧縮への交換では同じpatch packingならtoken数が1/4になり、
 全解像度self-attentionのスコア行列は理論上1/16になるが、全stepの速度/容量は別途測定する。
@@ -38,6 +38,40 @@ Design/Layer×native/swap 4条件も通過し、CUDA未初期化を確認した�
 この4条件はDiT再配線のGPU試験ではなく、小型実modelによる別の併用経路の検証。
 少数stepのfiniteな更新は収束保証ではない。旧節の未学習画質「未受入」は測定上の制約として残し、
 上記の機能検証結果を無効化するゲートにはしない。
+
+#### Animaの実Full学習コスト比較
+
+同じ公式Anima DiT（SHA256 `bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e`）と
+同じ公式Qwen3 TEで、RTX 6000 Ada・BF16・batch1・Adafactor stochastic rounding・
+gradient checkpointing・block swap無しを比較した。公開request/config変換を経て実Full trainerを実行。
+各構成8更新、最初の2更新を除外した中央値。データは合成図形8枚だけで、交換校正も合成2枚。
+checkpoint保存だけを検証subclassで省き、forward/backwardから成功optimizer更新のbookkeepingまでを測った。
+caption/latent encodingはその区間から除外し、学習全体時間には含めた。
+swap bufferは全8枚を保持するので、長いrunの補充・offload費用はこの表に含めない。
+
+| 解像度 | 構成 | 更新中央値（秒） | 通常比速度 | 学習更新peak allocated（GiB） | process peak RSS（GiB） | 学習全体（秒） |
+|---|---|---:|---:|---:|---:|---:|
+| 512 | 通常 | 0.8045 | 1.00x | 8.405 | 8.85 | 12.125 |
+| 512 | 64ch/16x交換 | 0.8985 | 0.90x | 8.414 | 9.81 | 14.469 |
+| 512 | 交換＋既定2段/deep4 | 0.9220 | 0.87x | 8.406 | 11.14 | 13.625 |
+| 1024 | 通常 | 1.7890 | 1.00x | 8.801 | 8.10 | 20.063 |
+| 1024 | 64ch/16x交換 | 0.9375 | 1.91x | 8.413 | 10.04 | 14.953 |
+| 1024 | 交換＋既定2段/deep4 | 0.7110 | 2.52x | 8.413 | 9.86 | 12.875 |
+
+1024pxでは全28blockの実入力をhookで確認した。通常64×64、交換のみ32×32、
+交換＋U-netは32×32（8層）/16×16（16層）/8×8（最深4層）。
+全層token総和は114688→28672→12544、token数二乗の総和は469762048→29360128→9453568。
+後者はself-attentionの計算規模の指標であり、Flash/SDPAの実メモリや全FLOPではない。
+trainable parameter数は通常2,091,068,928、交換の両構成2,091,929,216。
+U-net再配線は重みを減らさず、64ch交換の入出力層・bridgeで860,288 parameter増える。
+512pxでは速度改善がなく、1024pxでは改善した。固定費の影響は考えられるが、この測定だけで原因を断定しない。
+
+6構成48更新のlossは有限で、全processがexit0。source SHA一致、交換宣言一致、
+各層格子、checkpoint書込無しをCPU auditで照合した。単発8更新のため収束・品質回復・長期throughputは未証明。
+VRAM peakは学習更新区間、host RSSは読込・校正・encodingを含むprocess観測で、測定範囲が異なる。
+結果と再現scriptはignored `local/verification/anima_training_cost/`と`anima_training_cost_probe.py`に保持。
+専用DB run/datasetは作らず、終了後に元Ming LayerをAPIで復元した。
+Ming/SDXLの同条件コスト比較は残る。優先対象以外の高い初期再現性の追求は後回しにする。
 
 Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
 実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し

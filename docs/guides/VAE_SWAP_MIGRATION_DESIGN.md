@@ -945,6 +945,13 @@ API再起動で元のMingモデルを復元した。低stepの出力は概形を
 再装着後にH2D-only offloaderの部分配置を再適用し、既存CPU masterへweight/sidecarを
 戻してからdevice配置する修正を追加した。CPU回帰23件、構文検証・CUDA無し実import通過。
 修正後の連続生成GPU確認は未完。初回のwhole-GPU staging自体はまだ省略していない。
+同じ公式step 5・同じ要求で修正後の連続生成を実施し、2回ともHTTP200で完走した。
+2回目のallocated peakは59.859→36.867GiB、reservedは61.029→38.053GiBに低下した。
+所要は130.293→87.063秒（初回は134.796秒）。これは1組の測定で一般的な速度保証ではない。
+修正前後の4動画はCPUでdecodeした全73frame・128×128・RGB各pixelが完全一致した。
+15秒間隔のhost観測では最小空き5.285GiB、2回目後半は約24GiB、API再起動中は66.246GiB。
+初回のより短いpeakや全native host retentionの解消を、このsamplingだけで保証しない。
+検証galleryを削除し、API再起動後の元Mingモデル復元を確認した。生成画質未合格は維持する。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

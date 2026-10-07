@@ -133,6 +133,23 @@ DB run/dataset/gallery行は作成していない。公式sourceはignored `flux
 小さな診断・変換係数は`flux2_official_full`へ保持する。
 これは機能検証であり、owner frontend build/typecheckとFLUX.2の画質受入は残る。
 
+同じ公式BF16 DiTで、1024px・50step・CFG4、3 prompt（狐と青い本／果物2個／青い車）×
+2 seedを通常・2段U-net・交換・併用の4条件、計24枚で比較した。
+校正40枚は使用直前にrating=generalとpathを照合し、512pxでpaired_spatial/Gaussianを校正した。
+交換単独の6例は対象を識別でき、概形・配置・主要色を残すが、粒状・格子状の劣化と
+姿勢・画風・洋梨の形の変化が残る。詳細品質の受入や同一seedのpixel復元は主張しない。
+標準U-net併用では両seedの狐と本の概形が大きく崩れ、未達とする。
+通常VAEのU-net対照にも本の配置・車の形の劣化があり、交換単独の問題と混同しない。
+
+target token数は4096→1024。6例平均の生成関数全体は通常56.33秒／U-net37.01秒／
+交換19.58秒／併用14.44秒、CUDA peak allocatedは順に8.39／8.69／13.87／13.87GiB。
+これはcaption・phase移動・decodeを含み、先行条件でprompt cacheが温まるため、
+純粋なattention速度比として扱わない。target VAEの違いでピークVRAMは増えた。
+比較PNG・係数・目視診断はignored `local/verification/flux2_official_quality`に保持し、gitには含めない。
+DB run/dataset/gallery行は作成せず、APIのMing Layer選択は維持した。
+独立検証プロセスの終了後はbackend RSS4.65GiB、空きRAM59.52GiBを確認した。
+FLUXの交換単独について限定的な概形保持の証拠を得たが、U-net併用と全アーキテクチャの受入は未完。
+
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、
 CFG/NAGのbatch展開、single/multi style各参照の個別noiseを入力/velocity出力へ渡す。

@@ -80,7 +80,21 @@ component source復元と合わせてCPU12件・subtest6件、compile/実import�
 修正後の公開APIでstep2成果物を読込し、seed63・8秒・8step・CFG1で音声生成がHTTP200となった。
 生成FLACは作業フォルダへ保持し、この実行だけのgallery登録・出力をDELETE APIで整理した。
 実codec交換の機能確認であり、changed-hop codecの公式実重み検証や音楽/歌唱の品質回復、
-長期throughput、U-net併用の実重み検証は未了。小型CPUのU-net併用結果とは区別する。
+長期throughputは未了。U-net併用の実重み結果は以下へ記録する。
+
+同じ実DiT/ScragVAE・synthetic stereo8秒2件を使い、公開設定経路で既定2段deep4を併用した。
+24層のouter区間は[4,20)、inner区間は[10,14)、時間縮小率は各2倍。
+step1のloss=1.3426723、bridge4 parameter更新・保存が通過した。process41.000秒、peak7.964GiB。
+step2再開のloss=1.0406158、480 optimizer状態復元・fresh0、bridge4 parameterの追加更新・保存を確認。
+process39.531秒、peak8.123GiB。再開前後のtopologyは一致し、codec365 tensor・boundary buffer5件もbit一致。
+再開時の全24層の実forward入力をhook観測し、8層が100 token、12層が50、最深部4層が25であることを確認。
+このtoken数削減はU-netによるもので、同hopのScragVAE交換自体の軽量化とは区別する。
+短い2更新のprocess時間は読込・校正・保存を含み、長期step/secや収束/音質回復の証拠にはしない。
+再現script・JSON・成果物はignored `local/verification/ace_scrag_unet_full/`。
+step2成果物の公開API読込で、保存topologyと応答のdit_rewiring_specが一致した。
+同prompt・seed63・8秒・8step・CFG1で音声生成がHTTP200となり、48kHz stereo384,000 sampleが
+有限であることを確認した。検証出力だけのgallery登録・sidecar/thumbnail/mediaをDELETE APIで整理し、
+比較FLACは作業フォルダへ保持した。元のMingモデルを復元した。
 
 #### Chimeraの実読込入口とRGBA交換
 

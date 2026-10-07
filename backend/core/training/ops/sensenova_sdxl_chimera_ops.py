@@ -262,6 +262,9 @@ def load_components(trainer) -> None:
                 f"{initialization!r} with an unaligned bridge by explicit override; "
                 "conditioning has not passed the held-out alignment gate"
             )
+    from core.training.vae_swap import apply_latent_space
+    apply_latent_space(trainer, components.get("vae_identity"))
+
     if stage == "bridge_align":
         hidden_weight = (getattr(trainer, "config", None) or {}).get(
             "chimera_clip_hidden_weight"

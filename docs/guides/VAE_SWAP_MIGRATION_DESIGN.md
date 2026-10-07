@@ -45,7 +45,33 @@ private/権限不足と配布停止を区別できないため「モデル不存
 ACE-Stepは公式1.5のDiT/TE/元codecが手元にあるが、現在の交換契約を満たす別codecの
 公式成果物（48kHz stereo Oobleck）の確認が未了。元codecの同一重みを別名で読んでも
 交換検証にはしない。Chimeraは公式conditioning bootstrapの学習更新まで確認済みだが、
-交換後の公式Full更新は未了。これらを解決した記録がない限り全対応は完了としない。
+交換後のFull検証は以下のwarm-start経路で進める。未取得/未検証の条件が残る限り全対応は完了としない。
+
+#### Chimeraの実読込入口とRGBA交換
+
+公式SenseNova UnderstandingとSDXL由来のbridge-stage step3から、正式builderでV3→V4の
+warm-startを作った。trunk・時間埋め込み・conditioning bridgeを保持し、V3のradial head追加と
+各段階のconv_out初期化をmanifestへ記録した。元VAEの統計は合成RGB2枚・128px・posterior modeで
+測定した4成分平均とcentered second moment=1.0133816668510798を用い、仮の平均/分散を置かない。
+conditioningはunaligned、alignment_passed=falseを保持する。移植元の意味を変える宣言改変ではなく、
+既存の`chimera_allow_unaligned_scratch=true`が認めるwarm-start学習経路である。
+
+実Full trainerで、Chimeraのload_componentsからVAE交換が呼ばれず設定が無視される漏れを発見した。
+共通apply_latent_spaceを、prediction/stage契約の検証後・optimizer構築前へ接続した。
+Chimera固有のRGB限定条件も、共通codec経路が扱えるRGB/RGBAへ揃えた。
+RGB画像はopaque alphaでRGBA codecへ入る。新規読込からのbridge optimizer登録1件、
+RGB/RGBAの校正・保存復元・continuationとpreflight49件、既存stage/Full契約35件が通過（1 skip）。
+変更backendのcompile・CUDA未初期化の実import、OpenAPIの構文確認も通過した。
+
+修正後の公式由来V4 warm-startを、公開request/config変換→実Full trainerで、
+合成RGB2枚・128px・batch1・BF16・Adafactor・Qwen 2.1 64ch/16xへpaired_spatial交換した。
+step1のloss=3.463146209716797、更新/保存/preflightが通過し、校正後の入力/出力bridgeのweight/bias
+4 tensorがoptimizer更新で変化した。process 95.938秒、peak allocated 17.514GiB。
+step1からの再開も成功し、1688 optimizer状態が復元され、freshは0だった。
+保存済みcodec/bridgeからstep2へ継続し、loss=72.83879852294922、同じ4 tensorの更新・保存・preflightを確認した。
+process 97.453秒、peak allocated 17.513GiB。conditioningは未整列のままで、
+2回の有限な更新は収束・生成画質の証拠にはしない。交換成果物からの生成は今回未確認。
+成果物・JSON・再現scriptはignored `local/verification/chimera_official_swap_v4/`に保持する。
 
 #### 優先対象の現在の証拠と残作業
 

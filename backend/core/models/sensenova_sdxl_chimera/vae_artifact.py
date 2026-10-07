@@ -36,8 +36,8 @@ def validate_documents(manifest, runtime):
         raise ValueError("Chimera VAE alignment record exceeds its bounded size")
     declaration = validate_declaration(record.get("declaration"))
     width = max(declaration["old_channels"], declaration["new_channels"])
-    if declaration["old_channels"] != 4 or declaration["input_channels"] != 3:
-        raise ValueError("Chimera alignment requires its four-channel source and an RGB target codec")
+    if declaration["old_channels"] != 4 or declaration["input_channels"] not in (3, 4):
+        raise ValueError("Chimera alignment requires its four-channel source and an RGB or RGBA target codec")
     _contract(record.get("source_prediction"), width)
     target = _contract(manifest.get("prediction"), declaration["new_channels"])
     if target != record.get("target_prediction"):

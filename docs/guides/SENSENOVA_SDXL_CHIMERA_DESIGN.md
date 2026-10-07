@@ -602,10 +602,15 @@ the bundled donor VAE's latent identity, even though another SDXL-shaped VAE
 has the same four channels.
 
 Full FT can now migrate the bundled codec with `paired_spatial` on the target
-grid. The unet/joint stage trains both bridges; source and target prediction
+grid. RGB and RGBA target codecs use the shared image boundary; RGB training
+images enter RGBA codecs with opaque alpha. The production loader applies the
+configured or checkpoint-declared codec before optimizer construction.
+The unet/joint stage trains both bridges; source and target prediction
 statistics are saved separately. v4 also pins a time-drift loss/integrator
-contract. This is an experimental CPU-verified implementation; official
-full-weight quality acceptance is pending. See `VAE_SWAP_MIGRATION_DESIGN.md`.
+contract. CPU integration and two GPU Full updates with optimizer restoration
+on an official-source V4 warm-start are verified. Conditioning remains
+unaligned; swapped official-source generation and quality recovery are pending.
+See `VAE_SWAP_MIGRATION_DESIGN.md`.
 
 ### 7.6 SenseNova multimodal route preservation
 

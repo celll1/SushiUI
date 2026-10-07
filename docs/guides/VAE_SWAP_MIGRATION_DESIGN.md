@@ -45,6 +45,14 @@ gradient normはtotal/conditioningとも1.3367、凍結U-Netは0。step3は113.8
 全3checkpointのU-Net 1,680 tensorとVAE 248 tensorは、bootstrapをexport dtypeへcastした値と
 全要素一致し、bridge学習が凍結tensorを更新していないことを確認した。
 
+held-out alignmentの準備で、teacher padding maskがbridge lossへ渡されていない漏れを発見した。
+SDXL donorの両tokenizerから実token maskのunionを取り、固定77行のteacher maskとしてcollateする。
+hidden normalized MSE、RMS MSE、hidden cosineを実tokenだけで集計する。pooled lossは従来通り。
+明示maskがない旧auxの演算は維持し、不正shape/dtypeや空maskは拒否する。
+paddingだけの一致でhidden cosineが良く見えない独立参照、paddingへのzero gradient、
+producer/tokenizer unionとcollateを含むChimera CPU回帰221件が通過した（14 skip）。
+変更moduleのcompile/実importはCUDA未初期化で通過。公開API parameter/defaultは変更していない。
+
 公式Ming Designの固定revision `208087ada1486931692c1896f38d4cd16ff3df82` の全BF16
 componentを取得し、合成画像2枚で実Full trainerの1更新→保存→再開→2更新を確認した。
 16ch/8xからQwen 2.1の64ch/16xへのpaired_spatial交換、Gaussian補正、2段U-netを併用し、

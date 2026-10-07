@@ -2,6 +2,20 @@
 
 ## 現在の受け入れ範囲（2026-10-07照合）
 
+所有者の最新指定に基づく配線・学習継続・初期出力検査は完了した。
+Lensは静的検証のみ、ACEの別codec探索は対象外、動画品質は深追いしない。
+置換直後の完全再現・追加学習による品質回復・全variant/optimizerのGPU試験は完了を主張しない。
+以下の`quality_accepted=false`や古い画質ゲートの記録は保持するが、最新指定の受け入れを覆さない。
+
+最終照合ではregistry17件を基準に、交換対象15 architectureのstep2以降の学習継続記録と
+生成結果を確認した。Ming LayerのRGBA target/reference、固定buffer9件一致、bridge4件更新、
+再校正なし復元も別途確認した。API応答とnative H3の実production denoise/decode試験を区別する。
+対象記録のSHA256付き台帳はignored `local/verification/vae_swap_final_evidence.json`。
+これは保存済み実行記録の照合であり、新しいGPU実行・品質回復学習ではない。
+frontendはsource selector、arch別互換性、欠損sourceの保持、非同期scan取消、API型・送信、
+初期化とbundle設定、生成エラー伝播を静的確認した。Chimeraの説明もRGB/RGBA契約へ揃えた。
+owner frontend build/type-checkは未実施で、所有者の最終確認事項として残す。
+
 17 training archの宣言と保存済み実行記録を照合した。以下は過去の実GPU試験を
 保存JSON・再開ログで再確認した結果であり、この照合でGPU試験を再実行したものではない。
 CPUのregistry宣言・resume・wave3 resume回帰は17件通過し、CUDA未初期化を確認した。

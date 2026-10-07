@@ -4415,7 +4415,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       )}
                       {baseModelArch === "sensenova_sdxl_chimera" && (
                         <p className="text-xs text-amber-400">
-                          Chimera requires the U-Net or Joint stage and a bundled RGB VAE.
+                          Chimera requires the U-Net or Joint stage and a bundled RGB/RGBA VAE.
                           Source and target flow statistics are saved separately.
                           {params.bundle_vae === false && " Enable Bundle VAE before saving this run."}
                           {params.chimera_training_stage === "bridge_align"

@@ -833,6 +833,12 @@ BF16/5GB shard保存を行い、8 shardへの変換を完了した。driverはig
 LTX→H3のFull試験では、既存`official/vae`ディレクトリの欠損shardを公開preflightが拒否した。
 完全な既存FP16 H3 VAEを専用ローダーで設定付きパッケージへ変換し、共通resolverで
 24ch・空間/16・時間stride 4を確認して再試験する。これは空間tokenが増える方向の機能検証である。
+再試験では公式全DiTの実読込、H3 codec交換、U-net適用、46層CPU master/2 GPU slotの
+構築と合成73frame動画2本のcaption・latent buffer充填まで通過した。構築時の空きRAMは
+18.45GiBだったが、最初のstepで3GiB未満が3秒続き、検証用監視がプロセスを終了した。
+逆伝搬・optimizer更新・保存再開は未検証。試験終了後、通常のMingモデルをAPI再起動で復元した。
+LTXの凍結Gemmaとconnectorは現状CPU移動後もtrainer/pipelineに保持されるため、
+次の試験では凍結成分の保持とmutable block swapのstep時割当を計測する。原因をTEだけとは断定しない。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

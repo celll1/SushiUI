@@ -18,6 +18,29 @@ def declaration(old=4, new=8, scale=16, rank=4):
                 ndim=rank, norm="shift_scale", norm_pack=1)
 
 
+@pytest.mark.parametrize("frame_axis", [False, True])
+def test_real_codec_tiling_controls_preserve_normalized_decode(frame_axis):
+    from diffusers import AutoencoderKL
+    from core.models.components.latent_adapter import NormalizedImageVAE
+    inner = AutoencoderKL(in_channels=3, out_channels=3, latent_channels=4,
+        block_out_channels=(8, 8), down_block_types=("DownEncoderBlock2D",)*2,
+        up_block_types=("UpDecoderBlock2D",)*2, norm_num_groups=4, layers_per_block=1,
+        scaling_factor=1., shift_factor=0.).eval()
+    inner.tile_sample_min_size, inner.tile_latent_min_size = 8, 4
+    wrapper = NormalizedFrameVAE if frame_axis else NormalizedImageVAE
+    codec = wrapper(inner, declaration(4, 4, scale=2))
+    z = torch.randn(2, 4, 2, 8, 8)
+    with torch.no_grad():
+        for tiled in (True, False):
+            codec.enable_tiling() if tiled else codec.disable_tiling()
+            assert inner.use_tiling is tiled
+            expected = torch.stack([inner.decode(frame, return_dict=False)[0] for frame in z.unbind(2)], dim=2)
+            decoded = codec.decode(z if frame_axis else z[:, :, 0], return_dict=False)[0]
+            torch.testing.assert_close(decoded[:, :3], expected if frame_axis else expected[:, :, 0])
+            if frame_axis:
+                assert torch.equal(decoded[:, 3:], torch.ones_like(decoded[:, 3:]))
+
+
 def identity(bridge, bias=.3):
     w = torch.zeros(bridge.projection.in_channels * 9, bridge.projection.out_channels)
     for c in range(min(bridge.source_channels, bridge.target_channels)):

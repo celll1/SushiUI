@@ -8,6 +8,30 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+公式Ming Designの固定revision `208087ada1486931692c1896f38d4cd16ff3df82` の全BF16
+componentを取得し、合成画像2枚で実Full trainerの1更新→保存→再開→2更新を確認した。
+16ch/8xからQwen 2.1の64ch/16xへのpaired_spatial交換、Gaussian補正、2段U-netを併用し、
+523 optimizer stateを新規0で復元した。固定Gaussian buffer 5個は保存間でbit一致する。
+INT8からのmaterializeや既存runの重みではなく、公式の浮動小数点DiTを使用した。
+これは機能検証であり、Mingの画質受入は未完。
+
+GPU検証で、block swap初期化時に常駐層だけがCUDAへ移り、外側IOがCPUに残る配置を
+校正前のdevice確認が拒否する不具合を修正した。配置の判定からconductor所有の全main層を除き、
+実際の移動では常駐層も移し、swap対象のCPU masterは維持する。
+CPU回帰39件と小型実CUDAで初期配置・CPU/GPU移動・master storage保持を確認した。
+実画像は使わず、公式重みはignored `local/verification/ming_official_design`へ保持する。
+検証checkpointは終了後に削除し、小さな診断・係数だけ`ming_official_full_results`へ残した。
+
+保存済みMingを生成APIで読込む際のlatent channel固定値も修正した。
+交換先codecの由来を復元し、共有identity処理へ渡してchannel数・圧縮率・正規化と
+VAE交換warningを反映する。tinyのcaption幅も維持し、Design/LayerのFull bundleを含むCPU回帰47件が通過。
+生成APIが操作するtiling制御は共有`NormalizedFrameVAE`からinner codecへ委譲した。
+実AutoencoderKLのtiled/untiled decodeを独立oracleと照合し、共有codec/Ming生成のCPU回帰82件が通過した。
+公式重みから2更新した交換U-net bundleも生成APIから読込み、256px・2stepの推論/decodeが成功した。
+モデル情報は64ch・VAE交換済みを示し、既存frontend型/交換warning表示の経路を静的確認した。
+これは画質の評価ではない。元のMing Layer選択へ戻し、専用smokeのcheckpoint・出力を整理した。
+dataset/run/gallery DB行はこの検証では作成していない。
+
 校正設定panelのfrontend固定arch一覧からH3が漏れていたため、VAE source selectorと同じ
 backendの`vae_swap` capabilityによる表示条件へ統一した。H3にもpaired_spatial初期化・
 校正画像/clip数・target校正解像度が表示され、LTXと同じbundled RGB codec/DiT条件を示す。
@@ -38,8 +62,8 @@ MNT2・CFG dropout・guidance・保留gradient付きの途中再開も、CPUのt
 旧経路・公開Full・全Ming再開条件を含む最終CPU回帰207件、追加の2参照common_concept style2件が通過。
 変更backendのcompile/importもCUDA未初期化で通過した。
 frontendの既定policy説明へMingを追加し、既存API型・default・編集/保存経路を静的確認した。
-owner frontend build/typecheckと公式全重みの交換Full学習・画質受入は残る。
-実画像・GPU・API runは使わず、ignored `local/verification/ming_gaussian_*`へ診断を保持した。
+owner frontend build/typecheck、Layerの公式全重み交換Full学習、両profileの画質受入は残る。
+このCPU回帰では実画像・GPU・API runを使わず、ignored `local/verification/ming_gaussian_*`へ診断を保持した。
 
 画質の受入は完全な復元ではなく、概形・主要色を一定水準で保持することを目安とする。
 これは変換行列・空間畳み込み・noise補正の改善を省く理由にはしない。

@@ -24,16 +24,18 @@ def setup_training_block_swap(trainer):
     transformer._layer_offload_conductor = conductor
 
 
-def _managed_ids(module):
+def _managed_ids(module, *, include_resident=False):
     conductor = getattr(module, "_layer_offload_conductor", None)
     if conductor is None:
         return set()
-    return {id(value) for index in conductor.swappable
+    indices = range(len(conductor.layers)) if include_resident else conductor.swappable
+    return {id(value) for index in indices
             for value in (*conductor.layers[index].parameters(), *conductor.layers[index].buffers())}
 
 
 def execution_device(module):
-    managed = _managed_ids(module)
+    # The conductor initially places resident blocks on CUDA before the outer IO moves.
+    managed = _managed_ids(module, include_resident=True)
     locations = {value.device for value in (*module.parameters(), *module.buffers()) if id(value) not in managed}
     if len(locations) != 1:
         raise ValueError("Ming component requires one unmanaged execution device")

@@ -377,6 +377,12 @@ class NormalizedFrameVAE(nn.Module):
     def dtype(self):
         return next(self.inner.parameters()).dtype
 
+    def enable_tiling(self, *args, **kwargs):
+        return self.inner.enable_tiling(*args, **kwargs)
+
+    def disable_tiling(self):
+        return self.inner.disable_tiling()
+
     @apply_forward_hook
     def encode(self, pixels, **kwargs):
         if pixels.ndim != 5 or pixels.shape[1] != 4 or pixels.shape[2] < 1:

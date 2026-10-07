@@ -26,7 +26,13 @@ class MingImage01Mixin:
         self._sushi_wiring = MING_IMAGE_01_WIRING.replace(te_out_dim=result["transformer"].config.cap_feat_dim)
         self.current_model_info = {**info, "source_type": source_type, "source": source,
                                    "is_video": False, "is_audio": False,
-                                   "latent_channels": 16, "generation_available": True}
+                                   "latent_channels": self._sushi_wiring.latent_channels, "generation_available": True}
+        identity = getattr(result["vae"], "_sushi_vae_identity", None)
+        if identity is not None:
+            from types import SimpleNamespace
+            self.current_model_info.update(self._fold_sd_latent_identity(
+                SimpleNamespace(vae=result["vae"], _sushi_vae_identity=identity), "ming_image_01"))
+            self._sushi_wiring = self._sushi_wiring.replace(te_out_dim=result["transformer"].config.cap_feat_dim)
 
     def _ming_image_run(self, params, *, images, progress_callback=None, step_callback=None):
         from api.param_defaults import image_defaults_for_arch

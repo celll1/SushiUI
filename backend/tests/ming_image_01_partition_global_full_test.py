@@ -78,6 +78,16 @@ def test_public_global_full_training_updates_and_restores_bundle(tmp_path,profil
         assert pair.declaration["noise_policy"]=="gaussian_row_orthogonal_v1"
         for key,buffer in pair.noise_alignment.state_dict().items():
             assert torch.equal(buffer,loaded.transformer.vae_latent_bridge.noise_alignment.state_dict()[key])
+        from core.pipeline import DiffusionPipelineManager
+        manager = DiffusionPipelineManager()
+        manager._install_ming_image_01(dict(ming_native=loaded, transformer=loaded.transformer,
+            vae=loaded.vae, text_encoder=loaded.conditioner), model_id="restored", source_type="diffusers", source=str(saved))
+        assert manager.current_model_info["latent_channels"] == 24
+        assert manager.current_model_info["vae_identity_native"] is False
+        assert manager.current_model_info["vae_provenance"] == pair.declaration["source"]
+        assert manager._sushi_wiring.latent_channels == 24 and manager._sushi_wiring.vae_scale_factor == 16
+        assert manager._sushi_wiring.vae_norm == "identity"
+        assert manager._sushi_wiring.te_out_dim == loaded.transformer.config.cap_feat_dim
     payload=loaded.transformer._ming_partition_global_payload
     assert payload["metadata"]==branch.metadata()
     assert all(torch.equal(v,payload["state"][k]) for k,v in branch.export_tensors().items())

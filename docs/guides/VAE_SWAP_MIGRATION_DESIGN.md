@@ -32,6 +32,25 @@ VAE交換warningを反映する。tinyのcaption幅も維持し、Design/Layer�
 これは画質の評価ではない。元のMing Layer選択へ戻し、専用smokeのcheckpoint・出力を整理した。
 dataset/run/gallery DB行はこの検証では作成していない。
 
+公式Ming Designの1024px・12step・CFG1を、3 prompt×2 seedで通常/U-net/交換/併用の
+4条件と、元解像度24層を残す狭い2段U-netで比較した。校正画像40枚は使用直前にdataset itemの
+rating=generalとpathを照合した。256pxと512px校正を比較し、実画像・係数・生成画像はgitへ含めない。
+受入基準は完全復元ではなく概形・配置・主要色の保持とするが、単色や色の塊だけでは合格にしない。
+交換単独では本やブロックを認識できる例がある一方、標準U-net併用では概形を失う例があり未達。
+512px校正だけでは解消せず、狭いU-netも輪郭の改善と引換えに配置・対象の変更が残るため既定値に採用しない。
+通常生成自体にもpromptと異なる対象や役割名の文字が出るため、同じ3 promptのchat/raw/構造化入力で
+通常/交換を18枚比較した。rawや構造化だけでは解消せず、交換後に対象が変わる例もあるため画質は未達。
+本番の入力形式は変更しない。次の画質判定には公式実行経路とのconditioning/predictionの一致確認を要する。
+channel数が異なると同じseedでも初期noiseは一致しない。これはpixel単位の復元一致試験ではない。
+
+最初の比較ではcaption phaseの未使用CUDAキャッシュが残り、VRAM約48GiB・空きRAM約9GiBで
+U-net生成が大幅に遅延した。Ming生成のphase境界で全componentをCPUへ退避した後に
+未使用キャッシュを解放する。CPU処理と未初期化CUDAには触れない。CPU回帰35件、compileと
+実import、実CUDAで未使用予約86MiB→0の解放を確認した。
+解放条件を揃えた512px校正の6例平均は、通常11.68秒/U-net6.17秒/交換4.12秒/併用2.98秒、
+狭いU-netは通常10.38秒/交換3.77秒。計測はcondition encoding・model loadを除き、decodeを含む。
+速度の成功を画質受入には使わない。専用DB/run/gallery行は作成していない。
+
 校正設定panelのfrontend固定arch一覧からH3が漏れていたため、VAE source selectorと同じ
 backendの`vae_swap` capabilityによる表示条件へ統一した。H3にもpaired_spatial初期化・
 校正画像/clip数・target校正解像度が表示され、LTXと同じbundled RGB codec/DiT条件を示す。

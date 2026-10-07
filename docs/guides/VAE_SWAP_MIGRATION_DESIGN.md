@@ -1,5 +1,27 @@
 # VAE差し替えフルFT（latent移行）設計
 
+### 2026-10-07: 軽量化目的の検証方針（以前の画質ゲートに優先）
+
+目的はtoken数・attention計算と実測のメモリ/step時間を削減し、追加学習で出力品質を回復すること。
+置換直後のnative出力の完全再現や最終画質は、実装受け入れの必須条件にしない。
+paired_spatial等の初期化は残し、ランダム初期化の全面グレー出力より有用な初期値を狙う。
+概形の保持は望ましい初期化評価であり、以前の「画質未合格」の記録だけで機能検証や学習を止めない。
+ただしNaN/Inf、定義域や正規化の誤り、勾配欠落、保存/復元の不一致は修正する。
+
+優先対象はMing Design・Anima・SDXLのU-net＋VAE swap。
+この3系統では学習更新・再開・生成の配線、初期出力、token数、VRAM/DRAM、step時間を比較する。
+既定U-netは2段・最深部4層を維持し、必要な場合だけ高解像度側の層配分を比較する。
+SDXLはDiTではなく畳み込みU-Netなので、DiTのtoken削減によるattention高速化をそのまま当てはめず実測する。
+Ideogram/Krea2等は共通機能の配線と保存復元・有限な学習更新を優先し、
+置換直後の高い再現性を求める追加GPU画質検証は後回しにする。
+動画VAEの画質も深追いしない。過去の測定は参考値として保持する。
+
+VAEのchannel数と空間圧縮率を区別する。現行Qwen 2.1は64ch・縦横16倍圧縮・RGBA、
+旧Qwen-Image系は16ch・縦横8倍圧縮・RGBであり、「16ch Qwen 2.1」は現在の登録codecと一致しない。
+同じ空間圧縮率のchannel変更だけではtoken数は減らない。
+8倍から16倍圧縮への交換では同じpatch packingならtoken数が1/4になり、
+全解像度self-attentionのスコア行列は理論上1/16になるが、全stepの速度/容量は別途測定する。
+
 Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
 実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し
 `TRAINING_FEATURE_ADVISORY["sensenova"]["vae_swap"] = "experimental"` に移した。

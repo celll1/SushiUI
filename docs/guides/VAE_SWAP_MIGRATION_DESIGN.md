@@ -1,5 +1,44 @@
 # VAE差し替えフルFT（latent移行）設計
 
+## 現在の受け入れ範囲（2026-10-07照合）
+
+17 training archの宣言と保存済み実行記録を照合した。以下は過去の実GPU試験を
+保存JSON・再開ログで再確認した結果であり、この照合でGPU試験を再実行したものではない。
+CPUのregistry宣言・resume・wave3 resume回帰は17件通過し、CUDA未初期化を確認した。
+記録の再現scriptと集計はignored `local/verification/vae_swap_current_acceptance.*`。
+
+| training arch | 交換の空間圧縮率（元→先） | Full継続の実記録 | 制約・未了 |
+|---|---|---|---|
+| SD1.5 | 8→16 | step2、optimizer689 | 短い機能試験。画質回復の追加学習は未実施 |
+| SDXL | 8→16 | step2、optimizer1683 | 元から畳み込みU-Net。1024px実測で速度改善は確認できない |
+| Z-Image | 8→16 | step2、optimizer525 | 長期品質/throughputは未検証 |
+| Anima | 8→16 | step2、optimizer689 | 1024px・24枚のbuffer補充まで測定。長期品質は未検証 |
+| Lens | CPUの交換/復元契約のみ | 公式全重みは未検証 | 上流案内の3配布が現在のHub認証で404。保存先を所有者へ確認中 |
+| Ideogram4 | Qwen 2.1 codecへ交換 | step2、optimizer1060、両入力投影更新 | 公式FP8由来の実効BF16。高い置換直後の再現性は受け入れ条件にしない |
+| MiniT2I | pixel 1→16 | step2、optimizer374 | native patchも変わるため圧縮率だけからtoken数を計算しない |
+| Krea2 | 8→16 | step2、optimizer434 | 長期品質/throughputは未検証 |
+| Qwen-Image 2.1 | 16→32（LTX codec） | step2、optimizer301 | 動画codecの時間軸契約も保持する。置換直後の完全再現は要求しない |
+| Ming-Image 0.1 | Design/Layerとも8→16 | step2、Design523/Layer525 optimizer | LayerのRGBA/profile・再校正なし復元も記録。Designの速度比較は下記 |
+| FLUX.2 | 8→16 | step2、optimizer173、head更新 | 公式klein-base-4B。別サイズ全てのGPU検証を意味しない |
+| LTX-2.3 | 32→16（H3 codec） | step5まで継続 | 縮小率変更を確認する試験であり、token削減の向きではない。動画品質は深追いしない |
+| MiniMax-H3 | 16→32（LTX codec） | step2、optimizer638 | 動画品質は深追いしない |
+| ACE-Step | 時間hop1920→1920 | step2、optimizer480、bridge4件更新 | ScragVAEは別実重みだが同hop。異なるhopの実codec検証は未了 |
+| SenseNova U1.5 | pixel 1→16 | step2、head更新 | patch32→交換側実効stride32。VAE交換だけでtoken削減とは言えない |
+| SenseNova SDXL Chimera | 8→16 | step2、optimizer1688、bridge4件更新 | 公式由来warm-start、conditioning未整列。生成はノイズ状で概形保持未確認 |
+| YuE2 | 対象外 | planner-onlyの明示拒否 | plannerに交換対象の学習codecがない。未配線の代用として扱わない |
+
+optimizer件数は各試験の有効状態数であり、全parameterの勾配を保証する値ではない。
+全decoder/encoder・全variantでの収束、または全組合せの速度改善をこの表から推論しない。
+初期画質の比較・API生成・固定buffer一致の証拠は以下の各実験記録を参照する。
+全対応の完了条件にはLensの公式全重み試験とACEの異なるhopの実codec試験が残る。
+
+ACEの追加codec候補 `stabilityai/stable-audio-open-1.0` と
+`stabilityai/stable-audio-open-small` は、2026-10-07 12:23 UTCの取得で
+現在のHub認証では設定ファイルがHTTP403 / GatedRepoErrorだった。
+利用許諾済みの重みへのアクセスが必要であり、同codecを別名にして縮小率変更の証拠にはしない。
+現行ACE契約は48kHz stereoを要求するため、異なるsample rateのcodecでは実波形の
+resamplingと時間座標の換算も必要になる。sample rate宣言の書換えだけでは対応しない。
+
 ### 2026-10-07: 軽量化目的の検証方針（以前の画質ゲートに優先）
 
 目的はtoken数・attention計算と実測のメモリ/step時間を削減し、追加学習で出力品質を回復すること。

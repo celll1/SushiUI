@@ -928,6 +928,24 @@ txt2vid・img2vid・vidoutpaintのfinallyでも同じbackingを退避し、例�
 追加cleanup検証2通過、構文検証・CUDA未初期化の実import通過。実GPU/APIの生成・
 キャンセル・再生成は未検証なので、このCPU結果で生成品質の受け入れとはしない。
 
+RoPE修正後の本番loaderで、公式Full checkpointのstep 4→5をGPU再開し、
+更新・保存・cleanupまで確認した（process 253.016秒、load/save・SHA確認を含む）。
+保存stateはglobal_step=5、epoch=2、batch_idx=1。入力/出力bridgeのweight・biasの
+4 tensorが変化し、アライン宣言・calibratedフラグと2段階U-net構造は保持された。
+これは合成動画による学習機能検証であり、交換後の生成画質の合格ではない。
+最新step 5を保持し、生成APIの読込・連続生成・cleanupを別途検証する。
+step 5をAPIで読み込み、24ch・16x/4x圧縮・H3 chunk時計・2段階U-netを復元した。
+合成prompt、128px・73frame・24fps・2step・CFG1・46block swapで2回生成し、
+動画を保存した。所要118.538/130.293秒。自身のgallery行と出力は証拠コピー後に削除し、
+API再起動で元のMingモデルを復元した。低stepの出力は概形を認識できず、画質未合格。
+キャンセル要求は最初の生成完了と重なったため、キャンセル成功の証拠とは扱わない。
+2回目のallocator peakはallocated 59.859GiB/reserved 61.029GiBとなり、物理VRAM容量を
+超える割当とホストRAM圧迫を確認した。native `maybe_free_model_hooks`がoffloadを再装着し、
+除外transformerをwhole-GPUへ戻すため、次回TE配置と重なる経路が残っていた。
+再装着後にH2D-only offloaderの部分配置を再適用し、既存CPU masterへweight/sidecarを
+戻してからdevice配置する修正を追加した。CPU回帰23件、構文検証・CUDA無し実import通過。
+修正後の連続生成GPU確認は未完。初回のwhole-GPU staging自体はまだ省略していない。
+
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、
 交換後のnative gridで3×3 paired_spatialをfitした。生成は1024px、DDIM epsilon、

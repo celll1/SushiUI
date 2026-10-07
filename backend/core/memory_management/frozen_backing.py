@@ -123,6 +123,10 @@ def install_frozen_cpu_offload(pipeline, component_names):
                 raise RuntimeError(f"Frozen offload component replaced: {name}")
             backings[name].park()
         result = original(owner, *args, **kwargs)
+        for name in getattr(owner, "_exclude_from_cpu_offload", ()):
+            offloader = getattr(getattr(owner, name, None), "_block_offloader", None)
+            if offloader is not None and getattr(offloader, "h2d_only", False):
+                offloader.prepare_block_devices_before_forward()
         attached = set()
         for user_hook in owner._all_hooks:
             for name, backing in backings.items():

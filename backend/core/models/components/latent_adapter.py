@@ -185,6 +185,14 @@ class SpatialAlignmentPair(nn.Module):
         sign = 1 if convention == "eps_minus_x0" else -1
         return (mapped.float() + sign * residual).to(mapped.dtype)
 
+    def correct_diffusion_velocity(self, mapped, *, noise_derivative, noise):
+        correction = getattr(self, "noise_alignment", None)
+        if correction is None:
+            return mapped
+        self._check_noise(mapped, noise)
+        coefficient = self.output._sigma(noise_derivative, mapped).float()
+        return (mapped.float() + coefficient * correction.residual(noise)).to(mapped.dtype)
+
     def _check_noise(self, value, noise):
         if noise is None or noise.ndim != value.ndim or noise.shape[0] != value.shape[0] or noise.shape[2:] != value.shape[2:]:
             raise ValueError("Aligned flow requires this exposure's noise on the same external grid")

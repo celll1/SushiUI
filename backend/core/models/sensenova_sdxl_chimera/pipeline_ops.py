@@ -877,8 +877,10 @@ def _sample_flow_latents(
     if cfg_probe_callback is not None and not needs_cfg:
         raise ValueError("Chimera CFG probe requires a negative branch and cfg_scale > 1")
     install_chimera_attention_processors(unet, backend=attention_backend)
+    from core.models.components.image_noise_context import noise_scope
+    exposure = sample if source_noise is None and start_index == 0 else source_noise
     try:
-        with torch.inference_mode():
+        with noise_scope(exposure), torch.inference_mode():
             for index in range(start_index, steps):
                 timestep = times[index].to(dtype=dtype)
                 from core.inference.custom_sampling import calculate_dynamic_cfg

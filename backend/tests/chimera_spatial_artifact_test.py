@@ -71,13 +71,16 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     timestep = torch.tensor([.4])
     kwargs = dict(encoder_hidden_states=torch.randn(1, 3, 2048),
         added_cond_kwargs=dict(text_embeds=torch.randn(1, 1280), time_ids=torch.ones(1, 6)))
+    from core.models.components.image_noise_context import noise_scope
+    exposure = torch.randn_like(latent)
     def step(model, contract, optimizer):
         optimizer.zero_grad()
-        if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
-            from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
-            output = forward_prediction(model, latent, timestep, prediction=contract, **kwargs).full_velocity
-        else:
-            output = unet_forward(model, latent, timestep, prediction=contract, **kwargs)
+        with noise_scope(exposure):
+            if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
+                from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
+                output = forward_prediction(model, latent, timestep, prediction=contract, **kwargs).full_velocity
+            else:
+                output = unet_forward(model, latent, timestep, prediction=contract, **kwargs)
         (output - 1).square().mean().backward()
         optimizer.step()
         return output
@@ -111,6 +114,16 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     def record_grid(model, args, forward_kwargs):
         observed.append((tuple(args[0].shape), forward_kwargs["added_cond_kwargs"]["time_ids"].clone()))
     handle = restored["unet"].register_forward_pre_hook(record_grid, with_kwargs=True)
+    captured_noise = []
+    correction = getattr(restored["unet"].vae_latent_bridge, "noise_alignment", None)
+    noise_handle = None
+    if correction is not None:
+        original_delta = correction.input_delta
+        def record_noise(noise):
+            captured_noise.append(noise.clone())
+            return original_delta(noise)
+        noise_handle = patch.object(correction, "input_delta", side_effect=record_noise)
+        noise_handle.start()
     try:
         generated = pipeline_ops.sample_txt2img_latents(restored["unet"], conditioning, conditioning,
             height=128, width=192, steps=2, cfg_scale=3., cfg_mode="batched", seed=14,
@@ -121,6 +134,18 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
             steps=2, denoising_strength=1., cfg_scale=3., cfg_mode="sequential", seed=14,
             prediction=restored["prediction"])
         assert edited.shape == generated.shape and torch.isfinite(edited).all()
+        inpainted = pipeline_ops.sample_img2img_latents(restored["unet"], conditioning, conditioning, b,
+            steps=3, denoising_strength=.7, cfg_scale=3., cfg_mode="batched", seed=14,
+            generate_mask=torch.zeros(1, 1, 8, 12), prediction=restored["prediction"])
+        torch.testing.assert_close(inpainted, b)
+        if correction is not None:
+            expected_noise = torch.randn(b.shape, generator=torch.Generator().manual_seed(14), dtype=b.dtype)
+            assert captured_noise
+            for noise in captured_noise:
+                torch.testing.assert_close(noise, expected_noise.repeat(noise.shape[0], 1, 1, 1), rtol=0, atol=0)
+        from core.models.components.image_noise_context import exposure_noise
+        with pytest.raises(ValueError, match="exposure"):
+            exposure_noise(b)
         if channels == 2 and kind == "flow_velocity":
             from core.pipeline_backends.sensenova_sdxl_chimera import SenseNovaSDXLChimeraMixin
             components = dict(restored, understanding=dict(transformer=torch.nn.Linear(2, 2), tokenizer=object()))
@@ -139,6 +164,8 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
                     SenseNovaSDXLChimeraMixin._generate_txt2img_sensenova_sdxl_chimera(
                         manager, dict(width=192, height=144, steps=2, cfg_scale=1., seed=14))
     finally:
+        if noise_handle is not None:
+            noise_handle.stop()
         handle.remove()
         restored["unet"].set_attn_processor(dict(original_processors))
     assert observed

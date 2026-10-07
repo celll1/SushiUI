@@ -55,6 +55,8 @@ def transfer_prediction(unet, source_sample, source_radial, source_tangent,
         (derivative*source_mean + radial*source_direction).to(weight),
         clean_derivative=derivative.reshape(-1).expand(source_sample.shape[0]),
     ).to(target_direction) - derivative*target_mean
+    from .vae_alignment import correct_velocity_noise
+    drift = correct_velocity_noise(unet, drift, timestep, prediction=target_prediction)
     angular = output.epsilon(source_tangent.to(weight)).to(target_direction)
     coordinate_derivative = (destruction_coordinate(timestep, target_direction)[1]
                              if kind == FLOW_V4_PREDICTION else torch.ones_like(derivative))
@@ -76,9 +78,15 @@ def forward_prediction(unet, sample, timestep, *, prediction, **kwargs):
         raise ValueError("Polar aligned forward requires its saved spatial bridge and source contract")
     if source["type"] != prediction["type"]:
         raise ValueError("Polar VAE forward cannot reinterpret its source coordinate contract")
-    alpha, _, _, _ = endpoint_observable_coefficients(timestep, sample)
-    internal = pair.input.diffusion_state(sample.to(pair.input.projection.weight),
-        alpha=alpha.reshape(-1).expand(sample.shape[0]))
+    alpha, sigma, _, _ = endpoint_observable_coefficients(timestep, sample)
+    if getattr(pair, "noise_alignment", None) is None:
+        internal = pair.input.diffusion_state(sample.to(pair.input.projection.weight),
+            alpha=alpha.reshape(-1).expand(sample.shape[0]))
+    else:
+        from core.models.components.image_noise_context import exposure_noise
+        internal = pair.diffusion_state(sample.to(pair.input.projection.weight),
+            alpha=alpha.reshape(-1).expand(sample.shape[0]), sigma=sigma.reshape(-1),
+            noise=exposure_noise(sample))
     _, radius, direction = polar_state(internal, timestep,
         latent_mean=source["latent_mean"], radius_floor=source["radius_floor"])
     kwargs["return_dict"] = False

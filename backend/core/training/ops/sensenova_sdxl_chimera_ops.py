@@ -536,38 +536,40 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
 
         site = spatial_tap_sites(trainer.unet)[trainer.repa_align_depth][1]
         repa_handle = arm_spatial_tap(trainer._repa_tap_module, site)
+    from core.models.components.image_noise_context import noise_scope
     try:
-        if is_polar:
-            polar_kwargs = dict(encoder_hidden_states=conditioning,
-                encoder_attention_mask=context_mask,
-                added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
-                return_dict=False)
-            if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
-                from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
-                polar_prediction = forward_prediction(
-                    trainer.unet, noisy, timesteps,
-                    prediction=prediction_contract, **polar_kwargs)
-                radial_prediction = polar_prediction.radial_velocity
-                prediction = (polar_prediction.tangent_per_coordinate if is_v4
-                              else polar_prediction.tangent_per_time)
-                if is_v4:
-                    tangent_drift = polar_prediction.drift_tangent_per_time
+        with noise_scope(noise):
+            if is_polar:
+                polar_kwargs = dict(encoder_hidden_states=conditioning,
+                    encoder_attention_mask=context_mask,
+                    added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
+                    return_dict=False)
+                if getattr(trainer.unet, "vae_latent_bridge", None) is not None:
+                    from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
+                    polar_prediction = forward_prediction(
+                        trainer.unet, noisy, timesteps,
+                        prediction=prediction_contract, **polar_kwargs)
+                    radial_prediction = polar_prediction.radial_velocity
+                    prediction = (polar_prediction.tangent_per_coordinate if is_v4
+                                  else polar_prediction.tangent_per_time)
+                    if is_v4:
+                        tangent_drift = polar_prediction.drift_tangent_per_time
+                else:
+                    raw_tangent, radial_prediction = polar_unet_forward(
+                        trainer.unet, model_input, timesteps, log_radius=log_radius, **polar_kwargs)
+                    prediction = polar_tangent_projection(raw_tangent, polar_target.direction)
             else:
-                raw_tangent, radial_prediction = polar_unet_forward(
-                    trainer.unet, model_input, timesteps, log_radius=log_radius, **polar_kwargs)
-                prediction = polar_tangent_projection(raw_tangent, polar_target.direction)
-        else:
-            from core.models.sensenova_sdxl_chimera.vae_alignment import unet_forward
-            prediction = unet_forward(
-                trainer.unet,
-                model_input,
-                timesteps,
-                prediction=prediction_contract,
-                encoder_hidden_states=conditioning,
-                encoder_attention_mask=context_mask,
-                added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
-                return_dict=False,
-            )
+                from core.models.sensenova_sdxl_chimera.vae_alignment import unet_forward
+                prediction = unet_forward(
+                    trainer.unet,
+                    model_input,
+                    timesteps,
+                    prediction=prediction_contract,
+                    encoder_hidden_states=conditioning,
+                    encoder_attention_mask=context_mask,
+                    added_cond_kwargs={"text_embeds": pooled, "time_ids": time_ids},
+                    return_dict=False,
+                )
     finally:
         if repa_handle is not None:
             repa_handle.remove()

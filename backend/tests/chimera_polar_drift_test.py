@@ -105,7 +105,11 @@ def test_cfg_guides_both_tangent_fields_and_anchors_radial_to_positive(mode, nor
 
 
 @pytest.mark.parametrize("channels", [2, 6])
-def test_actual_train_step_supervises_coordinate_tangent_radial_and_boundary_drift(channels):
+@pytest.mark.parametrize("gaussian", [False, True])
+def test_actual_train_step_supervises_coordinate_tangent_radial_and_boundary_drift(channels, gaussian):
+    if gaussian and channels < 4:
+        pytest.skip("Gaussian row orthogonality requires enough target channels")
+    from core.models.components.image_noise_context import noise_scope
     from diffusers import UNet2DConditionModel
     from chimera_polar_spatial_boundaries_test import _pair
     from core.models.sensenova_sdxl_chimera.artifact import prediction_contract
@@ -119,7 +123,7 @@ def test_actual_train_step_supervises_coordinate_tangent_radial_and_boundary_dri
         down_block_types=("CrossAttnDownBlock2D",), up_block_types=("CrossAttnUpBlock2D",),
         cross_attention_dim=6, layers_per_block=1, norm_num_groups=4, attention_head_dim=1)
     install_polar_radial_head(model)
-    model.vae_latent_bridge = _pair(channels, torch.float32)
+    model.vae_latent_bridge = _pair(channels, torch.float32, gaussian=gaussian)
     model._chimera_source_prediction = prediction_contract(FLOW_V4_PREDICTION,
         latent_channels=width, latent_mean=[.1]*width, latent_centered_second_moment=.8)
     contract = prediction_contract(FLOW_V4_PREDICTION, latent_channels=channels,
@@ -136,11 +140,12 @@ def test_actual_train_step_supervises_coordinate_tangent_radial_and_boundary_dri
             context_attention_mask=torch.ones(2, 3, dtype=torch.bool)))
     target = destruction_coordinate_polar_flow_target(latents, noise, ctx.timesteps,
         latent_mean=contract["latent_mean"])
-    predicted = forward_prediction(model, target.sample, ctx.timesteps, prediction=contract,
-        encoder_hidden_states=gate_conditioning_tensor(ctx.text_embeddings, ctx.timesteps, latents),
-        encoder_attention_mask=ctx.attention_mask["context_attention_mask"],
-        added_cond_kwargs=dict(text_embeds=gate_conditioning_tensor(ctx.attention_mask["pooled_text_embeds"],
-            ctx.timesteps, latents), time_ids=torch.tensor([[128., 192., 0., 0., 128., 192.]]).repeat(2, 1)))
+    with noise_scope(noise):
+        predicted = forward_prediction(model, target.sample, ctx.timesteps, prediction=contract,
+            encoder_hidden_states=gate_conditioning_tensor(ctx.text_embeddings, ctx.timesteps, latents),
+            encoder_attention_mask=ctx.attention_mask["context_attention_mask"],
+            added_cond_kwargs=dict(text_embeds=gate_conditioning_tensor(ctx.attention_mask["pooled_text_embeds"],
+                ctx.timesteps, latents), time_ids=torch.tensor([[128., 192., 0., 0., 128., 192.]]).repeat(2, 1)))
     expected = (predicted.tangent_per_coordinate-target.tangent_velocity).square().mean()
     expected += (predicted.radial_velocity-target.radial_velocity).square().mean()
     expected += predicted.drift_tangent_per_time.square().mean()

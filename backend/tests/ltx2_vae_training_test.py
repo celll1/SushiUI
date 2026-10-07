@@ -22,6 +22,11 @@ class Trainer(SimpleNamespace):
     def move_vae_to_cpu(self):
         self.vae.to('cpu')
 
+    def move_text_encoder_to_cpu(self):
+        for module in (getattr(self, 'text_encoder', None), getattr(self, 'connectors', None)):
+            if module is not None:
+                module.to('cpu')
+
     def _check_stop_requested(self):
         self.checks += 1
         if self.stop_at == self.checks:

@@ -10235,6 +10235,10 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_gpu(self):
         """Move Text Encoder(s) to GPU for encoding."""
+        frozen = getattr(self, "_ltx2_frozen_conditioner", None)
+        if frozen is not None:
+            frozen.stage(self.device)
+            return
         if (getattr(self, "is_ming_image_01", False)
                 and getattr(self, "_text_encoding_mode", None) == "cpu_prefetch"):
             return
@@ -10284,6 +10288,11 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_cpu(self):
         """Move Text Encoder(s) to CPU to free VRAM."""
+        frozen = getattr(self, "_ltx2_frozen_conditioner", None)
+        if frozen is not None:
+            frozen.park()
+            torch.cuda.empty_cache()
+            return
         if self.is_minimax_h3:
             # Already CPU/memory-mapped and must stay that way -- see
             # move_text_encoder_to_gpu.
@@ -22551,6 +22560,14 @@ class BaseTrainer(ABC):
         - Close TensorBoard writer
         """
         print(f"{self.log_prefix} Cleaning up training resources...")
+        frozen = getattr(self, "_ltx2_frozen_conditioner", None)
+        if frozen is not None:
+            try:
+                frozen.park()
+            except Exception as exc:
+                print(f"{self.log_prefix} WARNING: Frozen conditioner cleanup failed: {exc}")
+            finally:
+                self._ltx2_frozen_conditioner = None
 
         if getattr(self, "sensenova_phase_evictor", None) is not None:
             try:

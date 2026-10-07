@@ -203,6 +203,8 @@ def load_components(trainer) -> None:
     trainer.vae.requires_grad_(False)
     trainer.text_encoder.requires_grad_(False)
     trainer.connectors.requires_grad_(False)
+    from core.memory_management.frozen_backing import FrozenCPUBacking
+    trainer._ltx2_frozen_conditioner = FrozenCPUBacking((trainer.text_encoder, trainer.connectors))
     if trainer.audio_vae is not None:
         trainer.audio_vae.requires_grad_(False)
     trainer.transformer.requires_grad_(False)
@@ -906,6 +908,11 @@ def generate_sample(
         print(f"{trainer.log_prefix} WARNING: LTX-2.3 sample generation failed ({e}); skipping")
         return None
     finally:
+        if getattr(trainer, "_ltx2_frozen_conditioner", None) is not None:
+            try:
+                trainer.move_text_encoder_to_cpu()
+            except Exception as exc:
+                print(f"{trainer.log_prefix} WARNING: LTX-2.3 sample conditioner parking failed: {exc}")
         trainer.transformer.train()
         trainer.vae.train()
         if trainer.text_encoder is not None:

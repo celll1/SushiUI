@@ -146,8 +146,7 @@ def calibrate(trainer, datasets):
     parameters = [p for m in text for p in m.parameters()]
     callback = getattr(trainer,"_vae_alignment_progress_callback",None)
     with encoder_refill_residency(trainer, text=False, vae=True), park_optimizer_state(all_optimizers(trainer), parameters):
-        for m in text:
-            m.to("cpu")
+        trainer.move_text_encoder_to_cpu()
         try:
             paired = []
             old.to(device=trainer.device,dtype=trainer.vae_dtype)

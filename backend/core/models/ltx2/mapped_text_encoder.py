@@ -59,9 +59,10 @@ def load_matching_mapped_encoder(directory, torch_dtype):
         return None
     state = {}
     for filename in files:
-        path = (directory / filename).resolve()
-        if not path.is_relative_to(directory.resolve()):
+        reference = Path(filename)
+        if reference.is_absolute() or reference.drive or reference.root or ".." in reference.parts:
             raise ValueError("Gemma shard escapes its component directory")
+        path = directory / reference
         with safe_open(str(path), framework="pt", device="cpu") as handle:
             for key in handle.keys():
                 if key in state or (weight_map is not None and weight_map.get(key) != filename):

@@ -478,7 +478,12 @@ def load_ltx2_from_diffusers(
         overrides["vae"] = video_codec.inner
 
     from .mapped_text_encoder import load_matching_mapped_encoder
-    text_encoder = load_matching_mapped_encoder(Path(model_path) / "text_encoder", torch_dtype)
+    text_directory = Path(model_path) / "text_encoder"
+    if torch_dtype == torch.bfloat16:
+        from config.settings import settings
+        from .text_encoder_cache import prepare_bf16_backing
+        text_directory = prepare_bf16_backing(text_directory, Path(settings.cache_dir) / "ltx2_text_encoder")
+    text_encoder = load_matching_mapped_encoder(text_directory, torch_dtype)
     if text_encoder is not None:
         overrides["text_encoder"] = text_encoder
     pipeline = LTX2Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype, **overrides)

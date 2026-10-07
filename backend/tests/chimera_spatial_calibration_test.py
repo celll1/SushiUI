@@ -6,8 +6,9 @@ import torch
 
 
 @pytest.mark.parametrize("channels", [2, 6])
+@pytest.mark.parametrize("pixel_channels", [3, 4])
 @pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow", "destruction_coordinate_polar_flow"])
-def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, channels, kind):
+def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, channels, kind, pixel_channels):
     import numpy as np
     from PIL import Image
     from diffusers import AutoencoderKL, UNet2DConditionModel
@@ -18,13 +19,13 @@ def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, 
     from core.training.vae_swap import validate_latent_io
 
     torch.manual_seed(94)
-    def codec(c, blocks):
-        return AutoencoderKL(latent_channels=c, block_out_channels=(4,)*blocks,
+    def codec(c, blocks, pixels=3):
+        return AutoencoderKL(in_channels=pixels, out_channels=pixels, latent_channels=c, block_out_channels=(4,)*blocks,
             down_block_types=("DownEncoderBlock2D",)*blocks,
             up_block_types=("UpDecoderBlock2D",)*blocks,
             layers_per_block=1, norm_num_groups=4, scaling_factor=.7, shift_factor=.2)
     old = codec(4, 4)
-    target = codec(channels, 5)
+    target = codec(channels, 5, pixel_channels)
     directory = tmp_path/"target"
     target.save_pretrained(directory)
     resolved = resolve_vae_source(f"file:{directory}", arch="sensenova_sdxl_chimera")

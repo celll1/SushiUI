@@ -73,8 +73,8 @@ def initialize_swap(trainer, resolved, *, handler):
         **{key: prediction[key] for key in (
             "angular_schedule", "angular_endpoint_slope", "radius_floor",
             "angular_singularity_threshold", "angular_step_limit") if key in prediction})
-    if resolved.config.get("in_channels", resolved.config.get("input_channels", 3)) != 3:
-        raise ValueError("Chimera VAE swap currently requires an RGB codec")
+    if resolved.config.get("in_channels", resolved.config.get("input_channels", 3)) not in (3, 4):
+        raise ValueError("Chimera VAE swap requires an RGB or RGBA codec")
     report = sd_initialize(trainer, resolved, handler=handler)
     pending = getattr(trainer, "_sd_vae_calibration_source", None)
     if pending is not None:

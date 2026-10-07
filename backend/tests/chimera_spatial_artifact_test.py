@@ -8,8 +8,9 @@ import torch
 
 
 @pytest.mark.parametrize("channels", [2, 6])
+@pytest.mark.parametrize("pixel_channels", [3, 4])
 @pytest.mark.parametrize("kind", ["flow_velocity", "endpoint_observable_velocity", "endpoint_observable_residual", "polar_tangent_flow", "destruction_coordinate_polar_flow"])
-def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channels, kind):
+def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channels, kind, pixel_channels):
     import numpy as np
     from PIL import Image
     from diffusers import AutoencoderKL
@@ -26,7 +27,7 @@ def test_full_adapter_export_restore_and_optimizer_continuation(tmp_path, channe
     torch.manual_seed(32)
     _und, _donor, _vae, artifact = _build(tmp_path, initialization="sdxl_transplant")
     native = load_chimera_artifact(artifact["directory"])
-    target = AutoencoderKL(latent_channels=channels, block_out_channels=(4,)*5,
+    target = AutoencoderKL(in_channels=pixel_channels, out_channels=pixel_channels, latent_channels=channels, block_out_channels=(4,)*5,
         down_block_types=("DownEncoderBlock2D",)*5, up_block_types=("UpDecoderBlock2D",)*5,
         layers_per_block=1, norm_num_groups=4, scaling_factor=.7, shift_factor=.2)
     directory = tmp_path/"target"

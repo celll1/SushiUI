@@ -710,6 +710,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "dit_rewiring_token_stride": generation_token_stride(model_result.get("vae")),
                     "model_hash": model_hash,
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "flux2"))
 
                 self._save_last_model(source_type, source, pipeline_type)
 

@@ -40,7 +40,11 @@ rating=generalとpathを照合した。256pxと512px校正を比較し、実画�
 512px校正だけでは解消せず、狭いU-netも輪郭の改善と引換えに配置・対象の変更が残るため既定値に採用しない。
 通常生成自体にもpromptと異なる対象や役割名の文字が出るため、同じ3 promptのchat/raw/構造化入力で
 通常/交換を18枚比較した。rawや構造化だけでは解消せず、交換後に対象が変わる例もあるため画質は未達。
-本番の入力形式は変更しない。次の画質判定には公式実行経路とのconditioning/predictionの一致確認を要する。
+本番の入力形式は変更しない。固定source revisionの公式関数を同じ依存版・ロード済みcomponentへ適用し、
+3 promptのconditioning 2 stream（6条件）とDiT予測t=0.99/0.5/0.01（9条件）がbit一致した。
+公式pipeline/forwardでの1024px・12step・seed63のRGBA bytesも通常生成と一致した。
+これは今回変更したwrapper/関数の差を否定する対照であり、旧Transformers環境の公式standaloneとの
+同等性や、MLLMの互換化・初期化の全体を証明するものではない。元のprompt追従と交換の画質は未達のまま。
 channel数が異なると同じseedでも初期noiseは一致しない。これはpixel単位の復元一致試験ではない。
 
 最初の比較ではcaption phaseの未使用CUDAキャッシュが残り、VRAM約48GiB・空きRAM約9GiBで
@@ -112,8 +116,20 @@ Gaussianを既定選択する。既存checkpointのpolicyとchannel減少のlega
 single/sharded×FP32/BF16×channel増減の校正・保存復元8条件では、既定policyの選択と
 Gaussian固定bufferのbit一致、固定係数のFP32維持、channel減少時のlegacy維持を確認した。
 frontendの説明へFLUX.2を追加し、既存API型・default・編集復元/保存経路を静的確認した。
-owner frontend build/typecheckと公式全重みの学習・画質受入は未検証。
-実画像・GPU・API runは使わず、ignored `local/verification/flux2_gaussian_*`へ診断を保持する。
+上記CPU回帰では実画像・GPU・API runを使わず、ignored `local/verification/flux2_gaussian_*`へ診断を保持する。
+公式`black-forest-labs/FLUX.2-klein-base-4B`の固定revision
+`a3b4f4849157f664bdbc776fd7453c2783562f4d`の未量子化BF16 DiTで、合成画像2枚を使い、
+32ch/8x→Qwen 2.1の64ch/16x、paired_spatial/Gaussian/2段U-netの実Full trainerを確認した。
+1更新→保存→再開→2更新が成功し、173 optimizer stateを新規0で復元した。
+出力headの重み更新と固定Gaussian buffer 5個の保存間bit一致も確認した。
+保存済みbundleの生成API読込で、FLUX.2だけ共有VAE情報の反映が抜けていたため修正した。
+関連CPU回帰56件、compileとCUDA未初期化の実importが通過し、API再起動後は64ch・交換VAEの
+由来とwarning・2段U-net構造が復元され、256px・2stepの推論/decodeも成功した。
+frontendの既存ModelInfo型・交換warning/チャネル表示経路を静的確認した。
+元のMing Layer選択へ戻し、専用checkpoint・optimizer・outputsを整理した。
+DB run/dataset/gallery行は作成していない。公式sourceはignored `flux2_official_base4b`、
+小さな診断・変換係数は`flux2_official_full`へ保持する。
+これは機能検証であり、owner frontend build/typecheckとFLUX.2の画質受入は残る。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、

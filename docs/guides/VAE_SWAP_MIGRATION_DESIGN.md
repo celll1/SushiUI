@@ -69,6 +69,22 @@ componentを取得し、合成画像2枚で実Full trainerの1更新→保存→
 INT8からのmaterializeや既存runの重みではなく、公式の浮動小数点DiTを使用した。
 これは機能検証であり、Mingの画質受入は未完。
 
+公式Ming Layerもrevision `9fabca8b62a67f1f53a957d46389c00451c11e52` の35ファイルを
+取得・検証した。Designと同じsafetensorsはSHA照合後に再利用し、原本は変更しない。
+RGBA合成データ2件を、補助canvas（loss重み0）＋2 layer（各重み1）と参照1枚の
+sidecarで実dataset loaderへ通した。公式浮動DiTから同じ64ch/16x交換と最深4層の
+2段U-netを併用し、実Full trainerの1更新→保存→再開→2更新が通過した。
+525 optimizer stateを新規0で復元し、固定Gaussian buffer 5個はbit一致する。
+所要103.2秒/170.2秒。交換先の実契約はRGBA入力4chで、RGB交換先のopaque alphaとは異なる。
+これは機能検証であり、Layerの生成API復元とレイヤ分離・alphaの画質受入は残る。
+
+Layer検証では、保存前の全component CPU退避で空きRAMが3.24→1.35GiBへ減り、
+検証用memory guardが保存を停止した。DiTのCPU退避は約2.71GiBで、保存後のstate量は
+DiT 11.47GiB、conditioner 35.04GiB、VAE 0.63GiB（state_dictのalias重複を含む）。
+2GiB shardでも再現したためshard縮小は撤回した。main生成modelを検証中だけ未読込にし、
+空きRAM約56GiBを確保すると保存・再開が完了した。起動設定は元のbytesへ復元した。
+この運用回避をcheckpoint常駐設計の改善やWindows heap残留の解消とは見なさない。
+
 GPU検証で、block swap初期化時に常駐層だけがCUDAへ移り、外側IOがCPUに残る配置を
 校正前のdevice確認が拒否する不具合を修正した。配置の判定からconductor所有の全main層を除き、
 実際の移動では常駐層も移し、swap対象のCPU masterは維持する。

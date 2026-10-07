@@ -21930,12 +21930,27 @@ class BaseTrainer(ABC):
                 entries.extend((param, "unet") for param in controlnet.parameters())
 
             overrides = self._full_parameter_grad_components()
+            seen = {id(param) for param, _ in entries}
+            for optimizer in all_optimizers(self):
+                if optimizer is None:
+                    continue
+                for group in optimizer.param_groups:
+                    bucket = grad_norm_bucket(group.get("component"))
+                    for param in group["params"]:
+                        if id(param) not in seen:
+                            entries.append((param, bucket))
+                            seen.add(id(param))
             if overrides:
                 entries = [
                     (param, grad_norm_bucket(overrides[id(param)]))
                     if id(param) in overrides else (param, bucket)
                     for param, bucket in entries
                 ]
+            # Components may share a root module; each gradient counts once.
+            unique = {}
+            for param, bucket in entries:
+                unique.setdefault(id(param), (param, bucket))
+            entries = list(unique.values())
 
         self._grad_norm_entry_cache = tuple(entries)
         return self._grad_norm_entry_cache

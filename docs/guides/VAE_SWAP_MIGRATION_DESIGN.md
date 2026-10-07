@@ -28,6 +28,22 @@ U-Netは2,567,463,684 parameter。CPU構築とpreflightは147.8秒、CUDA未初�
 ignored `local/verification/chimera_official/bootstrap`に保持する。条件付けbridgeは未学習で、
 transplantのdiffusion学習はheld-out alignmentを満たすまで拒否される。
 このbootstrapの構築成功を、swap Full学習や生成画質の受け入れに置き換えない。
+公式bootstrapの交換前bridge_alignを、公開request→config→実Full trainerで合成RGB2枚・
+caption2件から1更新し、directory保存後の再開で2更新目を確認した。optimizerは35 tensorが
+新規0で復元。bridgeの28.68M parameterが学習対象で、UnderstandingとU-Netは凍結を維持する。
+所要111.2秒/108.6秒、peak allocated VRAM 24.181/24.185GiB（別APIプロセス分を含まない）。
+bridge_alignでのVAE交換は段階契約により拒否されるため、この検証には交換を適用していない。
+hidden cosineは-0.0275/-0.0117で、低いnormalized hidden MSEをalignmentの成功と見なさない。
+未学習bridgeの状態はunalignedのまま保持する。held-out判定、交換後のU-Net Full学習と画質は残る。
+
+この公式検証ではbridgeが更新されてもgradient normが0と表示される集計漏れを発見した。
+共有Full集計は既知のrootに加えoptimizer所有parameterをcomponent付きで拾い、共有rootの重複を除く。
+追加architectureの独立moduleにも適用され、adapter分類がある場合はその分類を優先する。
+Chimera/future module、SenseNova、LoRA、fused、step-overheadのCPU回帰56件が通過した。
+修正後に公式step2から35 optimizer tensorを新規0で再開し、step3のbridge更新・保存が通過した。
+gradient normはtotal/conditioningとも1.3367、凍結U-Netは0。step3は113.8秒、peak24.185GiB。
+全3checkpointのU-Net 1,680 tensorとVAE 248 tensorは、bootstrapをexport dtypeへcastした値と
+全要素一致し、bridge学習が凍結tensorを更新していないことを確認した。
 
 公式Ming Designの固定revision `208087ada1486931692c1896f38d4cd16ff3df82` の全BF16
 componentを取得し、合成画像2枚で実Full trainerの1更新→保存→再開→2更新を確認した。

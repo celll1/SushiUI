@@ -91,6 +91,8 @@ owner frontend build/typecheck、Layerの公式全重み交換Full学習、両pr
 画質の受入は完全な復元ではなく、概形・主要色を一定水準で保持することを目安とする。
 これは変換行列・空間畳み込み・noise補正の改善を省く理由にはしない。
 H3→LTXの色block主体の未学習出力はこの水準を満たさず、画質未受入を維持する。
+その後のowner指示により、動画VAE交換の画質は深追いしない。
+この結果は制約として残し、以降は動画の配線・保存復元・学習/生成の機能検証を優先する。
 
 FLUX.2のGaussian補正は、共通投影境界・学習・定期sample・生成backendへ配線した。
 native forward、block swapの直接投影、CFG/NAG、参照prefix/suffix、KV抽出/再利用で

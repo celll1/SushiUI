@@ -16,7 +16,30 @@ from ming_image_01_conditioning_test import write_tiny_package, inputs
 from core.training.full_parameter_trainer import FullParameterTrainer
 from core.training.arch.base_arch import SampleContext
 from api.arch_capabilities import TRAINING_UNSUPPORTED
-from core.models.ming_image_01.training_sampling import publish_training_sample
+from core.models.ming_image_01.training_sampling import publish_training_sample, aligned_sample_dimensions
+
+
+@pytest.mark.parametrize("scale,width,height,expected", [
+    (8, 1472, 896, (1472, 896)),
+    (16, 1472, 896, (1536, 896)),
+    (16, 1536, 1024, (1536, 1024)),
+])
+def test_two_stage_sample_uses_current_codec_scale(scale, width, height, expected):
+    from types import SimpleNamespace
+    model = SimpleNamespace(_residual_unet_spec={"regions": [
+        {"id": "r0", "parent": None, "down_factor": [2, 2]},
+        {"id": "r1", "parent": "r0", "down_factor": [2, 2]},
+    ]})
+    assert aligned_sample_dimensions(model, scale, width, height) == expected
+
+
+def test_asymmetric_nested_sample_alignment():
+    from types import SimpleNamespace
+    model = SimpleNamespace(_residual_unet_spec={"regions": [
+        {"id": "r0", "parent": None, "down_factor": [2, 1]},
+        {"id": "r1", "parent": "r0", "down_factor": [2, 2]},
+    ]})
+    assert aligned_sample_dimensions(model, 16, 1472, 900) == (1472, 1024)
 
 
 @pytest.mark.parametrize("profile,reference", [("generation_edit", False), ("generation_edit", True), ("layer_decompose", True)])
@@ -36,17 +59,19 @@ def test_native_trainer_preview_restores_training_and_saves_all_rgba(tmp_path, m
     parameters = {id(p): p.detach().clone() for root in modules for p in root.parameters()}
     scheduler_timesteps = owner.noise_scheduler.timesteps.clone()
     progress = []
-    ctx = SampleContext(prompt="word5", width=64, height=64, num_inference_steps=1,
+    ctx = SampleContext(prompt="word5", width=60, height=64, num_inference_steps=1,
         guidance_scale=1., seed=17, reference_image_path=str(reference_path) if reference else None,
         step_progress_callback=lambda completed, total: progress.append((completed, total)))
     sample = owner.arch.sample(owner, ctx)
     assert sample.mode == "RGBA" and sample.size == (64, 64)
+    assert ctx.width == 60
     assert progress == [(1, 1)]
     assert modes == [m.training for root in modules for m in root.modules()]
     assert all(torch.equal(parameters[id(p)], p) for root in modules for p in root.parameters())
     torch.testing.assert_close(owner.noise_scheduler.timesteps, scheduler_timesteps, rtol=0, atol=0)
     metadata = PngImagePlugin.PngInfo()
     metadata.add_text("prompt", "word5")
+    metadata.add_text("width", "60")
     paths = publish_training_sample(sample, tmp_path / "preview.png", metadata)
     expected = ["auxiliary_canvas", "layer_1", "layer_2"] if profile == "layer_decompose" else ["image"]
     assert len(paths) == len(expected)
@@ -54,6 +79,7 @@ def test_native_trainer_preview_restores_training_and_saves_all_rgba(tmp_path, m
         with Image.open(path) as image:
             assert image.mode == "RGBA" and image.info["ming_frame_role"] == role
             assert image.info["prompt"] == "word5"
+            assert image.info["width"] == "64" and image.info["height"] == "64"
     def cancel_progress(*args):
         raise KeyboardInterrupt("test preview cancellation")
     ctx.step_progress_callback = cancel_progress

@@ -9,6 +9,14 @@ from .generation import MingGenerator
 from .residency import MingPhaseResidency
 
 
+def aligned_sample_dimensions(model, vae_scale, width, height):
+    from .residual_unet import spatial_alignment
+    ah, aw = spatial_alignment(model)
+    mh, mw = vae_scale * 2 * ah, vae_scale * 2 * aw
+    return ((width + mw - 1) // mw * mw,
+            (height + mh - 1) // mh * mh)
+
+
 @torch.no_grad()
 def generate_sample(trainer, ctx, *, step_progress_callback=None):
     from api.param_defaults import TRAINING_DEFAULTS
@@ -39,6 +47,11 @@ def generate_sample(trainer, ctx, *, step_progress_callback=None):
                 module.eval()
             preview = replace(components, scheduler=type(components.scheduler).from_config(components.scheduler.config))
             generator = MingGenerator(preview)
+            width, height = aligned_sample_dimensions(components.transformer,
+                generator.sampler.pipe.vae_scale_factor, ctx.width, ctx.height)
+            if (width, height) != (ctx.width, ctx.height):
+                print(f"[Ming sample] Aligning canvas {ctx.width}x{ctx.height} -> {width}x{height} "
+                      "for VAE and U-Net topology", flush=True)
             residency = MingPhaseResidency(preview, device=trainer.device,
                 cpu_text_encoding=getattr(trainer, "_text_encoding_mode", "") == "cpu_prefetch")
             def progress(index, total, timestep, latents):
@@ -49,7 +62,7 @@ def generate_sample(trainer, ctx, *, step_progress_callback=None):
                 trainer._check_stop_requested()
                 return False
             groups = generator.run(prompts=[ctx.prompt], references=[images], task=task,
-                width=ctx.width, height=ctx.height, resolution=max(ctx.width, ctx.height),
+                width=width, height=height, resolution=max(width, height),
                 steps=ctx.num_inference_steps, cfg=ctx.guidance_scale, seed=ctx.seed,
                 requested_layers=layers, cancelled=cancelled, step_callback=progress,
                 phase_context=residency)
@@ -91,6 +104,7 @@ def publish_training_sample(sample, path, metadata):
         for index, (image, role) in enumerate(zip(group.values, group.roles)):
             info = deepcopy(metadata)
             for key, value in {"ming_profile": group.profile, "ming_frame_role": role,
+                               "width": group.width, "height": group.height,
                                "ming_frame_index": index, "ming_target_frames": group.target_frames,
                                "ming_requested_layers": group.requested_layers}.items():
                 info.add_text(key, str(value))

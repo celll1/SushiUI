@@ -45,10 +45,33 @@ class Ltx2RuntimeContracts(unittest.TestCase):
         args.update(overrides)
         return (model or self.model)(**args)
 
+    def test_checkpoint_recomputes_before_block_backward_completion(self):
+        self.inner.enable_gradient_checkpointing()
+        recomputed=set()
+        completed=[]
+        handles=[]
+        for index,block in enumerate(self.inner.transformer_blocks):
+            def before(module,inputs,i=index):
+                if torch._C._current_graph_task_id() >= 0:
+                    recomputed.add(i)
+            def after_backward(module,grad_input,grad_output,i=index):
+                self.assertIn(i,recomputed)
+                completed.append(i)
+            handles.extend((block.register_forward_pre_hook(before),
+                            block.register_full_backward_hook(after_backward)))
+        try:
+            video,_=self.forward(isolate_modalities=True)
+            video.square().mean().backward()
+        finally:
+            for handle in handles:handle.remove()
+        self.assertEqual(completed,list(reversed(range(7))))
+        self.assertTrue(torch.isfinite(self.video.grad).all())
+        self.assertGreater(torch.count_nonzero(self.video.grad).item(),0)
+
     def test_native_joint_layout_coordinates_and_gradients(self):
         observed=[]
         hooks=[layer.register_forward_pre_hook(lambda module,args,kwargs:observed.append(
-            (kwargs["hidden_states"].shape[1],kwargs["audio_hidden_states"].shape[1],
+            (args[0].shape[1],args[1].shape[1],
              kwargs["video_rotary_emb"][0].shape[1])),with_kwargs=True) for layer in self.inner.transformer_blocks]
         coords=[]
         hook=self.inner.rope.register_forward_pre_hook(lambda module,args:coords.append(args[0].detach().clone()))
@@ -98,8 +121,8 @@ class Ltx2RuntimeContracts(unittest.TestCase):
         model=wrap_transformer(native,spec)
         counts=[]
         hooks=[layer.register_forward_pre_hook(lambda module,args,kwargs:counts.append(
-            (kwargs["hidden_states"].shape[1],kwargs["video_rotary_emb"][0].shape[2],
-             kwargs["audio_hidden_states"].shape[1])),with_kwargs=True) for layer in native.transformer_blocks]
+            (args[0].shape[1],kwargs["video_rotary_emb"][0].shape[2],
+             args[1].shape[1])),with_kwargs=True) for layer in native.transformer_blocks]
         try:video,audio=self.forward(model=model)
         finally:
             for handle in hooks:handle.remove()
@@ -130,7 +153,8 @@ class Ltx2RuntimeContracts(unittest.TestCase):
         direct=self.forward(model=self.inner);wrapped=self.forward()
         for left,right in zip(direct,wrapped):torch.testing.assert_close(left,right,rtol=0,atol=0)
         restore_topology(self.model,self.spec)
-        handles=[patch.object(layer,"forward",side_effect=lambda **kwargs:(kwargs["hidden_states"],kwargs["audio_hidden_states"]))
+        handles=[patch.object(layer,"forward",side_effect=lambda *args,**kwargs:
+                    (args[0],args[1]) if args else (kwargs["hidden_states"],kwargs["audio_hidden_states"]))
                  for layer in self.inner.transformer_blocks]
         for handle in handles:handle.start()
         try:
@@ -295,7 +319,7 @@ class Ltx2RuntimeContracts(unittest.TestCase):
                 before=[value.detach().clone() for value in parameters]
                 grids=[]
                 hooks=[block.register_forward_pre_hook(lambda module,args,kwargs:
-                    grids.append(kwargs["hidden_states"].shape[1]),with_kwargs=True)
+                    grids.append(args[0].shape[1]),with_kwargs=True)
                     for block in model.transformer_blocks]
                 try:
                     loss,pred,recon=train_step(trainer,torch.randn(2,8,3,8,12),self.encoder.detach(),

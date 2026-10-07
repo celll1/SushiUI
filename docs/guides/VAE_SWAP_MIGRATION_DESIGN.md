@@ -103,7 +103,12 @@ preflight recordからloss重みが正のtargetを先に集め、参照画像を
 校正ループの入力を合成encoderで観測し、透明cutout、不透明参照、zero-weight教師の除外、
 最小/十分な画像数上限のcoverageを検証するVAE/Gaussian/dataset CPU回帰99件が通過した。
 compile/実importはCUDA未初期化で通過。既存checkpointの係数は再校正しない。
-この修正後の新規校正による公式Full学習・画質検証はまだ残る。
+修正後も同じ公式Layer全重みで新規Full 1更新→保存→再開→2更新を検証した。
+preflightの正重みRGBA教師4枚と参照2枚の計6枚が実校正に入り、所要114.4秒/152.1秒。
+525 optimizer stateを新規0で復元し、再開では再校正されない。
+固定buffer 9個（Gaussian 5個を含む）はbit一致し、学習対象の入出力projection 4個は
+再開後の更新で変化する。実ログ・係数比較は `local/verification/ming_official_layer_rgba_full/`
+に保持する。合成画像による機能検証であり、修正後の実画像画質検証はまだ残る。
 
 GPU検証で、block swap初期化時に常駐層だけがCUDAへ移り、外側IOがCPUに残る配置を
 校正前のdevice確認が拒否する不具合を修正した。配置の判定からconductor所有の全main層を除き、

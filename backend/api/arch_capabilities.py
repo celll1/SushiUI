@@ -1367,7 +1367,7 @@ _add_training_feature_advisory(
     methods=["full_finetune"])
 _add_training_feature_advisory(
     "acestep", "vae_swap", "experimental",
-    "ACE-Step defaults to paired_temporal on the replacement codec's native time grid. Unquantized full fine-tuning with train_unet=true and a bundled 48kHz stereo Oobleck codec is required. Calibration uses bounded audio windows from the run's dataset. RVQ, timbre and reference conditioning retain the original codec; decoder bridges and target codec identity are saved, restored and compatible with U-net topology. Small native-model calibration, training, generation and artifact restoration are CPU-verified; official full-weight training, quality and throughput acceptance remain pending.",
+    "ACE-Step defaults to paired_temporal on the replacement codec's native time grid. Unquantized full fine-tuning with train_unet=true and a bundled 48kHz stereo Oobleck codec is required. Calibration uses bounded audio windows from the run's dataset. RVQ, timbre and reference conditioning retain the original codec; decoder bridges and target codec identity are saved, restored and compatible with U-net topology. Small native-model integration is CPU-verified. The local official-derived 1.5 turbo DiT with author-released ScragVAE verifies two GPU Full updates, 480 optimizer states restored and 8-second API generation. ScragVAE retains 64 channels and hop1920, so this verifies codec replacement, not token reduction. Music quality, changed-hop official-codec training and long-run throughput remain unverified.",
     methods=["full_finetune"])
 _add_training_feature_advisory(
     "sensenova", "vae_swap", "experimental",

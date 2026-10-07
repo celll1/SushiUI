@@ -2352,6 +2352,9 @@ class ModelLoader:
         if model_type == "ltx2":
             return ModelLoader.load_ltx2_from_path(file_path, torch.bfloat16)
 
+        if model_type == "acestep":
+            return ModelLoader.load_acestep_from_path(file_path, torch.bfloat16)
+
         # Anima (DiT + Qwen3 + Qwen-Image VAE)
         if model_type == "anima":
             print(f"[ModelLoader] Loading as Anima (Cosmos-Predict2 DiT)")

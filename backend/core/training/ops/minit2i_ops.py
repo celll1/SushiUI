@@ -335,12 +335,14 @@ def train_step(
     t_dtype = trainer.transformer.dtype
 
     def _forward():
-        return trainer.transformer(
-            x_t.to(t_dtype),
-            t.to(t_dtype),
-            text_embeds.to(t_dtype),
-            mask_eff,
-        )
+        from core.models.components.image_noise_context import noise_scope
+        with noise_scope(noise):
+            return trainer.transformer(
+                x_t.to(t_dtype),
+                t.to(t_dtype),
+                text_embeds.to(t_dtype),
+                mask_eff,
+            )
 
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):

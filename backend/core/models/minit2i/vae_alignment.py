@@ -94,14 +94,25 @@ def initialize_swap(trainer, resolved, *, handler):
         return report
 
     old_vae = trainer.vae
+    native_weight = model.model.net.img_embedder.proj1.weight.detach().cpu().clone() if pixel else None
     if pixel:
         from core.models.components.pixel_codec import RGBPixelCodec
         trainer.vae = RGBPixelCodec()
     try:
-        return initialize_image_swap(trainer, resolved, handler=handler, model=model,
+        report = initialize_image_swap(trainer, resolved, handler=handler, model=model,
             old_channels=int(cfg.in_channels), source_wiring=wiring,
             patch_size=patch, resize=resize,
             pending_key="_minit2i_vae_calibration_source",topology_config=lambda:native_config(model))
+        if pixel:
+            from core.models.components.patch_noise_alignment import POLICY, PatchNoiseAlignment
+            pair = model.vae_latent_bridge
+            declaration = dict(policy=POLICY, channels=pair.declaration["new_channels"],
+                bridge_channels=pair.input.projection.out_channels,
+                hidden_channels=model.model.net.img_embedder.proj1.out_channels, patch_size=patch)
+            pair.declaration["patch_noise"] = declaration
+            pair.add_module("patch_noise", PatchNoiseAlignment(declaration))
+            trainer._minit2i_patch_noise_source = native_weight
+        return report
     except Exception:
         trainer.vae = old_vae
         raise
@@ -109,8 +120,15 @@ def initialize_swap(trainer, resolved, *, handler):
 
 def calibrate(trainer, datasets):
     from core.models.components.spatial_swap import calibrate_images
+    def capture():
+        native = getattr(trainer, "_minit2i_patch_noise_source", None)
+        if native is not None:
+            pair = trainer.transformer.vae_latent_bridge
+            pair.patch_noise.capture(native, pair.input.projection,
+                trainer.transformer.model.net.img_embedder.proj1)
+            delattr(trainer, "_minit2i_patch_noise_source")
     calibrate_images(trainer, datasets, model=trainer.transformer,
-        pending_key="_minit2i_vae_calibration_source")
+        pending_key="_minit2i_vae_calibration_source", on_complete=capture)
 
 
 def predict_x0(model, image, timestep, context, mask):
@@ -126,4 +144,15 @@ def predict_x0(model, image, timestep, context, mask):
         raise ValueError("MiniT2I spatial VAE swap requires complete native patches")
     # MiniT2I uses x_t=t*x0+(1-t)*noise, the reverse of SD3's timestep.
     incoming = pair.input.diffusion_state(image, alpha=timestep)
-    return pair.output.prediction(model.model.net(incoming, timestep, context, mask), kind="x0")
+    correction = getattr(pair, "patch_noise", None)
+    if correction is None:
+        return pair.output.prediction(model.model.net(incoming, timestep, context, mask), kind="x0")
+    from core.models.components.image_noise_context import exposure_noise
+    noise = exposure_noise(image)
+    projection = model.model.net.img_embedder.proj1
+    hook = projection.register_forward_hook(
+        lambda module, args, output: correction.correct(output, noise, 1-timestep))
+    try:
+        return pair.output.prediction(model.model.net(incoming, timestep, context, mask), kind="x0")
+    finally:
+        hook.remove()

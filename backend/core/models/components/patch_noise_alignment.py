@@ -10,14 +10,24 @@ from torch.nn import functional as F
 POLICY = "patch_covariance_v1"
 
 
+def validate_declaration(declaration):
+    keys = ("channels", "bridge_channels", "hidden_channels", "patch_size")
+    if not isinstance(declaration, dict) or any(
+            type(declaration.get(key)) is not int or declaration[key] < 1 for key in keys):
+        raise ValueError("Patch noise alignment requires positive integer geometry")
+    if declaration.get("policy") != POLICY or set(declaration) != {*keys, "policy"}:
+        raise ValueError("Unsupported patch noise alignment declaration")
+    c, b, h, p = (declaration[key] for key in keys)
+    if b*c*9 + h*(b+c)*p*p > 10_000_000:
+        raise ValueError("Patch noise geometry exceeds the coefficient limit")
+    return declaration
+
+
 class PatchNoiseAlignment(nn.Module):
     def __init__(self, declaration):
         super().__init__()
+        validate_declaration(declaration)
         keys = ("channels", "bridge_channels", "hidden_channels", "patch_size")
-        if any(type(declaration.get(key)) is not int or declaration[key] < 1 for key in keys):
-            raise ValueError("Patch noise alignment requires positive integer geometry")
-        if declaration.get("policy") != POLICY or set(declaration) != {*keys, "policy"}:
-            raise ValueError("Unsupported patch noise alignment declaration")
         self.declaration = dict(declaration)
         c, b, h, p = (declaration[key] for key in keys)
         self.register_buffer("white", torch.zeros(h, c, p, p))

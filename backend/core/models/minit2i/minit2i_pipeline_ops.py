@@ -16,6 +16,7 @@ import torch
 from core.inference.schedule_utils import snapshot_schedule_scalars
 from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
+from core.models.components.image_noise_context import noise_scope
 from PIL import Image
 
 NOISE_SCALE = 2.0
@@ -126,7 +127,7 @@ def prepare_style_reference(vae, style_image: Image.Image, height: int, width: i
 
 @torch.no_grad()
 def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                           style_cfg, style_ref_x0, style_eps_ref, step_idx, num_steps, t_val):
+                           style_cfg, style_ref_x0, style_eps_ref, step_idx, num_steps, t_val, call_target=None):
     """One style-active x0-prediction step: bypasses ``_predict_x0_cfg``'s BATCHED
     ``[cond, uncond]`` forward for this step entirely -- capture forward (style
     reference re-noised to the CURRENT ``t``, using the SAME ``x_t = image*t +
@@ -160,6 +161,7 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
     from core.inference.style_minit2i import set_minit2i_style_context
 
     use_cfg = (cfg_scale != 1.0) and (cfg_interval[0] <= t_val <= cfg_interval[1])
+    predict = net if call_target is None else call_target
     progress = style_cfg.step_progress(step_idx, num_steps)
 
     ref_input = (style_ref_x0 * t_val + style_eps_ref * (1.0 - t_val)).to(x.dtype)
@@ -167,11 +169,12 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
     try:
         capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
         set_minit2i_style_context(net, capture_ctx)
-        net(ref_input, t, text, mask)
+        with noise_scope(style_eps_ref):
+            predict(ref_input, t, text, mask)
 
         inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
         set_minit2i_style_context(net, inject_ctx)
-        cond = net(x, t, text, mask)
+        cond = predict(x, t, text, mask)
     finally:
         set_minit2i_style_context(net, None)
 
@@ -182,7 +185,7 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
         u_text, u_mask = neg_text, neg_mask
     else:
         u_text, u_mask = text, torch.zeros_like(mask)
-    uncond = net(x, t, u_text, u_mask)
+    uncond = predict(x, t, u_text, u_mask)
 
     # --- CFG-decoupled style guidance (MiniT2I) --- see docstring above. Style
     # context is already disarmed (the `finally` above set it to None on every
@@ -190,7 +193,7 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
     lam = style_cfg.style_guidance_scale
     if lam is not None and lam > 0 and cfg_scale > 1e-6:
         cond_s = cond
-        cond_ns = net(x, t, text, mask)
+        cond_ns = predict(x, t, text, mask)
         cond = cond_ns + (lam / cfg_scale) * (cond_s - cond_ns)
 
     return uncond + (cond - uncond) * cfg_scale
@@ -198,7 +201,7 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
 
 @torch.no_grad()
 def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                                 style_refs, style_combine_mode, step_idx, num_steps, t_val):
+                                 style_refs, style_combine_mode, step_idx, num_steps, t_val, call_target=None):
     """Multi-reference (N>1) variant of ``_predict_x0_style_step``: one capture
     forward PER reference (each with its OWN ``StyleTransferConfig`` -- block_range,
     strengths, freq curve, step gating -- skipped if not step-active THIS step,
@@ -219,6 +222,7 @@ def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_
     from core.inference.style_minit2i import set_minit2i_style_context
 
     use_cfg = (cfg_scale != 1.0) and (cfg_interval[0] <= t_val <= cfg_interval[1])
+    predict = net if call_target is None else call_target
 
     try:
         active_refs = []
@@ -229,7 +233,8 @@ def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_
             ref_input_i = (x0_i * t_val + eps_i * (1.0 - t_val)).to(x.dtype)
             capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
             set_minit2i_style_context(net, capture_ctx_i)
-            net(ref_input_i, t, text, mask)
+            with noise_scope(eps_i):
+                predict(ref_input_i, t, text, mask)
             active_refs.append((capture_ctx_i.store, cfg_i))
 
         if active_refs:
@@ -241,7 +246,7 @@ def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_
             set_minit2i_style_context(net, inject_ctx)
         else:
             set_minit2i_style_context(net, None)
-        cond = net(x, t, text, mask)
+        cond = predict(x, t, text, mask)
     finally:
         set_minit2i_style_context(net, None)
 
@@ -252,7 +257,7 @@ def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_
         u_text, u_mask = neg_text, neg_mask
     else:
         u_text, u_mask = text, torch.zeros_like(mask)
-    uncond = net(x, t, u_text, u_mask)
+    uncond = predict(x, t, u_text, u_mask)
     return uncond + (cond - uncond) * cfg_scale
 
 
@@ -344,7 +349,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                start_idx=0, progress_callback=None, mask_latent=None, init_image=None, fixed_noise=None,
                clamp_output=True, spectrum_params=None,
                style_cfg=None, style_ref_x0=None, style_eps_ref=None,
-               style_refs=None, style_combine_mode="stack"):
+               style_refs=None, style_combine_mode="stack", alignment_noise=None):
     """Shared Euler loop from ts[start_idx] -> 1.
 
     Returns the final tensor. clamp_output=True clamps to [-1,1] (pixel RGB);
@@ -400,6 +405,8 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             from core.inference.style_minit2i import install_minit2i_style_blocks
             _style_saved = install_minit2i_style_blocks(_fb_net)
 
+    _noise_context = noise_scope(alignment_noise)
+    _noise_context.__enter__()
     try:
         for j, i in enumerate(range(start_idx, n)):
             raise_if_cancelled()
@@ -430,6 +437,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                 pred_x0 = _predict_x0_style_step_multi(
                     _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_now, cfg_interval,
                     style_refs, style_combine_mode, j, total, t_val,
+                    call_target=transformer,
                 )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)
@@ -437,6 +445,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
                 pred_x0 = _predict_x0_style_step(
                     _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_now, cfg_interval,
                     style_cfg, style_ref_x0, style_eps_ref, j, total, t_val,
+                    call_target=transformer,
                 )
                 if spectrum is not None:
                     spectrum.record(j, pred_x0)
@@ -458,10 +467,11 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             if progress_callback is not None:
                 progress_callback(j, total, x.detach(), None, pred_x0.detach())
     finally:
+        _noise_context.__exit__(None, None, None)
         if _style_saved is not None:
             from core.inference.style_minit2i import restore_minit2i_style_blocks
             restore_minit2i_style_blocks(_fb_net, _style_saved)
-    _cleanup_minit2i_fbcache(_fb_net, fbcache)
+        _cleanup_minit2i_fbcache(_fb_net, fbcache)
     return x.clamp(-1, 1) if clamp_output else x
 
 
@@ -482,6 +492,7 @@ def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cf
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device, dtype=dtype)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       progress_callback=progress_callback, clamp_output=clamp_output, spectrum_params=spectrum_params,
+                      alignment_noise=x,
                       style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                       style_refs=style_refs, style_combine_mode=style_combine_mode)
 
@@ -508,6 +519,7 @@ def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask
     x = init_image.to(dtype) * ti + noise * (1.0 - ti)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       start_idx=start_idx, progress_callback=progress_callback, clamp_output=clamp_output, spectrum_params=spectrum_params,
+                      alignment_noise=noise,
                       style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                       style_refs=style_refs, style_combine_mode=style_combine_mode)
 
@@ -544,6 +556,7 @@ def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strengt
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       start_idx=start_idx, progress_callback=progress_callback,
                       mask_latent=mask_latent, init_image=init_image, fixed_noise=fixed_noise,
+                      alignment_noise=fixed_noise,
                       clamp_output=clamp_output, spectrum_params=spectrum_params,
                       style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                       style_refs=style_refs, style_combine_mode=style_combine_mode)

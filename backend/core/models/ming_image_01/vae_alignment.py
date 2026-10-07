@@ -210,6 +210,25 @@ def configure_swap(trainer):
     handler.pixel_align = plan.pixel_alignment
 
 
+def _calibration_paths(datasets):
+    def candidates():
+        for dataset in datasets:
+            for item in dataset.items:
+                record = item.get("_ming_record")
+                if record is not None and record.profile == "layer_decompose":
+                    for asset, weight in zip(record.targets, record.weights):
+                        if weight > 0:
+                            yield str(asset.path)
+                elif item.get("image_path"):
+                    yield item["image_path"]
+        for dataset in datasets:
+            for item in dataset.items:
+                record = item.get("_ming_record")
+                if record is not None and record.profile == "layer_decompose":
+                    yield from (str(asset.path) for asset in record.references)
+    return list(dict.fromkeys(candidates()))
+
+
 def calibrate(trainer, datasets):
     old = getattr(trainer, "_ming_vae_calibration_source", None)
     if old is None:
@@ -225,8 +244,8 @@ def calibrate(trainer, datasets):
     side = trainer.config.get("vae_swap_calibration_resolution", TRAINING_DEFAULTS["vae_swap_calibration_resolution"])
     if type(count) is not int or not 2 <= count <= 256 or side not in (128, 256, 512):
         raise ValueError("Invalid VAE spatial calibration count/resolution")
-    paths = list(dict.fromkeys(item["image_path"] for dataset in datasets for item in dataset.items
-                               if item.get("image_path")))
+    # Layer primaries can be opaque composites; calibration must include supervised RGBA cutouts.
+    paths = _calibration_paths(datasets)
     if not paths:
         raise ValueError("Ming VAE calibration requires training images")
     indices = torch.linspace(0, len(paths)-1, min(count, len(paths))).long().tolist()

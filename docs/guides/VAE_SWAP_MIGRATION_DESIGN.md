@@ -22,6 +22,12 @@ VAEのchannel数と空間圧縮率を区別する。旧Qwen-Image系は16ch・�
 8倍から16倍圧縮への交換では同じpatch packingならtoken数が1/4になり、
 全解像度self-attentionのスコア行列は理論上1/16になるが、全stepの速度/容量は別途測定する。
 
+初期化方式の対応宣言は`core/training/vae_swap.py:VAE_SWAP_ALIGNMENT`に集約する。
+登録済み17 training archのうち画像/動画15系統はpaired_spatial、ACE-Stepはpaired_temporal、
+YuE2はplanner-onlyのため交換対象外。未宣言archのautoをzeroへ暗黙fallbackさせない。
+`vae_swap_registry_contract_test.py`がARCH_REGISTRYとの一致を検証するため、
+今後のarch追加では初期化/除外の宣言も必須になる。これは公式重みのGPU検証を代替しない。
+
 #### 優先対象の現在の証拠と残作業
 
 | 対象 | 実重みの機能検証記録 | 次に確認すること |

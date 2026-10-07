@@ -15,6 +15,17 @@ from typing import Any, Dict, Optional, Tuple
 # Values of the legacy SDXL-only key that mean "no swap".
 _LEGACY_NEUTRAL = ("", "none", "sdxl")
 
+# Every training registry entry must declare its alignment or exclusion.
+VAE_SWAP_ALIGNMENT = {
+    **dict.fromkeys((
+        "ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2",
+        "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4",
+        "sensenova_sdxl_chimera", "ltx2", "minimax_h3",
+    ), "paired_spatial"),
+    "acestep": "paired_temporal",
+    "yue2": None,
+}
+
 
 def latent_alignment_pair(root):
     """Find the registered boundary through backbone wrappers."""
@@ -34,17 +45,20 @@ def latent_alignment_pair(root):
 
 def initialization_mode(config, arch):
     from api.param_defaults import TRAINING_DEFAULTS
+    if arch not in VAE_SWAP_ALIGNMENT:
+        raise ValueError(f"Architecture {arch!r} has no declared VAE swap alignment")
+    alignment = VAE_SWAP_ALIGNMENT[arch]
+    if alignment is None:
+        raise ValueError(f"Architecture {arch!r} has no trainable codec path for VAE swap")
     mode = config.get("vae_swap_new_channel_init", TRAINING_DEFAULTS["vae_swap_new_channel_init"])
-    if arch == "acestep":
+    if alignment == "paired_temporal":
         if mode not in ("auto", "paired_temporal"):
             raise ValueError("ACE audio swap requires auto or paired_temporal initialization")
         return "paired_temporal"
     if mode == "auto":
-        return "paired_spatial" if arch in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "minimax_h3") else "zero"
+        return alignment
     if mode not in ("zero", "paired_spatial"):
         raise ValueError(f"Unknown vae_swap_new_channel_init: {mode!r}")
-    if mode == "paired_spatial" and arch not in ("ming_image_01", "qwen_image_21", "zimage", "krea2", "lens", "flux2", "anima", "sd15", "sdxl", "minit2i", "sensenova", "ideogram4", "sensenova_sdxl_chimera", "ltx2", "minimax_h3"):
-        raise ValueError("paired_spatial is currently wired for Ming, Qwen 2.1, Z-Image, Krea, Lens, Flux2, Anima, SD1.5, SDXL, MiniT2I, SenseNova, Chimera, Ideogram, LTX and H3; select zero for this architecture")
     return mode
 
 

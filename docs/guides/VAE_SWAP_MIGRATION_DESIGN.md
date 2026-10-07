@@ -13,7 +13,7 @@ CPUのregistry宣言・resume・wave3 resume回帰は17件通過し、CUDA未初
 | SDXL | 8→16 | step2、optimizer1683 | 元から畳み込みU-Net。1024px実測で速度改善は確認できない |
 | Z-Image | 8→16 | step2、optimizer525 | 長期品質/throughputは未検証 |
 | Anima | 8→16 | step2、optimizer689 | 1024px・24枚のbuffer補充まで測定。長期品質は未検証 |
-| Lens | CPUの交換/復元契約のみ | 公式全重みは未検証 | 上流案内の3配布が現在のHub認証で404。保存先を所有者へ確認中 |
+| Lens | CPUの交換/復元契約のみ | 公式全重みは未検証 | 所有者指定により静的検証で受け入れ。公式重みGPU/画質検証は完了条件から除外 |
 | Ideogram4 | Qwen 2.1 codecへ交換 | step2、optimizer1060、両入力投影更新 | 公式FP8由来の実効BF16。高い置換直後の再現性は受け入れ条件にしない |
 | MiniT2I | pixel 1→16 | step2、optimizer374 | native patchも変わるため圧縮率だけからtoken数を計算しない |
 | Krea2 | 8→16 | step2、optimizer434 | 長期品質/throughputは未検証 |
@@ -30,7 +30,8 @@ CPUのregistry宣言・resume・wave3 resume回帰は17件通過し、CUDA未初
 optimizer件数は各試験の有効状態数であり、全parameterの勾配を保証する値ではない。
 全decoder/encoder・全variantでの収束、または全組合せの速度改善をこの表から推論しない。
 初期画質の比較・API生成・固定buffer一致の証拠は以下の各実験記録を参照する。
-全対応の完了条件にはLensの公式全重み試験とACEの異なるhopの実codec試験が残る。
+所有者指定によりLensの公式全重み試験は完了条件から除外した。
+ACEの異なるhopの実codec試験は未実施で、交換先の選定も確定していない。
 
 ACEの追加codec候補 `stabilityai/stable-audio-open-1.0` と
 `stabilityai/stable-audio-open-small` は、2026-10-07 12:23 UTCの取得で
@@ -78,8 +79,9 @@ advisoryは設定の非表示/拒否には使わず、既存のmethod・互換�
 `microsoft/Lens-Turbo`を現在のHub認証で`model_info(files_metadata=True)`確認した。
 3件ともHTTP404 / RepositoryNotFoundErrorで、revision・公式重みmanifestは取得できなかった。
 private/権限不足と配布停止を区別できないため「モデル不存在」とは判断しない。
-結果はignored `local/verification/lens_official_availability.json`に保持し、所有者へ保存先を確認中。
-小型LensのCPU検証を公式全重み検証の代用にはしない。
+結果はignored `local/verification/lens_official_availability.json`に保持する。
+所有者はLensを静的検証のみで受け入れると指定したため、追加の取得/GPU試験は要求しない。
+小型LensのCPU検証を公式全重み検証済みとは表記しない。
 
 ACE-Stepは公式1.5由来のDiT/TE/元codecが手元にある。交換契約を満たす別codecは下記ScragVAEを
 確認・取得した。これは作者配布のcommunity fine-tuned VAEで、ACE-Step公式ベースVAEとは区別する。

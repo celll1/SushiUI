@@ -33,6 +33,20 @@ APIのVAE swap advisoryも、Anima/LTX/Ideogram/SenseNovaの公式Full更新・�
 frontendの`trainingFeatureAdvisory`→Full設定欄のreason表示を静的確認した。
 advisoryは設定の非表示/拒否には使わず、既存のmethod・互換性gateは維持する。
 
+#### 公式重み検証に進めない条件の再確認
+
+2026-10-07 11:21 UTC、上流READMEが案内する`microsoft/Lens`、`microsoft/Lens-Base`、
+`microsoft/Lens-Turbo`を現在のHub認証で`model_info(files_metadata=True)`確認した。
+3件ともHTTP404 / RepositoryNotFoundErrorで、revision・公式重みmanifestは取得できなかった。
+private/権限不足と配布停止を区別できないため「モデル不存在」とは判断しない。
+結果はignored `local/verification/lens_official_availability.json`に保持し、所有者へ保存先を確認中。
+小型LensのCPU検証を公式全重み検証の代用にはしない。
+
+ACE-Stepは公式1.5のDiT/TE/元codecが手元にあるが、現在の交換契約を満たす別codecの
+公式成果物（48kHz stereo Oobleck）の確認が未了。元codecの同一重みを別名で読んでも
+交換検証にはしない。Chimeraは公式conditioning bootstrapの学習更新まで確認済みだが、
+交換後の公式Full更新は未了。これらを解決した記録がない限り全対応は完了としない。
+
 #### 優先対象の現在の証拠と残作業
 
 | 対象 | 実重みの機能検証記録 | 次に確認すること |

@@ -115,6 +115,7 @@ def test_step0_forwards_conditioning_and_embeds_generation_metadata(tmp_path):
     saved = tmp_path / "samples" / "step_000000_sample_0.png"
     with Image.open(saved) as sample:
         assert sample.text == {
+            "sample_settings_revision": "0",
             "prompt": "a cat",
             "negative_prompt": "blurry",
             "steps": "4",

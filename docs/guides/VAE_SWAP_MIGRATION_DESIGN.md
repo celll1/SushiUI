@@ -8,6 +8,20 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Chimeraの新規paired_spatial交換は、共有SDXL初期化が選んだGaussian policyを実行境界にも適用する。
+入力は`A x + alpha(t) b + sigma(t) delta(noise)`、出力velocityは従来のaffine写像に
+`sigma'(t) residual(noise)`を加える。v1は`1-t`、v2/v3/v4は既存のendpoint-observable
+noise係数を使う。polar系はこの項を時間driftへ加え、v4のdestruction座標の微分を掛けない。
+これはpolar経路を線形経路へ置き換えるものではなく、既存のdirection/radius再構成を維持する。
+txt2imgの実初期noise、img2img/inpaintの実drawと学習noiseを共通の露出scopeへ渡し、
+CFGで同一露出を展開する。旧checkpointのpolicyは保持し、必要なnoiseが欠けた直接forwardは拒否する。
+独立conv/時間微分参照、FP32/BF16実U-Net、Full adapter保存とoptimizer続行、
+txt2img/img2img/inpaintの実draw一致、例外後のscope解除を含むCPU回帰301件が通過した。
+14件skipにはchannel減少時の非対応Gaussian条件と既存optional条件を含む。
+変更backendのcompile/実importはCUDA未初期化で通過。frontendのpolicy説明と既存API型・
+defaults・編集保存経路は静的確認のみで、owner build/typecheckは未実施。
+公式sourceからのChimera bootstrapのFull学習・画質検証はまだ未了。
+
 公式Ming Designの固定revision `208087ada1486931692c1896f38d4cd16ff3df82` の全BF16
 componentを取得し、合成画像2枚で実Full trainerの1更新→保存→再開→2更新を確認した。
 16ch/8xからQwen 2.1の64ch/16xへのpaired_spatial交換、Gaussian補正、2段U-netを併用し、

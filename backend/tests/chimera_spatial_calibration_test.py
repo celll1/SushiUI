@@ -94,16 +94,18 @@ def test_calibration_preserves_source_contract_and_trains_target_grid(tmp_path, 
     assert trainer.chimera_vae_calibration["positions_per_channel"] == 128
     encoded = trainer.vae.encode(torch.randn(1, 3, 128, 192)).latent_dist.mode()
     assert encoded.shape == (1, channels, 8, 12)
-    if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
-        from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
-        prediction = forward_prediction(unet, encoded, torch.tensor([.4]),
-            prediction=trainer.chimera_prediction,
-            encoder_hidden_states=torch.randn(1, 3, 6)).full_velocity
-        assert trainer.chimera_prediction["radius_floor"] == 1e-7
-        assert trainer.chimera_prediction["angular_step_limit"] == .4
-    else:
-        prediction = unet_forward(unet, encoded, torch.tensor([.4]),
-            prediction=trainer.chimera_prediction, encoder_hidden_states=torch.randn(1, 3, 6))
+    from core.models.components.image_noise_context import noise_scope
+    with noise_scope(torch.randn_like(encoded)):
+        if kind in ("polar_tangent_flow", "destruction_coordinate_polar_flow"):
+            from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
+            prediction = forward_prediction(unet, encoded, torch.tensor([.4]),
+                prediction=trainer.chimera_prediction,
+                encoder_hidden_states=torch.randn(1, 3, 6)).full_velocity
+            assert trainer.chimera_prediction["radius_floor"] == 1e-7
+            assert trainer.chimera_prediction["angular_step_limit"] == .4
+        else:
+            prediction = unet_forward(unet, encoded, torch.tensor([.4]),
+                prediction=trainer.chimera_prediction, encoder_hidden_states=torch.randn(1, 3, 6))
     assert prediction.shape == encoded.shape and torch.isfinite(prediction).all()
     optimizer = torch.optim.SGD(unet.parameters(), lr=.01)
     before = unet.vae_latent_bridge.output.projection.weight.detach().clone()

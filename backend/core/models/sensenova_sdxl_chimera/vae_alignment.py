@@ -143,14 +143,41 @@ def map_state(unet,sample,timestep,*,prediction):
     pair=getattr(unet,"vae_latent_bridge",None)
     if pair is None:return sample
     alpha,_=path_coefficients(prediction,timestep,sample)
-    return pair.input.diffusion_state(sample,alpha=alpha)
+    if getattr(pair, "noise_alignment", None) is None:
+        return pair.input.diffusion_state(sample,alpha=alpha)
+    from core.models.components.image_noise_context import exposure_noise
+    sigma, _ = noise_coefficients(prediction, timestep, sample)
+    return pair.diffusion_state(sample,alpha=alpha,sigma=sigma,noise=exposure_noise(sample))
 
 
 def map_velocity(unet,velocity,timestep,*,prediction):
     pair=getattr(unet,"vae_latent_bridge",None)
     if pair is None:return velocity
     _,derivative=path_coefficients(prediction,timestep,velocity)
-    return pair.output.diffusion_velocity(velocity,clean_derivative=derivative)
+    mapped = pair.output.diffusion_velocity(velocity,clean_derivative=derivative)
+    return correct_velocity_noise(unet, mapped, timestep, prediction=prediction)
+
+
+def noise_coefficients(prediction, timestep, reference):
+    if prediction["type"] == FLOW_V1_PREDICTION:
+        import torch
+        time = torch.as_tensor(timestep, device=reference.device, dtype=reference.dtype)
+        return 1-time, -torch.ones_like(time)
+    from .flow import endpoint_observable_coefficients
+    if prediction["type"] not in (FLOW_V2_PREDICTION, FLOW_V2_VELOCITY_PREDICTION,
+                                   FLOW_V3_PREDICTION, FLOW_V4_PREDICTION):
+        raise ValueError("Unsupported Chimera diffusion noise coefficients")
+    _, sigma, _, derivative = endpoint_observable_coefficients(timestep, reference)
+    return sigma.reshape(-1), derivative.reshape(-1)
+
+
+def correct_velocity_noise(unet, mapped, timestep, *, prediction):
+    pair = getattr(unet, "vae_latent_bridge", None)
+    if getattr(pair, "noise_alignment", None) is None:
+        return mapped
+    from core.models.components.image_noise_context import exposure_noise
+    _, derivative = noise_coefficients(prediction, timestep, mapped)
+    return pair.correct_diffusion_velocity(mapped, noise_derivative=derivative, noise=exposure_noise(mapped))
 
 
 def map_residual(unet,source_sample,source_residual,target_sample,timestep,*,source_prediction,target_prediction):

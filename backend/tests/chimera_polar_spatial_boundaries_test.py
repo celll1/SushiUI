@@ -12,26 +12,33 @@ from core.models.sensenova_sdxl_chimera.flow import (
 from core.models.sensenova_sdxl_chimera.polar_vae_alignment import transfer_prediction
 
 
-def _pair(channels, dtype=torch.float64):
+def _pair(channels, dtype=torch.float64, gaussian=False):
     pair = SpatialAlignmentPair(dict(
         version=1, method="paired_spatial", token_policy="target_native",
         old_channels=4, new_channels=channels, old_scale=8, new_scale=16,
         source="synthetic", ndim=4, norm="identity", norm_pack=1, input_channels=3,
+        **({"noise_policy": "gaussian_row_orthogonal_v1"} if gaussian else {}),
     )).to(dtype=dtype)
     rng = torch.Generator().manual_seed(315)
     for bridge in (pair.input, pair.output):
         bridge.initialize(torch.randn(bridge.source_channels*9, bridge.target_channels,
             generator=rng, dtype=dtype)/10,
             torch.randn(bridge.target_channels, generator=rng, dtype=dtype)/10)
+    if gaussian:
+        pair.noise_alignment.capture(pair.input, pair.output)
     return pair
 
 
 @pytest.mark.parametrize("channels", [2, 6])
 @pytest.mark.parametrize("kind", [FLOW_V3_PREDICTION, FLOW_V4_PREDICTION])
 @pytest.mark.parametrize("scalar", [False, True])
-def test_transfer_matches_independent_cartesian_oracle(channels, kind, scalar):
+@pytest.mark.parametrize("gaussian", [False, True])
+def test_transfer_matches_independent_cartesian_oracle(channels, kind, scalar, gaussian):
+    if gaussian and channels < 4:
+        pytest.skip("Gaussian row orthogonality requires enough target channels")
+    from core.models.components.image_noise_context import noise_scope
     torch.manual_seed(31)
-    pair = _pair(channels)
+    pair = _pair(channels, gaussian=gaussian)
     owner = SimpleNamespace(vae_latent_bridge=pair)
     target = torch.randn(2, channels, 8, 12, dtype=torch.float64)
     time = torch.tensor(.6 if scalar else [0., 1.], dtype=torch.float64)
@@ -39,6 +46,11 @@ def test_transfer_matches_independent_cartesian_oracle(channels, kind, scalar):
     alpha, derivative = t.square()*(2-t), 4*t-3*t.square()
     incoming = pair.input.projection
     source = F.conv2d(target, incoming.weight, padding=1) + alpha*incoming.bias[None, :, None, None]
+    noise = torch.randn_like(target)
+    if gaussian:
+        white = F.conv2d(noise.float(), pair.noise_alignment.white)
+        source[:, :4] += ((1-t).square()*(1+t))*(white.double()-F.conv2d(
+            noise.float(), pair.noise_alignment.incoming, padding=1).double())
     source_mean = torch.linspace(-.2, .3, source.shape[1], dtype=torch.float64)
     target_mean = torch.linspace(.4, -.1, channels, dtype=torch.float64)
     source_contract = dict(type=kind, latent_mean=source_mean.tolist(), radius_floor=1e-8)
@@ -51,11 +63,16 @@ def test_transfer_matches_independent_cartesian_oracle(channels, kind, scalar):
     source_velocity = derivative*source_mean[None, :, None, None] + radial[:, None, None, None]*direction + coordinate_derivative*projected
     outgoing = pair.output.projection
     expected = F.conv2d(source_velocity, outgoing.weight, padding=1) + derivative*outgoing.bias[None, :, None, None]
-    result = transfer_prediction(owner, source, radial, raw, target, time,
-        source_prediction=source_contract, target_prediction=target_contract)
-    torch.testing.assert_close(result.full_velocity, expected)
+    if gaussian:
+        residual = noise.float()-F.conv2d(white, pair.noise_alignment.outgoing, padding=1)
+        expected += (-1-2*t+3*t.square())*residual.double()
+    with noise_scope(noise):
+        result = transfer_prediction(owner, source, radial, raw, target, time,
+            source_prediction=source_contract, target_prediction=target_contract)
+    tolerance = dict(atol=1e-6, rtol=1e-6) if gaussian else {}
+    torch.testing.assert_close(result.full_velocity, expected, **tolerance)
     reconstructed = derivative*target_mean[None, :, None, None] + result.radial_velocity[:, None, None, None]*result.direction + result.tangent_per_time
-    torch.testing.assert_close(reconstructed, expected)
+    torch.testing.assert_close(reconstructed, expected, **tolerance)
     torch.testing.assert_close(result.tangent_per_time,
         result.drift_tangent_per_time + coordinate_derivative*result.tangent_per_coordinate)
     torch.testing.assert_close((result.tangent_per_time*result.direction).flatten(1).mean(1),
@@ -76,12 +93,16 @@ def test_transfer_matches_independent_cartesian_oracle(channels, kind, scalar):
 @pytest.mark.parametrize("channels", [2, 6])
 @pytest.mark.parametrize("kind", [FLOW_V3_PREDICTION, FLOW_V4_PREDICTION])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-def test_native_radial_head_and_both_bridges_train_on_target_grid(channels, kind, dtype):
+@pytest.mark.parametrize("gaussian", [False, True])
+def test_native_radial_head_and_both_bridges_train_on_target_grid(channels, kind, dtype, gaussian):
+    if gaussian and channels < 4:
+        pytest.skip("Gaussian row orthogonality requires enough target channels")
+    from core.models.components.image_noise_context import noise_scope
     from diffusers import UNet2DConditionModel
     from core.models.sensenova_sdxl_chimera.unet import install_polar_radial_head
     from core.models.sensenova_sdxl_chimera.polar_vae_alignment import forward_prediction
     torch.manual_seed(32)
-    pair = _pair(channels, torch.float32)
+    pair = _pair(channels, torch.float32, gaussian=gaussian)
     width = max(4, channels)
     unet = UNet2DConditionModel(in_channels=width, out_channels=width,
         block_out_channels=(8,), down_block_types=("CrossAttnDownBlock2D",),
@@ -96,8 +117,9 @@ def test_native_radial_head_and_both_bridges_train_on_target_grid(channels, kind
     observed = []
     hook = unet.conv_in.register_forward_pre_hook(lambda module, args: observed.append(args[0].shape))
     try:
-        result = forward_prediction(unet, target, torch.tensor([.2, .8]), prediction=prediction,
-            encoder_hidden_states=torch.randn(2, 3, 6, dtype=dtype))
+        with noise_scope(torch.randn_like(target)):
+            result = forward_prediction(unet, target, torch.tensor([.2, .8]), prediction=prediction,
+                encoder_hidden_states=torch.randn(2, 3, 6, dtype=dtype))
     finally:
         hook.remove()
     assert observed == [torch.Size([2, width, 8, 12])]

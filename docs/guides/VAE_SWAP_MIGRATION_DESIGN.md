@@ -626,7 +626,7 @@ Z-Image学習wrapperの時刻も修正した。training argumentはnoise fractio
 実importが通過。frontendの説明・型/API送信・既存初期化selectorを静的確認した。
 新しい公開parameter/defaultはなく、ownerのfrontend build/type-checkは未実施。
 既存general40校正で、画質比較時の行直交化＋残差補正と本番補正をCPU比較し、
-σ=0/0.1/0.5/1で入力/出力がbit一致した。本番経路での多prompt画質再検証は未了。
+σ=0/0.1/0.5/1で入力/出力がbit一致した。本番経路の多prompt検証結果は後述。
 
 公式非蒸留[Z-Image](https://huggingface.co/Tongyi-MAI/Z-Image)全成分18ファイルを
 `local/verification/zimage_base_weights/`へ取得した。revisionは
@@ -650,7 +650,7 @@ step2のsharded indexを生成APIに読み込み、type=zimage・latent_channels
 この再試験の詳細メトリクスDB記録は未検証。checkpoint/optimizer・run status・logで確認した。
 CPU回帰19件、compile・CUDA未初期化の実importが通過。frontendのsource type/path送信を静的確認し、
 APIパラメータ追加はない。使用済み専用run/datasetはDB・diskから整理し、選択モデルはMing Layerへ戻した。
-診断・optimizer・生成PNGはignored `local/verification/zimage_api_full_results/`のみ。画質比較は未了。
+診断・optimizer・生成PNGはignored `local/verification/zimage_api_full_results/`のみ。画質比較は後述。
 
 Z-Imageの未学習画質比較は、本番caption/denoise/decode経路・公式全成分で実行した。
 現在のgeneral ratingを再確認した40枚を本番Full trainerの校正hookへ渡し、
@@ -679,6 +679,17 @@ U-netなしの3prompt/2seedに限る概形回復を確認した。この比較�
 後続のZ-Image本番補正は上記のとおり数値一致を確認した。追加学習の画質回復は未検証。
 専用DB run/datasetは作成せず、画像・kernel・conditioning・比較scriptは
 ignored `local/verification/zimage_official_quality/`等にのみ保持する。
+
+後続の本番Gaussian配線でも、公式全成分と既存general40校正・conditioningを再利用し、
+同じ3prompt/2seedの交換単独6生成＋狐の既定2段/deep4併用2生成を検証した。
+候補用flow_state/flow_velocityのmonkey patchは使わず、現在の本番denoise/decodeを通した。
+1024px・28steps・CFG4・固定shift6で全8生成がfinite/decodeまで完走し、target tokenは1024。
+交換単独のdenoiseは9.20〜9.66秒、併用は4.70/4.84秒（読込・校正・decodeを除く）。
+交換単独は6枚すべてで主要対象・色・概形を認識でき、blur、局所色異常、車の見切れは残る。
+旧候補とのRGB画素MAEは1.70〜34.70/255で、seed64の狐は姿勢が変わるため生成bit一致ではない。
+併用は両seedで顔・耳・手・本の重複輪郭が強く、画質未受入。追加学習による回復も未検証。
+比較図・全結果はignored `local/verification/zimage_production_quality/`に保持する。
+専用DB run/datasetは作らず、mainのMing Layer選択は維持した。
 
 公式Krea全DiT・公式Qwen3-VL TEで、Qwen 2.1 VAEへの交換生成を比較した。
 現在のgeneral ratingを再確認した40枚で本番Full trainerの校正hookを実行し、
@@ -1880,7 +1891,8 @@ full checkpointは`component.vae.alignment`に宣言、DiT内にbridge、`vae.`�
 再開時は校正を繰り返さず学習済みbridgeを復元する。初回校正はunquantizedの2-1 image patch bankに限定する。
 明示的なlegacy zeroは4D/8x交換だけに対応する。
 Z-ImageのCPU合成検証はnative/dense/U-netの勾配、実AutoencoderKLの校正・保存復元・再開を含む。
-公式全重みを用いたZ-Imageのswap学習、画質、optimizer付きrun再開は未検証。
+公式全重みのZ-Image swap学習・optimizer再開と本番生成は冒頭の検証記録を参照。
+U-netなしの概形回復は確認したが、既定U-net併用の画質と追加学習の回復は未受入。
 2026-10-06の関連CPU回帰テスト282件が通過。全変更Pythonのpy_compileとCUDAを抑止した実importも通過した。
 API再起動後の`GET /training/vae-sources?arch=zimage`で、Qwen 2.1の64ch/16x codecを
 交換候補として選択可能であることを確認した。frontendの型・既定値・保存経路は静的確認済み、

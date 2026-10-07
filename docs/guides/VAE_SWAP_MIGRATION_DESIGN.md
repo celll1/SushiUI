@@ -76,7 +76,11 @@ sidecarで実dataset loaderへ通した。公式浮動DiTから同じ64ch/16x交
 2段U-netを併用し、実Full trainerの1更新→保存→再開→2更新が通過した。
 525 optimizer stateを新規0で復元し、固定Gaussian buffer 5個はbit一致する。
 所要103.2秒/170.2秒。交換先の実契約はRGBA入力4chで、RGB交換先のopaque alphaとは異なる。
-これは機能検証であり、Layerの生成API復元とレイヤ分離・alphaの画質受入は残る。
+保存step2のbundleも生成APIから64ch・Layer profileとして読み込み、256px・2stepの
+合成参照img2imgが補助canvas＋2 layerのRGBAを返した。Gallery行は作成せず、専用出力だけ整理した。
+MLLM 15,283、connector 338、projection 8、VAE 238 tensorの保存shard bytesはstep1/2で同一。
+DiTの最初のquery weightは1,633,416要素が変わり、平均絶対更新は3.6012e-5だった。
+これは機能検証であり、レイヤ分離・alphaの画質受入は残る。
 
 Layer検証では、保存前の全component CPU退避で空きRAMが3.24→1.35GiBへ減り、
 検証用memory guardが保存を停止した。DiTのCPU退避は約2.71GiBで、保存後のstate量は
@@ -84,6 +88,22 @@ DiT 11.47GiB、conditioner 35.04GiB、VAE 0.63GiB（state_dictのalias重複を�
 2GiB shardでも再現したためshard縮小は撤回した。main生成modelを検証中だけ未読込にし、
 空きRAM約56GiBを確保すると保存・再開が完了した。起動設定は元のbytesへ復元した。
 この運用回避をcheckpoint常駐設計の改善やWindows heap残留の解消とは見なさない。
+
+Layerの512px・12step・CFG2・参照1枚・2 layerを、別のgeneral画像40枚の校正と
+held-out general画像1枚（2 seed）で通常/U-net/交換/併用の4条件で比較した。
+所要は通常25.98/26.61秒、U-net17.81/18.03秒、交換9.86/9.95秒、併用8.03/8.03秒。
+target tokenは3,072→768で、peak allocatedは通常/U-net18.02GiB、交換/併用22.30GiB。
+交換単独は人物の概形を残すが背景・alphaが崩れ、U-net条件はほぼ単色で概形を失うため未達。
+通常のseed63は人物/背景を分離するが、seed64は小物だけが別layerになる差もある。
+これは不透明general画像の校正であり、native Layerのcutout分布を検証していない。
+
+学習時の校正もprimary完成画像だけを選び、教師RGBA layerを落としていた漏れを修正した。
+preflight recordからloss重みが正のtargetを先に集め、参照画像を加えてdeduplicateし、
+既存の画像数上限と決定的subsetで選ぶ。Designとrecordを持たない直接校正は従来経路を維持する。
+校正ループの入力を合成encoderで観測し、透明cutout、不透明参照、zero-weight教師の除外、
+最小/十分な画像数上限のcoverageを検証するVAE/Gaussian/dataset CPU回帰99件が通過した。
+compile/実importはCUDA未初期化で通過。既存checkpointの係数は再校正しない。
+この修正後の新規校正による公式Full学習・画質検証はまだ残る。
 
 GPU検証で、block swap初期化時に常駐層だけがCUDAへ移り、外側IOがCPUに残る配置を
 校正前のdevice確認が拒否する不具合を修正した。配置の判定からconductor所有の全main層を除き、

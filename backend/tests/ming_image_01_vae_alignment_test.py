@@ -155,7 +155,8 @@ def test_global_adapter_resize_preserves_coordinates_and_patch_order():
                                    getattr(resized,name)(resized._features(wide)))
 
 
-def test_runtime_calibration_uses_one_time_subset_and_restores_residency(tmp_path):
+@pytest.mark.parametrize("layer_supervision,sample_count", [(False,2), (True,2), (True,256)])
+def test_runtime_calibration_uses_one_time_subset_and_restores_residency(tmp_path, layer_supervision, sample_count):
     from PIL import Image
     import numpy as np
     from core.models.ming_image_01.vae_alignment import calibrate
@@ -167,7 +168,9 @@ def test_runtime_calibration_uses_one_time_subset_and_restores_residency(tmp_pat
             self.dtype = torch.float32
             self.config = SimpleNamespace(shift_factor=0.,scaling_factor=1.)
             self.channels, self.scale = channels,scale
+            self.alpha_ranges = []
         def encode(self,pixels):
+            self.alpha_ranges.append((float(pixels[:, 3].min()), float(pixels[:, 3].max())))
             z = torch.nn.functional.avg_pool2d(pixels.squeeze(2),self.scale)
             z = z.repeat(1,self.channels//4,1,1).unsqueeze(2)
             return SimpleNamespace(latent_dist=SimpleNamespace(mode=lambda:z))
@@ -178,18 +181,39 @@ def test_runtime_calibration_uses_one_time_subset_and_restores_residency(tmp_pat
     for i in range(2):
         path = tmp_path/f"synthetic_{i}.png"
         Image.fromarray(np.random.default_rng(i).integers(0,256,(128,128,4),dtype=np.uint8),"RGBA").save(path)
-        paths.append({"image_path":str(path)})
+        item = {"image_path":str(path)}
+        if layer_supervision:
+            import json
+            from core.models.ming_image_01.dataset import inspect_item, sidecar_path
+            Image.new("RGBA", (128,128), "white").save(path)
+            cutout = tmp_path/f"cutout_{i}.png"
+            pixels = np.zeros((128,128,4), dtype=np.uint8)
+            pixels[32:96,32:96] = (255,64,32,255)
+            Image.fromarray(pixels, "RGBA").save(cutout)
+            excluded = tmp_path/f"excluded_{i}.png"
+            Image.new("RGBA", (128,128), (1,1,1,128)).save(excluded)
+            sidecar_path(path).write_text(json.dumps(dict(schema_version=1, profile="layer_decompose",
+                targets=[dict(path=path.name, role="auxiliary_canvas", weight=0),
+                         dict(path=cutout.name, role="layer_1", weight=1),
+                         dict(path=excluded.name, role="layer_2", weight=0)],
+                references=[path.name])))
+            item["_ming_record"] = inspect_item(path, root=tmp_path, profile="layer_decompose")
+        paths.append(item)
     target = SyntheticVAE(64,16)
     components = SimpleNamespace(transformer=model,conditioner=nn.Linear(2,2))
     events = []
-    trainer = SimpleNamespace(config={"vae_swap_calibration_samples":2,"vae_swap_calibration_resolution":128},
+    trainer = SimpleNamespace(config={"vae_swap_calibration_samples":sample_count,"vae_swap_calibration_resolution":128},
         vae=target,device="cpu",ming_image_01_components=components,
         _ming_vae_calibration_source=SyntheticVAE(16,8),_check_stop_requested=lambda:None,
         _vae_alignment_progress_callback=lambda **event:events.append(event))
     calibrate(trainer,[SimpleNamespace(items=paths)])
     assert model.vae_latent_bridge.ready and not hasattr(trainer,"_ming_vae_calibration_source")
     assert next(model.parameters()).device.type == "cpu"
-    assert [e["step"] for e in events] == [1,2,3,4]
+    total = 8 if layer_supervision and sample_count == 256 else 4
+    assert [e["step"] for e in events] == list(range(1,total+1))
+    if layer_supervision:
+        expected = [(-1.,1.), (-1.,1.), (1.,1.), (1.,1.)] if sample_count == 256 else [(-1.,1.), (1.,1.)]
+        assert target.alpha_ranges == expected
     calibrate(trainer,[])  # Restoration never opens the old calibration subset again.
 
 

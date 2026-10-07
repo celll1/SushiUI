@@ -98,3 +98,15 @@ followed by Ming Layer restoration, live CPU storage returned to 25,272MiB
 and unused pinned cache to zero, while process RSS stayed around 28–30GiB
 instead of the cold-load 4.65GiB. These fixes do not explain that remaining
 native/allocator retention; its investigation is still open.
+
+A subsequent tiny-model replacement removed Ming's 24.91GiB mapped weights
+and reduced visible CPU storage to 2,034MiB, but RSS remained 26.35GiB.
+Windows CRT `_heapmin` did not improve the real model-switch measurement;
+the prototype was removed. A separate 2GiB CPU tensor allocation returned
+almost all RSS after deletion, so general CPU allocation alone does not
+reproduce the retention. The underlying native owner is still unproven.
+API restart recovered RAM. Subsequent official FLUX visual verification ran
+in an isolated process; after its normal exit, backend RSS was 4.65GiB and
+system available RAM was 59.52GiB. Process isolation avoided leaving these
+verification allocations in the serving backend; it is not a fix for the
+unresolved in-process model-switch retention.

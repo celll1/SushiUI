@@ -275,6 +275,26 @@ target noise scaleを維持して元noise gainを補う候補と、resolution no
 校正は既存general40枚の係数を再利用し、新しい画像は生成prompt由来のみ。
 比較図は同directoryの`noise_comparison_{63,64}.png`に保持した。
 
+target scale維持のnoise補正と標準2段U-netの併用も同じ6条件で確認したが、
+淡い縦縞・色blockが優勢となり、対象を識別できず画質未受入である。
+比較図は`patch_unet_comparison_{63,64}.png`に保持した。検証process終了後の空きRAMは58.50GiB。
+高解像度層を多く残す候補は別のtopologyとして比較し、標準presetを変更しない。
+outer `[28,40)`・inner `[34,38)`の狭い2段も6枚を比較した。元解像度30層を保持するが、
+狐/車はほぼ白地、果物は赤黄のblockとなり、概形保持は未達だった。
+`patch_narrow_comparison_{63,64}.png`に全6枚を保持する。生成平均23.28秒・peak allocated34.13GiBで、
+初回準備・caption・decodeを含む。層数配分だけで併用画質が回復するという仮説は支持しない。
+
+SenseNovaへの本番noise補正は未配線。元入力Convの共分散はgainなしで保存し、各露出の
+元pixel gridと交換先latent gridについて同じresolution/dynamic設定・上限から求めた
+noise scaleの比を、入力embeddingのdesired noise応答だけへ掛ける設計とする。
+512pxで得た比2を固定しない。共通`PatchNoiseAlignment.correct`は画像ごとの正の有限gainを
+受け取れる。省略時のMiniT2I演算と保存係数は維持する。
+gainの独立投影oracle、露出ごとの倍率、勾配、無効値拒否と既存MiniT2I配線を含むCPU回帰28件、
+compile・CUDA未初期化の実importが通過した。
+配線の受入にはFull学習の実noise、定期sample、txt2img/img2img/inpaint、CFG/style/参照の
+noise所有権と例外時解放、checkpoint保存・再開・生成復元の検証が必要である。
+試作の一時forward hookやsamplerの関数差替えを本番の代わりにはしない。
+
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、
 CFG/NAGのbatch展開、single/multi style各参照の個別noiseを入力/velocity出力へ渡す。

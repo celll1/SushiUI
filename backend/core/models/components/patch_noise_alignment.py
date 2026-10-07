@@ -93,7 +93,7 @@ class PatchNoiseAlignment(nn.Module):
         self.calibrated.fill_(True)
         self._ready = True
 
-    def correct(self, output, noise, sigma):
+    def correct(self, output, noise, sigma, *, desired_noise_gain=None):
         if not self._ready:
             raise RuntimeError("Patch noise alignment has no captured coefficients")
         p = self.declaration["patch_size"]
@@ -102,10 +102,18 @@ class PatchNoiseAlignment(nn.Module):
             raise ValueError("Patch noise requires this exposure's divisible BCHW grid")
         if not torch.is_tensor(sigma) or sigma.shape != (noise.shape[0],):
             raise ValueError("Patch noise requires one actual diffusion coefficient per image")
+        if desired_noise_gain is not None:
+            if (not torch.is_tensor(desired_noise_gain) or desired_noise_gain.shape != sigma.shape
+                    or not bool(torch.isfinite(desired_noise_gain).all())
+                    or not bool((desired_noise_gain > 0).all())):
+                raise ValueError("Patch noise gain requires one finite positive value per image")
         with torch.autocast(device_type=noise.device.type, enabled=False):
             value = noise.detach().float()
             current = F.conv2d(F.conv2d(value, self.incoming, padding=1), self.projection, stride=p)
             desired = F.conv2d(value, self.white, stride=p)
+            if desired_noise_gain is not None:
+                desired = desired * desired_noise_gain.detach().to(
+                    device=noise.device, dtype=torch.float32).reshape(-1, 1, 1, 1)
             if desired.shape != output.shape:
                 raise ValueError("Patch noise output does not share the declared token grid")
             return (output.float() + sigma.float().reshape(-1, 1, 1, 1) * (desired-current)).to(output.dtype)

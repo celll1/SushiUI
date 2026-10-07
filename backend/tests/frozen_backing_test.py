@@ -93,3 +93,55 @@ def test_trainer_cleanup_drops_backing_owner(monkeypatch):
     BaseTrainer.cleanup(trainer)
     assert events == ["park"]
     assert trainer._ltx2_frozen_conditioner is None
+
+
+def test_diffusers_hook_rebuild_keeps_original_storage():
+    from accelerate import cpu_offload_with_hook
+    from core.memory_management.frozen_backing import install_frozen_cpu_offload
+
+    class Pipeline:
+        def __init__(self):
+            self.text_encoder = torch.nn.Linear(2, 2)
+            self.connectors = torch.nn.Linear(2, 2)
+            self.calls = 0
+
+        def enable_model_cpu_offload(self, device):
+            self.calls += 1
+            self._all_hooks = []
+            previous = None
+            for model in (self.text_encoder, self.connectors):
+                _, previous = cpu_offload_with_hook(model, device, prev_module_hook=previous)
+                self._all_hooks.append(previous)
+
+    pipeline = Pipeline()
+    pointer = pipeline.text_encoder.weight.data_ptr()
+    install_frozen_cpu_offload(pipeline, ("text_encoder", "connectors"))
+    pipeline.enable_model_cpu_offload(device="cpu")
+    pipeline.text_encoder.weight.data = pipeline.text_encoder.weight.clone()
+    pipeline._all_hooks[0].offload()
+    assert pipeline.text_encoder.weight.data_ptr() == pointer
+    pipeline.enable_model_cpu_offload(device="cpu")
+    pipeline.text_encoder.weight.data = pipeline.text_encoder.weight.clone()
+    pipeline._all_hooks[0].offload()
+    assert pipeline.text_encoder.weight.data_ptr() == pointer
+    assert pipeline.calls == 2
+    assert torch.isfinite(pipeline.connectors(pipeline.text_encoder(torch.ones(1, 2)))).all()
+    install_frozen_cpu_offload(pipeline, ("text_encoder", "connectors"))
+    assert pipeline.calls == 2
+
+
+def test_ltx_generation_cleanup_parks_on_failure():
+    from types import SimpleNamespace
+    from core.pipeline_backends.ltx2 import LTX2Mixin
+    model = torch.nn.Linear(2, 2).requires_grad_(False)
+    pointer = model.weight.data_ptr()
+    backing = FrozenCPUBacking((model,))
+    model.weight.data = model.weight.clone()
+    pipeline = SimpleNamespace(_sushi_frozen_offload_backings={"text_encoder": backing})
+    manager = SimpleNamespace(ltx2_components={"pipeline": pipeline})
+    with pytest.raises(RuntimeError, match="synthetic cancellation"):
+        try:
+            raise RuntimeError("synthetic cancellation")
+        finally:
+            LTX2Mixin._park_ltx2_frozen_conditioner(manager)
+    assert model.weight.data_ptr() == pointer

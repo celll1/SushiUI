@@ -121,6 +121,14 @@ def _ltx2_invalidate_block_swap_caches(offloader) -> None:
 class LTX2Mixin:
     """LTX2Mixin: LTX-2.3 text-to-video generation backend."""
 
+    def _park_ltx2_frozen_conditioner(self):
+        pipeline = self.ltx2_components.get("pipeline")
+        for backing in getattr(pipeline, "_sushi_frozen_offload_backings", {}).values():
+            try:
+                backing.park()
+            except Exception as exc:
+                print(f"[LTX-2.3] Frozen conditioner parking failed: {exc}")
+
     def _ltx2_runtime_int8(self, params: Dict[str, Any], progress_callback=None,
                            force_wrap: bool = False):
         """Apply the one-time in-place INT8 conversion, if this request asks for it.
@@ -881,8 +889,8 @@ class LTX2Mixin:
         takes the plain-`.to(device)` branch (one unconditional move, not an
         accelerate hook) instead of being hook-managed. The block offloader
         (built afterward in `_ensure_ltx2_block_swap_wrapper`) then repositions
-        the swappable blocks' weights back to CPU. Every other component keeps
-        its stock accelerate-hook behavior in both modes.
+        the swappable blocks' weights back to CPU. Frozen TE/connector hooks
+        restore their CPU backing; other components keep stock hooks.
         """
         pipeline = self.ltx2_components.get("pipeline")
         if pipeline is None:
@@ -912,13 +920,13 @@ class LTX2Mixin:
                     exclude = [tok for tok in exclude if tok != "transformer"]
                 pipeline._exclude_from_cpu_offload = exclude
 
+                from core.memory_management.frozen_backing import install_frozen_cpu_offload
+                install_frozen_cpu_offload(pipeline, ("text_encoder", "connectors"))
                 pipeline.enable_model_cpu_offload(device=device)
                 print(f"[LTX-2.3] enable_model_cpu_offload attached (mode={desired_mode}, "
                       f"seq={pipeline.model_cpu_offload_seq})")
             except Exception as e:
-                print(f"[LTX-2.3] enable_model_cpu_offload failed ({e}); "
-                      f"falling back to whole-pipeline .to(cuda)")
-                pipeline.to(device)
+                raise RuntimeError("LTX-2.3 CPU offload setup failed") from e
         else:
             print("[LTX-2.3] CUDA unavailable; running pipeline on CPU")
 
@@ -1345,6 +1353,7 @@ class LTX2Mixin:
             )
             self._ltx2_capture_rewiring_metadata(params)
         finally:
+            self._park_ltx2_frozen_conditioner()
             self._unload_lora_ltx2()
             if fbcache_target is not None and fbcache is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
@@ -1665,6 +1674,7 @@ class LTX2Mixin:
             )
             self._ltx2_capture_rewiring_metadata(params)
         finally:
+            self._park_ltx2_frozen_conditioner()
             self._unload_lora_ltx2()
             if fbcache_target is not None and fbcache is not None:
                 print(f"[FBCache] LTX-2.3 vid_outpaint summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
@@ -1960,6 +1970,7 @@ class LTX2Mixin:
             )
             self._ltx2_capture_rewiring_metadata(params)
         finally:
+            self._park_ltx2_frozen_conditioner()
             self._unload_lora_ltx2()
             if fbcache_target is not None and fbcache is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")

@@ -89,3 +89,54 @@ class FrozenCPUBacking:
                     if buffer.device.type != "cpu":
                         buffer.data = buffer.to("cpu")
         return trim_mapped_pages(value for _, _, backing in self.entries for value in backing.values())
+
+
+def install_frozen_cpu_offload(pipeline, component_names):
+    """Preserve frozen storage when Diffusers rebuilds its model-offload hooks."""
+    from functools import wraps
+    from types import MethodType
+    from accelerate.hooks import CpuOffload
+
+    names = tuple(component_names)
+    existing = getattr(pipeline, "_sushi_frozen_offload_names", None)
+    if existing is not None:
+        if existing != names:
+            raise ValueError("Frozen offload component selection changed")
+        return
+    original = pipeline.enable_model_cpu_offload.__func__
+
+    def park_hook(hook, module):
+        hook._sushi_cpu_backing.park()
+        return module
+
+    @wraps(original)
+    def enable(owner, *args, **kwargs):
+        backings = owner._sushi_frozen_offload_backings
+        for name in names:
+            module = getattr(owner, name, None)
+            if module is None:
+                continue
+            if name not in backings:
+                module.eval().requires_grad_(False)
+                backings[name] = FrozenCPUBacking((module,))
+            elif backings[name].entries[0][0] is not module:
+                raise RuntimeError(f"Frozen offload component replaced: {name}")
+            backings[name].park()
+        result = original(owner, *args, **kwargs)
+        attached = set()
+        for user_hook in owner._all_hooks:
+            for name, backing in backings.items():
+                if user_hook.model is backing.entries[0][0]:
+                    hook = user_hook.hook
+                    if not isinstance(hook, CpuOffload):
+                        raise RuntimeError(f"Unsupported frozen offload hook: {name}")
+                    hook._sushi_cpu_backing = backing
+                    hook.init_hook = MethodType(park_hook, hook)
+                    attached.add(name)
+        if attached != backings.keys():
+            raise RuntimeError("Frozen components are missing their CPU offload hooks")
+        return result
+
+    pipeline._sushi_frozen_offload_names = names
+    pipeline._sushi_frozen_offload_backings = {}
+    pipeline.enable_model_cpu_offload = MethodType(enable, pipeline)

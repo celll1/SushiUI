@@ -115,6 +115,7 @@ def test_insufficient_space_does_not_create_partial_cache(tmp_path, monkeypatch)
 
 
 def test_converted_real_gemma_weights_and_logits_match(tmp_path):
+    from transformers import Gemma3ForConditionalGeneration
     from ltx2_mapped_text_encoder_test import _package
     from core.models.ltx2.mapped_text_encoder import load_matching_mapped_encoder
     source = tmp_path / "source"
@@ -122,7 +123,7 @@ def test_converted_real_gemma_weights_and_logits_match(tmp_path):
     original.save_pretrained(source)
     target = prepare_bf16_backing(source, tmp_path / "cache")
     loaded = load_matching_mapped_encoder(target, torch.bfloat16)
-    original.bfloat16()
+    original = Gemma3ForConditionalGeneration.from_pretrained(str(source), dtype=torch.bfloat16)
     for key, value in original.state_dict().items():
         assert torch.equal(value, loaded.state_dict()[key]), key
     tokens = torch.tensor([[1, 5, 7]])

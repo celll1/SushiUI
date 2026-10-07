@@ -75,11 +75,19 @@ def load_matching_mapped_encoder(directory, torch_dtype):
         raise ValueError("Gemma shard index has missing tensors")
     from accelerate import init_empty_weights
     from transformers import Gemma3Config, Gemma3ForConditionalGeneration
+    from transformers.models.gemma3.modeling_gemma3 import Gemma3RotaryEmbedding
 
     config = Gemma3Config.from_pretrained(str(directory))
     with init_empty_weights():
         model = Gemma3ForConditionalGeneration(config)
-    model.to(dtype=torch_dtype)
+    # Native rotary buffers stay FP32 even when the weights use BF16.
+    for parameter in model.parameters():
+        parameter.data = parameter.data.to(dtype=torch_dtype)
+    for module in model.modules():
+        if not isinstance(module, Gemma3RotaryEmbedding):
+            for buffer in module.buffers(recurse=False):
+                if buffer.is_floating_point():
+                    buffer.data = buffer.to(dtype=torch_dtype)
     model.tie_weights()
     _assign_weights(model, state)
     return model.eval()

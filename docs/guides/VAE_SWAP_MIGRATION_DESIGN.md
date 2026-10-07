@@ -907,6 +907,16 @@ CPU 18 test通過・file symlink作成権限による1 skip（小型実Gemmaの�
 整数/空tensor・shard index、原本保持、再利用・破損/容量不足/途中失敗拒否、並行処理を含む）、
 構文検証・CUDA未初期化の実importを確認した。以後のGPU/API検証はcomponent overrideを使わず
 この本番経路で行う。cacheは削除後に同じ原本から再作成できる。
+TEの検証用overrideを外した本番loaderで、公式原本からFull step 3→4の更新・保存・
+cleanupまで確認した（process 261.313秒、load/save・SHA確認を含む）。アライン宣言・
+calibratedフラグを維持し、4 projection tensorが追加stepで変化した。最新step 4を保持する。
+追加の標準Transformers比較で、mapped loaderの全module `.to(dtype)`が非永続RoPE
+bufferまでBF16に丸める差を検出した。Parameterとその他のfloating bufferのみdtypeを合わせ、
+Gemma3RotaryEmbeddingのbufferはnative FP32を保持する。小型実Gemmaの標準
+`from_pretrained(dtype=bf16)`と全bufferのdtype/値、29 token logitsが完全一致した。
+公式TEでもRoPE 4 bufferの値・FP32精度、embedding scaleのBF16、全ParameterのBF16を
+CPUで確認した。cacheに保存する重みは変更不要。step 4のGPU試験はこの修正前なので、
+修正後のGPU/API確認と生成品質は未完として扱う。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

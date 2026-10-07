@@ -808,13 +808,14 @@ U-netなし、73frame・256px・seed63・32指定steps（31 denoise更新）でd
 noise候補は本番に切り替えない。次の検証では静止校正と時間軸の整合を分けて調べる。
 
 LTX側の公式全重み検証に向け、Lightricks/LTX-2.3の未量子化dev原本
-`ltx-2.3-22b-dev.safetensors`（46,149,344,974 bytes）の取得を開始した。
-revisionは`3c6a4e66e5d0a684231950b9c74dd4ded7b6fadc`に固定し、完了時に公式LFS SHAを照合する。
+`ltx-2.3-22b-dev.safetensors`（46,149,344,974 bytes）の取得を完了した。
+revisionは`3c6a4e66e5d0a684231950b9c74dd4ded7b6fadc`に固定し、公式LFS SHA
+`7ab7225325bc403448ea84b6db2269811a880e5118cd2ee2b6282a93d585016f`との一致を確認した。
 成分config/TE/codec等は`diffusers/LTX-2.3-Diffusers`のrevision
-`8eee8edcf067e838b843f926ec4d4cc9b2be1aaf`、42ファイル/56,989,593,945 bytesを取得対象とする。
+`8eee8edcf067e838b843f926ec4d4cc9b2be1aaf`、42ファイル/56,989,593,945 bytesを取得し、全ファイルのサイズとSHAを照合した。
 重複connectorの単一ファイルと変換済みDiT shardは取得せず、DiTはdev原本から変換する。
 取得先はignored `local/verification/ltx_official_original/`と`ltx_official_converted/`。
-後者は`transformer_pending=true`で、未完成ディレクトリを全重み受入済みとは扱わない。
+成分取得時の記録には`transformer_pending=true`が残るが、以下の原本変換記録が後続の完了証拠となる。
 現venvで公式configの全DiT（18,988,838,144 parameters/4,186 tensor）とconnector
 （3,172,227,584 parameters/262 tensor）をmeta構築でき、CUDA未初期化を確認した。
 これは実重みのロード・学習・生成を証明しない。公式converterはcommit
@@ -823,9 +824,15 @@ revisionは`3c6a4e66e5d0a684231950b9c74dd4ded7b6fadc`に固定し、完了時に
 固定source SHAを検査してから、2.3 DiT変換に必要な9定義だけを分離する検証driverを作成した。
 公式成分configとの全設定一致、audio/video時刻埋め込みのキー変換、CUDA未初期化が通過した。
 原本変換では公式SHAの再確認、浮動dtypeのみの受入、4,186キーのstrict assign load、
-BF16/5GB shard保存を行う。driverはignored `local/verification/ltx_dev_convert.py`に保持し、
-現在までの確認は実重みを読まない準備検証である。原本の変換成功を示すものではない。
-取得完了・原本変換・実Full保存再開・生成のGPU検証は未完。
+BF16/5GB shard保存を行い、8 shardへの変換を完了した。driverはignored
+`local/verification/ltx_dev_convert.py`に保持する。独立した検証で全4,186 tensor・
+18,988,838,144要素が原本のBF16 castとbit一致し、全262 connector tensor・
+3,172,227,584要素もdev原本と一致した。原本のFP32 bit保持を意味しない。
+証拠は`dev_tensor_verification.json`と`connector_dev_verification.json`。
+公式全重みの実Full保存再開・生成のGPU検証は未完。
+LTX→H3のFull試験では、既存`official/vae`ディレクトリの欠損shardを公開preflightが拒否した。
+完全な既存FP16 H3 VAEを専用ローダーで設定付きパッケージへ変換し、共通resolverで
+24ch・空間/16・時間stride 4を確認して再試験する。これは空間tokenが増える方向の機能検証である。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

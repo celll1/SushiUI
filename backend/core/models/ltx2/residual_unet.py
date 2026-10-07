@@ -216,7 +216,8 @@ def run_rewired_blocks(wrapper, hidden, audio, frames, height, width, coords, *,
             offloader.wait_for_block(index)
         block = inner.transformer_blocks[index]
         def native(video, sound):
-            return block(hidden_states=video,audio_hidden_states=sound,
+            # Backward hooks track positional inputs, so release follows recomputation.
+            return block(video,sound,
                 encoder_hidden_states=encoder_hidden,audio_encoder_hidden_states=audio_encoder_hidden,
                 temb=current["temb"],temb_audio=temb_audio,
                 temb_ca_scale_shift=current["scale_shift"],temb_ca_audio_scale_shift=audio_scale_shift,

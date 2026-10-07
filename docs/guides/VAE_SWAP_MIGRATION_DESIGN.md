@@ -820,6 +820,11 @@ revisionは`3c6a4e66e5d0a684231950b9c74dd4ded7b6fadc`に固定し、完了時に
 これは実重みのロード・学習・生成を証明しない。公式converterはcommit
 `82e309a2b1b1748e0148efd65743a27092c59dcd`の検証用コピーを保持するが、
 未導入の2.5用クラスもimportするため、そのまま実行せず2.3用依存を分離して確認する。
+固定source SHAを検査してから、2.3 DiT変換に必要な9定義だけを分離する検証driverを作成した。
+公式成分configとの全設定一致、audio/video時刻埋め込みのキー変換、CUDA未初期化が通過した。
+原本変換では公式SHAの再確認、浮動dtypeのみの受入、4,186キーのstrict assign load、
+BF16/5GB shard保存を行う。driverはignored `local/verification/ltx_dev_convert.py`に保持し、
+現在までの確認は実重みを読まない準備検証である。原本の変換成功を示すものではない。
 取得完了・原本変換・実Full保存再開・生成のGPU検証は未完。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。

@@ -208,7 +208,6 @@ def _build_ideogram4_transformer_from_state(
     single-file loader (``load_ideogram4_single_file``). Detects fused-QKV,
     nf4 (bitsandbytes) and weight-only FP8 layouts independently.
     """
-    model = Ideogram4Transformer2DModel.from_config(config)
     bridge = {key[len("vae_latent_bridge."):]:value for key,value in state_dict.items()
         if key.startswith("vae_latent_bridge.")}
     if bridge and alignment is None:
@@ -234,6 +233,7 @@ def _build_ideogram4_transformer_from_state(
             raise RuntimeError(
                 f"[Ideogram4Loader] {label}: nf4 (bitsandbytes) weights require a CUDA device."
             )
+        model = Ideogram4Transformer2DModel.from_config(config)
         device = torch.device("cuda")
         swapped = swap_linears_to_bnb4bit(model, compute_dtype=torch_dtype)
         print(f"[Ideogram4Loader] {label}: swapped {swapped} Linear(s) to Linear4bit (nf4)")
@@ -263,6 +263,7 @@ def _build_ideogram4_transformer_from_state(
     quant_report = scaled_quantization_report(
         quantized_state_dict_report(state_dict), arch="Ideogram 4", label=label)
     if quant_report is not None:
+        model = Ideogram4Transformer2DModel.from_config(config)
         # Cast BEFORE the swap and skip any cast after it: ``nn.Module.to(dtype)``
         # rewrites every floating-point buffer, which would turn an e4m3 weight
         # buffer into bf16 -- value-preserving (all 256 codes convert exactly and
@@ -275,8 +276,16 @@ def _build_ideogram4_transformer_from_state(
         load_fp8_state_dict(model, state_dict, device=torch.device("cpu"), dtype=torch_dtype)
     else:
         print(f"[Ideogram4Loader] {label}: loading plain (unquantized) weights")
-        model.load_state_dict(state_dict)
-        model.to(dtype=torch_dtype)
+        from accelerate import init_empty_weights
+        with init_empty_weights():
+            model = Ideogram4Transformer2DModel.from_config(config)
+            model.to(dtype=torch_dtype)
+        # Preserve aligned FP32 CPU storage; GEMM rounding can depend on mapped offsets.
+        state_dict = {key: value.to(torch_dtype, copy=torch_dtype == torch.float32) if value.is_floating_point() else value
+                      for key, value in state_dict.items()}
+        model.load_state_dict(state_dict, strict=True, assign=True)
+        if any(value.is_meta for value in list(model.parameters()) + list(model.buffers())):
+            raise ValueError("Ideogram plain checkpoint left native tensors on the meta device")
 
     model.eval()
     model.to("cpu")

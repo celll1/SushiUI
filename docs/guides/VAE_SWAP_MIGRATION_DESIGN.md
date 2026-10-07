@@ -8,6 +8,34 @@ LoRA 系での拒否は他 arch と同様に残る。
 
 ### 2026-10-07: 現在の対応範囲
 
+Ideogram4の公式FP8 package（`ideogram-ai/ideogram-4-fp8`、revision
+`ee79a7237b519f1402ceacf952f30c8a31ec5073`）を取得し、DiT両branch・TE・VAEの
+全4重みファイル（27,526,985,054 bytes）のSHAを配布manifestと照合した。
+`tools/convert_ideogram4_full_base.py`は各DiTの211個のrow-scaled FP8行列を、
+native fallbackと同じ`weight.to(bf16) * scale.to(bf16)`でplain Parameter用に展開する。
+各branchは約17.284GiB、CPU変換35.203/39.079秒、観測peak RSS約1.10GiB。
+両branchそれぞれ9,279,288,448要素の全tensorが参照値と完全一致し、原本SHAも一致した。
+これは公式FP8の実効値であり、量子化前の原本BF16精度の復元ではない。
+provenanceにsource SHAと`recovered_unquantized_original=false`を保存する。
+plain loaderはmeta構築・strict assignで不要な全モデルFP32初期化を避ける。
+FP32 CPUではmapped offsetに依存するGEMM丸め差を避けるためaligned storageへcopyする。
+変換拒否・native forward一致・学習勾配・Full保存復元・VAE swap・U-netのCPU回帰26件と
+変更backendのcompile/実import（CUDA未初期化）が通過した。
+公式全重みを使う交換後のFull更新・再開・生成画質の受け入れはまだ未了。
+検証資産はignored `local/verification/ideogram_official/`に保持する。
+公式34層の両branchをplain loaderでCPU実読込し、各9,279,288,448 parameterが
+BF16・trainable、meta残留とFP8 moduleが無いことを確認した。TE/tokenizer/VAE/schedulerを
+原本から保持した検証packageのpreflightも通過した。CPU実読込はGPU更新の証明とは扱わない。
+
+LTX公式nativeと交換済みFull step 5を、同一prompt/seed 63・384px・73frame・
+24fps・30step・CFG3で比較した。nativeは赤い玩具車を認識できるposterを生成したが、
+交換＋既定2段U-netは青い格子状に崩れ、車の概形を保てなかった。
+両API要求はHTTP200、所要231.375/366.266秒。後者のpeak allocated/reservedは
+36.969/44.559GiB。低stepだけが画質劣化の原因とはいえず、交換側の画質未合格を維持する。
+nativeのposter確認を全frameの品質保証とは扱わない。両検証後に自身のgallery出力を整理し、
+API再起動で元Mingを復元した。動画と応答はignored `local/verification/ltx_official_full/`の
+`api_native_quality_media_0.*`と`api_swap_quality_media_0.*`に保持する。
+
 Chimeraの新規paired_spatial交換は、共有SDXL初期化が選んだGaussian policyを実行境界にも適用する。
 入力は`A x + alpha(t) b + sigma(t) delta(noise)`、出力velocityは従来のaffine写像に
 `sigma'(t) residual(noise)`を加える。v1は`1-t`、v2/v3/v4は既存のendpoint-observable

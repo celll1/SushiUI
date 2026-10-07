@@ -80,3 +80,21 @@ second activation arena, so saved tensors are considered only once by
 
 Validation and exact commands are recorded in
 `docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`.
+
+### Unused host cache at lifecycle boundaries
+
+`host_cache.release_unused_host_cache()` releases unused pinned staging buffers
+when a model is replaced, before a training process takes the GPU, and through
+the debug release API. It does not run on every step or evict live buffers.
+Uninitialized CUDA is left untouched. The installed Torch uses the private
+CUDA fallback; newer releases use the public accelerator API.
+Device `empty_cache()` alone leaves this host cache intact
+([PyTorch allocator documentation](https://docs.pytorch.org/devlogs/eager/2026-08-09-pinned-memory-allocator/)).
+Four CPU compatibility cases and a real CUDA test verified unused 128MiB
+reclamation while preserving a live 1MiB buffer and its contents.
+The debug inspection API reports deduplicated CPU storage bytes and pinned
+allocator statistics without tensor contents. In an official FLUX generation
+followed by Ming Layer restoration, live CPU storage returned to 25,272MiB
+and unused pinned cache to zero, while process RSS stayed around 28–30GiB
+instead of the cold-load 4.65GiB. These fixes do not explain that remaining
+native/allocator retention; its investigation is still open.

@@ -21114,9 +21114,13 @@ async def debug_vram_inspection():
     gc.collect()
     cuda_tensors = []
     tensor_summary = {}  # shape+dtype -> {count, total_bytes, referrers}
+    cpu_storages = {}
 
     for obj in gc.get_objects():
         try:
+            if isinstance(obj, torch.Tensor) and obj.device.type == "cpu":
+                storage = obj.untyped_storage()
+                cpu_storages[storage.data_ptr()] = storage.nbytes()
             if isinstance(obj, torch.Tensor) and obj.is_cuda:
                 shape = tuple(obj.shape)
                 dtype = str(obj.dtype)
@@ -21205,6 +21209,9 @@ async def debug_vram_inspection():
             "max_allocated_mb": round(mem_max_allocated, 2),
             "max_reserved_mb": round(mem_max_reserved, 2),
             "total_tensor_mb": round(total_tensor_mb, 2),
+            "cpu_tensor_mb": round(sum(cpu_storages.values()) / 1024**2, 2),
+            "cpu_storage_count": len(cpu_storages),
+            "host_pinned": torch.cuda.memory.host_memory_stats(),
         },
         "tensor_count": sum(t["count"] for t in tensor_list),
         "unique_shapes": len(tensor_list),
@@ -21227,6 +21234,8 @@ async def debug_vram_force_release():
 
     gc.collect()
     torch.cuda.empty_cache()
+    from core.memory_management.host_cache import release_unused_host_cache
+    release_unused_host_cache()
 
     after_reserved = torch.cuda.memory_reserved() / 1024**2
     after_allocated = torch.cuda.memory_allocated() / 1024**2

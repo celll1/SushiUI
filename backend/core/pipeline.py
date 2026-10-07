@@ -630,6 +630,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 torch.cuda.synchronize()
 
             print("[Pipeline] Cleanup complete, VRAM released")
+            from core.memory_management.host_cache import release_unused_host_cache
+            release_unused_host_cache()
 
             # === Step 2: Load new model ===
             # Always use fp16 (default in ModelLoader)
@@ -4287,6 +4289,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             torch.cuda.synchronize()
 
         allocated_after = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        from core.memory_management.host_cache import release_unused_host_cache
+        release_unused_host_cache()
         freed_bytes = sum(n for _name, n in released)
         names = [n for n, _b in released]
         suffix = f" ({reason})" if reason else ""

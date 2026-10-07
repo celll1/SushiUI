@@ -11731,7 +11731,7 @@ paths:
     get:
       tags: [debug]
       summary: Inspect CUDA VRAM usage
-      description: Developer-mode diagnostics endpoint. Lists all live CUDA tensors (grouped by shape/dtype) plus PyTorch memory stats and pipeline component device placement.
+      description: Developer-mode diagnostics endpoint. Lists live CUDA tensors, CPU storage totals, pinned host allocator statistics and pipeline component placement. Tensor values are not exposed.
       operationId: debugVramInspect
       responses:
         '200':
@@ -11743,6 +11743,12 @@ paths:
                 properties:
                   memory:
                     type: object
+                    properties:
+                      cpu_tensor_mb: {type: number}
+                      cpu_storage_count: {type: integer}
+                      host_pinned:
+                        type: object
+                        additionalProperties: true
                     additionalProperties: true
                   tensor_count:
                     type: integer
@@ -11761,6 +11767,7 @@ paths:
     post:
       tags: [debug]
       summary: Force release all cached CUDA memory back to the OS
+      description: Also releases unused pinned host cache; live tensors are retained. freed_mb reports device cache only.
       operationId: debugVramRelease
       responses:
         '200':

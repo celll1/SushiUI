@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -476,6 +477,10 @@ def load_ltx2_from_diffusers(
         video_codec.inner.temporal_compression_ratio = video_codec.temporal_compression_ratio
         overrides["vae"] = video_codec.inner
 
+    from .mapped_text_encoder import load_matching_mapped_encoder
+    text_encoder = load_matching_mapped_encoder(Path(model_path) / "text_encoder", torch_dtype)
+    if text_encoder is not None:
+        overrides["text_encoder"] = text_encoder
     pipeline = LTX2Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype, **overrides)
     if video_codec is not None:
         pipeline.register_modules(vae=video_codec)

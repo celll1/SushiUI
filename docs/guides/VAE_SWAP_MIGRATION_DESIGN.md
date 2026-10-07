@@ -848,6 +848,38 @@ CPU masterからGPU slotへの`copy_`内にいた。RAM計測とスタックはi
 encode後に凍結TE/connectorをmetaへ解放する検証用候補も試したが、空きRAMの回復は約1.66GiBで、
 24層通過後に同じ監視終了となった。従って解放候補は本番採用しない。CPU masterのページ保持・
 転送時working set・凍結成分の残存所有者の切り分けが残る。Full更新や保存の成功とは扱わない。
+所有者調査で、encode後のTEはCPU BF16で24,374,650,080 bytes、connectorはGPU BF16で
+6,344,455,168 bytesと確認した。meta解放後に古いParameterへの参照は残らなかった。
+未使用pinned host cacheの解放候補でもRAM不足は改善せず、本番のencode境界には追加しない。
+公式成分原本の11 TE shardを別CPUプロセスでBF16へ変換し、全1,065 tensor・
+12,187,325,040要素を原本BF16 castと照合した。検証用パッケージは
+ignored `ltx_official_bf16_text_encoder/`。原本や量子化形式は変更していない。
+通常のTransformersロードでは同dtypeでもTEがprivate allocationになったため、検証用
+meta/strict assign loaderで現venvのGemmaキー移行と共有embeddingを復元した。
+全24,374,650,080 bytesがWindowsのfile-mapped領域にあることをCPUで確認した。
+GPU転送完了後、凍結TE/connectorの30,719,105,248 bytesだけを`VirtualUnlock`で
+working setから退避する候補ではforward前の空きRAMが36.93GiBまで回復し、全48層を通過した。
+この操作はデータの破棄ではない（[Microsoft仕様](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualunlock)）。
+凍結成分のCPU backing復元・working set退避は検証用候補で、本番のstagingへの配線は未完。
+その試験で、U-net経路のblock入力をkwargsのみで渡すためfull backward hookが
+checkpoint再計算より先に発火する不具合を検出した。入力2streamを位置引数へ変更し、
+実小型AVモデルで全blockの再計算→backward完了の順序を確認した（CPU 44 test・26 subtest、
+py_compile・CUDA未初期化の実import通過）。失敗時は5 parameterだけ更新された非再開可能な状態で、
+通常checkpointは作成されなかった。未完成salvage shardは検証ログを残して整理した。
+修正後、公式全DiT重み・H3 VAE・default 2段階U-netでFull step 1の更新と保存、
+同checkpointからstep 2の再encode・更新・保存・cleanupを確認した。合成動画2本のみを使用し、
+step 1は160.953秒、再開processは172.375秒（いずれもload/saveを含みiter速度ではない）。
+named optimizerは2,885件を復元した。残り1,305件にはstep 2保存時にもmomentsがなく、
+音声657件、modality間attention576件、そのgate/modulation72件である。video-onlyの
+`isolate_modalities=True`経路ではこれらは更新対象の勾配を受けない。
+再開時に再校正せず、保存されたbridge宣言・calibratedフラグを維持し、3 projection tensorは
+追加stepで変化した。旧step 1の大きなモデルshardは小さな係数・state証跡を残して整理し、step 2を保持する。
+この交換方向は/32→/16でtoken数が増えるため高速化検証ではない。生成品質は未受け入れ。
+同dtypeのGemma safetensorsをmeta/strict assignで読む経路をLTX本番loaderへ追加した。
+小型実Gemmaで重み・logits完全一致、共有embedding・公式旧キー移行・欠損/不正index拒否を
+CPU 6 testで確認した。新loaderで公式BF16 TE全24,374,650,080 bytesがfile-mapped領域にあり、
+CUDA未初期化であることも確認した。dtype変換が必要な原本は従来loaderを使うため、
+原本からのBF16 backing準備とGPU往復の本番統合は引き続き必要である。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

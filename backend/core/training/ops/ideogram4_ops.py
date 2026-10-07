@@ -383,7 +383,7 @@ def train_step(
         latents:          Packed image latents [B, N, 128].
         encoder_features: 13-layer Qwen3-VL features [B, 13, L, 4096].
         encoder_mask:     Text token mask [B, L].
-        latent_h/latent_w: latent grid (height//16, width//16).
+        latent_h/latent_w: packed grid of the active codec (spatial scale * 2).
         repa_pixels:      Clean-image [B,3,S,S] in [-1,1] for the REPA teacher, or
                           None (no alignment term this step).
     """

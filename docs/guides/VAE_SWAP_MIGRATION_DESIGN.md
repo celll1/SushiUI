@@ -21,11 +21,32 @@ plain loaderはmeta構築・strict assignで不要な全モデルFP32初期化�
 FP32 CPUではmapped offsetに依存するGEMM丸め差を避けるためaligned storageへcopyする。
 変換拒否・native forward一致・学習勾配・Full保存復元・VAE swap・U-netのCPU回帰26件と
 変更backendのcompile/実import（CUDA未初期化）が通過した。
-公式全重みを使う交換後のFull更新・再開・生成画質の受け入れはまだ未了。
+修正後、公式両DiT・公式TEを実Full trainerへ読み込み、合成RGB2枚でQwen 2.1 VAE
+（32ch/8x→64ch/16x）と既定2段U-net（最深4層）を併用して1更新・4分割保存した。
+学習対象は両branch計18.56B、32block swap・ring2・pin無し・BF16 Adafactor fused。
+両branchの入力projection更新を確認し、所要130.766秒、peak allocated34.573GiB。
+optimizer/stateと校正済みbridge・U-netを保存した。再開・生成画質はこの1更新の証明に含めない。
+公式全重みを使う交換後の生成画質の受け入れはまだ未了。
 検証資産はignored `local/verification/ideogram_official/`に保持する。
 公式34層の両branchをplain loaderでCPU実読込し、各9,279,288,448 parameterが
 BF16・trainable、meta残留とFP8 moduleが無いことを確認した。TE/tokenizer/VAE/schedulerを
 原本から保持した検証packageのpreflightも通過した。CPU実読込はGPU更新の証明とは扱わない。
+公式両DiTのFull検証で、交換後のtoken格子を学習ループが元の16px strideで計算する漏れを
+発見した。Qwen 2.1 codecは16x圧縮に2x2 packingが加わるためstride32が必要で、
+256pxの64tokenへ16x16格子を渡すと最初のforward前に拒否されていた。
+packed batch格子とLens/Ideogramのcache形状検証を、交換後wiringの圧縮率に従うよう修正した。
+実codecの縮小率変更・縦長バッチ・cache token数・Full保存復元のCPU回帰6件、
+変更backendのcompile/実import（CUDA未初期化）が通過した。
+実Full checkpointの再開では、Ideogram判定後に専用loaderへ渡す分岐がなく、
+SD/SDXLのsafe_openが分割index JSONを読んで失敗する漏れも発見した。
+専用component loaderへ接続し、単一・分割checkpoint両形式のdispatch回帰を追加した。
+格子・codec artifact・Full所有権・再開dispatchのCPU回帰は計8件通過。
+修正後に公式Full step 1から再開し、1060 optimizer tensorを新規0で復元してstep 2を保存した。
+再開後も両入力projectionが更新され、所要188.250秒、peak allocated34.573GiB。
+保存後の全1060 optimizer stateはstep 2で、4shardの1306キーがindexのweight_mapと完全一致する。
+校正宣言・U-net spec/hashはstep 1と一致し、stateのglobal_stepも2。
+検証画像は合成図形のみ。初期値の画質や学習による画質回復をこの2更新で受け入れない。
+Full成果物と監査結果はignored `local/verification/ideogram_official_full/`に保持する。
 
 LTX公式nativeと交換済みFull step 5を、同一prompt/seed 63・384px・73frame・
 24fps・30step・CFG3で比較した。nativeは赤い玩具車を認識できるposterを生成したが、

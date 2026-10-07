@@ -71,6 +71,28 @@ def test_shared_calibration_and_public_native_codec_round_trip(tmp_path,monkeypa
     with Image.open(paths[0]["image_path"]) as image:
         encoded=vae_encode(trainer.vae,image,128,128,"cpu",torch.float32)
     assert encoded.shape == (1,16,16)
+    # Execute the production batch-grid statements with a rectangular target grid.
+    import ast
+    import inspect
+    import textwrap
+    from core.training.base_trainer import BaseTrainer
+    tree = ast.parse(textwrap.dedent(inspect.getsource(BaseTrainer.train)))
+    grid_branch = next(node for node in ast.walk(tree) if isinstance(node,ast.If)
+        and any(isinstance(statement,ast.Assign) and any(isinstance(target,ast.Name)
+                and target.id == "batch_lens_latent_shape" for target in statement.targets)
+                for statement in node.body)
+        and "is_ideogram4" in ast.unparse(node.test))
+    trainer.is_lens = trainer.is_krea2 = trainer.is_qwen_image_21 = False
+    namespace = dict(self=trainer,width=128,height=256)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[grid_branch],type_ignores=[])),"batch-grid","exec"),namespace)
+    assert namespace["batch_lens_latent_shape"] == (8,4)
+    cache_block = next(node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+        and any(isinstance(target,ast.Name) and target.id == "expected_seq_len" for target in node.targets))
+    cache_stride = next(node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+        and any(isinstance(target,ast.Name) and target.id == "latent_stride" for target in node.targets)
+        and ast.unparse(node.value) == "self.wiring.vae_scale_factor * 2")
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[cache_stride,cache_block],type_ignores=[])),"cache-grid","exec"),namespace)
+    assert namespace["expected_seq_len"] == encoded.shape[1]*2
     positions,segments,indicator=_prepare_ids([2],4,4,2,torch.device("cpu"))
     def predict(model):
         return model(hidden_states=torch.cat((encoded.new_zeros(1,2,16),encoded),dim=1),

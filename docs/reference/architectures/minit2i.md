@@ -309,4 +309,5 @@ never silently produce a truncated parameter list.
 | Ambiguous model directory refused | `resolve_minit2i_model_dir` (multiple variants ⇒ `ValueError` listing them) |
 | Weight inheritance requires an unchanged patch size for channel surgery | `_channel_partial_copy` returns `None` when `src_patch != tgt_patch` (pixel ↔ latent) |
 | Inference dtype | `bfloat16` hard-coded in all three `_generate_*_minit2i` entry points |
+| FP32 optimizer norm masters | `RMSNorm` returns the input activation dtype; otherwise BF16 Q/K/V disagree at conduit validation. CPU regression and official B/16 Full save/resume verified. |
 | `unet_quantization`, `vae_override`, `text_encoder_quantization`, `cpu_text_encoding`, `attention_impl` unsupported | `api/arch_capabilities.py` `_add("minit2i", …)` entries |

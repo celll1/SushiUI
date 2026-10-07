@@ -75,7 +75,8 @@ class RMSNorm(nn.Module):
 
     def forward(self, x):
         y = x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-        return y * self.weight
+        # FP32 optimizer masters must not promote reduced-precision activations.
+        return (y * self.weight).to(x.dtype)
 
 
 class TimestepEmbedder(nn.Module):

@@ -150,6 +150,29 @@ DB run/dataset/gallery行は作成せず、APIのMing Layer選択は維持した
 独立検証プロセスの終了後はbackend RSS4.65GiB、空きRAM59.52GiBを確認した。
 FLUXの交換単独について限定的な概形保持の証拠を得たが、U-net併用と全アーキテクチャの受入は未完。
 
+追加で元解像度19層・半解像度2層・最深部4層の狭い2段FLUX U-netを、同じ3 prompt×2 seedの
+通常VAE／交換VAEで12枚比較した。generalだけで校正した保存済み係数を再利用した。
+交換併用でも6例の対象を識別でき、標準併用から改善したが、耳・本の配置・果物の形・余分な車輪と
+格子状の劣化が残る。既定presetは変更せず、詳細品質の受入も主張しない。
+生成関数全体の6例平均は通常47.16秒／交換17.48秒で、比較時のprompt cache条件の注意は同じ。
+診断はignored `flux2_official_quality/narrow_visual_review.json`、比較PNGは同じdirectoryに保持する。
+
+公式`MiniT2I/MiniT2I` revision `5b4da2870d1554992670d1005567e9d55b1b37bb`のB/16全浮動小数点重みと、
+公式`google/flan-t5-large` revision `0613663d0d48ea86ba8cb3d7a44f0f65dc596a2a`を取得し、サイズとSHA256を照合した。
+合成画像2枚を使い、RGB pixel（3ch/1x/patch16）からQwen 2.1（64ch/16x/patch2）へのpaired_spatial交換と
+標準2段U-netを併用した実Full trainerの1更新→保存→再開→2更新、出力head更新を確認した。
+374 optimizer stateを復元した。ログには5 start freshが出るが、前後とも保存stateは374で、
+現行forwardが使用しないt_embedderの4 parameterとpooled_embedderの1 parameterにはstateがない。
+全trainable parameterにoptimizer stateがある、あるいは学習勾配が届くという主張はしない。
+保存済みbundleを生成APIから読み、64ch・交換VAE・2段U-netを復元して256px・2stepの推論/decodeが成功した。
+元のMing Layer選択へ戻した。この小さい生成は機能検証であり、MiniT2Iの公式画質比較は未実施。
+
+最初のFull学習で、FP32 optimizer masterのRMSNorm weightがBF16 activationをFP32へ昇格し、
+Q/KとVのdtype不一致が発生した。RMSNorm出力を入力dtypeへ戻し、通常/U-net×autocastの
+小型実forward/backward 4条件で再現失敗→通過を確認した。関連MiniT2I CPU回帰79件と
+compile・CUDA未初期化の実importが通過し、その後の公式Full/API検証も成功した。
+新しいAPI parameterやdefaultは追加していない。実画像は使わず、sourceと診断はignored `local/verification`に保持する。
+
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、
 CFG/NAGのbatch展開、single/multi style各参照の個別noiseを入力/velocity出力へ渡す。

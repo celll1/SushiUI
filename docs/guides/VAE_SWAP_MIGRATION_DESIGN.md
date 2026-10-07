@@ -38,7 +38,7 @@ advisoryは設定の非表示/拒否には使わず、既存のmethod・互換�
 | 対象 | 実重みの機能検証記録 | 次に確認すること |
 |---|---|---|
 | Ming Design | 公式浮動DiT、16ch/8x→64ch/16x＋2段/deep4。Full step 2保存、523 optimizer状態、固定noise係数bit一致を記録 | 26層swapとswap無しのコスト比較は下表で完了。長いbuffer補充と異なるoptimizer条件は未測定 |
-| Anima | 公式DiT/TE、同じcodec交換＋2段/deep4。公開API step 1→2、689 optimizer状態、保存したcodec/構造で生成を確認 | 512/1024pxのコスト比較は下表で完了。長いbuffer補充を含む速度は未測定 |
+| Anima | 公式DiT/TE、同じcodec交換＋2段/deep4。公開API step 1→2、689 optimizer状態、保存したcodec/構造で生成を確認 | 512/1024pxの比較と24枚・2回途中補充を確認。多様なcaptionを持つ長期runは未測定 |
 | SDXL | 公式ベース、4ch/8x→64ch/16x。公開API step 1→2、1683 optimizer状態、追加channel重みの更新を確認 | 1024pxのコスト比較は下表で完了。改善なしの原因別profileは未実施。DiT再配線は追加しない |
 
 2026-10-07に保存済みAnima/SDXLのstep 2応答・宣言とMingの公式step 2ログを再確認した。
@@ -83,6 +83,32 @@ VRAM peakは学習更新区間、host RSSは読込・校正・encodingを含むp
 結果と再現scriptはignored `local/verification/anima_training_cost/`と`anima_training_cost_probe.py`に保持。
 専用DB run/datasetは作らず、終了後に元Ming LayerをAPIで復元した。
 優先対象以外の高い初期再現性の追求は後回しにする。
+
+#### Animaの途中buffer補充を含む比較
+
+上記と同じ公式重みSHA・1024px・batch1・Adafactor・block swap無しで、
+合成画像24枚、latent/text buffer各8件、caption 2種類を3構成で揃えた。
+各24更新で途中補充を2回ずつ実行し、補充後も最後まで更新できた。
+更新時間は先頭2更新を除外した中央値。学習全体は初回encoding・校正・途中補充・cleanup込みで、
+モデル読込とcheckpoint I/Oは含まない。
+
+| 構成 | 更新中央値（秒） | 補充前後の更新間隔（秒、2回） | 学習全体（秒） | 全体の通常比速度 | 初回forward以降peak allocated（GiB） | process peak RSS（GiB） |
+|---|---:|---:|---:|---:|---:|---:|
+| 通常16ch/8x | 1.727 | 3.454 / 3.313 | 54.906 | 1.00x | 8.808 | 8.18 |
+| 64ch/16x交換 | 0.656 | 3.000 / 3.094 | 30.719 | 1.79x | 8.420 | 10.15 |
+| 交換＋既定2段/deep4 | 0.672 | 2.985 / 3.140 | 30.375 | 1.81x | 8.414 | 10.17 |
+
+更新間隔は前の成功optimizer更新終了から次のforward開始までで、
+encodingだけの専用timerではなくoffload/restore・batch準備等も含む。
+VRAM peakは初回forwardでresetした後の途中encodingも含む区間で、前節の8更新とは測定範囲が異なる。
+今回もVAE交換の全体時間短縮は確認したが、交換のみからU-net併用の差は約1.1%で、
+追加の速度改善を保証しない。前節の8更新との差から原因を断定しない。
+captionが2種類の短い試験であり、多様なcaption・長期run・保存込みthroughputや収束は未検証。
+
+全72更新がfinite、3 processはexit0。CPU auditで合成24画像のhash一致、source SHA、
+公開requestの共通設定、交換宣言、全28層の初回格子、latent形状、6回の途中補充、保存I/O無しを照合した。
+result/logと再現scriptはignored `local/verification/anima_training_cost/1024/refill24_buffer8/`、
+`image_training_cost_probe.py`、`anima_refill_audit.py`に保持する。専用DB run/datasetは作っていない。
 
 #### SDXLの実Full学習コスト比較
 

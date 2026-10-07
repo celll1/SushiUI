@@ -26,7 +26,7 @@ VAEのchannel数と空間圧縮率を区別する。旧Qwen-Image系は16ch・�
 
 | 対象 | 実重みの機能検証記録 | 次に確認すること |
 |---|---|---|
-| Ming Design | 公式浮動DiT、16ch/8x→64ch/16x＋2段/deep4。Full step 2保存、523 optimizer状態、固定noise係数bit一致を記録 | 26層swapのコスト比較は下表で完了。block swapを減らせるか確認 |
+| Ming Design | 公式浮動DiT、16ch/8x→64ch/16x＋2段/deep4。Full step 2保存、523 optimizer状態、固定noise係数bit一致を記録 | 26層swapとswap無しのコスト比較は下表で完了。長いbuffer補充と異なるoptimizer条件は未測定 |
 | Anima | 公式DiT/TE、同じcodec交換＋2段/deep4。公開API step 1→2、689 optimizer状態、保存したcodec/構造で生成を確認 | 512/1024pxのコスト比較は下表で完了。長いbuffer補充を含む速度は未測定 |
 | SDXL | 公式ベース、4ch/8x→64ch/16x。公開API step 1→2、1683 optimizer状態、追加channel重みの更新を確認 | 1024pxのコスト比較は下表で完了。改善なしの原因別profileは未実施。DiT再配線は追加しない |
 
@@ -137,7 +137,31 @@ conditioner phase終了時にはallocatedが約33.94→0.69GiBへ下がり、com
 結果はignored `local/verification/ming_image_01_training_cost/1024/blocks26/`、
 scriptは`image_training_cost_probe.py`と`ming_training_cost_audit.py`に保持。
 DB run/datasetは作らず、完了後にAPI経由で元Ming Layerを復元した。
-次のコスト確認候補はMingのblock swap削減。今回の26層結果を無swap時の最小コストとは扱わない。
+26層結果とblock swap無しの結果を区別する。後者の追加測定は次節に記録する。
+
+#### Ming Designのblock swap無し比較
+
+同じ公式package・合成8枚・1024px・batch1・Adafactor・gradient checkpointingで、
+block swapだけを0にした3構成を各8更新測定した。先頭2更新を除外した中央値。
+全構成でconductor無し、最初のforward前に全trainable ParameterがCUDA上にあることを確認した。
+
+| 構成 | 更新中央値（秒） | 通常比速度 | 学習更新peak allocated（GiB） | encodingを含む更新前peak（GiB） | process peak RSS（GiB） | 学習全体（秒） |
+|---|---:|---:|---:|---:|---:|---:|
+| 通常16ch/8x | 5.2420 | 1.00x | 24.542 | 33.367 | 49.25 | 82.625 |
+| Qwen 2.1の64ch/16xへ交換 | 2.0630 | 2.54x | 23.758 | 33.367 | 49.82 | 54.875 |
+| 交換＋既定2段/deep4 | 1.7730 | 2.96x | 23.757 | 33.367 | 49.77 | 52.421 |
+
+U-net併用は26層swap時の3.2425秒から約45%短縮した。
+交換のみからU-net併用への追加短縮は約14%。この条件では48GiB GPUに全DiTを常駐でき、
+転送を省く選択が成立した。ただし更新peakは26層swap時の4.718GiBから23.757GiBへ増える。
+encoding等を含む更新前peakは約33.37GiBで、更新peakだけを必要容量として扱わない。
+Adam系optimizer、より大きいbucketやbatch、長いbuffer補充への適用は別途確認する。
+ユーザーrunやblock swapの既定値は変更しない。
+
+24更新のlossは有限で全processがexit0。CPU auditで公式source・交換宣言・全30層の格子・
+caption prefix・parameter数・保存I/O無しを照合した。格子とparameter数は前節と同じ。
+少数更新のため収束や品質回復は未証明。専用DB run/datasetは作らなかった。
+結果はignored `local/verification/ming_image_01_training_cost/1024/`に保持する。
 
 Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
 実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し

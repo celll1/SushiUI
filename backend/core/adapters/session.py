@@ -237,6 +237,13 @@ class AdapterSession:
             state = self._states[name] = _ComponentState()
         return state
 
+    def release(self) -> None:
+        """Restore branches and release old base layers before model teardown."""
+        for state in self._states.values():
+            self._restore_state(state)
+            state.reset(None)
+        self._states.clear()
+
     def bind(self, component: AdapterComponent) -> _ComponentState:
         """The state for ``component``, reset if its module was replaced.
 

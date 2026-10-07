@@ -132,6 +132,26 @@ class _Backend(Flux2Mixin):
                                  "text_encoder": text_encoder, "vae": None}
 
 
+def test_model_cleanup_releases_adapter_original_weights(tmp_path):
+    import gc
+    import weakref
+    from core.pipeline import DiffusionPipelineManager
+
+    path, _, _ = train_and_save(tmp_path)
+    manager = DiffusionPipelineManager()
+    model, encoder = _Transformer(), _TextEncoder()
+    original = model.transformer_blocks[0].attn.to_q
+    weight = weakref.ref(original.weight)
+    manager.flux2_components = dict(transformer=model, text_encoder=encoder, vae=None)
+    manager._load_lora_flux2([{"path": path, "strength": STRENGTH}])
+    assert manager._flux2_lora_session.state("transformer").originals
+    del original, model, encoder
+    manager._cleanup_component_architectures()
+    gc.collect()
+    assert weight() is None
+    assert not manager._flux2_lora_session.state("transformer").originals
+
+
 def wrapped_paths(model):
     """Target paths a GENERATION load covers, i.e. the composite roots."""
     return {name for name, module in model.named_modules()

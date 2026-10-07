@@ -9,6 +9,14 @@ The authoritative generation and training capability tables are
 `backend/core/adapters/capability.py`. Documentation and architecture handlers
 must not maintain copies of those tables.
 
+Model teardown releases every attached `AdapterSession` before dropping the
+component dictionaries. `release()` restores owned branches and clears the
+original-layer maps and weak component bindings; generation-only `unload()`
+keeps its existing per-component lifetime. A real FLUX adapter-load CPU
+regression reproduced an old base weight surviving model teardown, then
+verified that the corrected cleanup allows its collection. This applies to
+all session-backed architectures without an architecture name list.
+
 ## Shipped capability
 
 | Architectures | Generation | Training |

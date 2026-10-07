@@ -4086,6 +4086,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         always CPU-resident) from being copied into anonymous memory moments
         before it is dropped.
         """
+        from core.adapters import AdapterSession
+
+        for holder in vars(self).values():
+            if isinstance(holder, AdapterSession):
+                holder.release()
         for attr, label, flag in ARCH_COMPONENT_SETS:
             components = getattr(self, attr, None)
             if components is None:

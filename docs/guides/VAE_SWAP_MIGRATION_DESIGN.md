@@ -193,6 +193,30 @@ joint blockとfinal layerがvecを使わないため、この調査では独自�
 全60枚の記録、比較PNG、clean codec対照、係数はignored `minit2i_official_quality`に保持する。
 検証processは正常終了し、APIはMing Layerのまま待機、backend RSS 4.65GiB・空きRAM約58.19GiBを確認した。
 
+続けて、公式pixel patch投影の`W W^T`を交換先64ch×patch2のnoiseから再現する
+固定投影を作り、実patch埋め込み直後で既存noiseとの差分だけを加えた。
+等倍・半分・clean patch回帰併用・標準2段U-net併用を各6枚、共通component版を6枚の計30枚で確認した。
+等倍とcomponent版では格子模様から狐/本・リンゴ・青い車の識別まで改善するが、
+洋ナシの欠落、切れた構図、ぼけが残る。半分は模様化し、U-net併用は大きく崩れる。
+全面的な品質受入とはしない。component版の生成関数全体は平均4.74秒、token数は256のままである。
+追加の実画像・学習run・gallery DBは使わず、全90枚と係数をignored directoryに保持する。
+
+`components/patch_noise_alignment.py`へ凍結FP32の共通補正を切り出した。
+private RNGで直交基底を作り、sourceの共分散とcapture時のnoise写像を保存する。
+縮小先のpatch次元が不足する場合は近似rankと共分散誤差を記録し、完全保存と主張しない。
+clean境界・勾配・非正方形格子・保存復元・不正state・global RNG非消費のCPU検証が通過した。
+このmoduleはまだ自動で新規swapへ取り付けない。本番配線には宣言metadata、native/directory保存復元、
+学習の各露出、通常/img2img/inpaintとsingle/multi参照の個別noise、定期sample、
+CFG/NAG/NegPipのbatch展開、cancel/例外後の解除を同じ契約へ接続する必要がある。
+
+静的確認で、MiniT2IのNAG/NegPipが外側modelを迂回してraw MMJiTを呼び、
+既存paired_spatial入出力変換を落としていた点を修正した。両wrapperはmodel境界を呼ぶ。
+縮小先channelが元より少ない実tiny modelでCFG有無と両guidance/併用を検証した。
+既存U-net+guidanceの明示的refusalは維持し、例外後もactive flagを解除する。
+compile・CUDA未初期化の実import、新規/既存Gaussian・MiniT2I境界の76件が通過した。
+style参照のraw-net呼出しも別途配線確認が必要であり、guidance全機能の完了とはしない。
+検証終了後はAPI待機/Ming Layer、backend RSS 4.65GiB・空きRAM約58.47GiBだった。
+
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、
 CFG/NAGのbatch展開、single/multi style各参照の個別noiseを入力/velocity出力へ渡す。

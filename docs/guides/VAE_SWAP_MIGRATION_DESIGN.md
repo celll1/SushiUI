@@ -880,6 +880,19 @@ named optimizerは2,885件を復元した。残り1,305件にはstep 2保存時�
 CPU 6 testで確認した。新loaderで公式BF16 TE全24,374,650,080 bytesがfile-mapped領域にあり、
 CUDA未初期化であることも確認した。dtype変換が必要な原本は従来loaderを使うため、
 原本からのBF16 backing準備とGPU往復の本番統合は引き続き必要である。
+凍結成分のGPU往復は共通`memory_management/frozen_backing.py`へ移し、LTX trainingの
+TE/connectorで使用する。CPU Parameter storageを保持してGPUからの巨大な再コピーを避け、
+runtime rotary bufferは現在値をCPUへ戻す。構造・dtype変更、Parameter交換、requires_gradや
+gradがある場合は退避を拒否し、学習済み値を古いbackingで上書きしない。
+Windowsでは転送完了後にcontiguous file-mapped CPU範囲だけをworking setから退避する。
+校正、共通encoder refill、sampleのfinally、cleanupから同じ退避経路を使い、他architectureへは
+自動適用しない。CPU 16 testで欠損・変更拒否、mapped/private範囲の内容保持、
+sample失敗時の退避、既存LTX校正/再開を確認した（構文検証・実importも通過）。
+追加のcleanupテストでbacking所有者の解放も確認した。
+公式BF16 TEを検証用component overrideで指定し、stagingの検証用置換を外したFull再開では、
+caption encode後の空きRAMが17.87→46.55GiBへ回復した。Full step 2から3への更新・保存・
+cleanupまで正常終了した（process 191.156秒、load/saveを含む）。原本FP32 TEからのbacking準備と
+本番API生成の検証はまだ必要である。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

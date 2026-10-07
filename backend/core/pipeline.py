@@ -1321,9 +1321,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     "unet_parameter_count": manifest["unet"]["parameter_count"],
                     "bridge_state": manifest["conditioning"]["bridge_state"],
                     "context_length": manifest["conditioning"]["context_length"],
-                    "latent_channels": 4,
+                    "latent_channels": manifest["vae"]["latent_channels"],
                     "vae_identity": manifest["vae"],
                 }
+                self.current_model_info.update(
+                    self._fold_component_latent_identity(model_result, "sensenova_sdxl_chimera"))
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] SenseNova SDXL Chimera model loaded successfully")
                 return

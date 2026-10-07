@@ -30,7 +30,7 @@ def test_token_display_uses_replacement_scale_and_native_registry(architecture,p
     assert image_token_stride(SimpleNamespace(spatial_scale_factor=32),architecture,patch)==32*patch
 
 
-@pytest.mark.parametrize("architecture", ["qwen_image_21", "flux2"])
+@pytest.mark.parametrize("architecture", ["qwen_image_21", "flux2", "sensenova_sdxl_chimera"])
 def test_component_info_accepts_resolved_codec_identity(architecture):
     from core.pipeline import DiffusionPipelineManager
     from core.models.common.vae_source import ResolvedVAE

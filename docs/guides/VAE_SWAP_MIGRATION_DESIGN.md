@@ -70,7 +70,17 @@ step1のloss=3.463146209716797、更新/保存/preflightが通過し、校正後
 step1からの再開も成功し、1688 optimizer状態が復元され、freshは0だった。
 保存済みcodec/bridgeからstep2へ継続し、loss=72.83879852294922、同じ4 tensorの更新・保存・preflightを確認した。
 process 97.453秒、peak allocated 17.513GiB。conditioningは未整列のままで、
-2回の有限な更新は収束・生成画質の証拠にはしない。交換成果物からの生成は今回未確認。
+2回の有限な更新は収束・生成画質の証拠にはしない。
+step2成果物を公開APIで読込し、256px・4step・CFG1・seed63・skip_galleryで生成がHTTP200になった。
+出力は淡い色のノイズ状で、概形保持を確認できない。unaligned warm-startの機能検証として記録し、
+収束や画質回復の証拠にはしない。再開前後のmanifestのalignment/flow統計と固定bridge/noise buffer9件は
+bit一致し、projection weight/bias4件だけが更新された。
+APIモデル情報にlatent_channels=4固定の漏れを発見し、保存codecのchannel数と共通identity foldへ変更した。
+frontendのModelInfo型、ModelLoadSectionの交換VAE表示、LoRASelector/VaeOverrideSelectorの
+channel互換性判定がこの情報を使うことを静的確認した。修正後のAPI再読込で64ch・
+vae_struct_native=false・vae_identity_native=false・Qwen 2.1 provenanceを確認し、
+共通生成identity経路のCPU回帰49件とcompile/実importも通過した。
+frontend build/type-checkは所有者検証のまま。
 成果物・JSON・再現scriptはignored `local/verification/chimera_official_swap_v4/`に保持する。
 
 #### 優先対象の現在の証拠と残作業

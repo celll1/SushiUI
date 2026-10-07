@@ -1432,7 +1432,7 @@ _add_training_feature_unsupported(
 _add_training_feature_advisory(
     "sensenova_sdxl_chimera", "vae_swap",
     "experimental",
-    "Chimera uses paired_spatial on the target codec grid and bundles its RGB or RGBA codec, bridges and separate source/target flow statistics. RGB images enter RGBA codecs with opaque alpha. Full fine-tuning in the unet or joint stage is required. Polar v4 retains both coordinate tangent and time drift. Small native models verify calibration, generation, restoration and optimizer continuation. An official-source V4 warm-start verifies two GPU Full updates and optimizer restoration with a Qwen 2.1 codec; conditioning remains unaligned, and swapped official-source generation and quality recovery remain unverified.",
+    "Chimera uses paired_spatial on the target codec grid and bundles its RGB or RGBA codec, bridges and separate source/target flow statistics. RGB images enter RGBA codecs with opaque alpha. Full fine-tuning in the unet or joint stage is required. Polar v4 retains both coordinate tangent and time drift. Small native models verify calibration, generation, restoration and optimizer continuation. An official-source V4 warm-start verifies two GPU Full updates, optimizer restoration and API generation with a Qwen 2.1 codec. Conditioning remains unaligned; its initial output is noise-like, and quality recovery is unverified.",
     methods=["full_finetune"])
 
 # --- Layer-wise LR decay ----------------------------------------------------

@@ -42,10 +42,45 @@ private/権限不足と配布停止を区別できないため「モデル不存
 結果はignored `local/verification/lens_official_availability.json`に保持し、所有者へ保存先を確認中。
 小型LensのCPU検証を公式全重み検証の代用にはしない。
 
-ACE-Stepは公式1.5のDiT/TE/元codecが手元にあるが、現在の交換契約を満たす別codecの
-公式成果物（48kHz stereo Oobleck）の確認が未了。元codecの同一重みを別名で読んでも
-交換検証にはしない。Chimeraは公式conditioning bootstrapの学習更新まで確認済みだが、
+ACE-Stepは公式1.5由来のDiT/TE/元codecが手元にある。交換契約を満たす別codecは下記ScragVAEを
+確認・取得した。これは作者配布のcommunity fine-tuned VAEで、ACE-Step公式ベースVAEとは区別する。
+元codecの同一重みを別名で読んでも交換検証にはしない。Chimeraは公式conditioning bootstrapの学習更新まで確認済みだが、
 交換後のFull検証は以下のwarm-start経路で進める。未取得/未検証の条件が残る限り全対応は完了としない。
+
+#### ACE-Stepの実codec交換先の確定
+
+[ACE-Step上流v0.1.7](https://github.com/ace-step/ACE-Step-1.5/releases/tag/v0.1.7)が
+対応を公表する[作者配布ScragVAE](https://huggingface.co/scragnog/Ace-Step-1.5-ScragVAE)を
+revision `0547ba36ff72b94ca3db3fa9194a59899ca37e5c`で取得した。
+configと674,821,856-byte safetensorsを保持し、weight SHA256は配布metadataと一致する
+`fa4558a263b230fe480066f2b0c04a1a6fe2d05c0b64d0f432a43e8a8c0379c0`。
+元codecと同じFP32へ揃えた比較で365 tensor（encoder183、decoder182）が異なり、単なる別名ではない。
+両方とも64ch・48kHz stereo・hop1920のためtoken数は減らない。
+
+実元codecと実ScragVAEを、合成chirp/倍音/包絡の8秒音声2件で3タップpaired_temporal校正し、
+別の合成音声1件でdecodeを比較した。校正後のoutput latent RMSE=0.0980694、
+input latent RMSE=0.104882、paired decodeとtarget再構成のwaveform RMSE=0.0114421。
+入力音声とのRMSEはsource=0.0324790、target=0.0348460、paired=0.0362060。
+GPU process 11.954秒、peak allocated 2.723GiB。音楽/歌唱の音質評価やFull学習の証拠とは区別する。
+再現script・配布manifest・比較WAV・校正係数はignored `local/verification/ace_codec_sources/`。
+実音源・dataset画像は使っていない。
+
+公開TrainingRunCreateRequest→YAML/config変換→実FullParameterTrainerを通し、
+手元のACE-Step 1.5 turbo浮動DiT/TE/元codecとScragVAEを接続した。
+BF16・batch1・Adafactor・synthetic stereo8秒2件でstep1のloss=0.7124305、
+校正後bridge4 parameter更新・1051 tensor保存が通過した。process44.985秒、peak7.964GiB。
+step1からstep2へ再開し480 optimizer状態を復元、fresh0、loss=0.6438193、
+bridge4 parameterの追加更新と保存を確認した。process40.203秒、peak8.123GiB。
+保存前後のalignment record、凍結target codec365 tensor、boundary buffer5件はbit一致。
+run/データセットDBは作らず、成果物はignored `local/verification/ace_scrag_full/`に保持する。
+API生成用の成果物読込で500となり、単一safetensors入口からACE専用loaderへのdispatch欠落を発見した。
+学習側の専用入口は通る一方、生成入口がSDのCLIP復元へfallbackしていた。
+ACE分岐を追加し、公開ModelLoader入口をnative/net prefixの両方で検証した。
+component source復元と合わせてCPU12件・subtest6件、compile/実importが通過した。
+修正後の公開APIでstep2成果物を読込し、seed63・8秒・8step・CFG1で音声生成がHTTP200となった。
+生成FLACは作業フォルダへ保持し、この実行だけのgallery登録・出力をDELETE APIで整理した。
+実codec交換の機能確認であり、changed-hop codecの公式実重み検証や音楽/歌唱の品質回復、
+長期throughput、U-net併用の実重み検証は未了。小型CPUのU-net併用結果とは区別する。
 
 #### Chimeraの実読込入口とRGBA交換
 

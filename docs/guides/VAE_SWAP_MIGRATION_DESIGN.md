@@ -165,13 +165,33 @@ FLUXの交換単独について限定的な概形保持の証拠を得たが、U
 現行forwardが使用しないt_embedderの4 parameterとpooled_embedderの1 parameterにはstateがない。
 全trainable parameterにoptimizer stateがある、あるいは学習勾配が届くという主張はしない。
 保存済みbundleを生成APIから読み、64ch・交換VAE・2段U-netを復元して256px・2stepの推論/decodeが成功した。
-元のMing Layer選択へ戻した。この小さい生成は機能検証であり、MiniT2Iの公式画質比較は未実施。
+元のMing Layer選択へ戻した。この小さい生成は機能検証であり、画質比較とは分ける。
 
 最初のFull学習で、FP32 optimizer masterのRMSNorm weightがBF16 activationをFP32へ昇格し、
 Q/KとVのdtype不一致が発生した。RMSNorm出力を入力dtypeへ戻し、通常/U-net×autocastの
 小型実forward/backward 4条件で再現失敗→通過を確認した。関連MiniT2I CPU回帰79件と
 compile・CUDA未初期化の実importが通過し、その後の公式Full/API検証も成功した。
 新しいAPI parameterやdefaultは追加していない。実画像は使わず、sourceと診断はignored `local/verification`に保持する。
+
+その後、同じ公式B/16・FLAN-T5全重みで512px・100step・CFG2.5の画質比較を行った。
+狐/本・果物・車×seed63/64×通常/標準2段U-net/交換/交換併用の24枚を確認した。
+通常は対象を識別でき、未学習U-netはぼけと構図変化がある。交換側12枚は格子模様となり概形の受入を満たさない。
+target token数は1024→256だが、生成関数全体の平均は通常5.58秒／交換5.91秒、
+交換併用6.05秒だった。TE・phase移動・decode・cache条件を含み、attention単体の速度を表さない。
+Qwen VAEの追加で観測CUDA peak allocatedは通常0.685GiB／交換4.423GiBになった。
+
+general40枚の校正係数を再利用し、RGB側の行直交noise、gain 0.125、noiseゼロを各6枚比較した。
+さらにgeneralのratingとpathを画像を開く直前に再確認し、縮小RGB patchから公式patch特徴の
+平均poolへのridge線形回帰を行い、同じnoise3条件×6枚を比較した。追加36枚も対象を識別できない。
+これらはignored prototypeであり、本番のpolicy・既定値・学習済みcheckpointを変更していない。
+合成生成画像3枚のclean codec対照ではRGB→交換VAEでも対象と主要色を識別できるため、
+出側3×3変換だけで全生成の模様化を説明することはできない。
+公式入側patch投影の実rankは128、RGB patch16→2の集約後は12だった。
+次の候補はRGB側だけでなくpatch特徴側のnoise共分散を保持する補正であり、原因確定や品質回復済みとはしない。
+公式[mmdit.py](https://github.com/Hope7Happiness/minit2i-torch/blob/main/diffusers/mmdit.py)も
+joint blockとfinal layerがvecを使わないため、この調査では独自のtimestep演算を足していない。
+全60枚の記録、比較PNG、clean codec対照、係数はignored `minit2i_official_quality`に保持する。
+検証processは正常終了し、APIはMing Layerのまま待機、backend RSS 4.65GiB・空きRAM約58.19GiBを確認した。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、

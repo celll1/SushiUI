@@ -209,7 +209,9 @@ clean境界・勾配・非正方形格子・保存復元・不正state・global 
 宣言metadataの`patch_noise`からsingle-file復元時に同じmoduleを構築し、
 学習の各露出、通常/img2img/inpaintとsingle/multi参照の個別noise、定期sampleの生成loopへ接続した。
 ContextVarのscopeでCFG/NAG/NegPipのbatch展開とcancel/例外後の解除を扱う。
-既存checkpointは宣言がないため従来の演算を維持する。diffusers directory形式の交換artifactは別途未検証。
+既存checkpointは宣言がないため従来の演算を維持する。
+diffusers directory形式もalignment宣言から校正moduleを構築し、全shardの宣言一致を確認する。
+外部codecのlocator/hashを解決してから読み込み、宣言が欠ける交換artifactは拒否する。
 
 静的確認で、MiniT2IのNAG/NegPipが外側modelを迂回してraw MMJiTを呼び、
 既存paired_spatial入出力変換を落としていた点を修正した。両wrapperはmodel境界を呼ぶ。
@@ -236,6 +238,16 @@ single/multi styleの実tiny forward、metadata復元と学習勾配、3生成mo
 比較図は未追跡の`local/verification/minit2i_official_quality/production_comparison_{63,64}.png`に保持した。
 検証process終了後はAPI待機/Ming Layer、backend RSS 4.65GiB・空きRAM57.83GiBだった。
 この回復は検証processの終了とAPI再起動後の確認であり、モデル切替時のnative RAM残留の根治とはしない。
+
+directory復元追加後、dense/U-net・single/shardedと宣言不一致拒否、実VAE locator復元を含む
+70件のCPU回帰とcompile・CUDA未初期化の実importが通過した。
+公式B/16全重みでも、交換Qwen VAEを自己記述可能な別directoryへ書き出して参照し、
+標準2段U-net・64ch/16倍codec・固定patch係数をdirectoryから復元した。
+全stateと保存前後のGPU予測はbit一致した。検証用DiT重み約492MiBは成功後に削除した。
+
+SenseNovaの次の公式全重み検証に向けて、配布元`sensenova/SenseNova-U1.5-8B-MoT`の
+revision `9feeeab8a2792514d109cd34589342a2cc1d4ab2`、BF16の8 shard約35GBを確認した。
+取得とSHA256検証を進めている段階であり、公式Full学習・画質の合格とはしない。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、

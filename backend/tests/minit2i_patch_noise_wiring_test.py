@@ -107,3 +107,47 @@ def test_sampler_exception_releases_noise_and_projection_hook():
     assert not model.model.net.img_embedder.proj1._forward_hooks
     with pytest.raises(ValueError, match='exposure'):
         exposure_noise(torch.zeros(1, 4, 8, 12))
+
+
+@pytest.mark.parametrize('rewired', [False, True])
+@pytest.mark.parametrize('sharded', [False, True])
+def test_directory_restores_patch_alignment_and_optional_topology(tmp_path, rewired, sharded):
+    import json
+    from core.models.minit2i.residual_unet import (
+        load_directory_transformer, native_config, restore_topology, model_topology_metadata,
+    )
+    from core.models.common.single_file_format import save_single_file_state
+    from core.rewiring.spec import build_spec, OPERATORS
+    model = aligned_model()
+    config = native_config(model)
+    if rewired:
+        spec = build_spec('minit2i', [{'name': 'main', 'block_count': config['depth_double']}],
+            [dict(id='s', stream='main', parent=None, start_block=1, end_block=2,
+                  down_factor=[2, 2], **OPERATORS)], config)
+        restore_topology(model, spec)
+    (tmp_path / 'config.json').write_text(json.dumps(config))
+    metadata = dict(artifact_metadata(model), **model_topology_metadata(model))
+    save_single_file_state(model.state_dict(), metadata,
+        str(tmp_path / 'diffusion_pytorch_model.safetensors'),
+        max_shard_bytes=20000 if sharded else 10**9)
+    restored = load_directory_transformer(tmp_path, torch.float32)
+    assert restored.vae_latent_bridge.ready
+    assert getattr(restored, '_residual_unet_spec', None) == getattr(model, '_residual_unet_spec', None)
+    image, noise = torch.randn(1, 4, 8, 12), torch.randn(1, 4, 8, 12)
+    t, text, mask = torch.tensor([.3]), torch.randn(1, 5, 16), torch.ones(1, 5)
+    with noise_scope(noise):
+        torch.testing.assert_close(restored(image, t, text, mask), model(image, t, text, mask))
+    for key, value in model.vae_latent_bridge.patch_noise.state_dict().items():
+        assert torch.equal(restored.vae_latent_bridge.patch_noise.state_dict()[key], value)
+
+
+def test_directory_refuses_disagreeing_alignment_before_allocation(tmp_path, monkeypatch):
+    from safetensors.torch import save_file
+    from core.models.minit2i.residual_unet import load_directory_transformer
+    from core.models.minit2i.vendor.transformer import MiniT2IMMJiTModel
+    metadata = artifact_metadata(aligned_model())
+    save_file({'placeholder': torch.ones(1)}, str(tmp_path / 'first.safetensors'), metadata=metadata)
+    save_file({'placeholder': torch.ones(1)}, str(tmp_path / 'second.safetensors'))
+    monkeypatch.setattr(MiniT2IMMJiTModel, '__init__', lambda *a, **k: pytest.fail('model allocation'))
+    with pytest.raises(ValueError, match='alignment declarations disagree'):
+        load_directory_transformer(tmp_path, torch.float32)

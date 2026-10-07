@@ -26,9 +26,9 @@ VAEのchannel数と空間圧縮率を区別する。旧Qwen-Image系は16ch・�
 
 | 対象 | 実重みの機能検証記録 | 次に確認すること |
 |---|---|---|
-| Ming Design | 公式浮動DiT、16ch/8x→64ch/16x＋2段/deep4。Full step 2保存、523 optimizer状態、固定noise係数bit一致を記録 | 同じ学習条件で通常/交換/交換＋U-netのstep時間・メモリを比較 |
-| Anima | 公式DiT/TE、同じcodec交換＋2段/deep4。公開API step 1→2、689 optimizer状態、保存したcodec/構造で生成を確認 | 交換＋U-netの学習コストを通常/交換のみと比較。未学習の細部一致を待たない |
-| SDXL | 公式ベース、4ch/8x→64ch/16x。公開API step 1→2、1683 optimizer状態、追加channel重みの更新を確認 | 通常/交換の学習コストを比較。元からU-Netで、DiT再配線は追加しない |
+| Ming Design | 公式浮動DiT、16ch/8x→64ch/16x＋2段/deep4。Full step 2保存、523 optimizer状態、固定noise係数bit一致を記録 | 26層swapのコスト比較は下表で完了。block swapを減らせるか確認 |
+| Anima | 公式DiT/TE、同じcodec交換＋2段/deep4。公開API step 1→2、689 optimizer状態、保存したcodec/構造で生成を確認 | 512/1024pxのコスト比較は下表で完了。長いbuffer補充を含む速度は未測定 |
+| SDXL | 公式ベース、4ch/8x→64ch/16x。公開API step 1→2、1683 optimizer状態、追加channel重みの更新を確認 | 1024pxのコスト比較は下表で完了。改善なしの原因別profileは未実施。DiT再配線は追加しない |
 
 2026-10-07に保存済みAnima/SDXLのstep 2応答・宣言とMingの公式step 2ログを再確認した。
 実重み成果物の一部はsmoke整理済みであり、この再確認は新たな公式GPU実行ではない。
@@ -58,7 +58,7 @@ swap bufferは全8枚を保持するので、長いrunの補充・offload費用�
 | 1024 | 64ch/16x交換 | 0.9375 | 1.91x | 8.413 | 10.04 | 14.953 |
 | 1024 | 交換＋既定2段/deep4 | 0.7110 | 2.52x | 8.413 | 9.86 | 12.875 |
 
-1024pxでは全28blockの実入力をhookで確認した。通常64×64、交換のみ32×32、
+1024pxでは最初のforwardの全28blockの実入力をhookで確認した。通常64×64、交換のみ32×32、
 交換＋U-netは32×32（8層）/16×16（16層）/8×8（最深4層）。
 全層token総和は114688→28672→12544、token数二乗の総和は469762048→29360128→9453568。
 後者はself-attentionの計算規模の指標であり、Flash/SDPAの実メモリや全FLOPではない。
@@ -71,7 +71,7 @@ U-net再配線は重みを減らさず、64ch交換の入出力層・bridgeで86
 VRAM peakは学習更新区間、host RSSは読込・校正・encodingを含むprocess観測で、測定範囲が異なる。
 結果と再現scriptはignored `local/verification/anima_training_cost/`と`anima_training_cost_probe.py`に保持。
 専用DB run/datasetは作らず、終了後に元Ming LayerをAPIで復元した。
-Mingの同条件コスト比較は残る。優先対象以外の高い初期再現性の追求は後回しにする。
+優先対象以外の高い初期再現性の追求は後回しにする。
 
 #### SDXLの実Full学習コスト比較
 
@@ -103,6 +103,41 @@ VRAMは更新区間のpeak、host RSSは読込・校正・encodingを含む観�
 Animaとの基本条件は揃えたが、conditioning長はAnima512/SDXL77で、予測形式も異なる。
 結果はignored `local/verification/sdxl_training_cost/`、scriptは`image_training_cost_probe.py`に保持。
 DB run/datasetは作らず、完了後にAPI経由で元Ming Layerへ戻した。
+
+#### Ming Designの実Full学習コスト比較
+
+公式package revision `208087ada1486931692c1896f38d4cd16ff3df82`の52,881,456,709 bytesを確認した。
+全manifest fileのSHAを計算し、LFS重みは配布SHAと一致。3構成で同一packageを使用した。
+最後の構成では、直前にSHA照合済みでサイズ/mtimeが変わらない17重みの確認を再利用し、
+小さい設定fileは再hashした。未量子化の公式DiTをFull trainerへ渡し、量子化展開は行っていない。
+RTX 6000 Ada・1024px・batch1・BF16・Adafactor stochastic rounding・gradient checkpointing、
+26層block swap・ring2・pin無しを3構成で揃えた。Anima/SDXLのswap無しとは区別する。
+合成8枚、交換校正も合成2枚、各8更新、最初の2更新を中央値から除外。
+公開config変換と実Full trainerを使い、checkpoint I/Oだけを省いた。
+
+| 構成 | 更新中央値（秒） | 通常比速度 | 学習更新peak allocated（GiB） | encoder phase peak（GiB） | process peak RSS（GiB） | 学習全体（秒） |
+|---|---:|---:|---:|---:|---:|---:|
+| 通常16ch/8x | 6.3360 | 1.00x | 6.430 | 34.05 | 49.69 | 94.828 |
+| Qwen 2.1の64ch/16xへ交換 | 3.5855 | 1.77x | 4.827 | 34.05 | 51.41 | 71.625 |
+| 交換＋既定2段/deep4 | 3.2425 | 1.95x | 4.718 | 34.05 | 51.28 | 63.360 |
+
+最初のforwardの全30層の実joint streamをhookで確認した。通常4448 token、交換のみ1376 token。
+交換＋U-netは1376（8層）/608（18層）/416（最深4層）で、各層のcaption側352 tokenは残る。
+全層token総和は133440→41280→23616、二乗総和は593541120→56801280→22493184。
+これはjoint attentionの規模の指標で、全FLOPや実attentionメモリ量ではない。
+trainable parameter数は6,154,901,056→6,156,449,664。交換の両構成は同数で、U-net化で重みは減らない。
+交換のみからU-net併用への追加速度改善は約10%、通常比では約1.95倍。
+
+24更新のlossは有限で、全processがexit0。CPU auditでsource一致・交換宣言・全層token・
+caption prefix不変・checkpoint I/O無しを照合した。8枚がbufferに収まる単発測定で、
+長期run・収束・品質回復の証拠にはしない。
+学習更新のVRAMが4.72GiBでも、caption encodingは約34GiBを要する。
+conditioner phase終了時にはallocatedが約33.94→0.69GiBへ下がり、component退避も確認した。
+小さい学習更新peakだけを必要GPU容量として提示しない。host RSSは読込・校正・encodingを含む。
+結果はignored `local/verification/ming_image_01_training_cost/1024/blocks26/`、
+scriptは`image_training_cost_probe.py`と`ming_training_cost_audit.py`に保持。
+DB run/datasetは作らず、完了後にAPI経由で元Ming Layerを復元した。
+次のコスト確認候補はMingのblock swap削減。今回の26層結果を無swap時の最小コストとは扱わない。
 
 Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
 実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し

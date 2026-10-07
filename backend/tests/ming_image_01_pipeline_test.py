@@ -145,6 +145,24 @@ def test_phase_policy_never_overlaps_and_cleans_partial_staging_failure():
     assert residency.active is None and not torch.cuda.is_initialized()
 
 
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_phase_releases_allocator_only_after_all_components_are_parked(monkeypatch, device):
+    events = []
+    class Module:
+        def to(self, *, device):
+            events.append(str(device))
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: events.append("release"))
+    components = SimpleNamespace(conditioner=Module(), transformer=Module(), vae=Module())
+    residency = MingPhaseResidency(components, device=device, cpu_text_encoding=False)
+    with pytest.raises(RuntimeError, match="injected"):
+        with residency("conditioner"):
+            raise RuntimeError("injected")
+    expected = ["cpu"] * 3 + (["release"] if device == "cuda" else [])
+    assert events == expected + [device] + expected
+    assert residency.active is None
+
+
 @pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
 def test_manager_runs_restored_nested_unet_with_native_reference_and_layer_frames(profile):
     from core.models.ming_image_01.model_definition import create_transformer

@@ -23,6 +23,9 @@ class MingPhaseResidency:
                 errors.append(exc)
         if errors:
             raise RuntimeError("Ming phase cleanup failed") from errors[0]
+        if self.device.type == "cuda" and torch.cuda.is_initialized():
+            # Caption allocations otherwise crowd the next phase on WDDM.
+            torch.cuda.empty_cache()
 
     @contextmanager
     def __call__(self, phase):

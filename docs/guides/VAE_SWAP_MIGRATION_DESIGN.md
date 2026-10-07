@@ -62,6 +62,21 @@ nativeは車体・タイヤ・台面を認識できたが、交換＋U-netは紫
 このcheckpointの校正は合成2枚で、40枚general校正やU-net無しの対照とは区別する。
 API結果と画像はignored `api_native_quality_*` / `api_swap_unet_quality_*`へ保存し、
 検証galleryを整理して元MingをAPI経由で復元した。交換側の画質は未合格を維持する。
+U-netだけを外す対照は、indexだけの書き換えではshard宣言との不一致としてpreflightが拒否した。
+拒否を弱めず、4shardのheaderとindexのU-net宣言を揃えて除いた独立対照をCPUで作成した。
+元checkpointと全tensor payloadのSHAが一致し、VAE/bridge/学習済みDiT重みは同じまま。
+CPU構築109.594秒。対照も同条件API生成がHTTP200で完了し、105.281秒で紫色の斑点状に崩れた。
+従って今回の失敗はU-netだけでは説明できない。元checkpointと対照は変更せず保持し、
+比較図をignored `local/verification/ideogram_official_full/quality_comparison.png`へ保存した。
+対照の自身のgalleryを整理し、元Mingの復元を確認した。
+
+次の校正比較用に、既存matrixのIdeogram→Qwen 2.1係数をCPUでpreflightした。
+校正40項目の現在のrating:generalとpath一致、held-out項目の除外をAPIで再確認した。
+matrixに用いたsource VAEのconfigが公式原本と一致し、重みSHA
+`925ce3a08e8759174667f5e89384ba2b54dd81a87b7379dadb68a1a87b70b052`も公式配布値と一致した。
+縮小率・channel・正規化・packing契約とkernel shapeが交換checkpointと一致し、係数は有限。
+画像の再読込・再encodeは行っていない。このpreflightは係数の再利用条件の確認であり、
+40枚係数での生成品質やnoise分布補正の成功はまだ未検証。
 
 LTX公式nativeと交換済みFull step 5を、同一prompt/seed 63・384px・73frame・
 24fps・30step・CFG3で比較した。nativeは赤い玩具車を認識できるposterを生成したが、

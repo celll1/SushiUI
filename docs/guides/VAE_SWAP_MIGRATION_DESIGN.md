@@ -22,7 +22,7 @@ CPUのregistry宣言・resume・wave3 resume回帰は17件通過し、CUDA未初
 | FLUX.2 | 8→16 | step2、optimizer173、head更新 | 公式klein-base-4B。別サイズ全てのGPU検証を意味しない |
 | LTX-2.3 | 32→16（H3 codec） | step5まで継続 | 縮小率変更を確認する試験であり、token削減の向きではない。動画品質は深追いしない |
 | MiniMax-H3 | 16→32（LTX codec） | step2、optimizer638 | 動画品質は深追いしない |
-| ACE-Step | 時間hop1920→1920 | step2、optimizer480、bridge4件更新 | ScragVAEは別実重みだが同hop。異なるhopの実codec検証は未了 |
+| ACE-Step | 時間hop1920→1920 | step2、optimizer480、bridge4件更新 | 同hop交換はtokenを減らさない。所有者指定により別codec探索・追加検証を打ち切り |
 | SenseNova U1.5 | pixel 1→16 | step2、head更新 | patch32→交換側実効stride32。VAE交換だけでtoken削減とは言えない |
 | SenseNova SDXL Chimera | 8→16 | step2、optimizer1688、bridge4件更新 | 公式由来warm-start、conditioning未整列。生成はノイズ状で概形保持未確認 |
 | YuE2 | 対象外 | planner-onlyの明示拒否 | plannerに交換対象の学習codecがない。未配線の代用として扱わない |
@@ -31,12 +31,14 @@ optimizer件数は各試験の有効状態数であり、全parameterの勾配�
 全decoder/encoder・全variantでの収束、または全組合せの速度改善をこの表から推論しない。
 初期画質の比較・API生成・固定buffer一致の証拠は以下の各実験記録を参照する。
 所有者指定によりLensの公式全重み試験は完了条件から除外した。
-ACEの異なるhopの実codec試験は未実施で、交換先の選定も確定していない。
+所有者指定によりACEの別codec探索・異なるhopの追加実重み試験も完了条件から除外した。
+既存の交換配線・保存復元・U-net併用の検証結果は保持するが、同hop交換を軽量化として推奨しない。
 
 ACEの追加codec候補 `stabilityai/stable-audio-open-1.0` と
 `stabilityai/stable-audio-open-small` は、2026-10-07 12:23 UTCの取得で
 現在のHub認証では設定ファイルがHTTP403 / GatedRepoErrorだった。
-利用許諾済みの重みへのアクセスが必要であり、同codecを別名にして縮小率変更の証拠にはしない。
+これは打ち切った探索の記録であり、追加の取得・アクセス情報を所有者へ要求しない。
+同codecを別名にして縮小率変更の証拠にはしない。
 現行ACE契約は48kHz stereoを要求するため、異なるsample rateのcodecでは実波形の
 resamplingと時間座標の換算も必要になる。sample rate宣言の書換えだけでは対応しない。
 
@@ -86,7 +88,7 @@ private/権限不足と配布停止を区別できないため「モデル不存
 ACE-Stepは公式1.5由来のDiT/TE/元codecが手元にある。交換契約を満たす別codecは下記ScragVAEを
 確認・取得した。これは作者配布のcommunity fine-tuned VAEで、ACE-Step公式ベースVAEとは区別する。
 元codecの同一重みを別名で読んでも交換検証にはしない。Chimeraは公式conditioning bootstrapの学習更新まで確認済みだが、
-交換後のFull検証は以下のwarm-start経路で進める。未取得/未検証の条件が残る限り全対応は完了としない。
+交換後のFull検証は以下のwarm-start経路で進める。除外されたLens/ACEの追加試験は完了の阻害条件にしない。
 
 #### ACE-Stepの実codec交換先の確定
 

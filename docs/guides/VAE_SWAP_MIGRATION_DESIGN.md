@@ -108,7 +108,19 @@ preflightの正重みRGBA教師4枚と参照2枚の計6枚が実校正に入り�
 525 optimizer stateを新規0で復元し、再開では再校正されない。
 固定buffer 9個（Gaussian 5個を含む）はbit一致し、学習対象の入出力projection 4個は
 再開後の更新で変化する。実ログ・係数比較は `local/verification/ming_official_layer_rgba_full/`
-に保持する。合成画像による機能検証であり、修正後の実画像画質検証はまだ残る。
+に保持する。合成画像による機能検証であり、実画像の画質受入とは分ける。
+
+続いてheld-out general評価画像を除いた別のgeneral 8枚を、同じ公式未交換Layer modelで
+分解した。正重みteacher layer 16枚＋不透明参照8枚を修正後の校正選択経路へ渡し、
+512px・12step・CFG2・seed63/64の交換単独/2段U-net併用を比較した。
+通常生成の既存4結果は再利用した。不透明40枚との比較は校正画像数も異なる。
+交換単独は人物の概形を残し、seed63 layer1のalpha<16の割合は9.91%、
+seed64 layer2は98.39%となり、以前の黒っぽい背景は一部改善した。
+ただしseed63は両layerに人物が重複し、seed64の小物も復元されず、分離の画質受入は未達。
+U-net条件は交換前から概形を失い、新校正でもほぼ単色のまま。交換単独10.00/9.98秒、
+併用8.00/8.02秒で、target tokenは768、peak allocatedは22.30GiBだった。
+比較図と全結果は `local/verification/ming_layer_rgba_quality/` に保持する。
+この比較の係数は検証用であり、本番へ固定配布しない。公式原本は変更せず、生成modelは復帰済み。
 
 GPU検証で、block swap初期化時に常駐層だけがCUDAへ移り、外側IOがCPUに残る配置を
 校正前のdevice確認が拒否する不具合を修正した。配置の判定からconductor所有の全main層を除き、

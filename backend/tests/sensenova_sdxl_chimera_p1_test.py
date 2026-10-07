@@ -88,7 +88,7 @@ def _tiny_unet() -> UNet2DConditionModel:
     )
 
 
-def _tiny_vae() -> tuple[AutoencoderKL, ResolvedVAE]:
+def _tiny_vae(*, force_upcast=True) -> tuple[AutoencoderKL, ResolvedVAE]:
     module = AutoencoderKL(
         in_channels=3,
         out_channels=3,
@@ -100,6 +100,7 @@ def _tiny_vae() -> tuple[AutoencoderKL, ResolvedVAE]:
         norm_num_groups=4,
         sample_size=32,
         scaling_factor=0.13025,
+        force_upcast=force_upcast,
     )
     state = {name: tensor.detach().clone() for name, tensor in module.state_dict().items()}
     resolved = ResolvedVAE(
@@ -148,13 +149,13 @@ def _write_donor_marker(path: Path) -> None:
     save_file({"model.diffusion_model.marker": torch.zeros(1)}, str(path))
 
 
-def _build(tmp_path: Path, *, initialization: str = "scratch"):
+def _build(tmp_path: Path, *, initialization: str = "scratch", vae_force_upcast=True):
     und = tmp_path / "sensenova.safetensors"
     donor_path = tmp_path / "sdxl.safetensors"
     _write_sensenova_source(und)
     _write_donor_marker(donor_path)
     donor = _tiny_unet()
-    _module, vae = _tiny_vae()
+    _module, vae = _tiny_vae(force_upcast=vae_force_upcast)
     artifact = tmp_path / "chimera"
     result = build_chimera_artifact_from_components(
         str(artifact),
@@ -203,14 +204,15 @@ def test_checkpoint_preserves_pinned_vae_across_runtime_dtype_cast(tmp_path):
     assert content_hash_for_state_dict(reloaded["vae"].state_dict()) == vae.content_hash
 
 
-def test_runtime_can_keep_bf16_backbone_and_fp16_vae(tmp_path):
-    _und, _donor, _vae, result = _build(tmp_path)
+@pytest.mark.parametrize("force_upcast", [True, False])
+def test_runtime_vae_dtype_respects_force_upcast(tmp_path, force_upcast):
+    _und, _donor, _vae, result = _build(tmp_path, vae_force_upcast=force_upcast)
     loaded = load_chimera_artifact(
         result["directory"], torch_dtype=torch.bfloat16, vae_dtype=torch.float16
     )
     assert next(loaded["unet"].parameters()).dtype == torch.bfloat16
     assert next(loaded["condition_bridge"].parameters()).dtype == torch.bfloat16
-    assert next(loaded["vae"].parameters()).dtype == torch.float16
+    assert next(loaded["vae"].parameters()).dtype == (torch.float32 if force_upcast else torch.float16)
 
 
 def test_understanding_relocation_same_hash_and_mutation_refusal(tmp_path):

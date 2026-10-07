@@ -17392,6 +17392,13 @@ class BaseTrainer(ABC):
         # Metrics are append-only across resume sessions. A rollback (for example,
         # 10k -> 8k) must retain the abandoned 8k-10k branch for comparison.
 
+        # Calibrate before step-0 sampling and the parameter-tracker baseline.
+        self._vae_alignment_progress_callback = progress_callback
+        try:
+            self.arch.calibrate_before_training(self, datasets, bucket_manager)
+        finally:
+            del self._vae_alignment_progress_callback
+
         self._param_tracker: Optional[ParameterChangeTracker] = None
         if param_tracking:
             tracked_components: Dict[str, torch.nn.Module] = {}
@@ -17642,13 +17649,6 @@ class BaseTrainer(ABC):
         self._partial_step_taint = None
         self._setup_grad_spike_log()
         self._warn_fused_clip_ignored()
-
-        # Needs the datasets, so it cannot live in load_components.
-        self._vae_alignment_progress_callback = progress_callback
-        try:
-            self.arch.calibrate_before_training(self, datasets, bucket_manager)
-        finally:
-            del self._vae_alignment_progress_callback
 
         try:
             # resume_seq: 0 for a fresh run, one past the highest recorded seq when

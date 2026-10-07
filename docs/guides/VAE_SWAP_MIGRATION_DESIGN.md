@@ -28,6 +28,11 @@ YuE2はplanner-onlyのため交換対象外。未宣言archのautoをzeroへ暗�
 `vae_swap_registry_contract_test.py`がARCH_REGISTRYとの一致を検証するため、
 今後のarch追加では初期化/除外の宣言も必須になる。これは公式重みのGPU検証を代替しない。
 
+APIのVAE swap advisoryも、Anima/LTX/Ideogram/SenseNovaの公式Full更新・再開記録に合わせる。
+有限な更新・保存復元と、収束/画質回復・長期throughputの未検証を分けて表示する。
+frontendの`trainingFeatureAdvisory`→Full設定欄のreason表示を静的確認した。
+advisoryは設定の非表示/拒否には使わず、既存のmethod・互換性gateは維持する。
+
 #### 優先対象の現在の証拠と残作業
 
 | 対象 | 実重みの機能検証記録 | 次に確認すること |

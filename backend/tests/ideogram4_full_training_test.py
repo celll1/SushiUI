@@ -82,3 +82,18 @@ def test_full_dispatch_selects_ideogram_adapter_instead_of_sd_fallthrough():
     trainer.log_prefix="[CPU]"
     FullParameterTrainer._create_adapter(trainer)
     assert isinstance(trainer.adapter,Ideogram4FullParameterAdapter)
+
+
+@pytest.mark.parametrize("suffix", [".safetensors", ".safetensors.index.json"])
+def test_checkpoint_resume_routes_both_layouts_to_native_loader(monkeypatch,suffix):
+    from core.model_loader import ModelLoader
+    from core.training.base_trainer import BaseTrainer
+    from core.training.ops import ideogram4_ops
+    path = "saved_ideogram"+suffix
+    monkeypatch.setattr(ModelLoader,"detect_model_type",lambda candidate:"ideogram4")
+    seen = []
+    monkeypatch.setattr(ideogram4_ops,"load_components",lambda trainer:seen.append(trainer.model_path))
+    trainer = SimpleNamespace(model_path="original_companion")
+    BaseTrainer._load_checkpoint_as_base(trainer,path)
+    assert seen == [path]
+    assert trainer.is_ideogram4 and not trainer.is_sdxl

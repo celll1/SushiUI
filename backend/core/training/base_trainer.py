@@ -4479,6 +4479,12 @@ class BaseTrainer(ABC):
         self.is_yue2 = (model_type == "yue2")
         self.is_sdxl = False
 
+        if self.is_ideogram4:
+            self.model_path = checkpoint_path
+            from core.training.ops import ideogram4_ops
+            ideogram4_ops.load_components(self)
+            return
+
         if self.is_ming_image_01:
             self.model_path = checkpoint_path
             from core.training.ops import ming_image_01_ops
@@ -19287,9 +19293,9 @@ class BaseTrainer(ABC):
                                         print(f"{self.log_prefix}   Regenerating latent...")
                                         latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                                 else:
-                                    # Lens: [1, latent_h*latent_w, C*4]; C is 32
-                                    # unless this run swapped its VAE.
-                                    expected_seq_len = (height // 16) * (width // 16)
+                                    # Lens/Ideogram pack 2x2 cells from the active codec.
+                                    latent_stride = self.wiring.vae_scale_factor * 2
+                                    expected_seq_len = (height // latent_stride) * (width // latent_stride)
                                     expected_width = 4 * int(getattr(
                                         getattr(self, "wiring", None),
                                         "latent_channels", 0) or 32)
@@ -20382,12 +20388,10 @@ class BaseTrainer(ABC):
                                 active_ids=_active_census_ids,
                             )
 
-                        # Lens: pass latent spatial dims so train_step_lens can build img_shapes
-                        # correctly for non-square resolutions.  width/height from batch loop.
+                        # Packed models need the exchange codec's grid, including non-square batches.
                         batch_lens_latent_shape = None
                         if (self.is_lens or self.is_ideogram4 or self.is_krea2 or self.is_qwen_image_21) and width and height:
-                            latent_stride = (self.wiring.vae_scale_factor * (1 if self.is_qwen_image_21 else 2)
-                                             if self.is_qwen_image_21 or self.is_krea2 or self.is_lens else 16)
+                            latent_stride = self.wiring.vae_scale_factor * (1 if self.is_qwen_image_21 else 2)
                             batch_lens_latent_shape = (height // latent_stride, width // latent_stride)
 
                         self._collect_concept_sample_loss = (

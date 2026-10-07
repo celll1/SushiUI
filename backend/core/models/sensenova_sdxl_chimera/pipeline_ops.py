@@ -1353,7 +1353,11 @@ def decode_latents(
             vae.to(device=decode_device)
         latents = latents.to(device=decode_device, dtype=vae_dtype)
         with torch.inference_mode():
+            if not torch.isfinite(latents).all():
+                raise ValueError("Chimera VAE decode received non-finite latents")
             decoded = vae.decode(latents / scaling + shift, return_dict=False)[0]
+            if not torch.isfinite(decoded).all():
+                raise ValueError("Chimera VAE decode produced non-finite pixels")
             pixels = (decoded.float() / 2.0 + 0.5).clamp(0, 1)
             array = (
                 pixels[0].permute(1, 2, 0).mul(255).round().byte().cpu().numpy()

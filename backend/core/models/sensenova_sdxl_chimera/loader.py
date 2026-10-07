@@ -149,6 +149,8 @@ def load_chimera_artifact(
         unet.to(dtype=torch_dtype)
         bridge.to(dtype=torch_dtype)
     effective_vae_dtype = vae_dtype if vae_dtype is not None else torch_dtype
+    if effective_vae_dtype == torch.float16 and getattr(vae.config, "force_upcast", False):
+        effective_vae_dtype = torch.float32
     if effective_vae_dtype is not None:
         vae.to(dtype=effective_vae_dtype)
     for module in (unet, bridge, vae):

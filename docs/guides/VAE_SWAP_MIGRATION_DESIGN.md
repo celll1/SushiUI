@@ -171,6 +171,21 @@ vae_struct_native=false・vae_identity_native=false・Qwen 2.1 provenanceを確�
 frontend build/type-checkは所有者検証のまま。
 成果物・JSON・再現scriptはignored `local/verification/chimera_official_swap_v4/`に保持する。
 
+交換前の同V4 warm-startを同prompt・256px・4step・CFG1・seed63で生成すると、
+旧APIは全面黒PNGをHTTP200で返した。Chimeraのdecodeにlatent/pixelの有限値検出を追加して
+再実行したところ、latentは有限だがVAE出力が非有限であることを実GPUで確認した。
+生成入口のFP16指定に対し、元SDXL codecの`force_upcast=true`をloaderが尊重していなかった。
+FP16要求かつforce_upcast有効のcodecをFP32で保持し、安全なFP16 codecは変更しない。
+修正後は同じnative生成がHTTP200・有限値検出通過となり、全面黒は解消した。
+出力は色のあるノイズ状で、promptの概形は確認できない。交換後の淡いノイズ画像と比較しても、
+未整列のnativeに意味のある概形がないため、VAE交換の概形保持を評価できる比較元ではない。
+nativeは0更新、交換済み成果物は2更新であり、等しい学習重みの厳密な比較でもない。
+新規7件を含むCPU45件が通過（既存条件による4 skip）、変更ファイルのcompile・実importも
+CUDA未初期化で通過した。PNGのfinite判定だけをVAEの有限性の証拠にはしない。
+失敗応答・修正後native生成・比較画像は同作業フォルダの`native_*`に保持する。
+保存済み交換step2のAPI再読込・同条件生成もHTTP200となり、latent/pixelの有限値検出を
+通過した。64ch/16x・Qwen出所・両native=falseのモデル情報も保持し、元Mingを復元した。
+
 #### 優先対象の現在の証拠と残作業
 
 | 対象 | 実重みの機能検証記録 | 次に確認すること |

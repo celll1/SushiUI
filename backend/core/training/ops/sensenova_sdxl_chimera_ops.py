@@ -335,6 +335,14 @@ def encode_prompt(trainer, prompt: str, *, requires_grad: bool = False) -> tuple
             "teacher_hidden": teacher_hidden,
             "teacher_pooled": teacher_pooled,
         })
+        masks = []
+        for tokenizer in (getattr(teacher, "tokenizer", None), getattr(teacher, "tokenizer_2", None)):
+            if tokenizer is not None:
+                encoded = tokenizer(prompt, padding="max_length", truncation=True,
+                    max_length=teacher_hidden.shape[1], return_tensors="pt")
+                masks.append(encoded["attention_mask"].bool())
+        if masks:
+            auxiliary["teacher_attention_mask"] = torch.stack(masks).any(0).to(device)
     return output.encoder_hidden_states, auxiliary
 
 
@@ -373,10 +381,24 @@ def bridge_alignment_loss(trainer, student: torch.Tensor, auxiliary: dict) -> tu
     teacher = auxiliary["teacher_hidden"].to(student)
     student_pooled = auxiliary["pooled_text_embeds"].to(student)
     teacher_pooled = auxiliary["teacher_pooled"].to(student)
-    hidden_mse = F.mse_loss(F.normalize(student.float(), dim=-1), F.normalize(teacher.float(), dim=-1))
+    mask = auxiliary.get("teacher_attention_mask")
+    if mask is not None and (mask.dtype != torch.bool or mask.shape != student.shape[:2]):
+        raise ValueError("Chimera teacher mask must be boolean [batch, teacher tokens]")
+    weights = None if mask is None else mask.to(device=student.device, dtype=torch.float32)
+    count = None if weights is None else weights.sum()
+    if count is not None and not bool(count > 0):
+        raise ValueError("Chimera teacher mask contains no valid tokens")
+    def token_mean(value):
+        if mask is None:
+            return value.mean()
+        return (value*weights).sum()/count
+    normalized_student, normalized_teacher = F.normalize(student.float(), dim=-1), F.normalize(teacher.float(), dim=-1)
+    hidden_mse = (F.mse_loss(normalized_student, normalized_teacher) if mask is None else
+                  token_mean((normalized_student-normalized_teacher).square().mean(-1)))
     student_rms = student.float().square().mean(dim=-1).sqrt()
     teacher_rms = teacher.float().square().mean(dim=-1).sqrt()
-    rms_mse = F.mse_loss(student_rms, teacher_rms)
+    rms_mse = (F.mse_loss(student_rms, teacher_rms) if mask is None else
+               token_mean((student_rms-teacher_rms).square()))
     pooled_mse = F.mse_loss(student_pooled.float(), teacher_pooled.float())
     config = getattr(trainer, "config", None) or {}
     loss = (
@@ -388,7 +410,7 @@ def bridge_alignment_loss(trainer, student: torch.Tensor, auxiliary: dict) -> tu
         "hidden_mse": hidden_mse.detach(),
         "hidden_rms_mse": rms_mse.detach(),
         "pooled_mse": pooled_mse.detach(),
-        "hidden_cosine": F.cosine_similarity(student.float(), teacher.float(), dim=-1).mean().detach(),
+        "hidden_cosine": token_mean(F.cosine_similarity(student.float(), teacher.float(), dim=-1)).detach(),
         "pooled_cosine": F.cosine_similarity(student_pooled.float(), teacher_pooled.float(), dim=-1).mean().detach(),
     }
     return loss, metrics

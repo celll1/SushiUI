@@ -123,6 +123,17 @@ def test_managed_storage_never_receives_device_transfer(monkeypatch):
     assert set(calls) == {value.data_ptr() for value in (*model.layers[0].parameters(), *model.embedding.parameters())}
 
 
+def test_initial_resident_blocks_do_not_determine_outer_execution_device():
+    model = torch.nn.Module()
+    model.layers = torch.nn.ModuleList([torch.nn.Linear(2, 2, device="meta"), torch.nn.Linear(2, 2)])
+    model.embedding = torch.nn.Linear(2, 2)
+    model._layer_offload_conductor = SimpleNamespace(layers=model.layers, swappable=(1,))
+    assert execution_device(model).type == "cpu"
+    model.extra = torch.nn.Linear(2, 2, device="meta")
+    with pytest.raises(ValueError, match="one unmanaged execution device"):
+        execution_device(model)
+
+
 @pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
 def test_native_preview_and_bundle_restore_preserve_master_storage(tmp_path, monkeypatch, profile):
     from PIL import Image

@@ -141,13 +141,17 @@ def restore(model, artifact, dtype):
 
 
 def load_saved_vae(directory, declaration, dtype):
+    from dataclasses import replace
     from core.models.common.vae_source import resolve_vae_source
     resolved = resolve_vae_source(f"file:{directory}", load_weights=True)
     if resolved.latent_channels != declaration["new_channels"] or resolved.scale_factor != declaration["new_scale"]:
         raise ValueError("Saved target VAE disagrees with alignment geometry")
     if (resolved.norm, resolved.norm_pack, resolved.ndim) != (declaration["norm"], declaration["norm_pack"], declaration["ndim"]):
         raise ValueError("Saved target VAE disagrees with alignment normalization/frame layout")
-    return NormalizedFrameVAE(resolved.load_module(torch_dtype=dtype), declaration)
+    vae = NormalizedFrameVAE(resolved.load_module(torch_dtype=dtype), declaration)
+    vae._sushi_vae_identity = replace(resolved, state_dict=None, identity_native=False,
+        struct_native=False, provenance=declaration["source"])
+    return vae
 
 
 def configure_swap(trainer):

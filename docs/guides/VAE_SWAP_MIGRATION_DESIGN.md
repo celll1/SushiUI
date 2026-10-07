@@ -21,6 +21,13 @@ txt2img/img2img/inpaintの実draw一致、例外後のscope解除を含むCPU回
 変更backendのcompile/実importはCUDA未初期化で通過。frontendのpolicy説明と既存API型・
 defaults・編集保存経路は静的確認のみで、owner build/typecheckは未実施。
 公式sourceからのChimera bootstrapのFull学習・画質検証はまだ未了。
+取得済みのSenseNova原本revision `9feeeab8a2792514d109cd34589342a2cc1d4ab2`と
+SDXL原本revision `462165984030d82259a11f4367a4eed129e94a7b`から、公開builderで
+transplant bootstrapを構築し、原本content hashと全artifact headerのpreflightを通過した。
+U-Netは2,567,463,684 parameter。CPU構築とpreflightは147.8秒、CUDA未初期化。
+ignored `local/verification/chimera_official/bootstrap`に保持する。条件付けbridgeは未学習で、
+transplantのdiffusion学習はheld-out alignmentを満たすまで拒否される。
+このbootstrapの構築成功を、swap Full学習や生成画質の受け入れに置き換えない。
 
 公式Ming Designの固定revision `208087ada1486931692c1896f38d4cd16ff3df82` の全BF16
 componentを取得し、合成画像2枚で実Full trainerの1更新→保存→再開→2更新を確認した。

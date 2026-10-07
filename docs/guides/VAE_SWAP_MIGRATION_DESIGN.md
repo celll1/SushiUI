@@ -52,6 +52,15 @@ hidden normalized MSE、RMS MSE、hidden cosineを実tokenだけで集計する�
 paddingだけの一致でhidden cosineが良く見えない独立参照、paddingへのzero gradient、
 producer/tokenizer unionとcollateを含むChimera CPU回帰221件が通過した（14 skip）。
 変更moduleのcompile/実importはCUDA未初期化で通過。公開API parameter/defaultは変更していない。
+公式UnderstandingとSDXL CLIP teacherで、合成caption 48 train/12 validation/12 held-outを
+事前固定し、固定seed・1200更新のbridge検証を実施した。実画像は使わない。
+teacher再encodeの最大差は0、BF16 autocastのhidden/pooled NRMSE上限は0.002465/0.005170。
+loss係数は学習captionだけの各項の初期平均から1.5214e-5/0.0010979と測定して固定した。
+最終held-outのBF16 hidden cosine平均0.3371・pooled平均0.6696、hidden RMS relative上限0.1421、
+pooled NRMSE上限0.7992だった。FP32でもほぼ同じで、dtype差ではなく未見captionへのalignmentが未達。
+事前のcosine平均0.9・最小0.8、hidden RMS 0.15、pooled NRMSE 0.25の全基準は満たさず、
+checkpointはunalignedを維持する。少数templateのloss減少でtransplantの学習gateを解除しない。
+追加のconditioning学習・held-out受入、VAE交換後の公式Chimera Full学習と画質は残る。
 
 公式Ming Designの固定revision `208087ada1486931692c1896f38d4cd16ff3df82` の全BF16
 componentを取得し、合成画像2枚で実Full trainerの1更新→保存→再開→2更新を確認した。

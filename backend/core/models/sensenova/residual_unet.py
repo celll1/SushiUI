@@ -257,16 +257,19 @@ def inspect_artifact(path):
     from pathlib import Path
     from safetensors import safe_open
     from core.models.common.single_file_format import parse_component_metadata
-    from .loader import sensenova_checkpoint_metadata, SENSENOVA_REFINER_DELTA_KIND
+    from .loader import sensenova_checkpoint_metadata, SENSENOVA_REFINER_DELTA_KIND, _load_sensenova_config
     source = Path(path)
     if not source.is_file() and Path(str(source) + ".index.json").is_file():
         source = Path(str(source) + ".index.json")
     topology = preflight_checkpoint(source)
     metadata = sensenova_checkpoint_metadata(str(source))
     declaration = metadata.get("sensenova_config")
-    if not isinstance(declaration, str) or not declaration.strip():
-        raise ValueError("SenseNova inspection requires embedded native config")
-    config = json.loads(declaration)
+    if declaration is None:
+        _, config = _load_sensenova_config(metadata, str(source.parent))
+    else:
+        if not isinstance(declaration, str) or not declaration.strip():
+            raise ValueError("SenseNova inspection requires native config JSON")
+        config = json.loads(declaration)
     if (not isinstance(config, dict) or not isinstance(config.get("llm_config"), dict)
             or type(config["llm_config"].get("num_hidden_layers")) is not int
             or "architectures" not in config["llm_config"]):
@@ -286,12 +289,13 @@ def inspect_artifact(path):
     else:
         with safe_open(str(source), framework="pt", device="cpu") as handle:
             keys = list(handle.keys())
-    prefix = "transformer.language_model.model.layers."
+    key_prefix = "transformer." if any(key.startswith("transformer.") for key in keys) else ""
+    prefix = key_prefix + "language_model.model.layers."
     blocks = {int(match.group(1)) for key in keys
               if (match := re.match(re.escape(prefix) + r"(\d+)\.", key))}
     count = resolved["llm_config"]["num_hidden_layers"]
     if (blocks != set(range(count)) or not any(
-            key.startswith("transformer.fm_modules.fm_head.") for key in keys) or not any(
+            key.startswith(key_prefix + "fm_modules.fm_head.") for key in keys) or not any(
             key.endswith("self_attn.q_proj_mot_gen.weight") for key in keys)):
         raise ValueError("SenseNova inspection requires complete native blocks and generation head")
     vae = parse_component_metadata(metadata).get("vae") or {}

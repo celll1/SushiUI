@@ -61,15 +61,26 @@ validated. The common transfer primitive's completed evidence and its
 architecture-level boundary are recorded in
 `docs/audits/UNIFIED_OFFLOAD_TRANSFER_VALIDATION_2026-09.md`.
 
-`sensenova_full_finetune_save_format: int8` is the only export a NEW run may be
-pointed at as its base. A run resuming its OWN checkpoint is a narrower
+New runs accept complete native BF16 decoder weights, or the plain-int8 base
+for full fine-tuning (LoRA also accepts ConvRot-int8). A native BF16 base keeps
+all 588 decoder Linears as Parameters without quantization or dequantization;
+every target must be present and BF16. Official bare-key shard indices require
+a complete model state and their sibling config/tokenizer. Mixed/partial bases
+remain refused. `mixed` export of an all-floating model becomes lossless `bf16`,
+including a single-half run whose frozen half was originally BF16.
+Explicit `int8` export quantizes floating trained and frozen decoder weights;
+it leaves the live BF16 model unchanged and remains a lossy export.
+A run resuming its OWN checkpoint is a narrower
 question and is answered separately by `sensenova_ops.accept_resume_shaped_base`,
 which also accepts `mixed` (one trained half plus one `Int8Linear` half) and
-`bf16` (both halves trained), losslessly. It decides on a class census of the
+`bf16`, losslessly, verifying a single-half run's frozen weights against its base.
+It decides on a class census of the
 constructed tree; the checkpoint's metadata is required and required to agree,
 but can only narrow acceptance. A resume has actually been run for the
-`gen`/`mixed` pair; `both`/`bf16` reaching the same acceptance is an inference
-from the same write/read path, not a measured run.
+`gen`/`mixed` pair and, with the official native BF16 base, `gen`/`bf16` plus
+Qwen 2.1 VAE replacement and the default two-stage U-net. The latter restored
+567 optimizer tensors with none starting fresh and advanced step 1 to step 2.
+`both`/`bf16` reaching the same acceptance remains an inference, not a measured run.
 
 ## Packed batches (batch_size > 1)
 

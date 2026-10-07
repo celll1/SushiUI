@@ -279,16 +279,14 @@ def test_an_int8_tree_is_left_to_the_shipped_gate(tmp_path):
         branch="gen") is None
 
 
-def test_a_float_tree_that_is_not_a_resume_is_left_to_the_shipped_gate(tmp_path):
-    """Handed over as ``model_path``, a bf16 file is still not a base."""
+def test_a_complete_bf16_tree_is_a_native_training_base(tmp_path):
     tree = _MoTTree(gen_factory=_float, und_factory=_float)
     not_resuming = SimpleNamespace(
         model_path=str(tmp_path / "some_release.safetensors"),
         output_dir=tmp_path, run_name=RUN_NAME, resume_from_checkpoint=None)
     assert accept_resume_shaped_base(
         not_resuming, tree, _metadata("both", "bf16"), branch="both") is None
-    with pytest.raises(RuntimeError, match="unquantized bf16 base is refused"):
-        _assert_supported_quantized_training_base(tree, training_method="full")
+    assert _assert_supported_quantized_training_base(tree, training_method="full") == "bf16"
 
 
 def test_a_refiner_distribution_is_a_portable_single_half_training_base(tmp_path):
@@ -659,13 +657,12 @@ def test_load_components_still_materializes_an_int8_base(tmp_path):
     assert trainer.sensenova_resumed_save_format is None
 
 
-def test_load_components_still_refuses_a_bf16_model_path(tmp_path):
-    """The shipped base gate, untouched, on the route that is not a resume."""
+def test_load_components_keeps_native_bf16_parameters_without_dequantization(tmp_path):
     tree = _MoTTree(gen_factory=_float, und_factory=_float)
     trainer = _load_components_trainer(
         tmp_path, "someone_elses_bf16.safetensors", resume=None, branch="both")
-    with pytest.raises(RuntimeError, match="unquantized bf16 base is refused"):
-        _run_load_components(trainer, tree, {})
+    materialize = _run_load_components(trainer, tree, {})
+    materialize.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +674,8 @@ def test_the_base_refusal_separates_base_substitution_from_resume():
     text = _own_save_format_remedy(
         {"sensenova_save_format": "mixed", "sensenova_trained_branch": "gen"})
     assert "sensenova_full_finetune_save_format='mixed'" in text
-    assert "only 'int8'" in text
+    assert "all native BF16 Parameters" in text
+    assert "mixed floating/int8 half" in text
     assert "accept_resume_shaped_base" in text
     assert "RESUMING the run" in text
 

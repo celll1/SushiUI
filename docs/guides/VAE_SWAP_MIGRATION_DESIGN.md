@@ -245,9 +245,35 @@ directory復元追加後、dense/U-net・single/shardedと宣言不一致拒否�
 標準2段U-net・64ch/16倍codec・固定patch係数をdirectoryから復元した。
 全stateと保存前後のGPU予測はbit一致した。検証用DiT重み約492MiBは成功後に削除した。
 
-SenseNovaの次の公式全重み検証に向けて、配布元`sensenova/SenseNova-U1.5-8B-MoT`の
-revision `9feeeab8a2792514d109cd34589342a2cc1d4ab2`、BF16の8 shard約35GBを確認した。
-取得とSHA256検証を進めている段階であり、公式Full学習・画質の合格とはしない。
+SenseNovaは配布元`sensenova/SenseNova-U1.5-8B-MoT`のrevision
+`9feeeab8a2792514d109cd34589342a2cc1d4ab2`、BF16の8 shardを取得し、サイズとSHA256を照合した。
+全1,116 tensorのdtype/shapeをnative treeと照合し、bare-key index＋sibling config/tokenizerの
+読込を追加した。native BF16の588 decoder Linearを量子化せずFull学習へ渡し、Qwen 2.1 VAE
+64ch/16x＋標準2段U-netとの併用で1更新→9 shard保存→再開→2更新を確認した。
+再開はoptimizer 567 tensorを復元、0 fresh、元BF16の凍結understanding halfをtensor一致で検証した。
+保存済みbundleの公開API読込・256px/2step生成も成功し、元Ming Layer選択へ戻してAPI再起動後に解放を確認した。
+CPU回帰243件＋12 subtest、compile・CUDA未初期化の実import、OpenAPI構文が通過した。
+明示int8 exportはnative BF16の学習・凍結両halfを量子化し、live weightを変更しないこともCPU検証した。
+
+公式全重みの512px/50step/CFG4、狐・果物・車×2seedを、通常・標準U-net・交換・併用の4条件、
+全24枚で比較した。通常6枚は対象を識別できたが、native U-netは強いぼけと縞、交換denseは
+黒白の格子がpromptをまたいで優勢、併用は暗い色block/縞となり、画質は未受入。
+生成全体の6例平均は21.11/21.63/18.21/17.84秒、ピークallocatedは32.96/32.96/34.13/34.13GiBだった。
+初回準備・caption・decodeを含み、通常とU-netの初回費用が異なるため、attention単体の高速化率とはしない。
+比較図・係数・ログはignored `local/verification/sensenova_official_quality`に保持し、画像をgitへ含めない。
+検証用step1/2 checkpointとoptimizer計66.67GiBは、alignment係数・metadata・state・API結果を保持して整理した。
+公式元重みは保持する。学習/復元の機能受入と画質未達を分け、pixel入力Convのnoise共分散と
+resolution noise scaleを次の候補検証対象とする。
+
+追加の入力Conv noise共分散補正を公式全重みで試作した。元の1024×768投影の共分散から
+交換先64ch×2×2で保持可能な上位256成分を取り、calibrated bridge＋縮小したConvが与える
+noise応答との差を入力embeddingで補正する。元covariance全体の完全復元ではない。
+target noise scaleを維持して元noise gainを補う候補と、resolution noise scaleを元pixelモデル相当へ
+戻す候補を、各3prompt×2seedで比較した。両候補の全12枚で狐と青い本、赤いリンゴと黄色い洋梨、
+青い車を識別できた。ぼけ・細部欠落・色/構図の差が残り、追加学習していない。
+これはU-netなしの候補試験に限る概形回復であり、本番配線・save/resume・U-net併用の受入ではない。
+校正は既存general40枚の係数を再利用し、新しい画像は生成prompt由来のみ。
+比較図は同directoryの`noise_comparison_{63,64}.png`に保持した。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、

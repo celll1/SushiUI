@@ -646,7 +646,7 @@ def encode_prompt(
 
 def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: torch.Tensor, t: torch.Tensor,
                         noise_scale: float, *,
-                        enable_grad: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                        enable_grad: bool = False, exposure_noise=None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Per-step embed construction (patchify -> gen-branch ViT -> +timestep/
     noise-scale embeddings), computed EXACTLY ONCE per step regardless of
     whether CFG needs a cond+uncond pair.
@@ -673,12 +673,15 @@ def _build_step_context(transformer, prefix: SenseNovaPrefix, image_prediction: 
         batch_size = prefix.batch_size
         geometry = gen_geometry(transformer)
         z = transformer.patchify(image_prediction, geometry.patch)
-        from .vae_alignment import input_state
+        from .vae_alignment import input_state, patch_projection_transform
         image_input = transformer.patchify(input_state(transformer, image_prediction, t),
                                            geometry.vit_patch, channel_first=True)
         grid_hw = torch.tensor([[prefix.grid_h, prefix.grid_w]] * batch_size, device=image_prediction.device)
+        transform = patch_projection_transform(transformer, image_prediction, t, noise_scale, exposure_noise)
+        extra = {} if transform is None else dict(patch_projection_transform=transform)
         image_embeds = transformer.extract_feature(
             image_input.view(batch_size * prefix.grid_h * prefix.grid_w, -1), gen_model=True, grid_hw=grid_hw,
+            **extra,
         ).view(batch_size, prefix.token_h * prefix.token_w, -1)
 
         # ``t`` is a scalar at inference; training may pass one value per item
@@ -920,7 +923,8 @@ def _style_capture(
     from .vendor.modeling_qwen3 import Qwen3Attention
 
     ref_z = style_ref_x0 * t + style_eps_ref * (1.0 - t)
-    z_ref, image_embeds_ref, timestep_embeddings_ref = _build_step_context(transformer, prefix, ref_z, t, noise_scale)
+    z_ref, image_embeds_ref, timestep_embeddings_ref = _build_step_context(
+        transformer, prefix, ref_z, t, noise_scale, exposure_noise=style_eps_ref)
     capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
     Qwen3Attention._style_ctx = capture_ctx
     try:
@@ -999,6 +1003,7 @@ def _euler_run(
     style_refs: Optional[Sequence[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
     style_combine_mode: str = "stack",
     cfg_schedule: Optional[dict] = None,
+    exposure_noise: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Shared Euler loop from ``ts[start_idx]`` -> ``t=1`` (clean). ``t`` runs
     forward 0->1 (see module docstring for why this is NOT flux2's direction).
@@ -1077,7 +1082,7 @@ def _euler_run(
             # see _build_step_context's docstring (this was H1: the earlier
             # version recomputed the full ViT feature extraction twice here).
             z, image_embeds, timestep_embeddings = _build_step_context(
-                transformer, prefix, image_prediction, t, noise_scale)
+                transformer, prefix, image_prediction, t, noise_scale, exposure_noise=exposure_noise)
 
             def _combine_branches(v_cond):
                 """This step's CFG branches + blend. Called INSIDE the style-armed
@@ -1263,6 +1268,7 @@ def denoise_loop(
     ts = transformer._apply_time_schedule(ts, prefix.token_h * prefix.token_w, timestep_shift)
     with _t_eps_override(transformer, t_eps):
         return _euler_run(transformer, prefix, x, ts, 0, cfg_scale, cfg_interval, cfg_norm, noise_scale,
+                          exposure_noise=x,
                           progress_callback=progress_callback, step_callback=step_callback,
                           clamp_output=clamp_output,
                           style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
@@ -1323,6 +1329,7 @@ def denoise_loop_img2img(
     x = x0 * ti + noise * (1.0 - ti)
     with _t_eps_override(transformer, t_eps):
         return _euler_run(transformer, prefix, x, ts, start_idx, cfg_scale, cfg_interval, cfg_norm, noise_scale,
+                          exposure_noise=noise,
                           progress_callback=progress_callback, step_callback=step_callback,
                           clamp_output=clamp_output,
                           style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
@@ -1392,6 +1399,7 @@ def denoise_loop_inpaint(
     x = x0 * ti + fixed_noise * (1.0 - ti)
     with _t_eps_override(transformer, t_eps):
         return _euler_run(transformer, prefix, x, ts, start_idx, cfg_scale, cfg_interval, cfg_norm, noise_scale,
+                          exposure_noise=fixed_noise,
                           progress_callback=progress_callback, step_callback=step_callback,
                           mask_latent=mask, init_image=x0, fixed_noise=fixed_noise, clamp_output=clamp_output,
                           style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,

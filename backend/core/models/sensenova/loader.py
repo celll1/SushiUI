@@ -1474,6 +1474,8 @@ def load_sensenova_from_path(
         require_complete=native_source or topology is not None or alignment is not None,
     )
     validate_loaded(model)
+    from .vae_alignment import validate_patch_alignment
+    validate_patch_alignment(model)
     if topology is not None:
         restore_topology(model, topology)
     if "fm_refiner" in model.fm_modules:

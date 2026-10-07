@@ -399,13 +399,16 @@ class NEOChatModel(PreTrainedModel):
             attentions=outputs.attentions,
         )
 
-    def extract_feature(self, pixel_values, gen_model=False, grid_hw=None):
+    def extract_feature(self, pixel_values, gen_model=False, grid_hw=None, patch_projection_transform=None):
         if gen_model:
+            extra = {} if patch_projection_transform is None else dict(patch_projection_transform=patch_projection_transform)
             return self.fm_modules['vision_model_mot_gen'](pixel_values=pixel_values, 
                                  output_hidden_states=False, 
                                  return_dict=True, 
-                                 grid_hw=grid_hw).last_hidden_state
+                                 grid_hw=grid_hw, **extra).last_hidden_state
         else:
+            if patch_projection_transform is not None:
+                raise ValueError("Patch noise correction belongs to the generation tower")
             return self.vision_model(pixel_values=pixel_values, 
                                  output_hidden_states=False, 
                                  return_dict=True, 

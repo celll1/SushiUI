@@ -609,7 +609,8 @@ The unet/joint stage trains both bridges; source and target prediction
 statistics are saved separately. v4 also pins a time-drift loss/integrator
 contract. CPU integration and two GPU Full updates with optimizer restoration
 on an official-source V4 warm-start are verified. Conditioning remains
-unaligned; swapped official-source generation and quality recovery are pending.
+unaligned. API generation from the swapped warm-start is verified, but its
+initial output is noise-like; quality recovery is pending.
 See `VAE_SWAP_MIGRATION_DESIGN.md`.
 
 ### 7.6 SenseNova multimodal route preservation

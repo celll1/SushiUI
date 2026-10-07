@@ -161,7 +161,7 @@ class MiniT2INAGWrapper:
             mm = torch.cat([mask, nag_mask], dim=0)
             self._set_groups(active=True, pos_idx=0, neg_idx=2)
             try:
-                out = self.net(xx, tt, yy, mm)
+                out = self.transformer(xx, tt, yy, mm)
             finally:
                 self._set_groups(active=False)
             return out[0:2]                                       # [cond, uncond]
@@ -174,10 +174,10 @@ class MiniT2INAGWrapper:
             mm = torch.cat([mask, nag_mask], dim=0)
             self._set_groups(active=True, pos_idx=0, neg_idx=1)
             try:
-                out = self.net(xx, tt, yy, mm)
+                out = self.transformer(xx, tt, yy, mm)
             finally:
                 self._set_groups(active=False)
             return out[0:1]
 
         # Unexpected batch size: run without NAG (safety fallback).
-        return self.net(x, t, text, mask)
+        return self.transformer(x, t, text, mask)

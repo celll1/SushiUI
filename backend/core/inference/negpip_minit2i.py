@@ -253,7 +253,7 @@ class MiniT2INegPipWrapper:
             matching yy = cat([text, u_text]) == [pos, uncond].
           * With NAG installed, this IS the NAG wrapper's call target: the NAG wrapper
             builds [pos, uncond, nag_neg] (CFG) or [pos, nag_neg] (no-CFG) and calls
-            self.net(...) through our patched block forward. We defer to it, setting the
+            the model boundary through our patched blocks. We defer to it, setting the
             weight rows for the maximal layout; the NAG forward selects by batch index.
 
         NegPip attaches one signed weight row per text-context element, so v_t is scaled
@@ -287,6 +287,6 @@ class MiniT2INegPipWrapper:
             rows = pos_row.unsqueeze(0)                      # [pos]
         self._set_weights(True, rows)
         try:
-            return self.net(x, t, text, mask)
+            return self.transformer(x, t, text, mask)
         finally:
             self._set_weights(False, None)

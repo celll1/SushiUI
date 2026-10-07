@@ -205,17 +205,37 @@ joint blockとfinal layerがvecを使わないため、この調査では独自�
 private RNGで直交基底を作り、sourceの共分散とcapture時のnoise写像を保存する。
 縮小先のpatch次元が不足する場合は近似rankと共分散誤差を記録し、完全保存と主張しない。
 clean境界・勾配・非正方形格子・保存復元・不正state・global RNG非消費のCPU検証が通過した。
-このmoduleはまだ自動で新規swapへ取り付けない。本番配線には宣言metadata、native/directory保存復元、
-学習の各露出、通常/img2img/inpaintとsingle/multi参照の個別noise、定期sample、
-CFG/NAG/NegPipのbatch展開、cancel/例外後の解除を同じ契約へ接続する必要がある。
+その後、新規MiniT2I pixel→VAE交換へ自動設置し、paired校正完了時に係数を固定する本番配線を追加した。
+宣言metadataの`patch_noise`からsingle-file復元時に同じmoduleを構築し、
+学習の各露出、通常/img2img/inpaintとsingle/multi参照の個別noise、定期sampleの生成loopへ接続した。
+ContextVarのscopeでCFG/NAG/NegPipのbatch展開とcancel/例外後の解除を扱う。
+既存checkpointは宣言がないため従来の演算を維持する。diffusers directory形式の交換artifactは別途未検証。
 
 静的確認で、MiniT2IのNAG/NegPipが外側modelを迂回してraw MMJiTを呼び、
 既存paired_spatial入出力変換を落としていた点を修正した。両wrapperはmodel境界を呼ぶ。
 縮小先channelが元より少ない実tiny modelでCFG有無と両guidance/併用を検証した。
 既存U-net+guidanceの明示的refusalは維持し、例外後もactive flagを解除する。
 compile・CUDA未初期化の実import、新規/既存Gaussian・MiniT2I境界の76件が通過した。
-style参照のraw-net呼出しも別途配線確認が必要であり、guidance全機能の完了とはしない。
+style参照のraw-net呼出しも外側model境界へ変更し、各captureのscopeにその参照noiseを渡す。
+single/multi styleの実tiny forward、metadata復元と学習勾配、3生成mode、例外解除を含む
+65件のCPU回帰と変更backendのcompile・CUDA未初期化の実importが通過した。
 検証終了後はAPI待機/Ming Layer、backend RSS 4.65GiB・空きRAM約58.47GiBだった。
+
+自動設置を含む公式B/16全重みの実Full trainerを合成画像2枚で再検証した。
+1更新→保存→再開→2更新で出力headが更新され、374 optimizer stateを復元した。
+固定patch noise buffer 7個はstep1/2でbit一致し、浮動小数点係数はFP32を保持した。
+保存済みbundleをAPIから読み、64ch・交換VAE・標準2段U-netを復元し、256px/2step生成が成功した。
+これは学習・復元の機能検証であり、追加学習による画質回復の検証ではない。
+今回のFull smoke checkpoint/optimizerだけを削除し、係数・JSON・生成診断と公式元重みは保持した。
+
+本番生成経路でも512px・100step・CFG2.5、3 prompt×2 seedを通常/標準U-net各6枚で比較した。
+保存済みgeneral-only校正係数を再利用し、新たな実画像は使用していない。
+通常swapでは狐/青い本、リンゴ、青い車が概形として読める一方、梨の欠落・構図・細部の崩れが残った。
+標準U-net併用では本の欠落や色塊化が強く、全ケースの概形保持という画質条件は未達である。
+生成全体の平均は通常5.22秒、U-net4.72秒（text encoding・decodeを含むためattention単体の比較ではない）。
+比較図は未追跡の`local/verification/minit2i_official_quality/production_comparison_{63,64}.png`に保持した。
+検証process終了後はAPI待機/Ming Layer、backend RSS 4.65GiB・空きRAM57.83GiBだった。
+この回復は検証processの終了とAPI再起動後の確認であり、モデル切替時のnative RAM残留の根治とはしない。
 
 Lensの新規paired_spatial交換も、targetの空間縮小率が強くchannel数がsource以上なら
 `gaussian_row_orthogonal_v1`を選ぶ。学習の実露出noise、通常生成・img2img・inpaint、

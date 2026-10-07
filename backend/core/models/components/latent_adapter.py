@@ -69,6 +69,15 @@ def validate_declaration(value):
     for key in ("old_channels", "new_channels", "old_scale", "new_scale", "input_channels", "norm_pack"):
         if type(value.get(key)) is not int or value[key] < 1:
             raise ValueError(f"Invalid VAE alignment {key}")
+    patch_noise = value.get("patch_noise")
+    if patch_noise is not None:
+        from .patch_noise_alignment import validate_declaration as validate_patch_noise
+        validate_patch_noise(patch_noise)
+        if value.get("noise_policy") is not None:
+            raise ValueError("Patch and grid noise policies cannot be combined")
+        if (patch_noise.get("channels") != value.get("new_channels") or
+                patch_noise.get("bridge_channels") != max(value.get("old_channels", 0), value.get("new_channels", 0))):
+            raise ValueError("Patch noise geometry disagrees with the codec declaration")
     if value["input_channels"] not in (3, 4) or value.get("ndim") not in (4, 5):
         raise ValueError("Spatial alignment requires an RGB/RGBA image-capable codec")
     if value["old_scale"] % value["new_scale"] and value["new_scale"] % value["old_scale"]:
@@ -116,11 +125,16 @@ class SpatialAlignmentPair(nn.Module):
         if declaration.get("noise_policy") is not None:
             from .gaussian_alignment import GaussianNoiseAlignment
             self.noise_alignment = GaussianNoiseAlignment(self.declaration)
+        if declaration.get("patch_noise") is not None:
+            from .patch_noise_alignment import PatchNoiseAlignment
+            self.patch_noise = PatchNoiseAlignment(declaration["patch_noise"])
 
     @property
     def ready(self):
         noise = getattr(self, "noise_alignment", None)
-        return self.input._ready and self.output._ready and (noise is None or noise._ready)
+        patch = getattr(self, "patch_noise", None)
+        return (self.input._ready and self.output._ready and (noise is None or noise._ready)
+                and (patch is None or patch._ready))
 
     def flow_state(self, value, sigma, *, noise=None):
         mapped = self.input.flow_state(value, sigma)

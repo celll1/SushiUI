@@ -50,6 +50,35 @@ def test_clean_boundary_and_gradient_are_unchanged():
     assert list(module.parameters()) == []
 
 
+def test_resolution_gain_scales_only_desired_noise_response():
+    module, _, _, _ = fixture()
+    noise = torch.randn(2, 4, 8, 12)
+    current = F.conv2d(F.conv2d(noise, module.incoming, padding=1), module.projection, stride=2)
+    clean = torch.randn_like(current, requires_grad=True)
+    sigma = torch.tensor([0.25, 0.75])
+    gain = torch.tensor([2., 0.5], requires_grad=True)
+    output = clean + sigma[:, None, None, None] * current
+    actual = module.correct(output, noise, sigma, desired_noise_gain=gain)
+    native_noise = F.conv2d(noise, module.white, stride=2)
+    expected = clean + (sigma * gain)[:, None, None, None] * native_noise
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    assert torch.equal(clean.grad, torch.ones_like(clean))
+    assert gain.grad is None
+    assert torch.equal(module.correct(output.detach(), noise, sigma),
+                       module.correct(output.detach(), noise, sigma, desired_noise_gain=torch.ones(2)))
+
+
+@pytest.mark.parametrize("gain", [torch.ones(1), torch.tensor([0., 1.]),
+                                  torch.tensor([-1., 1.]), torch.tensor([float('nan'), 1.]),
+                                  torch.tensor([float('inf'), 1.])])
+def test_invalid_resolution_gain_is_rejected(gain):
+    module, _, _, _ = fixture()
+    with pytest.raises(ValueError, match="finite positive"):
+        module.correct(torch.zeros(2, 7, 4, 6), torch.zeros(2, 4, 8, 12), torch.ones(2),
+                       desired_noise_gain=gain)
+
+
 def test_restoration_keeps_coefficients_fp32_and_prediction_exact():
     module, _, _, _ = fixture()
     restored = PatchNoiseAlignment(module.declaration)

@@ -121,27 +121,40 @@ def load_directory_transformer(path, torch_dtype):
     from pathlib import Path
     from .vendor.transformer import MiniT2IMMJiTModel
     from core.rewiring.artifacts import read_directory_topology
-    from core.models.common.single_file_format import read_state_dict
+    from core.models.common.single_file_format import read_state_dict, read_metadata
+    from core.models.components.spatial_swap import read_declaration, install, validate_loaded
     from core.models.common.quantized_checkpoint_guard import refuse_quantized_state_dict
     directory = Path(path)
     spec = read_directory_topology(directory)
-    if spec is None:
+    declarations = [read_declaration(read_metadata(str(candidate))) for candidate in sorted(directory.iterdir())
+                    if candidate.is_file() and str(candidate).endswith(
+                        (".safetensors", ".safetensors.index.json"))]
+    alignment = declarations[0] if declarations else None
+    if any(value != alignment for value in declarations):
+        raise ValueError("MiniT2I directory alignment declarations disagree")
+    if spec is None and alignment is None:
         return MiniT2IMMJiTModel.from_pretrained(path, torch_dtype=torch_dtype)
     with (directory / "config.json").open(encoding="utf-8") as handle:
         config = json.load(handle)
     if not isinstance(config, dict):
         raise ValueError("MiniT2I native directory config must be an object")
     config = native_config(config)
-    validate_topology_identity(spec, config)
+    if spec is not None:
+        validate_topology_identity(spec, config)
+    if alignment is not None and (config["vae_type"] == "none" or config["in_channels"] !=
+            max(alignment["old_channels"], alignment["new_channels"])):
+        raise ValueError("MiniT2I directory alignment disagrees with native config")
     source = directory / "diffusion_pytorch_model.safetensors.index.json"
     if not source.is_file():source = directory / "diffusion_pytorch_model.safetensors"
     state, _ = read_state_dict(str(source))
     refuse_quantized_state_dict(state, arch="minit2i", path=str(source))
     model = MiniT2IMMJiTModel(**config)
+    install(model, alignment)
     info = model.load_state_dict(state, strict=False)
     if info.missing_keys or info.unexpected_keys:
         raise ValueError("Rewired MiniT2I directory weights do not match native config")
     model.to(torch_dtype).to("cpu").eval()
+    validate_loaded(model)
     restore_topology(model, spec)
     return model
 

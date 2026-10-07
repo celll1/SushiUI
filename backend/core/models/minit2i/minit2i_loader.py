@@ -316,6 +316,16 @@ def load_minit2i_components(
         transformer_dir = os.path.join(model_path, "transformer")
         if not os.path.isdir(transformer_dir):
             transformer_dir = model_path  # allow pointing directly at the transformer dir
+        from core.models.common.single_file_format import read_metadata
+        from core.models.components.spatial_swap import read_declaration
+        source = os.path.join(transformer_dir, "diffusion_pytorch_model.safetensors.index.json")
+        if not os.path.isfile(source):
+            source = os.path.join(transformer_dir, "diffusion_pytorch_model.safetensors")
+        if os.path.isfile(source) and read_declaration(read_metadata(source)) is not None:
+            from core.models.common.vae_source import load_declared_latent_io
+            declared_vae = load_declared_latent_io(source, arch="minit2i")
+            if declared_vae is None:
+                raise ValueError("Aligned MiniT2I directory requires a declared external codec")
         from core.models.minit2i.residual_unet import load_directory_transformer
         transformer = load_directory_transformer(transformer_dir, torch_dtype)
         variant = _detect_variant_name(transformer)

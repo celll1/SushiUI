@@ -223,6 +223,25 @@ def test_calibration_training_export_loader_and_native_sampling(tmp_path, old, n
     for key,value in model.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[key],value,rtol=0,atol=0)
     assert (restored._residual_unet_spec["regions"][0]["id"]=="s") if rewired else not hasattr(restored,"_residual_unet_spec")
+    from safetensors.torch import save_file
+    from core.models.components.spatial_swap import artifact_metadata
+    from core.models.minit2i.residual_unet import model_topology_metadata
+    target_dir=tmp_path/"aligned_directory"; transformer_dir=target_dir/"transformer"
+    transformer_dir.mkdir(parents=True)
+    (transformer_dir/"config.json").write_text(json.dumps(native_config(model)))
+    directory_metadata=dict(metadata, **artifact_metadata(model), **model_topology_metadata(model))
+    directory_metadata.update({"component.vae.embedded":"0",
+                               "component.vae.locator":trainer.vae_identity.locator})
+    save_file(model.state_dict(),str(transformer_dir/"diffusion_pytorch_model.safetensors"),
+              metadata=directory_metadata)
+    with patch("core.models.minit2i.minit2i_loader._resolve_flan_t5",return_value="synthetic"), \
+         patch("core.models.minit2i.minit2i_loader._load_flan_t5",return_value=(object(),torch.nn.Linear(1,1))):
+        directory_components=load_minit2i_components(str(target_dir),torch_dtype=torch.float32,vae_dtype=torch.float32)
+    assert directory_components["vae_scale_factor"]==16
+    assert directory_components["transformer"].vae_latent_bridge.ready
+    assert directory_components["declared_vae"].content_hash==trainer.vae_identity.content_hash
+    for key,value in model.state_dict().items():
+        torch.testing.assert_close(directory_components["transformer"].state_dict()[key],value,rtol=0,atol=0)
     with patch("core.models.minit2i.minit2i_loader._resolve_flan_t5",return_value="synthetic"), \
          patch("core.models.minit2i.minit2i_loader._load_flan_t5",return_value=(object(),torch.nn.Linear(1,1))):
         components=load_minit2i_components(written,torch_dtype=torch.float32,vae_dtype=torch.float32)

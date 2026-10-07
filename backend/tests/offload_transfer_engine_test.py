@@ -180,6 +180,33 @@ def test_flux_inference_path_uses_the_same_multi_plane_engine():
     offloader.cleanup()
 
 
+def test_transformer_reprepare_reuses_frozen_masters():
+    blocks = nn.ModuleList([SidecarLinear(1), SidecarLinear(2), SidecarLinear(3)])
+    offloader = TransformerBlockOffloader(
+        blocks=blocks, blocks_to_swap=3, device=torch.device("cpu"),
+        h2d_only=True, ring_size=2, use_pinned_memory=False,
+    )
+    try:
+        offloader.prepare_block_devices_before_forward()
+        offloader.wait_for_block(0)
+        offloader.submit_move_blocks_forward(0)
+        original = [(block.weight.detach().clone(), block.weight_scale.clone()) for block in blocks]
+        for block in blocks:
+            block.weight.data = block.weight.clone()
+            block.weight_scale.data = block.weight_scale.clone()
+        offloader.prepare_block_devices_before_forward()
+        for index, block in enumerate(blocks):
+            planes, layout = offloader.h2d_masters[index]
+            for module, name, dtype, offset, count, shape in layout:
+                assert getattr(module, name).data_ptr() == planes[dtype][offset:offset+count].data_ptr()
+            assert torch.equal(block.weight, original[index][0])
+            assert torch.equal(block.weight_scale, original[index][1])
+        offloader.wait_for_block(1)
+        assert torch.equal(blocks[1].weight, original[1][0])
+    finally:
+        offloader.cleanup()
+
+
 def test_flux_frozen_training_path_uses_shared_lru_policy():
     blocks = [SidecarLinear(1), SidecarLinear(2), SidecarLinear(3)]
     for block in blocks:

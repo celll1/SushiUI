@@ -145,3 +145,30 @@ def test_ltx_generation_cleanup_parks_on_failure():
         finally:
             LTX2Mixin._park_ltx2_frozen_conditioner(manager)
     assert model.weight.data_ptr() == pointer
+
+
+def test_hook_rebuild_restores_excluded_block_swap_layout():
+    from types import SimpleNamespace
+    from accelerate import cpu_offload_with_hook
+    from core.memory_management.frozen_backing import install_frozen_cpu_offload
+
+    events = []
+
+    class Pipeline:
+        _exclude_from_cpu_offload = ("transformer",)
+
+        def __init__(self):
+            self.text_encoder = torch.nn.Linear(2, 2)
+            self.transformer = SimpleNamespace(_block_offloader=SimpleNamespace(
+                h2d_only=True, prepare_block_devices_before_forward=lambda: events.append("partial")))
+
+        def enable_model_cpu_offload(self, device):
+            events.append("native_whole_stage")
+            _, hook = cpu_offload_with_hook(self.text_encoder, device)
+            self._all_hooks = [hook]
+
+    pipeline = Pipeline()
+    install_frozen_cpu_offload(pipeline, ("text_encoder",))
+    pipeline.enable_model_cpu_offload("cpu")
+    pipeline.enable_model_cpu_offload("cpu")
+    assert events == ["native_whole_stage", "partial"] * 2

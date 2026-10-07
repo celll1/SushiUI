@@ -364,6 +364,11 @@ class TransformerBlockOffloader(DtypeSplitGuardMixin):
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
+        # Native hook rebuilding can stage the whole frozen model again.
+        if self.h2d_only and self.h2d_masters is not None:
+            for block_idx, (planes, _) in self.h2d_masters.items():
+                self._h2d_point_weights(block_idx, planes)
+
         print(f"[BlockOffloader] Preparing block devices...")
 
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap

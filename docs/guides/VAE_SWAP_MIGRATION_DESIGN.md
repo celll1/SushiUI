@@ -22,6 +22,23 @@ VAEのchannel数と空間圧縮率を区別する。現行Qwen 2.1は64ch・縦�
 8倍から16倍圧縮への交換では同じpatch packingならtoken数が1/4になり、
 全解像度self-attentionのスコア行列は理論上1/16になるが、全stepの速度/容量は別途測定する。
 
+#### 優先対象の現在の証拠と残作業
+
+| 対象 | 実重みの機能検証記録 | 次に確認すること |
+|---|---|---|
+| Ming Design | 公式浮動DiT、16ch/8x→64ch/16x＋2段/deep4。Full step 2保存、523 optimizer状態、固定noise係数bit一致を記録 | 同じ学習条件で通常/交換/交換＋U-netのstep時間・メモリを比較 |
+| Anima | 公式DiT/TE、同じcodec交換＋2段/deep4。公開API step 1→2、689 optimizer状態、保存したcodec/構造で生成を確認 | 交換＋U-netの学習コストを通常/交換のみと比較。未学習の細部一致を待たない |
+| SDXL | 公式ベース、4ch/8x→64ch/16x。公開API step 1→2、1683 optimizer状態、追加channel重みの更新を確認 | 通常/交換の学習コストを比較。元からU-Netで、DiT再配線は追加しない |
+
+2026-10-07に保存済みAnima/SDXLのstep 2応答・宣言とMingの公式step 2ログを再確認した。
+実重み成果物の一部はsmoke整理済みであり、この再確認は新たな公式GPU実行ではない。
+現行コードではMing縮小格子のforward/backward・可搬復元、共通Gaussian、SD sampler正規化の
+CPU回帰88件が通過。Mingの公開Full trainer＋partition global adapter＋交換codecの
+Design/Layer×native/swap 4条件も通過し、CUDA未初期化を確認した。
+この4条件はDiT再配線のGPU試験ではなく、小型実modelによる別の併用経路の検証。
+少数stepのfiniteな更新は収束保証ではない。旧節の未学習画質「未受入」は測定上の制約として残し、
+上記の機能検証結果を無効化するゲートにはしない。
+
 Status: **P0〜P8 実装済み**。P8（SenseNova の pixel → latent）は §10.6 の受け入れ条件を
 実重みで測定して満たしたため（測定値は §10.6 末尾）、ゲートを解除し
 `TRAINING_FEATURE_ADVISORY["sensenova"]["vae_swap"] = "experimental"` に移した。

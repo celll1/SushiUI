@@ -917,6 +917,16 @@ Gemma3RotaryEmbeddingのbufferはnative FP32を保持する。小型実Gemmaの�
 公式TEでもRoPE 4 bufferの値・FP32精度、embedding scaleのBF16、全ParameterのBF16を
 CPUで確認した。cacheに保存する重みは変更不要。step 4のGPU試験はこの修正前なので、
 修正後のGPU/API確認と生成品質は未完として扱う。
+生成側も、通常のAccelerate CpuOffloadの`init_hook`によるGPU→CPUコピーを、凍結
+TE/connectorのbacking復元へ置き換える。pipeline instanceのenableメソッドを包むため、
+Diffusersが生成終了時にoffload hookを作り直しても同じ処理を再装着する。transformerや
+codecのnative hook、実行device、前成分のoffload順序は維持する。offload設置失敗時の
+whole-pipeline CUDA配置fallbackは削除した。
+txt2vid・img2vid・vidoutpaintのfinallyでも同じbackingを退避し、例外/中断時のTE残留を避ける。
+実AccelerateのCPU hookで再装着・Parameter storage再利用・forwardを確認し、生成例外の
+共通cleanupもCPUで確認した。RoPE/cache/offloadのCPU検証は30通過・1 symlink権限skip、
+追加cleanup検証2通過、構文検証・CUDA未初期化の実import通過。実GPU/APIの生成・
+キャンセル・再生成は未検証なので、このCPU結果で生成品質の受け入れとはしない。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

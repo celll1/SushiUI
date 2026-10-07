@@ -839,6 +839,15 @@ LTX→H3のFull試験では、既存`official/vae`ディレクトリの欠損sha
 逆伝搬・optimizer更新・保存再開は未検証。試験終了後、通常のMingモデルをAPI再起動で復元した。
 LTXの凍結Gemmaとconnectorは現状CPU移動後もtrainer/pipelineに保持されるため、
 次の試験では凍結成分の保持とmutable block swapのstep時割当を計測する。原因をTEだけとは断定しない。
+成分移動前後・各block前後の追加計測では、forward前の空きRAM15.79GiB/RSS45.52GiBから、
+20層通過時に空き1.39GiB/RSS59.99GiBへ変化した。一方private memoryは95.20→95.55GiBで、
+増加の大半は新しいprivate割当ではなくworking setの増加だった。停止時のmain threadは
+`LayerOffloadConductor._prefetch_neighbor`→`MutableLruTransferEngine._submit_load`の
+CPU masterからGPU slotへの`copy_`内にいた。RAM計測とスタックはignored
+`ltx_official_full/memory_trace.jsonl`・`memory_abort_stack.txt`に保持する。
+encode後に凍結TE/connectorをmetaへ解放する検証用候補も試したが、空きRAMの回復は約1.66GiBで、
+24層通過後に同じ監視終了となった。従って解放候補は本番採用しない。CPU masterのページ保持・
+転送時working set・凍結成分の残存所有者の切り分けが残る。Full更新や保存の成功とは扱わない。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

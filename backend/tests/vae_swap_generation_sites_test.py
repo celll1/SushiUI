@@ -30,7 +30,8 @@ def test_token_display_uses_replacement_scale_and_native_registry(architecture,p
     assert image_token_stride(SimpleNamespace(spatial_scale_factor=32),architecture,patch)==32*patch
 
 
-def test_component_info_accepts_resolved_codec_identity():
+@pytest.mark.parametrize("architecture", ["qwen_image_21", "flux2"])
+def test_component_info_accepts_resolved_codec_identity(architecture):
     from core.pipeline import DiffusionPipelineManager
     from core.models.common.vae_source import ResolvedVAE
     from core.models.components.latent_adapter import NormalizedFrameVAE
@@ -39,12 +40,13 @@ def test_component_info_accepts_resolved_codec_identity():
         vae_class="AutoencoderKLLTX2Video",config={},content_hash="synthetic",provenance="synthetic",
         locator=None,struct_native=False,identity_native=False,scaling_factor=1.,shift_factor=0.)
     module=torch.nn.Linear(1,1);module.config={}
+    module.decode = lambda latents, return_dict=True: SimpleNamespace(sample=latents)
     codec=NormalizedFrameVAE(module,dict(version=1,method="paired_spatial",token_policy="target_native",
         source="file:synthetic",old_channels=64,new_channels=128,old_scale=16,new_scale=32,
         input_channels=3,ndim=5,norm="per_channel",norm_pack=1))
     manager=DiffusionPipelineManager.__new__(DiffusionPipelineManager)
     manager._sushi_load_warnings=[]
-    fields=manager._fold_component_latent_identity(dict(vae=codec,vae_identity=identity),"qwen_image_21")
+    fields=manager._fold_component_latent_identity(dict(vae=codec,vae_identity=identity),architecture)
     assert fields["latent_channels"]==128 and fields["vae_hash"]==identity.latent_hash
     assert manager._sushi_wiring.vae_scale_factor==32 and manager._sushi_wiring.vae_norm=="identity"
 

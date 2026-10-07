@@ -893,6 +893,20 @@ sample失敗時の退避、既存LTX校正/再開を確認した（構文検証�
 caption encode後の空きRAMが17.87→46.55GiBへ回復した。Full step 2から3への更新・保存・
 cleanupまで正常終了した（process 191.156秒、load/saveを含む）。原本FP32 TEからのbacking準備と
 本番API生成の検証はまだ必要である。
+公式FP32 Gemma componentからBF16 backingを準備する経路もLTX本番loaderへ追加した。
+`settings.cache_dir/ltx2_text_encoder/<content-sha>/`へ最大64MiBのsource/cast chunkで書き、
+全tensorを原本BF16 castと照合してからatomicに公開する。原本は編集せず、file lockで
+複数processの同時変換を直列化する。config/indexと全source/outputファイルのSHAを記録し、
+再利用時にも全SHAを確認するため、内容変更や途中失敗を通常モデルとして読まない。
+公式11 TE shard・1,065 tensor・12,187,325,040要素、24,374,650,080 tensor bytesで
+一致を確認し、新mapped loaderで復元した。source SHAはdownload済み公式manifestとも一致した。
+初回CPU processは142.719秒、再利用の全SHA確認は60.891秒で、再変換・output書換えはない。
+これは約24.4GBのモデル補助ファイルであり、dataset cacheではない。強い内容照合のため、
+再利用でもload待ち時間は残る。GPU未使用で、生成品質やiter速度の成功とは扱わない。
+CPU 18 test通過・file symlink作成権限による1 skip（小型実Gemmaの重み/logits一致、
+整数/空tensor・shard index、原本保持、再利用・破損/容量不足/途中失敗拒否、並行処理を含む）、
+構文検証・CUDA未初期化の実importを確認した。以後のGPU/API検証はcomponent overrideを使わず
+この本番経路で行う。cacheは削除後に同じ原本から再作成できる。
 
 SD1.5→Qwen 2.1 VAEの未学習生成を、一般ratingを再確認した40枚で校正して比較した。
 Full trainerの実encode入力はteacherが256px、targetが512pxで各40枚となり、

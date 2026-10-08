@@ -322,3 +322,26 @@ Previously Anima saved only `.pt` latents regardless of this setting. Those
 historical steps retain their latent-channel previews; this fix applies to new
 debug dumps. CPU synthetic tests cover deferred decode, three sidecar names,
 latent-only mode and both ordinary and partitioned dump construction.
+
+### Swap-refill batch identity repair
+
+The shared caption and latent refill collectors previously rebound the outer
+training loop's `batch` to the last batch in the refill window. At #174's first
+256-batch boundary this selected the wrong samples and disagreed with the
+previously captured concept-exposure items. Different batch sizes triggered
+`Exposure timesteps must match the completed sample batch`; equal sizes could
+silently associate the wrong samples with the current batch cursor.
+
+All four shared prefill/refill collectors now use a separate `buffer_batch`
+local. Synthetic regressions execute the production collectors with unequal
+and equal batch sizes and verify active item identity, buffer coverage, exposure
+counts and restoration. The strict exposure validation remains unchanged.
+
+The #174 emergency checkpoint at step 256 held the prior 256 optimizer updates,
+but its saved cursor skipped to batch 257 and included unapplied gradients from
+the erroneous refill-selected batch. A verified copy of the original state is
+retained as `*_step_000256_state_before_refill_batch_fix.json`; the active state
+now resumes at batch 256 and ignores those pending gradients. Model, optimizer
+and gradient files are retained unchanged. The failed attempt consumed RNG;
+this repair re-exposes the correct batch without claiming a bitwise replay of
+an uninterrupted run. It does not start training automatically.

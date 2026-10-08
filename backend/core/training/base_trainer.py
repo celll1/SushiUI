@@ -18406,8 +18406,8 @@ class BaseTrainer(ABC):
                         # Encode captions for first interval
                         # Use batches (which have bucket info) instead of all_items
                         buffer_items = []
-                        for batch in batches[:text_encoding_swap_interval]:
-                            buffer_items.extend(batch)
+                        for buffer_batch in batches[:text_encoding_swap_interval]:
+                            buffer_items.extend(buffer_batch)
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
                             self._check_stop_requested()
 
@@ -18496,8 +18496,8 @@ class BaseTrainer(ABC):
                         # Encode images for first interval
                         # Use batches (which have bucket info) instead of all_items
                         buffer_items = []
-                        for batch in batches[:latent_encoding_swap_interval]:
-                            buffer_items.extend(batch)
+                        for buffer_batch in batches[:latent_encoding_swap_interval]:
+                            buffer_items.extend(buffer_batch)
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
                             # Abort promptly on user stop (raises KeyboardInterrupt; the
                             # finally below restores the training stack to the GPU).
@@ -18930,8 +18930,8 @@ class BaseTrainer(ABC):
                             end_idx = min(start_idx + text_encoding_swap_interval, len(batches))
                             # Use batches (which have bucket info) instead of all_items
                             buffer_items = []
-                            for batch in batches[start_idx:end_idx]:
-                                buffer_items.extend(batch)
+                            for buffer_batch in batches[start_idx:end_idx]:
+                                buffer_items.extend(buffer_batch)
 
                             print(f"\n{self.log_prefix} Refilling swap buffer (steps {start_idx}-{end_idx})...")
                             if progress_callback:
@@ -18977,8 +18977,8 @@ class BaseTrainer(ABC):
                             end_idx = min(start_idx + latent_encoding_swap_interval, len(batches))
                             # Use batches (which have bucket info) instead of all_items
                             buffer_items = []
-                            for batch in batches[start_idx:end_idx]:
-                                buffer_items.extend(batch)
+                            for buffer_batch in batches[start_idx:end_idx]:
+                                buffer_items.extend(buffer_batch)
 
                             print(f"\n{self.log_prefix} Refilling latent swap buffer (steps {start_idx}-{end_idx})...")
                             if progress_callback:

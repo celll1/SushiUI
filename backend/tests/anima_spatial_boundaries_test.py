@@ -11,6 +11,28 @@ from core.models.anima.vae_alignment import noise_kwargs
 from backend.tests.latent_adapter_contract_test import declaration,identity
 
 
+def test_recreated_handler_uses_swapped_codec_for_nested_unet_buckets():
+    from types import SimpleNamespace
+    from core.training.base_trainer import BaseTrainer
+    from core.training.bucketing import get_bucket_sizes
+    from core.rewiring.spec import build_spec, OPERATORS, preview_plan
+    spec = build_spec("anima", [{"name": "main", "block_count": 28}], [
+        dict(id="r0", stream="main", parent=None, start_block=4, end_block=24,
+             down_factor=[2, 2], **OPERATORS),
+        dict(id="r1", stream="main", parent="r0", start_block=12, end_block=16,
+             down_factor=[2, 2], **OPERATORS),
+    ], {})
+    model = SimpleNamespace(patch_spatial=2, _residual_unet_spec=spec,
+        vae_latent_bridge=SimpleNamespace(declaration={"new_scale": 16, "new_channels": 64}))
+    trainer = SimpleNamespace(is_anima=True, transformer=model, arch=SimpleNamespace(pixel_align=16))
+    align = BaseTrainer._arch_pixel_align(trainer)
+    assert align == 128
+    with pytest.raises(ValueError, match="r1 grid"):
+        preview_plan(spec, 832//32, 1216//32)
+    for bucket in get_bucket_sizes(1024, align):
+        preview_plan(spec, bucket.height//32, bucket.width//32)
+
+
 @pytest.fixture(autouse=True)
 def no_cuda():
     with patch.object(torch.cuda,"get_device_capability",return_value=(8,9)), \
@@ -121,6 +143,8 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
         with pytest.raises(ValueError):
             configure_training_topology(value,dict(resume_config,dit_rewiring_spec=edited),resuming=True)
     assert trainer.wiring.vae_scale_factor==16 and trainer.wiring.latent_channels==new_c
+    assert BaseTrainer._arch_pixel_align(trainer)==64
+    trainer.arch=AnimaArchHandler(trainer)
     assert BaseTrainer._arch_pixel_align(trainer)==64
     assert value._residual_unet_spec["regions"][0]["id"]=="s"
     assert validate_latent_io(trainer)==[]

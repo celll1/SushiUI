@@ -1309,7 +1309,8 @@ class Anima(nn.Module):
 
     def forward_mini_train_dit(self, x_B_C_T_H_W, timesteps_B_T, crossattn_emb,
                                 fps=None, padding_mask=None, source_attention_mask=None,
-                                t5_input_ids=None, t5_attn_mask=None, alignment_noise=None):
+                                t5_input_ids=None, t5_attn_mask=None, alignment_noise=None,
+                                partition_box=None):
         from .vae_alignment import map_image
         x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T,noise=alignment_noise)
         if t5_input_ids is not None and self.use_llm_adapter and hasattr(self, "llm_adapter"):
@@ -1325,6 +1326,11 @@ class Anima(nn.Module):
         x_B_T_H_W_D, rope_emb_L_1_1_D, extra_pos_emb = self.prepare_embedded_sequence(
             x_B_C_T_H_W, fps=fps, padding_mask=padding_mask,
         )
+        if partition_box is not None:
+            if self.pos_emb_cls != "rope3d" or self.extra_per_block_abs_pos_emb:
+                raise ValueError("Anima partitions require native RoPE without extra absolute positions")
+            from .partition import region_rotary
+            rope_emb_L_1_1_D = region_rotary(self.pos_embedder, x_B_T_H_W_D, partition_box, fps=fps)
         if timesteps_B_T.ndim == 1:
             timesteps_B_T = timesteps_B_T.unsqueeze(1)
         t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps_B_T)
@@ -1378,7 +1384,8 @@ class Anima(nn.Module):
             from .residual_unet import run_rewired_anima
             x_B_T_H_W_D = run_rewired_anima(
                 self, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
-                attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D, fps, rewiring)
+                attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D, fps, rewiring,
+                partition_box=partition_box)
         elif blockskip is not None:
             x_B_T_H_W_D = self._blockskip_forward(
                 blockskip, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,

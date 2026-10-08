@@ -84,6 +84,36 @@ class AnimaRuntimeContracts(unittest.TestCase):
                 torch.testing.assert_close(a, b, rtol=1e-4, atol=1e-5)
         self.assertGreater(float(after[1].abs().sum()), 0)
 
+    def test_partition_origin_survives_nested_unet_and_backward(self):
+        from core.training.partition import PartitionBox
+        from core.models.anima.partition import region_rotary
+        box = PartitionBox(4, 4, 12, 16)
+        seen = []
+        def observe(module, args, kwargs):
+            grid = args[0]
+            factor = (8 // grid.shape[2], 12 // grid.shape[3])
+            expected = region_rotary(self.model.pos_embedder, grid, box, factor=factor)
+            torch.testing.assert_close(kwargs["rope_emb_L_1_1_D"], expected, rtol=0, atol=0)
+            seen.append(factor)
+        handles = [block.register_forward_pre_hook(observe, with_kwargs=True) for block in self.model.blocks]
+        try:
+            output = self.model(self.image, torch.tensor([0.5]), self.text,
+                padding_mask=self.padding, partition_box=box)
+            output.square().mean().backward()
+        finally:
+            for handle in handles:
+                handle.remove()
+        self.assertEqual(seen, [(1, 1), (2, 2), (4, 4), (4, 4), (4, 4), (2, 2), (1, 1)])
+        self.assertGreater(float(self.image.grad.abs().sum()), 0)
+        self.assertGreater(float(self.text.grad.abs().sum()), 0)
+
+    def test_zero_origin_partition_preserves_native_prediction(self):
+        from core.training.partition import PartitionBox
+        expected = self.forward()
+        actual = self.model(self.image, torch.tensor([0.5]), self.text,
+            padding_mask=self.padding, partition_box=PartitionBox(0, 0, 8, 12))
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
     def test_incompatible_features_and_identity_refusal(self):
         from core.models.anima.residual_unet import restore_topology, validate_topology_identity, native_config
         for name in ("_fbcache", "_tread_config", "_blockskip_config", "_block_skip_config", "_repa_tap_depth"):

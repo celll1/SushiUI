@@ -23,6 +23,7 @@ machine-local working material.
 | [docs/guides/ADD_A_PARAMETER.md](ADD_A_PARAMETER.md) | End-to-end parameter checklist. |
 | [docs/guides/ADD_A_MODEL_ARCHITECTURE.md](ADD_A_MODEL_ARCHITECTURE.md) | Architecture integration checklist. |
 | [docs/guides/API_TESTING.md](API_TESTING.md) | Safe API verification procedures. |
+| [docs/guides/ANIMA_PARTITION_TRAINING_DESIGN.md](ANIMA_PARTITION_TRAINING_DESIGN.md) | Anima partition/global-summary training with residual U-Net and target-native VAE IO, artifact tests and DRAM investigation. |
 | [docs/guides/DATABASE_MIGRATION.md](DATABASE_MIGRATION.md) | SQLite schema migration procedure. |
 | [docs/guides/GENERATION_QUEUE_PROCESSOR.md](GENERATION_QUEUE_PROCESSOR.md) | Frontend queue ownership and dispatch invariants. |
 | [docs/guides/DIT_REWIRING_DESIGN.md](DIT_REWIRING_DESIGN.md) | Implemented residual U-Net topology, artifact restoration, graph editor/acoustic export and GPU/CPU verification boundaries. |

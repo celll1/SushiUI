@@ -19,8 +19,10 @@ def config_value(config, name):
     return a if a is not None else b if b is not None else TRAINING_DEFAULTS[canonical]
 
 
-def validate_training_options(config):
+def validate_training_options(config, *, method=None):
     if config.get("dit_partition_global_adapter_enabled", TRAINING_DEFAULTS["dit_partition_global_adapter_enabled"]):
+        if method is not None and method != "full_finetune":
+            raise ValueError("Anima trainable global summaries currently require full_finetune")
         if not config_value(config, "training_enabled") or not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]):
             raise ValueError("Anima global summaries require partition training and train_unet")
     if not config_value(config, "training_enabled"):

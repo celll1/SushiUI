@@ -2258,6 +2258,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setError("Global summaries require tiled training and DiT training. Enable both or disable global summaries.");
       return;
     }
+    if (isAnimaModel(baseModelPath) && params.dit_partition_global_adapter_enabled && trainingMethod !== "full_finetune") {
+      setError("Anima trainable global summaries currently require full fine-tuning. Disable global summaries for LoRA.");
+      return;
+    }
 
     if (isMingImageModel && trainingMethod === "lora" && trainTextEncoder) {
       setError("Ming LoRA currently requires a frozen conditioner. Disable text encoder training.");

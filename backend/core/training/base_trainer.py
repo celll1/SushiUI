@@ -12633,6 +12633,8 @@ class BaseTrainer(ABC):
                 delattr(self, "_pending_chimera_debug_previews")
             if self.is_qwen_image_21 and hasattr(self, "_pending_qwen_debug_previews"):
                 delattr(self, "_pending_qwen_debug_previews")
+            if self.is_anima and hasattr(self, "_pending_anima_debug_previews"):
+                delattr(self, "_pending_anima_debug_previews")
             self._note_partial_step_taint(_applied_before, _exc)
             raise
 
@@ -12690,6 +12692,14 @@ class BaseTrainer(ABC):
                 if isinstance(debug_error, DebugDecodeRestorationError):
                     raise
                 print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
+        elif self.is_anima:
+            try:
+                from core.models.anima.training_debug import flush_pending_debug_previews
+                flush_pending_debug_previews(self)
+            except Exception as debug_error:
+                if isinstance(debug_error, DebugDecodeRestorationError):
+                    raise
+                print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         elif self.is_qwen_image_21:
             try:
                 from core.training.ops.qwen_image_21_ops import flush_pending_debug_previews
@@ -12724,6 +12734,8 @@ class BaseTrainer(ABC):
             if events is not None:
                 events["forward_backward"][1].record(torch.cuda.current_stream(self.device))
         except BaseException as exc:
+            if hasattr(self, "_pending_anima_debug_previews"):
+                delattr(self, "_pending_anima_debug_previews")
             self._note_partial_step_taint(applied_before, exc)
             raise
         self._flush_deferred_predicted_latent()
@@ -12731,6 +12743,13 @@ class BaseTrainer(ABC):
         self._flush_deferred_extra_metrics()
         self._finish_repa_profile_call(0.0, self._flush_repa_loss_metric_after_backward())
         self._flush_concept_sample_loss()
+        try:
+            from core.models.anima.training_debug import flush_pending_debug_previews
+            flush_pending_debug_previews(self)
+        except Exception as debug_error:
+            if isinstance(debug_error, DebugDecodeRestorationError):
+                raise
+            print(f"{self.log_prefix} [debug_latents] VAE decode failed: {debug_error}")
         return result
 
     def _execute_ming_partitioned_forward_backward(self, batch, *, timesteps, loss_scale, cfg_drop_mask,

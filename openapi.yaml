@@ -27649,7 +27649,7 @@ components:
           enum: [latent, pixel]
           default: latent
           description: >-
-            Qwen-Image 2.1 and Ming-Image 0.1 debug comparison mode. Pixel additionally decodes
+            Qwen-Image 2.1, Ming-Image 0.1 and Anima debug comparison mode. Pixel additionally decodes
             target, noisy and predicted-clean latents to WebP after backward;
             latent keeps the existing false-color tensor display only.
         convergence_diagnostics_enable:

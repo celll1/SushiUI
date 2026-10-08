@@ -203,3 +203,45 @@ saved-parameter JSON and output paths. Raw local measurements are retained in
 `local/verification/anima174_gpu_partition_smoke.json` and
 `local/verification/anima174_topology_benchmark.json`. The processes exited and
 GPU memory returned to approximately 1.8 GiB baseline; no training was started.
+
+### Batch-size ablation
+
+The same four conditions were measured at 1024x1024 with actual batches 1, 2
+and 4 on 2026-10-08. Batch 1 was remeasured in the same session. All earlier
+exclusions apply; checkpoint prefix remains 24, CPU/async activation offload is
+disabled, and each condition has one warmup plus three measured samples.
+Rows show medians; per-image time is iteration divided by actual batch size.
+
+| Topology | Batch | Forward ms | Backward ms | Iteration ms | ms/image | Peak VRAM GiB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Native | 1 | 247.4 | 945.4 | 1267.9 | 1267.9 | 12.231 |
+| Native | 2 | 533.6 | 1996.3 | 2607.0 | 1303.5 | 14.502 |
+| Native | 4 | 1206.6 | 4355.2 | 5637.5 | 1409.4 | 20.968 |
+| U-Net | 1 | 109.0 | 365.9 | 553.3 | 553.3 | 12.275 |
+| U-Net | 2 | 218.4 | 761.5 | 1057.8 | 528.9 | 14.055 |
+| U-Net | 4 | 486.7 | 1654.3 | 2220.5 | 555.1 | 20.068 |
+| Swap | 1 | 82.0 | 172.6 | 334.6 | 334.6 | 11.889 |
+| Swap | 2 | 102.6 | 360.4 | 541.1 | 270.6 | 11.868 |
+| Swap | 4 | 232.5 | 800.7 | 1114.2 | 278.6 | 12.261 |
+| Both | 1 | 83.3 | 158.8 | 310.8 | 310.8 | 11.895 |
+| Both | 2 | 87.3 | 173.3 | 338.7 | 169.3 | 11.907 |
+| Both | 4 | 97.1 | 311.4 | 491.5 | 122.9 | 12.306 |
+
+Combined versus swap alone is 1.08x at batch 1, 1.60x at batch 2 and 2.27x at
+batch 4. The small batch-1 difference varies across sessions; earlier results
+showed no combined advantage there. At batch 4, combining is 2.53x faster per
+image than its own batch-1 baseline, with approximately 0.41 GiB extra allocated
+memory. Native and U-Net alone do not show comparable batching gains.
+
+This supports the hypothesis that small low-resolution block operations gain
+utilization from batching while optimizer costs are amortized. It does not
+identify individual kernel bottlenecks without a profiler. Non-monotonic small
+VRAM differences can reflect allocator lifetimes and kernel workspace choices;
+they are not evidence that doubling the batch reduces tensor storage. No OOM
+or nonfinite loss occurred. Throughput is not a convergence-equivalence claim:
+larger batches change gradient averaging and optimizer update frequency.
+
+Raw results: `local/verification/anima174_batch_benchmark.json`. Reproduce using
+the benchmark tool with `--samples 3 --batches 1 2 4 --resolutions 1024` plus the
+explicit model, params and output arguments. The tool now requires batch sizes
+and resolutions explicitly. #174 stays pending; GPU memory returned to 1.8 GiB.

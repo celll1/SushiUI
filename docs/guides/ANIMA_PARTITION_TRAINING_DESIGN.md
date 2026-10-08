@@ -76,3 +76,18 @@ Dataset, optimizer, sample, exposure and dropout settings inherit #173 at creati
 After backend fixes, restart through `/api/v1/system/restart-backend` and verify
 recovery before handing control back. Check the active process first; preserve
 the owner's running training process and never start servers directly.
+
+## Implementation status
+
+Native global-coordinate RoPE, nested U-Net coordinates and portable global
+adapter weights are implemented. The partition planner preserves exact core
+coverage while expanding inputs to cumulative U-Net alignment. Sequential
+velocity/reconstruction backward is implemented as an internal primitive; CPU
+tests compare its losses and gradients with a full-canvas pointwise reference,
+including a shared conditioning graph and accumulation scaling. Checkpoint
+prefix scopes preserve activation-offload modes and restore them on exceptions.
+
+Trainer dispatch, auxiliary loss/debug integration, capability/API/UI gates and
+run #174 creation remain pending. The internal backward primitive is not yet
+advertised as an executable training capability. Its CPU tests do not establish
+real-model convergence or performance.

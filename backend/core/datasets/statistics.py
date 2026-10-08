@@ -8,7 +8,7 @@ from collections.abc import Callable
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from database.models import DatasetCaption, DatasetItem
+from database.models import Dataset, DatasetCaption, DatasetItem
 from utils.taglist_cache import taglist_cache
 
 
@@ -27,6 +27,15 @@ def caption_item_counts(db: Session, dataset_id: int) -> tuple[int, int]:
         func.trim(DatasetCaption.content) != "",
     ).distinct().count()
     return with_tags, with_captions
+
+
+def refresh_index_counts(db: Session, dataset: Dataset) -> None:
+    """Refresh cached counts without reading sidecars or claiming scan completion."""
+    db.flush()
+    dataset.total_items = db.query(DatasetItem.id).filter(
+        DatasetItem.dataset_id == dataset.id,
+    ).count()
+    dataset.total_tags, dataset.total_captions = caption_item_counts(db, dataset.id)
 
 
 def compute_tag_statistics(

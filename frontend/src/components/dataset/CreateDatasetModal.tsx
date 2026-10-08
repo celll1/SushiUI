@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from "react";
 import { X, Folder, AlertCircle } from "lucide-react";
-import { createDataset, scanDataset, scanDatasetPreview, Dataset, StructureDetectionResult, ScanPreviewResult } from "@/utils/api";
+import { createDataset, getDataset, scanDataset, scanDatasetPreview, Dataset, StructureDetectionResult, ScanPreviewResult } from "@/utils/api";
 import { wsClient } from "@/utils/websocket";
 
 interface CreateDatasetModalProps {
   initialPath: string | null;
   onClose: () => void;
-  onCreate: (dataset: Dataset) => void;
+  onCreate: (dataset: Dataset, warning?: string) => void;
 }
 
 export default function CreateDatasetModal({ initialPath, onClose, onCreate }: CreateDatasetModalProps) {
@@ -99,11 +99,13 @@ export default function CreateDatasetModal({ initialPath, onClose, onCreate }: C
         }
 
         onCreate(scanResult.dataset); // Return scanned dataset with updated counts
-      } catch (scanErr) {
+      } catch (scanErr: unknown) {
         console.error("Failed to scan dataset:", scanErr);
         setScanningProgress(null);
         setScanningMessage("");
-        onCreate(newDataset); // Return dataset even if scan fails
+        const message = scanErr instanceof Error ? scanErr.message : "Unknown scan error";
+        const indexedDataset = await getDataset(newDataset.id, false).catch(() => newDataset);
+        onCreate(indexedDataset, `Dataset created, but scan failed: ${message}. Open the dataset and retry Scan.`);
       }
     } catch (err: any) {
       setError(err.response?.data?.error || "Failed to create dataset");

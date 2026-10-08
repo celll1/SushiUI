@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from config.settings import settings
 from database.models import Dataset, DatasetCaption, DatasetItem
-from core.datasets.statistics import compute_tag_statistics
+from core.datasets.statistics import compute_tag_statistics, refresh_index_counts
 from utils import create_thumbnail, dataset_thumbnail_key
 from utils.taglist_cache import taglist_cache
 
@@ -870,6 +870,11 @@ async def scan_dataset_index(
         _scan_cancelled = True
         print(f"[Dataset Scan] Rescan skipped mid-walk for dataset {dataset_id}; "
               f"committing {items_found} new items, skipping purge")
+    except Exception:
+        db.rollback()
+        refresh_index_counts(db, dataset)
+        db.commit()
+        raise
 
     if _scan_cancelled:
         # Skip the purge: we did not finish seeing every on-disk file, so the
@@ -879,6 +884,7 @@ async def scan_dataset_index(
         # drift (already-applied changes stay, per the skip contract).
         if items_found or captions_found or captions_updated:
             bump_scan_revision()
+        refresh_index_counts(db, dataset)
         db.commit()
         db.refresh(dataset)
         _send_progress(progress, 
@@ -1068,10 +1074,7 @@ async def scan_dataset_index(
 
     # Update dataset statistics (count all items in DB, not just newly added).
     # total_tags = images with danbooru tags; total_captions = images with a
-    from core.datasets.statistics import caption_item_counts
-
-    dataset.total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
-    dataset.total_tags, dataset.total_captions = caption_item_counts(db, dataset_id)
+    refresh_index_counts(db, dataset)
     dataset.tag_statistics = tag_statistics
     dataset.last_scanned_at = datetime.utcnow()
 

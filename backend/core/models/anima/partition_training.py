@@ -1,0 +1,134 @@
+"""Deterministic native Anima image partition plans."""
+from dataclasses import replace
+from contextlib import nullcontext
+import math
+
+import torch
+
+from api.param_defaults import TRAINING_DEFAULTS
+from core.models.components.latent_adapter import topology_alignment
+from core.training.partition.core import PartitionBox, PartitionRegion, validate_partition_regions
+from .partition import AnimaPartitionAdapter
+
+
+def config_value(config, name):
+    canonical, legacy = "dit_partition_" + name, "qwen_partition_" + name
+    a, b = config.get(canonical), config.get(legacy)
+    if a is not None and b is not None and a != b:
+        raise ValueError(f"{canonical} conflicts with {legacy}")
+    return a if a is not None else b if b is not None else TRAINING_DEFAULTS[canonical]
+
+
+def region_count(trainer, clean):
+    if clean.ndim != 4 or any(side % 2 for side in clean.shape[-2:]):
+        raise ValueError("Anima partitions require BCHW latents with even spatial sides")
+    if not config_value(trainer.config, "training_enabled"):
+        return 1
+    mode = config_value(trainer.config, "mode")
+    if mode == "fixed":
+        count = config_value(trainer.config, "fixed_count")
+        if type(count) is not int or count not in (2, 4):
+            raise ValueError("Anima partition count must be 2 or 4")
+        return count
+    if mode != "token_threshold":
+        raise ValueError("Anima partition mode must be fixed or token_threshold")
+    limit = config_value(trainer.config, "full_frame_max_tokens")
+    if type(limit) is not int or limit < 1:
+        raise ValueError("Anima partition token threshold must be a positive integer")
+    tokens = (clean.shape[-2] // 2) * (clean.shape[-1] // 2)
+    return 1 if tokens <= limit else 4 if tokens >= 4 * limit else 2
+
+
+def training_plan(trainer, clean):
+    count = region_count(trainer, clean)
+    if count == 1:
+        raise ValueError("Anima full-frame execution has no partition plan")
+    value = lambda name: config_value(trainer.config, name)
+    plan = AnimaPartitionAdapter().build_fixed_plan(
+        clean.shape[-2] // 2, clean.shape[-1] // 2, count=count,
+        halo=value("halo_tokens"), seed=value("seed"),
+        epoch=int(getattr(trainer, "_current_epoch", 0)),
+        occurrence=int(getattr(trainer, "_current_batch_position", 0)),
+        split_ratio_min=value("split_ratio_min"), split_ratio_max=value("split_ratio_max"))
+    model = getattr(trainer.transformer, "module", trainer.transformer)
+    ah, aw = topology_alignment(getattr(model, "_residual_unet_spec", None))
+    if plan.full_height % ah or plan.full_width % aw:
+        raise ValueError("Anima partition canvas must match cumulative U-Net alignment")
+    regions = tuple(PartitionRegion(region.core, PartitionBox(
+        region.input.top // ah * ah, region.input.left // aw * aw,
+        min(plan.full_height, (region.input.bottom + ah - 1) // ah * ah),
+        min(plan.full_width, (region.input.right + aw - 1) // aw * aw)))
+        for region in plan.regions)
+    validate_partition_regions(plan.full_height, plan.full_width, regions)
+    return replace(plan, regions=regions)
+
+
+def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
+                     plan, backward_scale):
+    """Accumulate exact core-weighted velocity loss without retaining tile graphs."""
+    if not math.isfinite(backward_scale) or backward_scale < 0:
+        raise ValueError("Anima partition backward scale must be finite and nonnegative")
+    clean = clean.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    noise, sigma = noise.to(clean), sigma.to(clean)
+    if noise.shape != clean.shape or sigma.shape != (clean.shape[0],):
+        raise ValueError("Anima partition noise/sigma geometry disagrees with targets")
+    if (plan.full_height * 2, plan.full_width * 2) != clean.shape[-2:]:
+        raise ValueError("Anima partition plan disagrees with target canvas")
+    validate_partition_regions(plan.full_height, plan.full_width, plan.regions)
+    weight = float(trainer.reconstruction_loss_weight)
+    if not math.isfinite(weight) or not 0 <= weight <= 1:
+        raise ValueError("Anima reconstruction loss weight must be within [0, 1]")
+    prompt_embeds = prompt_embeds.to(clean, non_blocking=True)
+    aux = {name: anima_aux[name].to(device=clean.device, non_blocking=True)
+           for name in ("source_mask", "t5_input_ids", "t5_attn_mask")}
+    sigma_view = sigma[:, None, None, None]
+    noisy, target = (1 - sigma_view) * clean + sigma_view * noise, noise - clean
+    model = getattr(trainer.transformer, "module", trainer.transformer)
+    from .vae_alignment import noise_kwargs
+    from .checkpointing import partition_scope
+    crop = lambda value, box: value[..., 2*box.top:2*box.bottom, 2*box.left:2*box.right]
+    shared_graph = any(value.grad_fn is not None for value in (clean, prompt_embeds, noise))
+    totals = clean.new_zeros(3, dtype=torch.float32)
+    pred_items = clean.new_zeros(clean.shape[0], dtype=torch.float32)
+    loss_items = torch.zeros_like(pred_items)
+    with partition_scope(model, trainer.config):
+        for index, region in enumerate(plan.regions):
+            local = crop(noisy, region.input)
+            context = (torch.autocast(device_type=clean.device.type, dtype=trainer.training_dtype)
+                       if trainer.mixed_precision else nullcontext())
+            with context:
+                prediction = trainer.transformer(
+                    x=local.unsqueeze(2), timesteps=sigma, context=prompt_embeds,
+                    padding_mask=local.new_zeros(local.shape[0], 1, *local.shape[-2:]),
+                    target_input_ids=aux["t5_input_ids"], target_attention_mask=aux["t5_attn_mask"],
+                    source_attention_mask=aux["source_mask"], partition_box=region.input,
+                    partition_full_latents=noisy.unsqueeze(2), partition_full_noise=noise.unsqueeze(2),
+                    **noise_kwargs(model, crop(noise, region.input)))
+            if prediction.ndim != 5 or prediction.shape[2] != 1:
+                raise ValueError("Anima partition prediction must be a singleton image frame")
+            prediction = crop(prediction.squeeze(2), region.core_in_input)
+            expected = crop(target, region.core)
+            if prediction.shape != expected.shape:
+                raise ValueError("Anima partition prediction disagrees with its supervised core")
+            per_item = (prediction.float() - expected.float()).square().mean((1, 2, 3))
+            recon_items = torch.zeros_like(per_item)
+            if weight > 0:
+                recovered = crop(noisy, region.core).float() - sigma_view.float() * prediction.float()
+                recon_items = (recovered - crop(clean, region.core).float()).square().mean((1, 2, 3))
+            combined = (1 - weight) * per_item + weight * recon_items
+            fraction = region.core.tokens / plan.full_tokens
+            scaled = combined.mean() * fraction * backward_scale
+            retain = shared_graph and index + 1 < len(plan.regions)
+            if getattr(trainer, "use_grad_scaler", False):
+                trainer.grad_scaler.scale(scaled).backward(retain_graph=retain)
+            else:
+                scaled.backward(retain_graph=retain)
+            totals += fraction * torch.stack((combined.mean().detach(), per_item.mean().detach(),
+                                             recon_items.mean().detach()))
+            pred_items += fraction * per_item.detach()
+            loss_items += fraction * combined.detach()
+            del prediction, expected, per_item, combined, scaled, recon_items
+    trainer._last_loss_per_sample = pred_items
+    if getattr(trainer, "_collect_concept_sample_loss", False):
+        trainer._pending_concept_sample_loss = loss_items
+    return tuple(float(value) for value in totals)

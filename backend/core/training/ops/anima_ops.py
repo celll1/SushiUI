@@ -77,6 +77,8 @@ def load_components(trainer) -> None:
     configure_training_topology(trainer.transformer, trainer.config,
         resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
         pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
+    from core.models.anima.partition_global import configure_training as configure_global
+    configure_global(trainer.transformer, trainer.config)
 
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
     # the full reasoning). An Anima DiT loaded from a weight-only int8/fp8

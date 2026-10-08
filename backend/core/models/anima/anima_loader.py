@@ -213,6 +213,14 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
 
     from .residual_unet import preflight_artifact, restore_topology
     from core.models.components.spatial_swap import install,validate_loaded
+    from .partition_global import install as install_global, METADATA_KEY
+    from core.models.common.single_file_format import read_metadata
+    import json
+    global_declaration = None
+    if Path(dit_path).exists() or Path(str(dit_path)+".index.json").is_file():
+        artifact_metadata = read_metadata(dit_path)
+        if METADATA_KEY in artifact_metadata:
+            global_declaration = json.loads(artifact_metadata[METADATA_KEY])
     alignment=None
     # In-memory callers may supply weights without a backing artifact.
     if state_dict is not None and not Path(dit_path).exists() and not Path(str(dit_path)+".index.json").is_file():
@@ -224,6 +232,7 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     with init_empty_weights():
         model = Anima(**config)
         install(model,alignment)
+        install_global(model, global_declaration, dtype=dtype)
         model.to(dtype)
 
     if state_dict is not None:
@@ -288,6 +297,8 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
             f"architecture but carries none of its keys (an adapter file?)")
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
+    from .partition_global import validate_loaded as validate_global_loaded
+    validate_global_loaded(model, missing, unexpected)
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).
     expected_missing_substrings = ("seq", "dim_spatial_range", "dim_temporal_range", "inv_freq")
     real_missing = [k for k in missing if not any(s in k for s in expected_missing_substrings)]

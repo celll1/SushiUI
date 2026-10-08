@@ -141,6 +141,33 @@ def test_pixel_previews_are_deferred_and_use_exclusive_vae_residency(tmp_path, m
     assert not hasattr(trainer, "_pending_anima_debug_previews")
 
 
+def test_decode_oom_falls_back_without_partial_decoded_images(tmp_path, monkeypatch, capsys):
+    from contextlib import nullcontext
+    from PIL import Image
+    from core.models.anima.training_debug import queue_debug_previews, flush_pending_debug_previews
+    import core.training.debug_decode_residency as residency
+    import core.models.anima.anima_pipeline_ops as pipeline
+    trainer = SimpleNamespace(config={"qwen_debug_latent_view": "pixel"}, vae=object(),
+                              vae_dtype=torch.float32, device="cpu")
+    data = {key: torch.zeros(1, 64, 4, 4) for key in
+            ("latents", "noisy_latents", "predicted_latent")}
+    data["timestep"] = .3
+    torch.save(data, tmp_path / 'latents_t0.3000.pt')
+    calls = []
+    def decode(vae, latent):
+        calls.append(1)
+        if len(calls) == 2:
+            raise torch.OutOfMemoryError('synthetic decoder OOM')
+        return [Image.new('RGB', (8, 8))]
+    monkeypatch.setattr(residency, 'debug_decode_residency', lambda *a, **k: nullcontext())
+    monkeypatch.setattr(pipeline, 'vae_decode_latents', decode)
+    queue_debug_previews(trainer, tmp_path, data)
+    flush_pending_debug_previews(trainer)
+    assert (tmp_path / 'latents_t0.3000.pt').exists()
+    assert not list(tmp_path.glob('*.webp')) and not list(tmp_path.glob('*.tmp'))
+    assert 'using latent previews' in capsys.readouterr().out
+
+
 def test_debug_path_writes_dump_with_endpoint_keys(tmp_path):
     out = tmp_path / "step_000010"
     _run(

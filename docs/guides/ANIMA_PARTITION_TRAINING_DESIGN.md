@@ -345,3 +345,37 @@ now resumes at batch 256 and ignores those pending gradients. Model, optimizer
 and gradient files are retained unchanged. The failed attempt consumed RNG;
 this repair re-exposes the correct batch without claiming a bitwise replay of
 an uninterrupted run. It does not start training automatically.
+
+### Bounded Qwen 2.1 VAE work and debug failure recovery
+
+The step-300 debug dump held one 2304×1664 image (64×104×144 latent).
+Exclusive residency reported only 1.30 GiB allocated before decode, but the
+untiled FP32 decoder reached 43.09 GiB allocated and failed in normalization.
+Unwound decoder frames and feature caches then retained tensors during model
+restoration. A single image can therefore exhaust VRAM without another model
+remaining resident.
+
+Shared image encoding now scopes Qwen 2.1 tiling to 512-pixel tiles with
+384-pixel strides in patched encoder coordinates (roughly 1024 source pixels).
+Shared debug residency scopes its decoder to 256-pixel tiles with 192-pixel
+strides. Both restore the prior codec policy and clear feature caches; encoder
+reuse keys include all four tile dimensions. This does not enable tiling for
+other codecs or the separate native Ming encoder path. Tiling can change latent
+values and edge behavior; numerical or visual equivalence is not promised.
+
+Debug residency clears unwound traceback locals and codec caches before
+restoring training components. Anima publishes its three decoded sidecars only
+after every decode and residency restoration succeeds. Decode failure removes
+partial sidecars, logs the failure and leaves the `.pt` dump available for the
+monitor's latent preview fallback. A genuine residency restoration failure
+still stops training rather than continuing with incomplete model state.
+
+Synthetic GPU probes used official Qwen 2.1 VAE weights in FP32, without owner
+images. At 2304×1664, tiled decode peaked at 2.16 GiB allocated; at 1024×4096,
+2.18 GiB. Tiled encode peaked at 2.38 GiB for both 1664×2304 and 1024×4096.
+These are VAE-only memory measurements, not end-to-end training speed or
+quality acceptance. Reports live in ignored `local/verification/` files.
+The combined CPU regression suite passed 29 tests, including decode-OOM
+fallback, partial-file cleanup, traceback tensor release, policy restoration,
+encoder reuse and swap-refill batch identity. Changed modules also passed
+compilation and CUDA-stubbed real imports.

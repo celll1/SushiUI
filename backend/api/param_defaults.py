@@ -10,6 +10,16 @@ from typing import Any, Dict, Optional
 # Process-local training optimization, not a REST/config parameter.
 ENCODER_REUSE_DEFAULTS = {"max_bytes": 512 * 1024 * 1024, "max_entries": 4096}
 
+# Qwen 2.1's encoder tiles operate after its input patchification.
+QWEN21_TRAINING_ENCODE_DEFAULTS = {
+    "tile_sample_min_height": 512, "tile_sample_min_width": 512,
+    "tile_sample_stride_height": 384, "tile_sample_stride_width": 384,
+}
+QWEN21_DEBUG_DECODE_DEFAULTS = {
+    "tile_sample_min_height": 256, "tile_sample_min_width": 256,
+    "tile_sample_stride_height": 192, "tile_sample_stride_width": 192,
+}
+
 # Native Ideogram sampler settings; these are not separate REST parameters.
 IDEOGRAM4_INFERENCE_DEFAULTS: Dict[str, Any] = {
     "mu": 0.0, "std": 1.5, "max_sequence_length": 512,

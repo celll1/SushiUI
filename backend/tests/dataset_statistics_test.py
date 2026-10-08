@@ -5,6 +5,29 @@ from core.datasets import statistics
 from database.models import Dataset, DatasetBase, DatasetCaption, DatasetItem
 
 
+def test_partial_index_counts_flush_pending_rows_without_marking_scan_complete(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'partial.db'}")
+    DatasetBase.metadata.create_all(engine)
+    db = sessionmaker(bind=engine, autoflush=False)()
+    dataset = Dataset(name="partial", path="not-read", total_items=0, total_tags=0)
+    db.add(dataset)
+    db.flush()
+    item = DatasetItem(dataset_id=dataset.id, base_name="one", image_path="not-read.png")
+    db.add(item)
+    db.flush()
+    db.add_all([
+        DatasetCaption(item_id=item.id, caption_type="tags", is_tags_format=True, content="test"),
+        DatasetCaption(item_id=item.id, caption_type="extra", is_tags_format=True, content="test"),
+        DatasetCaption(item_id=item.id, caption_type="caption", field_category="training",
+                       is_tags_format=False, content="   "),
+    ])
+    statistics.refresh_index_counts(db, dataset)
+    db.commit()
+    assert (dataset.total_items, dataset.total_tags, dataset.total_captions) == (1, 1, 0)
+    assert dataset.last_scanned_at is None
+    db.close()
+
+
 def test_tag_statistics_streams_once_and_preserves_category_priority(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'datasets.db'}")
     DatasetBase.metadata.create_all(engine)

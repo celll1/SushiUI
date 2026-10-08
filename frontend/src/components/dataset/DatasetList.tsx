@@ -39,8 +39,9 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
     setShowCreateModal(true);
   };
 
-  const handleDatasetCreated = (newDataset: Dataset) => {
-    setDatasets([...datasets, newDataset]);
+  const handleDatasetCreated = (newDataset: Dataset, warning?: string) => {
+    setDatasets(current => [...current, newDataset]);
+    setError(warning || null);
     setShowCreateModal(false);
     setInitialFolderPath(null);
     onSelectDataset(newDataset.id);
@@ -116,6 +117,8 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
         {!loading && datasets.length > 0 && (
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
             {datasets.map((dataset) => {
+              const unscanned = !dataset.last_scanned_at;
+              const countsUnknown = unscanned && dataset.total_items === 0;
               const taggedPercent = dataset.total_items > 0
                 ? Math.round((dataset.total_tags / dataset.total_items) * 100)
                 : 0;
@@ -143,20 +146,23 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
                     <span className="truncate pr-8 text-xs font-semibold">{dataset.name}</span>
                   </div>
                   <p className="mb-2 truncate font-mono text-[9px] text-gray-500" title={dataset.path}>{dataset.path}</p>
+                  {unscanned && (
+                    <p className="mb-2 text-[10px] text-amber-400">Scan incomplete · counts cover indexed items only</p>
+                  )}
                   <div className="grid grid-cols-3 gap-1.5">
                     <div className="rounded bg-gray-900/80 px-2 py-1.5">
                       <p className="text-[9px] uppercase tracking-wide text-gray-500">Items</p>
-                      <p className="mt-0.5 text-xs font-medium text-gray-200">{dataset.total_items.toLocaleString()}</p>
+                      <p className="mt-0.5 text-xs font-medium text-gray-200">{countsUnknown ? "—" : dataset.total_items.toLocaleString()}</p>
                     </div>
                     <div className="rounded bg-gray-900/80 px-2 py-1.5">
                       <p className="text-[9px] uppercase tracking-wide text-gray-500">Tagged</p>
-                      <p className="mt-0.5 text-xs font-medium text-gray-200">{dataset.total_tags.toLocaleString()}</p>
-                      <p className="text-[9px] text-gray-500">{taggedPercent}%</p>
+                      <p className="mt-0.5 text-xs font-medium text-gray-200">{countsUnknown ? "—" : dataset.total_tags.toLocaleString()}</p>
+                      {!countsUnknown && <p className="text-[9px] text-gray-500">{taggedPercent}%</p>}
                     </div>
                     <div className="rounded bg-gray-900/80 px-2 py-1.5">
                       <p className="text-[9px] uppercase tracking-wide text-gray-500">Captioned</p>
-                      <p className="mt-0.5 text-xs font-medium text-gray-200">{dataset.total_captions.toLocaleString()}</p>
-                      <p className="text-[9px] text-gray-500">{captionedPercent}%</p>
+                      <p className="mt-0.5 text-xs font-medium text-gray-200">{countsUnknown ? "—" : dataset.total_captions.toLocaleString()}</p>
+                      {!countsUnknown && <p className="text-[9px] text-gray-500">{captionedPercent}%</p>}
                     </div>
                   </div>
                 </button>

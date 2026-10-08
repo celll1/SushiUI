@@ -2,6 +2,7 @@
 import argparse
 import gc
 import json
+from itertools import product
 from pathlib import Path
 import statistics
 import sys
@@ -18,9 +19,15 @@ def main():
     parser.add_argument("--params", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--samples", type=int, required=True)
+    parser.add_argument("--batches", type=int, nargs="+", required=True)
+    parser.add_argument("--resolutions", type=int, nargs="+", required=True)
     args = parser.parse_args()
     if args.samples < 1:
         raise ValueError("samples must be positive")
+    if any(batch < 1 for batch in args.batches):
+        raise ValueError("batch sizes must be positive")
+    if any(pixels < 128 or pixels % 128 for pixels in args.resolutions):
+        raise ValueError("resolutions must be positive multiples of 128 for all topologies")
     from core.models.anima.anima_loader import load_anima_dit
     from core.models.anima.residual_unet import restore_topology, default_topology, native_config
     from core.models.anima.partition_global import configure_training
@@ -55,16 +62,16 @@ def main():
             async_offload=bool(config.get("async_cpu_offload_checkpointing")))
         configure(model, config)
         optimizer = bnb.optim.AdamW8bit(model.parameters(), lr=1e-5)
-        text = torch.randn(1, 5, 1024, device="cuda", dtype=torch.bfloat16)
-        aux = dict(target_input_ids=torch.tensor([[1, 2, 3]], device="cuda"),
-            target_attention_mask=torch.ones(1, 3, device="cuda", dtype=torch.long),
-            source_attention_mask=torch.ones(1, 5, device="cuda", dtype=torch.long))
-        for pixels in (512, 1024):
+        for batch, pixels in product(args.batches, args.resolutions):
+            text = torch.randn(batch, 5, 1024, device="cuda", dtype=torch.bfloat16)
+            aux = dict(target_input_ids=torch.tensor([[1, 2, 3]], device="cuda").repeat(batch, 1),
+                target_attention_mask=torch.ones(batch, 3, device="cuda", dtype=torch.long),
+                source_attention_mask=torch.ones(batch, 5, device="cuda", dtype=torch.long))
             side = pixels // scale
             measurements = []
             for iteration in range(args.samples+1):
                 optimizer.zero_grad(set_to_none=True)
-                clean = torch.randn(1, channels, 1, side, side, device="cuda", dtype=torch.bfloat16)
+                clean = torch.randn(batch, channels, 1, side, side, device="cuda", dtype=torch.bfloat16)
                 noise = torch.randn_like(clean)
                 noisy, target = .5*clean + .5*noise, noise-clean
                 torch.cuda.synchronize()
@@ -73,8 +80,8 @@ def main():
                 start = time.perf_counter()
                 events[0].record()
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                    predicted = model(noisy, torch.tensor([.5], device="cuda", dtype=torch.bfloat16), text,
-                        padding_mask=torch.zeros(1, 1, side, side, device="cuda", dtype=torch.bfloat16), **aux)
+                    predicted = model(noisy, torch.full((batch,), .5, device="cuda", dtype=torch.bfloat16), text,
+                        padding_mask=torch.zeros(batch, 1, side, side, device="cuda", dtype=torch.bfloat16), **aux)
                     loss = (predicted.float()-target.float()).square().mean()
                 events[1].record()
                 loss.backward()
@@ -93,7 +100,7 @@ def main():
                         peak_reserved_gib=torch.cuda.max_memory_reserved()/1024**3,
                         rss_gib=psutil.Process().memory_info().rss/1024**3))
                 del loss, predicted, noisy, target, clean, noise, events
-            row = dict(unet=rewired, vae_swap=swapped, pixels=pixels,
+            row = dict(unet=rewired, vae_swap=swapped, pixels=pixels, batch_size=batch,
                 latent_channels=channels, latent_scale=scale, image_tokens=(side//2)**2,
                 parameters=sum(p.numel() for p in model.parameters()),
                 median={key: statistics.median(m[key] for m in measurements) for key in measurements[0]},
@@ -106,7 +113,7 @@ def main():
     report = dict(model=args.model, synthetic=True, real_vae_calibration=False,
         excludes=["VAE encoding/decoding", "caption encoding", "IO", "spatial partition training",
             "calibrated Gaussian noise complement"],
-        dtype="bf16", batch_size=1, warmup_per_resolution=1,
+        dtype="bf16", batch_sizes=args.batches, resolutions=args.resolutions, warmup_per_resolution=1,
         checkpoint_blocks=config.get("dit_gradient_checkpointing_blocks"),
         optimizer="AdamW8bit", gpu=torch.cuda.get_device_name(), results=results)
     Path(args.output).write_text(json.dumps(report, indent=2), encoding="utf-8")

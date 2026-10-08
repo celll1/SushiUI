@@ -37,7 +37,7 @@ def model_topology_metadata(model):
 
 
 def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
-                       rotary, adaln, fps, spec):
+                       rotary, adaln, fps, spec, *, partition_box=None):
     spec = validate_topology_identity(spec, model)
     if hidden.ndim != 5 or hidden.shape[1] != 1:
         raise ValueError("Anima rewiring requires a single 2D image frame")
@@ -52,6 +52,10 @@ def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
 
     def coarse_context(context, value, h, w, prefix):
         grid = value.reshape(batch, 1, h, w, channels)
+        if partition_box is not None:
+            from .partition import region_rotary
+            return region_rotary(model.pos_embedder, grid, partition_box,
+                factor=(height // h, width // w), fps=fps), h, w
         return model.pos_embedder(grid, fps=fps), h, w
 
     def execute(index, value, context):

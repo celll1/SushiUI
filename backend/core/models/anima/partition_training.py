@@ -19,6 +19,16 @@ def config_value(config, name):
     return a if a is not None else b if b is not None else TRAINING_DEFAULTS[canonical]
 
 
+def validate_training_options(config):
+    if not config_value(config, "training_enabled"):
+        return
+    for name in ("repa_enable", "tread_enable", "blockskip_enable", "crop_decode_loss_enable"):
+        if config.get(name, TRAINING_DEFAULTS[name]):
+            raise ValueError(f"Anima partition training does not support {name}")
+    if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
+        raise ValueError("Anima partition training does not support block_skip_rate")
+
+
 def region_count(trainer, clean):
     if clean.ndim != 4 or any(side % 2 for side in clean.shape[-2:]):
         raise ValueError("Anima partitions require BCHW latents with even spatial sides")
@@ -64,10 +74,12 @@ def training_plan(trainer, clean):
 
 
 def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
-                     plan, backward_scale):
+                     plan, backward_scale, debug_save_path=None, debug_captions=None,
+                     debug_reference_image_paths=None):
     """Accumulate exact core-weighted velocity loss without retaining tile graphs."""
     if not math.isfinite(backward_scale) or backward_scale < 0:
         raise ValueError("Anima partition backward scale must be finite and nonnegative")
+    validate_training_options(trainer.config)
     clean = clean.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
     noise, sigma = noise.to(clean), sigma.to(clean)
     if noise.shape != clean.shape or sigma.shape != (clean.shape[0],):
@@ -91,6 +103,10 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
     totals = clean.new_zeros(3, dtype=torch.float32)
     pred_items = clean.new_zeros(clean.shape[0], dtype=torch.float32)
     loss_items = torch.zeros_like(pred_items)
+    capture = bool(getattr(trainer, "convergence_diagnostics_enable", False))
+    stitched = (torch.empty_like(clean[:1], device="cpu", dtype=torch.float32)
+                if debug_save_path is not None or capture else None)
+    debug_recon = clean.new_zeros((), dtype=torch.float32)
     with partition_scope(model, trainer.config):
         for index, region in enumerate(plan.regions):
             local = crop(noisy, region.input)
@@ -110,11 +126,16 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
             expected = crop(target, region.core)
             if prediction.shape != expected.shape:
                 raise ValueError("Anima partition prediction disagrees with its supervised core")
+            if stitched is not None:
+                box = region.core
+                stitched[..., 2*box.top:2*box.bottom, 2*box.left:2*box.right] = prediction[:1].detach().float().cpu()
             per_item = (prediction.float() - expected.float()).square().mean((1, 2, 3))
             recon_items = torch.zeros_like(per_item)
-            if weight > 0:
+            if weight > 0 or debug_save_path is not None:
                 recovered = crop(noisy, region.core).float() - sigma_view.float() * prediction.float()
                 recon_items = (recovered - crop(clean, region.core).float()).square().mean((1, 2, 3))
+                debug_recon += region.core.tokens / plan.full_tokens * recon_items.mean().detach()
+                del recovered
             combined = (1 - weight) * per_item + weight * recon_items
             fraction = region.core.tokens / plan.full_tokens
             scaled = combined.mean() * fraction * backward_scale
@@ -124,11 +145,41 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
             else:
                 scaled.backward(retain_graph=retain)
             totals += fraction * torch.stack((combined.mean().detach(), per_item.mean().detach(),
-                                             recon_items.mean().detach()))
+                                             recon_items.mean().detach() if weight > 0 else totals.new_zeros(())))
             pred_items += fraction * per_item.detach()
             loss_items += fraction * combined.detach()
             del prediction, expected, per_item, combined, scaled, recon_items
     trainer._last_loss_per_sample = pred_items
     if getattr(trainer, "_collect_concept_sample_loss", False):
         trainer._pending_concept_sample_loss = loss_items
+    if stitched is not None:
+        first_noisy = noisy[:1].detach().float().cpu()
+        recovered = first_noisy - float(sigma[0]) * stitched
+        if capture:
+            from core.training.ops.crop_decode_loss import _capture_predicted_latent
+            _capture_predicted_latent(trainer, recovered.to(clean), model_pred=stitched,
+                noisy_latents=first_noisy, timesteps=sigma[:1], noise_process="flow",
+                prediction_target="velocity", noise_scheduler=trainer.noise_scheduler,
+                velocity_sign="eps_minus_x0")
+        if debug_save_path is not None:
+            from pathlib import Path
+            path = Path(debug_save_path)
+            path.mkdir(parents=True, exist_ok=True)
+            first_clean = clean[:1].detach().float().cpu()
+            data = dict(latents=first_clean, noisy_latents=first_noisy,
+                predicted_velocity=stitched, actual_velocity=target[:1].detach().float().cpu(),
+                predicted_latent=recovered, timestep=float(sigma[0]), loss=float(pred_items[0]),
+                loss_batch_mean=float(totals[0]), recon_loss=float((recovered-first_clean).square().mean()),
+                recon_loss_batch_mean=float(debug_recon), batch_size=int(clean.shape[0]),
+                scheduler_type="FlowMatching", model_type="anima", partition_count=len(plan.regions),
+                partition_grid_size=[clean.shape[-1], clean.shape[-2]],
+                partition_regions=[dict(top=2*r.core.top, left=2*r.core.left,
+                    bottom=2*r.core.bottom, right=2*r.core.right) for r in plan.regions])
+            if debug_captions:
+                data.update(caption=debug_captions[0], all_captions=list(debug_captions))
+            if debug_reference_image_paths:
+                reference = next((p for p in debug_reference_image_paths if p), None)
+                if reference:
+                    data["reference_image_path"] = reference
+            torch.save(data, path / f"latents_t{float(sigma[0]):.4f}.pt")
     return tuple(float(value) for value in totals)

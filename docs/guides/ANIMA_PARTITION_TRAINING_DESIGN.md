@@ -87,7 +87,15 @@ tests compare its losses and gradients with a full-canvas pointwise reference,
 including a shared conditioning graph and accumulation scaling. Checkpoint
 prefix scopes preserve activation-offload modes and restore them on exceptions.
 
-Trainer dispatch, auxiliary loss/debug integration, capability/API/UI gates and
-run #174 creation remain pending. The internal backward primitive is not yet
-advertised as an executable training capability. Its CPU tests do not establish
-real-model convergence or performance.
+Trainer dispatch now performs one logical noise draw and sequential region
+backward with gradient accumulation scaling and shared deferred-metric flushing.
+Debug output stitches detached supervised cores; convergence diagnostics receive
+the recovered full first sample. Synthetic real-Anima tests include its LLM
+adapter, nested U-Net, global adapter and 64-channel/16x target-native VAE bridge.
+
+Partition execution currently refuses REPA, TREAD, BlockSkip, stochastic block
+dropout and crop-decode auxiliary loss rather than silently dropping them. Run
+#173 has these options disabled. Capability/API/UI gates, combined artifact and
+resume verification and run #174 creation remain pending. The implementation is
+not yet advertised as an executable training capability. CPU tests do not
+establish real-model convergence or performance.

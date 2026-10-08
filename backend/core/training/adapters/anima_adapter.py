@@ -401,6 +401,8 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         from core.models.anima.residual_unet import native_config, model_topology_metadata
         metadata["transformer_config"] = _json.dumps(native_config(trainer.transformer))
         metadata.update(model_topology_metadata(trainer.transformer))
+        from core.models.anima.partition_global import metadata as global_metadata
+        metadata.update(global_metadata(trainer.transformer))
         try:
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(

@@ -1310,9 +1310,19 @@ class Anima(nn.Module):
     def forward_mini_train_dit(self, x_B_C_T_H_W, timesteps_B_T, crossattn_emb,
                                 fps=None, padding_mask=None, source_attention_mask=None,
                                 t5_input_ids=None, t5_attn_mask=None, alignment_noise=None,
-                                partition_box=None):
+                                partition_box=None, partition_full_latents=None, partition_full_noise=None):
         from .vae_alignment import map_image
         x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T,noise=alignment_noise)
+        global_adapter = getattr(self, "anima_partition_global_adapter", None)
+        global_source = None
+        if global_adapter is not None:
+            if partition_full_latents is None:
+                if partition_box is not None:
+                    raise ValueError("Anima partition global adapter requires the full noisy canvas")
+                global_source = x_B_C_T_H_W
+            else:
+                global_source = map_image(self, partition_full_latents,
+                    sigma=timesteps_B_T, noise=partition_full_noise)
         if t5_input_ids is not None and self.use_llm_adapter and hasattr(self, "llm_adapter"):
             crossattn_emb = self.llm_adapter(
                 source_hidden_states=crossattn_emb,
@@ -1331,6 +1341,11 @@ class Anima(nn.Module):
                 raise ValueError("Anima partitions require native RoPE without extra absolute positions")
             from .partition import region_rotary
             rope_emb_L_1_1_D = region_rotary(self.pos_embedder, x_B_T_H_W_D, partition_box, fps=fps)
+        if global_adapter is not None:
+            residual = global_adapter(global_source, partition_box)
+            if residual.shape != x_B_T_H_W_D.shape:
+                raise ValueError("Anima global residual does not match the tile patch embeddings")
+            x_B_T_H_W_D = x_B_T_H_W_D + residual.to(x_B_T_H_W_D)
         if timesteps_B_T.ndim == 1:
             timesteps_B_T = timesteps_B_T.unsqueeze(1)
         t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps_B_T)

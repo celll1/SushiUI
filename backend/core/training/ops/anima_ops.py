@@ -79,6 +79,8 @@ def load_components(trainer) -> None:
         pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
     from core.models.anima.partition_global import configure_training as configure_global
     configure_global(trainer.transformer, trainer.config)
+    from core.models.anima.partition_training import validate_training_options
+    validate_training_options(trainer.config)
 
     # A training process is DEQUANT-ONLY (see ideogram4_ops.load_components for
     # the full reasoning). An Anima DiT loaded from a weight-only int8/fp8
@@ -122,6 +124,8 @@ def load_components(trainer) -> None:
                       else "cpu_offload" if cpu_offload_ckpt else "standard")
         print(f"{trainer.log_prefix} Gradient checkpointing enabled for Anima DiT "
               f"(mode={ckpt_mode})")
+    from core.models.anima.checkpointing import configure as configure_checkpointing
+    configure_checkpointing(trainer.transformer, trainer.config)
     if trainer.gradient_checkpointing and hasattr(trainer.text_encoder, "gradient_checkpointing_enable"):
         trainer.text_encoder.gradient_checkpointing_enable()
         print(f"{trainer.log_prefix} Gradient checkpointing enabled for Qwen3 text encoder")

@@ -1,6 +1,7 @@
 """Exclusive VAE residency for deferred, non-training debug decode."""
 
 from contextlib import contextmanager
+import traceback
 
 import torch
 
@@ -76,9 +77,19 @@ def debug_decode_residency(trainer, vae, *, dtype=None):
             print(f"{getattr(trainer, 'log_prefix', '[Trainer]')} [debug_latents] "
                   f"VAE-only decode: allocated={torch.cuda.memory_allocated(device)/2**30:.2f} GiB",
                   flush=True)
-        yield
+        from .vae_encode_memory import bounded_debug_decode
+        with bounded_debug_decode(vae):
+            yield
+    except BaseException as error:
+        # Unwound decoder frames can retain the tensors that caused OOM during restoration.
+        traceback.clear_frames(error.__traceback__)
+        raise error.with_traceback(None)
     finally:
         try:
+            codec = getattr(vae, "inner", vae)
+            clear = getattr(codec, "clear_cache", None)
+            if callable(clear):
+                clear()
             vae.to(device="cpu", dtype=original_dtype).train(was_training)
             if device.type == "cuda":
                 torch.cuda.empty_cache()

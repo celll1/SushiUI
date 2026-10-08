@@ -116,7 +116,8 @@ def producer_identity(module):
         state.append((name, identity, str(value.dtype), tuple(value.shape)))
     state.append(json.dumps(getattr(module, "config", {}), sort_keys=True, default=str))
     state.append(tuple((name, getattr(module, name, None)) for name in (
-        "use_tiling", "use_slicing", "tile_sample_min_size", "tile_latent_min_size", "tile_overlap_factor")))
+        "use_tiling", "use_slicing", "tile_sample_min_size", "tile_latent_min_size", "tile_overlap_factor",
+        "tile_sample_min_height", "tile_sample_min_width", "tile_sample_stride_height", "tile_sample_stride_width")))
     return id(module), sha256(repr(state).encode()).digest()
 
 

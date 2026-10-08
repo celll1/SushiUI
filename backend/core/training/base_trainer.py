@@ -10649,7 +10649,8 @@ class BaseTrainer(ABC):
         # the shared post-amble below performs the final dtype/CPU move. All
         # encode_image call sites (cache pre-encode / train loop / sampling) run
         # post-__init__, so self.arch is always bound here.
-        with torch.no_grad(), reuse_vae_posterior(self, self.vae):
+        from core.training.vae_encode_memory import bounded_image_encode
+        with torch.no_grad(), bounded_image_encode(self, self.vae, image_tensor), reuse_vae_posterior(self, self.vae):
             latents = self.arch.vae_encode(
                 self, image_tensor, image=image, width=width, height=height,
                 vae_device=vae_device, debug_preprocessing=debug_preprocessing,

@@ -10,6 +10,7 @@ from .dataset import (load_shared_items, prepare_shared_items_latents, prepare_r
                       shared_conditioning_context, supervision_identity, verify_record_files)
 from .training_residency import grouped_encoder_phase
 from .pixel_prefetch import prefetch_pixels
+from core.training.encoder_reuse import reuse_vae_posterior, reuse_ming_conditioning, log_reuse
 
 
 def batch_identity(pairs):
@@ -62,7 +63,8 @@ class MingBatchBuffer:
         self._progress("latent_cache", 0, total)
         previous_shape = None
         pixels = prefetch_pixels(self.batches, start, end, self._items, self.trainer._check_stop_requested)
-        with grouped_encoder_phase(self.policy, "vae") as grouped, closing(pixels):
+        with grouped_encoder_phase(self.policy, "vae") as grouped, closing(pixels), \
+                reuse_vae_posterior(self.trainer, getattr(self.trainer.ming_image_01_components, "vae", None)):
             for index, items in pixels:
                 self.trainer._check_stop_requested()
                 pairs = self.batches[index]
@@ -84,6 +86,7 @@ class MingBatchBuffer:
                 completed += len(pairs)
                 if (index-start+1) % 10 == 0 or index+1 == end:
                     self._progress("latent_cache", completed, total)
+        log_reuse(self.trainer)
 
     def _fill_conditions(self, start):
         self.conditions.clear()
@@ -114,12 +117,13 @@ class MingBatchBuffer:
                     source = prepare_record_conditioning(self.trainer.ming_image_01_components,
                         self._items(index, pairs), resolution=self.trainer.ming_prompt_resolution,
                         cache_context=context, residency=grouped)
-                condition = source.for_step().detached()
+                condition = reuse_ming_conditioning(self.trainer, source)
                 condition.queries, condition.direct = condition.queries.cpu(), condition.direct.cpu()
                 self.conditions[index] = (batch_identity(pairs), condition)
                 completed += len(pairs)
                 if (index-start+1) % 10 == 0 or index+1 == end:
                     self._progress("text_encoder_cache", completed, total)
+        log_reuse(self.trainer)
 
     def prepare(self, index, pairs):
         if self.closed or type(index) is not int or not 0 <= index < len(self.batches):

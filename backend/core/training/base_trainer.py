@@ -45,6 +45,9 @@ from core.attention import (
 from core.training import training_control_rpc as control_rpc
 from core.training.debug_decode_residency import DebugDecodeRestorationError
 from core.training.sample_occurrence import text_buffer_key, occurrence_batches
+from core.training.encoder_reuse import (
+    reuse_vae_posterior, reuse_caption_encoding, reuse_caption_batch, log_reuse,
+)
 from core.training import training_sample_rpc as sample_rpc
 from core.training.lr_schedules import (
     LR_SCHEDULER_NAMES,
@@ -9971,6 +9974,7 @@ class BaseTrainer(ABC):
         from core.training.ops import minit2i_ops
         return minit2i_ops.encode_prompt(self, prompt, requires_grad=requires_grad)
 
+    @reuse_caption_encoding
     def encode_caption(self, caption: str, requires_grad: bool = False, lyrics: str = "",
                        reference_image_paths=None, cfg_null: bool = False):
         """
@@ -10177,6 +10181,7 @@ class BaseTrainer(ABC):
     # Call sites in the train loop now dispatch via ``self.arch.collate_aux``;
     # only the anima handler overrides the base_arch no-op default.
 
+    @reuse_caption_batch
     def encode_captions_batched(self, captions, requires_grad: bool = False, lyrics=None):
         """Encode a list of captions in one forward pass when possible.
 
@@ -10644,7 +10649,7 @@ class BaseTrainer(ABC):
         # the shared post-amble below performs the final dtype/CPU move. All
         # encode_image call sites (cache pre-encode / train loop / sampling) run
         # post-__init__, so self.arch is always bound here.
-        with torch.no_grad():
+        with torch.no_grad(), reuse_vae_posterior(self, self.vae):
             latents = self.arch.vae_encode(
                 self, image_tensor, image=image, width=width, height=height,
                 vae_device=vae_device, debug_preprocessing=debug_preprocessing,
@@ -16829,6 +16834,7 @@ class BaseTrainer(ABC):
             self._repa_pixel_cache_prior(datasets, _repa_latent_strategy)
 
         # Setup latent caches (mode-dependent)
+        self._latent_encoding_mode = latent_encoding_mode
         latent_caches = None
         print(f"{self.log_prefix} Latent encoding mode: {latent_encoding_mode}")
         if getattr(self, "is_ming_image_01", False):
@@ -18410,6 +18416,7 @@ class BaseTrainer(ABC):
 
                     next_swap_at_step = text_encoding_swap_interval
                     print(f"{self.log_prefix} Buffer pre-filled with {len(swap_buffer)} embeddings")
+                    log_reuse(self)
 
                 # Initialize latent swap mode buffer if needed
                 # Use dict keyed by image_path for robust lookup (immune to index misalignment)
@@ -18548,6 +18555,7 @@ class BaseTrainer(ABC):
                         _vramdiag("after_prefill_restore")
                     next_latent_swap_at_step = latent_encoding_swap_interval
                     print(f"{self.log_prefix} Latent buffer pre-filled with {len(latent_swap_buffer)} latents")
+                    log_reuse(self)
 
                 # onthefly_gpu mode: Ensure text encoders and main model are on GPU for entire epoch
                 if text_encoding_mode == "onthefly_gpu" and not getattr(self, "is_ming_image_01", False):
@@ -18942,6 +18950,7 @@ class BaseTrainer(ABC):
 
                             next_swap_at_step += text_encoding_swap_interval
                             print(f"{self.log_prefix} Buffer refilled with {len(swap_buffer)} embeddings")
+                            log_reuse(self)
 
                         if _latent_refill_due:
                             # Calculate next batch range
@@ -19039,6 +19048,7 @@ class BaseTrainer(ABC):
 
                             next_latent_swap_at_step += latent_encoding_swap_interval
                             print(f"{self.log_prefix} Latent buffer refilled with {len(latent_swap_buffer)} latents")
+                            log_reuse(self)
 
                     # ============================================================
                     # Batch data preparation (ONCE per batch, OUTSIDE MNT loop)

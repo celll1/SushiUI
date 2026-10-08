@@ -686,6 +686,9 @@ def generate_sample(
     height = max(snap, (height // snap) * snap)
     width = max(snap, (width // snap) * snap)
 
+    training_modes = [(module, module.training) for root in
+                      (trainer.transformer, trainer.vae, trainer.text_encoder) if root is not None
+                      for module in root.modules()]
     trainer.transformer.eval()
     trainer.vae.eval()
     if trainer.text_encoder is not None:
@@ -771,7 +774,5 @@ def generate_sample(
         return images[0]
 
     finally:
-        trainer.transformer.train()
-        trainer.vae.train()
-        if trainer.text_encoder is not None:
-            trainer.text_encoder.train()
+        for module, training in training_modes:
+            module.training = training

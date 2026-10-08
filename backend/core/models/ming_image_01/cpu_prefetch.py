@@ -7,6 +7,7 @@ import torch
 
 from .cache import parameter_versions
 from .dataset import load_shared_items, prepare_record_conditioning, shared_conditioning_context
+from core.training.encoder_reuse import reuse_ming_conditioning
 
 
 class _Cancelled(Exception):
@@ -71,7 +72,7 @@ class MingCpuPrefetch:
                         resolution=self.trainer.ming_prompt_resolution,
                         cache_context=shared_conditioning_context(self.trainer, pairs))
                 self._check()
-                condition = source.for_step().detached()
+                condition = reuse_ming_conditioning(self.trainer, source)
                 self._check()
                 if condition.queries.device.type != "cpu" or condition.direct.device.type != "cpu":
                     raise RuntimeError("Ming CPU prefetch produced non-CPU conditioning")

@@ -1244,6 +1244,9 @@ def generate_sample(
     from core.inference.schedulers import get_scheduler
     from core.training.temp_pipeline import sampling_scheduler_source
 
+    training_modes = [(module, module.training) for root in
+                      (trainer.unet, trainer.vae, trainer.text_encoder, trainer.text_encoder_2) if root is not None
+                      for module in root.modules()]
     trainer.unet.eval()
     trainer.vae.eval()
     trainer.text_encoder.eval()
@@ -1484,12 +1487,8 @@ def generate_sample(
         return placeholder
 
     finally:
-        # Restore training mode
-        trainer.unet.train()
-        trainer.vae.train()
-        trainer.text_encoder.train()
-        if trainer.text_encoder_2 is not None:
-            trainer.text_encoder_2.train()
+        for module, training in training_modes:
+            module.training = training
 
         # Ensure U-Net is back on GPU for training continuation
         trainer.move_main_model_to_gpu()

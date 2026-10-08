@@ -111,8 +111,9 @@ found only base model, native U-Net spec, run identity/name, cleared resume path
 and disabled Ming quantized-base dequantization changed. The Qwen 2.1 codec,
 global rank 64 / 16 tokens and checkpointed prefix counts of 24 were preserved.
 The actual generated YAML passes native Anima checkpoint/partition preflight
-without CUDA initialization. These CPU and API checks do not claim real-weight
-GPU acceptance. The owner subsequently stopped #173 at step 19854 after backend
+without CUDA initialization. Real-weight synthetic GPU checks are recorded below;
+dataset calibration and generation-quality acceptance remain separate. The owner
+subsequently stopped #173 at step 19854 after backend
 restart lost its child-process tracking. The restart endpoint now refuses live
 and starting registered training children with HTTP 409, preventing that loss
 through the API. Run #173 must not be resumed implicitly.
@@ -135,3 +136,70 @@ failure path retains it for retry, so it must be distinguished from a leak.
 Anima's frozen FP8 option copies its base during quantization, but full DiT FT
 does not take that path. Avoid adding a second inference model or full-canvas
 prediction graph while the owner's run is active.
+
+## Real-weight GPU checks and topology performance
+
+On 2026-10-08, the official Anima BF16 weights passed synthetic Full FT GPU
+forward/backward and AdamW8bit steps with nested U-Net, a 64-channel/16x bridge
+and global summaries. Two-region and four-region sequential backward produced
+finite gradients. The initially zero output projection received gradients on
+the first update; all global-summary parameters received nonzero gradients on
+the next update. No dataset images were read and #174 remains pending.
+
+The separate ablation below isolates full-frame DiT execution on RTX 6000 Ada:
+batch 1, BF16, AdamW8bit, checkpoint prefix 24, identical global-summary settings,
+one warmup and three measured iterations per resolution/condition. Times are
+medians. Forward includes the FP32 MSE loss; backward includes checkpoint
+recomputation. Iteration includes optimizer and synchronization. VRAM is peak
+PyTorch allocated memory after optimizer-state warmup, not Task Manager usage.
+
+| Square input | Topology | Image tokens | Forward ms | Backward ms | Iteration ms | Peak VRAM GiB |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 512 | Native | 1024 | 87.0 | 191.8 | 349.1 | 11.881 |
+| 512 | U-Net | 1024 | 93.8 | 181.8 | 350.3 | 11.885 |
+| 512 | Qwen 2.1 VAE grid | 256 | 88.4 | 174.6 | 338.0 | 11.901 |
+| 512 | Both | 256 | 93.1 | 180.0 | 344.0 | 11.889 |
+| 1024 | Native | 4096 | 249.9 | 949.9 | 1279.5 | 12.243 |
+| 1024 | U-Net | 4096 | 120.3 | 357.1 | 557.1 | 12.293 |
+| 1024 | Qwen 2.1 VAE grid | 1024 | 90.5 | 179.1 | 342.6 | 11.901 |
+| 1024 | Both | 1024 | 93.0 | 174.8 | 345.4 | 11.896 |
+
+At 1024, iteration speedups are 2.30x for U-Net, 3.73x for the swapped grid,
+and 3.70x for both. U-Net uses the two-stage, deepest-four-block default.
+Its region-weighted image-token count is 43.75% of native (8 full-resolution,
+16 half-resolution and 4 quarter-resolution blocks); attention's quadratic
+term is 32.2%, before text, shared projections and other operations. The swapped
+grid has one quarter as many image tokens: 16ch/8x becomes 64ch/16x, retaining
+the same latent element count per pixel. Both give 10.94% of native region-weighted
+image tokens and 2.01% of its image-only quadratic term. These are operation
+proxies, not whole-model FLOP counts or measured throughput predictions.
+
+U-Net retains all weights and adds skip/down/up work, so parameter count is
+unchanged and VRAM reduction is not guaranteed. These tests measured almost
+constant VRAM because weights, gradients and optimizer dominate with
+checkpointing enabled. At small grids, fixed overhead and approximately 70–75 ms
+optimizer steps dominate; combining U-Net with swap did not improve iteration
+time over swap alone at either tested size. Larger grids require separate
+measurement; do not extrapolate the quadratic proxy to wall-clock speed.
+
+Native plus global summaries has 2,091,213,696 parameters. The synthetic swapped
+configuration has 2,092,110,848 (+897,152, about 0.043%), including its changed
+input/output projections, spatial bridge and global-summary input dimensions.
+Process RSS was approximately 2.4–2.6 GiB in these isolated probes; it does not
+represent the full dataset worker/swap-buffer footprint observed in #173.
+
+The probes use synthetic latent/text inputs (five source and three target text
+tokens), center-identity spatial coefficients, and no real VAE calibration.
+They exclude VAE encode/decode, caption encoding, disk I/O, spatial partitioning
+in the ablation and the calibrated Gaussian noise complement. Therefore these
+are DiT grid/bridge measurements, not complete #174 training throughput or a
+generation-quality test. Full-run captions and calibrated bridge/noise handling
+can change the timings. The partition functional probe's cold first optimizer
+step must not be used to compare two versus four regions.
+
+Reproducible tools: `backend/tools/verify_anima_partition_gpu.py` and
+`backend/tools/benchmark_anima_topology_gpu.py`; both require explicit model,
+saved-parameter JSON and output paths. Raw local measurements are retained in
+`local/verification/anima174_gpu_partition_smoke.json` and
+`local/verification/anima174_topology_benchmark.json`. The processes exited and
+GPU memory returned to approximately 1.8 GiB baseline; no training was started.

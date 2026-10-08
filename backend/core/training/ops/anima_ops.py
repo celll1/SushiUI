@@ -625,6 +625,8 @@ def train_step(
                     debug_data['reference_image_path'] = first_ref
 
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
+            from core.models.anima.training_debug import queue_debug_previews
+            queue_debug_previews(trainer, debug_save_path, debug_data)
             del predicted_latent, debug_recon_per_element, debug_recon_per_sample
         except Exception as _dbg_e:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")

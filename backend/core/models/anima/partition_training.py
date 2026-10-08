@@ -192,4 +192,6 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                 if reference:
                     data["reference_image_path"] = reference
             torch.save(data, path / f"latents_t{float(sigma[0]):.4f}.pt")
+            from .training_debug import queue_debug_previews
+            queue_debug_previews(trainer, path, data)
     return tuple(float(value) for value in totals)

@@ -47,6 +47,7 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
              down_factor=[2, 2], **OPERATORS)], native_config(model))
     restore_topology(model, spec)
     config = dict(dit_partition_training_enabled=True, dit_partition_mode="fixed",
+        qwen_debug_latent_view="pixel",
         dit_partition_fixed_count=4, dit_partition_halo_tokens=2,
         dit_partition_global_adapter_enabled=True, dit_partition_global_rank=4,
         dit_partition_global_tokens=2, dit_gradient_checkpointing_blocks=3,
@@ -87,6 +88,10 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
     assert data["partition_count"] == 4 and data["caption"] == "general synthetic"
     torch.testing.assert_close(data["predicted_latent"], data["noisy_latents"] - .3*data["predicted_velocity"])
     assert torch.isfinite(data["predicted_latent"]).all()
+    pending = owner._pending_anima_debug_previews
+    assert [name for name, _ in pending["previews"]] == ["target", "noisy", "pred_x0"]
+    assert all(latent.device.type == "cpu" and not latent.requires_grad
+               for _, latent in pending["previews"])
     assert owner._pending_concept_sample_loss.shape == (2,)
     assert metrics["anima_partition_count"] == 4
     assert metrics["anima_partition_checkpoint_blocks"] == 5

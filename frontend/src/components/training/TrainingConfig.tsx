@@ -8667,9 +8667,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </p>
             </div>
           )}
-          {debugLatents && (isQwenImage21Model || isMingImageModel) && (
+          {debugLatents && (isQwenImage21Model || isMingImageModel || isAnimaModel(baseModelPath)) && (
             <div>
-              <label className="block text-sm text-gray-400 mb-1.5">{isMingImageModel ? "Ming Debug Comparison" : "Qwen Debug Comparison"}</label>
+              <label className="block text-sm text-gray-400 mb-1.5">{isMingImageModel ? "Ming" : isAnimaModel(baseModelPath) ? "Anima" : "Qwen"} Debug Comparison</label>
               <select
                 value={params.qwen_debug_latent_view ?? (trainingDefaults?.qwen_debug_latent_view as string | undefined) ?? ""}
                 onChange={(e) => updateParam("qwen_debug_latent_view", e.target.value as "latent" | "pixel")}

@@ -66,6 +66,7 @@ def _make_trainer(transformer):
         timestep_sampler=None,
         mixed_precision=False,
         transformer=transformer,
+        transformer_original=transformer,
         reconstruction_loss_weight=0.0,
         tread_config=None,
         block_skip_config=None,
@@ -100,6 +101,44 @@ def _run(transformer, debug_save_path, sigma=0.3, **kwargs):
 def test_no_debug_path_writes_nothing(tmp_path):
     _run(ConstantVelocityDiT(), None)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_pixel_previews_are_deferred_and_use_exclusive_vae_residency(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from PIL import Image
+    from core.models.anima.training_debug import queue_debug_previews, flush_pending_debug_previews
+    import core.training.debug_decode_residency as residency
+    import core.models.anima.anima_pipeline_ops as pipeline
+    trainer = SimpleNamespace(config={"qwen_debug_latent_view": "pixel"}, vae=object(),
+                              vae_dtype=torch.float32, device="cpu")
+    data = {key: torch.zeros(2, 64, 4, 4) for key in
+            ("latents", "noisy_latents", "predicted_latent")}
+    data["timestep"] = .3
+    active, calls = [], []
+    @contextmanager
+    def exclusive(owner, vae, **kwargs):
+        assert vae is trainer.vae and kwargs["dtype"] == torch.float32
+        active.append(True)
+        try:
+            yield
+        finally:
+            active.pop()
+    def decode(vae, latent):
+        assert active and latent.shape == (1, 64, 4, 4)
+        calls.append(1)
+        return [Image.new("RGB", (8, 8))]
+    monkeypatch.setattr(residency, "debug_decode_residency", exclusive)
+    monkeypatch.setattr(pipeline, "vae_decode_latents", decode)
+    queue_debug_previews(trainer, tmp_path, data)
+    assert calls == []
+    flush_pending_debug_previews(trainer)
+    assert len(calls) == 3 and not active
+    assert {path.name for path in tmp_path.glob("*.webp")} == {
+        "decode_t0.3000_target.webp", "decode_t0.3000_noisy.webp", "decode_t0.3000_pred_x0.webp"}
+    assert not hasattr(trainer, "_pending_anima_debug_previews")
+    trainer.config["qwen_debug_latent_view"] = "latent"
+    queue_debug_previews(trainer, tmp_path, data)
+    assert not hasattr(trainer, "_pending_anima_debug_previews")
 
 
 def test_debug_path_writes_dump_with_endpoint_keys(tmp_path):

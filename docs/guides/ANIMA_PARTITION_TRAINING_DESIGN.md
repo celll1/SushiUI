@@ -307,3 +307,18 @@ not a measured #174 wall-time speedup. Input loading, preprocessing, input
 hashing and component residency transfers still execute; all-hit windows do
 not yet skip GPU residency transitions. No owner images or sidecars are read
 for these tests, and no training run is started by the verification.
+
+### Decoded training debug previews
+
+Anima now consumes the existing `qwen_debug_latent_view` setting in both native
+and partitioned training. `pixel` queues target/noisy/predicted-x0 tensors on
+CPU and decodes them after backward through the installed native or swapped
+VAE. The shared exclusive debug-decode residency guard evicts training
+components and optimizer state during decode, then restores them. The monitor
+already prefers the matching `decode_t*_*.webp` sidecars; no REST payload change
+is needed. TrainingConfig exposes the comparison setting for Anima too.
+
+Previously Anima saved only `.pt` latents regardless of this setting. Those
+historical steps retain their latent-channel previews; this fix applies to new
+debug dumps. CPU synthetic tests cover deferred decode, three sidecar names,
+latent-only mode and both ordinary and partitioned dump construction.

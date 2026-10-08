@@ -2253,9 +2253,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       return;
     }
 
-    if (isMingImageModel && params.dit_partition_global_adapter_enabled &&
+    if ((isMingImageModel || isAnimaModel(baseModelPath)) && params.dit_partition_global_adapter_enabled &&
         (!params.dit_partition_training_enabled || !trainUnet)) {
-      setError("Ming global summaries require tiled training and DiT training. Enable both or disable global summaries.");
+      setError("Global summaries require tiled training and DiT training. Enable both or disable global summaries.");
       return;
     }
 
@@ -6529,7 +6529,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            {(isQwenImage21Model || isMingImageModel) && (
+            {(isQwenImage21Model || isMingImageModel || isAnimaModel(baseModelPath)) && (
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <div className="flex items-center space-x-2">
                   <input
@@ -6547,7 +6547,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   Processes every image region before one optimizer step and may lower peak activation,
                   but removes target attention between regions. This is not numerically equivalent to a full forward.
                 </p>
-                {isMingImageModel && params.dit_partition_global_adapter_enabled &&
+                {(isMingImageModel || isAnimaModel(baseModelPath)) && params.dit_partition_global_adapter_enabled &&
                   (!params.dit_partition_training_enabled || !trainUnet) && (
                     <p className="text-xs text-amber-400">
                       Global summaries require tiled training and DiT training. Restore both settings or disable global summaries before submitting.
@@ -6612,17 +6612,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="number"
                     min={0}
-                    max={isMingImageModel ? undefined : 32}
+                    max={isMingImageModel ? undefined : isAnimaModel(baseModelPath) ? 28 : 32}
                     placeholder="auto"
                     value={params.dit_gradient_checkpointing_blocks ?? ""}
                     onChange={(e) => updateParam(
                       "dit_gradient_checkpointing_blocks",
-                      e.target.value === "" ? null : Math.max(0, isMingImageModel ? (parseInt(e.target.value) || 0) : Math.min(32, parseInt(e.target.value) || 0))
+                      e.target.value === "" ? null : Math.max(0, isMingImageModel ? (parseInt(e.target.value) || 0) : Math.min(isAnimaModel(baseModelPath) ? 28 : 32, parseInt(e.target.value) || 0))
                     )}
                     className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
                   />
                   <p className="text-xs text-gray-500 mt-1">
-                    {isMingImageModel ? "When checkpointing is enabled, empty checkpoints all main blocks. Refiners follow the global checkpointing switch; the server checks the native main-stream depth." : "Empty uses the Qwen resolution policy (16/24/32). Lower values trade VRAM for less recomputation only when measured safe."}
+                    {isAnimaModel(baseModelPath) ? "Empty preserves the Anima checkpointing mode on all blocks. The server validates the saved model's native depth." : isMingImageModel ? "When checkpointing is enabled, empty checkpoints all main blocks. Refiners follow the global checkpointing switch; the server checks the native main-stream depth." : "Empty uses the Qwen resolution policy (16/24/32). Lower values trade VRAM for less recomputation only when measured safe."}
                   </p>
                 </div>
                 {params.dit_partition_training_enabled && (
@@ -6681,13 +6681,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="number"
                         min={0}
-                        max={isMingImageModel ? undefined : 32}
+                        max={isMingImageModel ? undefined : isAnimaModel(baseModelPath) ? 28 : 32}
                         placeholder="auto"
                         value={params.dit_partition_gradient_checkpointing_blocks ?? ""}
                         onChange={(e) => {
                           updateParam(
                             "dit_partition_gradient_checkpointing_blocks",
-                            e.target.value === "" ? null : Math.max(0, isMingImageModel ? (parseInt(e.target.value) || 0) : Math.min(32, parseInt(e.target.value) || 0))
+                            e.target.value === "" ? null : Math.max(0, isMingImageModel ? (parseInt(e.target.value) || 0) : Math.min(isAnimaModel(baseModelPath) ? 28 : 32, parseInt(e.target.value) || 0))
                           );
                         }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
@@ -6696,7 +6696,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         Empty preserves the resolved full-frame checkpoint count; a lower override can increase peak VRAM. {isQwenImage21Model && "Zero was slower and larger in the SM89 probe."}
                       </p>
                     </div>
-                    {(isQwenImage21Model || isMingImageModel) && <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
+                    {(isQwenImage21Model || isMingImageModel || isAnimaModel(baseModelPath)) && <label className="flex items-center gap-2 self-end pb-1 text-xs text-gray-300 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={params.dit_partition_profile ?? DEFAULT_PARAMS.dit_partition_profile}
@@ -6735,7 +6735,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           />
                         </div>
                         <p className="col-span-2 text-xs text-gray-500">
-                          Carries learned global content into each tile. {isMingImageModel ? "Saved with LoRA or full-parameter checkpoints; Layer summaries include every target layer. Full-frame generation ignores the summary branch." : "Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch."}
+                          Carries learned global content into each tile. {isAnimaModel(baseModelPath) ? "Saved with full-parameter checkpoints and restored for full-frame generation." : isMingImageModel ? "Saved with LoRA or full-parameter checkpoints; Layer summaries include every target layer. Full-frame generation ignores the summary branch." : "Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch."}
                         </p>
                       </>
                     )}

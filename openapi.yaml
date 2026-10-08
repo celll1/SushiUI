@@ -27052,7 +27052,7 @@ components:
           enum: [fixed, token_threshold]
           default: token_threshold
           description: >-
-            Fixed partitions every Qwen or Ming image. Ming counts native target patch tokens across all Layer frames. Token threshold uses the full
+            Fixed partitions every Qwen, Ming or Anima image. Anima supports residual U-Net and target-native VAE swap with trainable global summaries. Ming counts native target patch tokens across all Layer frames. Token threshold uses the full
             image through the limit, two regions above it, and four regions
             at four times the limit or above.
         dit_partition_fixed_count:
@@ -27092,7 +27092,7 @@ components:
         dit_partition_profile:
           type: boolean
           default: false
-          description: Opt-in synchronized CUDA forward/backward timing for Qwen/Ming partition training; null guidance forwards are included. CPU emits host wall time only. Profiling adds synchronization overhead; CUDA peak memory is process-wide and is not reset.
+          description: Opt-in synchronized CUDA forward/backward timing for Qwen/Ming/Anima partition training; null guidance forwards are included where applicable. CPU emits host wall time only. Profiling adds synchronization overhead; CUDA peak memory is process-wide and is not reset.
         dit_partition_global_adapter_enabled:
           type: boolean
           default: false

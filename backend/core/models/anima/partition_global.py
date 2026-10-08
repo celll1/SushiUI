@@ -103,7 +103,7 @@ def validate_loaded(model, missing, unexpected):
 def configure_training(model, config):
     from api.param_defaults import TRAINING_DEFAULTS
     existing = getattr(model, NAME, None)
-    if not config.get("dit_partition_global_adapter_enabled", False):
+    if not config.get("dit_partition_global_adapter_enabled", TRAINING_DEFAULTS["dit_partition_global_adapter_enabled"]):
         return existing
     rank = config.get("dit_partition_global_rank", TRAINING_DEFAULTS["dit_partition_global_rank"])
     tokens = config.get("dit_partition_global_tokens", TRAINING_DEFAULTS["dit_partition_global_tokens"])

@@ -1636,6 +1636,15 @@ def _apply_dit_checkpoint_contract(
         depth = inspect_artifact(base_model_path, require_weights=False).configs["transformer"]["n_layers"]
         block_limit(train_config, depth)
         block_limit(train_config, depth, partition=True)
+    if architecture == "anima":
+        from core.models.anima.residual_unet import preflight_artifact
+        from core.models.anima.checkpointing import block_limit
+        from core.models.anima.partition_training import validate_training_options
+        _, native = preflight_artifact(base_model_path)
+        depth = native["num_blocks"]
+        block_limit(train_config, depth)
+        block_limit(train_config, depth, partition=True)
+        validate_training_options(train_config)
     supports_partition = bool(
         getattr(handler, "supports_dit_partition_training", False)) if handler else False
     if canonical_base is not None and depth is None:

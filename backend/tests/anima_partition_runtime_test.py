@@ -59,6 +59,8 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
     owner = SimpleNamespace(config=config, transformer=model, device=torch.device("cpu"),
         training_dtype=torch.float32, reconstruction_loss_weight=.2, mixed_precision=False,
         _collect_concept_sample_loss=True, _current_epoch=2, _current_batch_position=5)
+    metrics = {}
+    owner.log_extra_metric = lambda name, value: metrics.__setitem__(name, value)
     clean = torch.randn(2, channels, 32, 48)
     noise, sigma = torch.randn_like(clean), torch.tensor([.3, .7])
     text = torch.randn(2, 3, 12, requires_grad=True)
@@ -86,3 +88,7 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
     torch.testing.assert_close(data["predicted_latent"], data["noisy_latents"] - .3*data["predicted_velocity"])
     assert torch.isfinite(data["predicted_latent"]).all()
     assert owner._pending_concept_sample_loss.shape == (2,)
+    assert metrics["anima_partition_count"] == 4
+    assert metrics["anima_partition_checkpoint_blocks"] == 5
+    assert metrics["anima_partition_wall_ms"] > 0
+    assert "anima_partition_forward_ms" not in metrics

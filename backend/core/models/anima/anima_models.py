@@ -348,7 +348,8 @@ class VideoRopePosition3DEmb(VideoPositionEmb):
         self.dim_spatial_range = torch.arange(0, dim_h, 2)[: (dim_h // 2)].float().to(self.dim_spatial_range.device) / dim_h
         self.dim_temporal_range = torch.arange(0, dim_t, 2)[: (dim_t // 2)].float().to(self.dim_spatial_range.device) / dim_t
 
-    def generate_embeddings(self, B_T_H_W_C, fps=None, h_ntk_factor=None, w_ntk_factor=None, t_ntk_factor=None):
+    def generate_embeddings(self, B_T_H_W_C, fps=None, h_ntk_factor=None, w_ntk_factor=None, t_ntk_factor=None,
+                            spatial_origin=(0, 0)):
         h_ntk_factor = h_ntk_factor if h_ntk_factor is not None else self.h_ntk_factor
         w_ntk_factor = w_ntk_factor if w_ntk_factor is not None else self.w_ntk_factor
         t_ntk_factor = t_ntk_factor if t_ntk_factor is not None else self.t_ntk_factor
@@ -362,9 +363,13 @@ class VideoRopePosition3DEmb(VideoPositionEmb):
         temporal_freqs = 1.0 / (t_theta ** self.dim_temporal_range)
 
         B, T, H, W, _ = B_T_H_W_C
-        assert H <= self.max_h and W <= self.max_w
-        half_emb_h = torch.outer(self.seq[:H], h_spatial_freqs)
-        half_emb_w = torch.outer(self.seq[:W], w_spatial_freqs)
+        top, left = spatial_origin
+        if any(type(value) is not int or value < 0 for value in (top, left)):
+            raise ValueError("Anima RoPE spatial origins must be nonnegative integers")
+        if top + H > self.max_h or left + W > self.max_w:
+            raise ValueError("Anima RoPE region exceeds the native position range")
+        half_emb_h = torch.outer(self.seq[top:top+H], h_spatial_freqs)
+        half_emb_w = torch.outer(self.seq[left:left+W], w_spatial_freqs)
 
         if self.enable_fps_modulation:
             uniform_fps = (fps is None) or (fps.min() == fps.max())

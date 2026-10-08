@@ -114,7 +114,9 @@ async def scan_dataset_index(
     caption_exts = {".txt", ".json"}
 
     from utils.taglist_loader import load_all_tags
-    from utils.caption_detector import classify_field, scan_json_fields, read_exif_captions
+    from utils.caption_detector import (
+        classify_field, scan_json_fields, read_exif_captions, normalize_caption_unicode,
+    )
     print(f"[Dataset Scan] Loading taglist for format detection...")
     # Gelbooru supplement + alias table improve both format detection (match rate)
     # and category resolution; graceful when taglist_gel/ is absent.
@@ -171,6 +173,8 @@ async def scan_dataset_index(
         every rescan (which previously duplicated those rows). Returns True when a
         new row was added, False when an existing row was updated.
         """
+        result = {key: normalize_caption_unicode(value) if isinstance(value, str) else value
+                  for key, value in result.items()}
         ctype = result["caption_type"]
         _is_tags = result["is_tags_format"]
         _tag_data = _build_tag_data_json(result["content"]) if _is_tags else None
@@ -668,7 +672,7 @@ async def scan_dataset_index(
                             # TXT file: Read content and detect format
                             with open(caption_path, 'r', encoding='utf-8') as f:
                                 _ts = time.time()
-                                content = f.read().strip()
+                                content = normalize_caption_unicode(f.read().strip())
                                 _txr += time.time() - _ts
                                 if content:
                                     _ts = time.time()
@@ -751,6 +755,8 @@ async def scan_dataset_index(
                             _ups += time.time() - _ts
 
                     except Exception as e:
+                        if not db.is_active:
+                            raise
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
                 _ts = time.time()
@@ -760,7 +766,7 @@ async def scan_dataset_index(
                             _, sext = os.path.splitext(suffix_path)
                             if sext.lower() == '.txt':
                                 with open(suffix_path, 'r', encoding='utf-8') as f:
-                                    content = f.read().strip()
+                                    content = normalize_caption_unicode(f.read().strip())
                                 if content:
                                     field_category, is_tags_format, match_rate = classify_field(
                                         suffix, content, taglist
@@ -797,6 +803,8 @@ async def scan_dataset_index(
                                         captions_found += 1
                                         _fstat_bump(suffix, added=True)
                         except Exception as e:
+                            if not db.is_active:
+                                raise
                             print(f"[Dataset Scan] Failed to read suffix caption {suffix_path}: {e}")
                 _sfx += time.time() - _ts
 
@@ -809,6 +817,8 @@ async def scan_dataset_index(
                             else:
                                 captions_updated += 1
                     except Exception as e:
+                        if not db.is_active:
+                            raise
                         print(f"[Dataset Scan] Failed to read EXIF captions for {image_path}: {e}")
                 _exif += time.time() - _ts
 
@@ -840,6 +850,8 @@ async def scan_dataset_index(
                           f"exif {_exif*1000:.0f}) json={_has_json} ncaps={len(caption_files)} {os.path.basename(image_path)}")
 
             except Exception as e:
+                if not db.is_active:
+                    raise
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
 
             # Periodic commit: flush accumulated changes and let SQLAlchemy release
@@ -852,12 +864,9 @@ async def scan_dataset_index(
             # set bounded and per-item cost flat. Partial progress is committed,
             # which also matches the cancel/skip-commits-partial behaviour.
             if files_processed > 0 and files_processed % 300 == 0:
-                try:
-                    if items_found or captions_found or captions_updated:
-                        bump_scan_revision()
-                    db.commit()
-                except Exception as _ce:
-                    print(f"[Dataset Scan] Periodic commit failed: {_ce}")
+                if items_found or captions_found or captions_updated:
+                    bump_scan_revision()
+                db.commit()
 
     # Run scan in thread pool to avoid blocking event loop (enables WebSocket progress updates)
     # SQLite is configured with check_same_thread=False, so cross-thread access is safe

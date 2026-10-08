@@ -11,6 +11,13 @@ import re
 from typing import Tuple, List, Dict, Any
 
 
+def normalize_caption_unicode(value: str) -> str:
+    """Join escaped surrogate pairs and replace lone surrogates for UTF-8 storage."""
+    if not re.search(r"[\ud800-\udfff]", value):
+        return value
+    return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+
+
 def classify_field(field_name: str, content: str, taglist: set) -> Tuple[str, bool, float]:
     """
     Classify field as: 'metadata', 'tags', or 'natural_language'
@@ -314,7 +321,7 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
     found_tags_field = False  # Track if we've already found a tags field
 
     for key, value in json_data.items():
-        field_path = f"{prefix}.{key}" if prefix else key
+        field_path = normalize_caption_unicode(f"{prefix}.{key}" if prefix else key)
 
         if not prefix and key == "_sushi_compact_caption":
             continue
@@ -324,7 +331,8 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
                     and isinstance(metadata.get("caption_type"), str)
                     and metadata["caption_type"].strip() and metadata["caption_type"] != "tags"
                     and isinstance(value, str)):
-                results.append({"caption_type": metadata["caption_type"], "content": value,
+                results.append({"caption_type": normalize_caption_unicode(metadata["caption_type"]),
+                                "content": normalize_caption_unicode(value),
                                 "field_category": "training", "is_tags_format": False,
                                 "tag_match_rate": 0.0, "source_field": "compact_caption"})
                 continue
@@ -343,7 +351,7 @@ def scan_json_fields(json_data: Dict[str, Any], taglist: set, prefix: str = "") 
         if isinstance(value, list):
             continue
 
-        content = str(value)
+        content = normalize_caption_unicode(str(value))
 
         # Classify field
         field_category, is_tags_format, match_rate = classify_field(field_path, content, taglist)
@@ -388,7 +396,7 @@ def _scan_json_fields_internal(json_data: Dict[str, Any], taglist: set, prefix: 
     results = []
 
     for key, value in json_data.items():
-        field_path = f"{prefix}.{key}" if prefix else key
+        field_path = normalize_caption_unicode(f"{prefix}.{key}" if prefix else key)
 
         if isinstance(value, dict):
             nested_results, found_tags_in_nested = _scan_json_fields_internal(
@@ -402,7 +410,7 @@ def _scan_json_fields_internal(json_data: Dict[str, Any], taglist: set, prefix: 
         if isinstance(value, list):
             continue
 
-        content = str(value)
+        content = normalize_caption_unicode(str(value))
         field_category, is_tags_format, match_rate = classify_field(field_path, content, taglist)
 
         if is_tags_format and field_category == "training":

@@ -1694,6 +1694,9 @@ def _prepare_training_process_config(
         for key in _TRAINING_SCOPE_FLAGS:
             _normalize_scope_flag(train_config, key, key == "train_unet")
         preflight_training(train_config, method=network_type)
+    if ModelLoader.detect_model_type(base_model_path) == "anima":
+        from core.models.anima.partition_training import validate_training_options
+        validate_training_options(train_config, method=network_type)
     mode, topology = validate_training_rewiring(
         train_config, ModelLoader.detect_model_type(base_model_path))
     train_config["dit_rewiring_mode"] = mode

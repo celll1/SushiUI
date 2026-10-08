@@ -100,8 +100,22 @@ rewiring gate, frontend controls and OpenAPI now expose the implementation.
 Combined full-parameter artifacts preserve every model tensor exactly. Restored
 full-frame and region predictions agree within FP32 rounding tolerance (1e-6),
 and named optimizer moments restore even with reversed parameter traversal.
-CPU tests do not establish real-model convergence or performance. Run #174
-creation and final runtime acceptance remain pending.
+Trainable Anima global summaries currently require Full FT; LoRA cannot declare
+new summary weights because its artifact writer does not yet export them.
+CPU tests do not establish real-model convergence or performance.
+
+Run #174 was created through the public API as
+`Anima_Full_UNet_2stage_deep4_Qwen21VAE_Global`, pending and not started. A fresh
+#173 settings read supplied 20 epochs and dataset #38. Saved-parameter comparison
+found only base model, native U-Net spec, run identity/name, cleared resume path
+and disabled Ming quantized-base dequantization changed. The Qwen 2.1 codec,
+global rank 64 / 16 tokens and checkpointed prefix counts of 24 were preserved.
+The actual generated YAML passes native Anima checkpoint/partition preflight
+without CUDA initialization. These CPU and API checks do not claim real-weight
+GPU acceptance. The owner subsequently stopped #173 at step 19854 after backend
+restart lost its child-process tracking. The restart endpoint now refuses live
+and starting registered training children with HTTP 409, preventing that loss
+through the API. Run #173 must not be resumed implicitly.
 
 ## DRAM investigation
 

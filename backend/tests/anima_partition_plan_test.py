@@ -103,6 +103,11 @@ def test_api_config_keeps_anima_partition_global_and_checkpoint_settings():
     with pytest.raises(ValueError, match="crop_decode"):
         _build_train_section(bad, total_steps=1, epochs=None,
             train_unet=True, train_text_encoder=False, arch="anima")
+    bad = request.model_dump()
+    bad["training_method"] = "lora"
+    with pytest.raises(ValueError, match="full_finetune"):
+        _build_train_section(bad, total_steps=1, epochs=None,
+            train_unet=True, train_text_encoder=False, arch="anima")
 
 
 class PointwiseModel(torch.nn.Module):

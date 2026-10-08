@@ -11053,6 +11053,11 @@ async def save_generation_settings(
 @router.post("/system/restart-backend")
 async def restart_backend(background_tasks: BackgroundTasks):
     """Restart the backend server"""
+    active = [str(run_id) for run_id in tuple(training_process_manager.processes)
+              if training_process_manager.is_live(run_id)]
+    if active:
+        raise HTTPException(status_code=409, detail=
+            f"Stop training run(s) {', '.join(active)} before restarting the backend; live children would lose process tracking.")
     try:
         python_exe = sys.executable
         backend_dir = os.path.dirname(os.path.dirname(__file__))

@@ -5714,10 +5714,20 @@ paths:
     post:
       tags: [system]
       summary: Restart backend server
+      description: Refuses restart while a training child is live or registered for startup, so process tracking cannot be orphaned. Stop training first.
       operationId: restartBackend
       responses:
         '200':
           description: Restart initiated
+        '409':
+          description: Training must be stopped before backend restart
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail: {type: string}
+              example: {detail: 'Stop training run(s) 173 before restarting the backend; live children would lose process tracking.'}
 
   /system/restart-frontend:
     post:
@@ -27096,7 +27106,7 @@ components:
         dit_partition_global_adapter_enabled:
           type: boolean
           default: false
-          description: Enable the architecture adapter's trainable full-canvas summary path when supported.
+          description: Enable the architecture adapter's trainable full-canvas summary path when supported. Anima currently requires full_finetune; its global weights are saved with the full checkpoint and used in generation.
         dit_partition_global_rank:
           type: integer
           minimum: 1

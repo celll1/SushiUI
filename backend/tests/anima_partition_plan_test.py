@@ -79,6 +79,32 @@ def test_conflicting_legacy_partition_settings_fail():
         region_count(trainer(qwen_partition_fixed_count=2), torch.zeros(1, 64, 48, 80))
 
 
+def test_api_config_keeps_anima_partition_global_and_checkpoint_settings():
+    from unittest.mock import patch
+    from api.routes import TrainingRunCreateRequest
+    from core.training.training_config import _build_train_section
+    from core.training.arch.anima import AnimaArchHandler
+    with patch("core.model_loader.ModelLoader.detect_model_type", return_value="anima"):
+        request = TrainingRunCreateRequest(training_method="full_finetune", base_model_path="anima.safetensors",
+            total_steps=1, dit_rewiring_mode="configure", dit_partition_training_enabled=True,
+            dit_partition_global_adapter_enabled=True, dit_partition_global_rank=64,
+            dit_partition_global_tokens=16, dit_gradient_checkpointing_blocks=24,
+            dit_partition_gradient_checkpointing_blocks=24, train_unet=True)
+    section = _build_train_section(request.model_dump(), total_steps=1, epochs=None,
+        train_unet=True, train_text_encoder=False, arch="anima")
+    for name in ("dit_partition_training_enabled", "dit_partition_global_adapter_enabled",
+                 "dit_partition_global_rank", "dit_partition_global_tokens",
+                 "dit_gradient_checkpointing_blocks", "dit_partition_gradient_checkpointing_blocks"):
+        assert section[name] == getattr(request, name)
+    assert AnimaArchHandler().supports_dit_partition_training
+    assert AnimaArchHandler().dit_partition_adapter() is not None
+    bad = request.model_dump()
+    bad["crop_decode_loss_enable"] = True
+    with pytest.raises(ValueError, match="crop_decode"):
+        _build_train_section(bad, total_steps=1, epochs=None,
+            train_unet=True, train_text_encoder=False, arch="anima")
+
+
 class PointwiseModel(torch.nn.Module):
     def __init__(self):
         super().__init__()

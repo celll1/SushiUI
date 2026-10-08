@@ -20,6 +20,9 @@ def config_value(config, name):
 
 
 def validate_training_options(config):
+    if config.get("dit_partition_global_adapter_enabled", TRAINING_DEFAULTS["dit_partition_global_adapter_enabled"]):
+        if not config_value(config, "training_enabled") or not config.get("train_unet", TRAINING_DEFAULTS["train_unet"]):
+            raise ValueError("Anima global summaries require partition training and train_unet")
     if not config_value(config, "training_enabled"):
         return
     for name in ("repa_enable", "tread_enable", "blockskip_enable", "crop_decode_loss_enable"):
@@ -107,12 +110,15 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
     stitched = (torch.empty_like(clean[:1], device="cpu", dtype=torch.float32)
                 if debug_save_path is not None or capture else None)
     debug_recon = clean.new_zeros((), dtype=torch.float32)
+    from .partition_timing import AnimaPartitionTiming
+    timing = AnimaPartitionTiming(trainer, clean)
     with partition_scope(model, trainer.config):
+        checkpoint_blocks = sum(block.gradient_checkpoint_mode != "none" for block in model.blocks) if model.training else 0
         for index, region in enumerate(plan.regions):
             local = crop(noisy, region.input)
             context = (torch.autocast(device_type=clean.device.type, dtype=trainer.training_dtype)
                        if trainer.mixed_precision else nullcontext())
-            with context:
+            with timing.measure("forward"), context:
                 prediction = trainer.transformer(
                     x=local.unsqueeze(2), timesteps=sigma, context=prompt_embeds,
                     padding_mask=local.new_zeros(local.shape[0], 1, *local.shape[-2:]),
@@ -140,15 +146,17 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
             fraction = region.core.tokens / plan.full_tokens
             scaled = combined.mean() * fraction * backward_scale
             retain = shared_graph and index + 1 < len(plan.regions)
-            if getattr(trainer, "use_grad_scaler", False):
-                trainer.grad_scaler.scale(scaled).backward(retain_graph=retain)
-            else:
-                scaled.backward(retain_graph=retain)
+            with timing.measure("backward"):
+                if getattr(trainer, "use_grad_scaler", False):
+                    trainer.grad_scaler.scale(scaled).backward(retain_graph=retain)
+                else:
+                    scaled.backward(retain_graph=retain)
             totals += fraction * torch.stack((combined.mean().detach(), per_item.mean().detach(),
                                              recon_items.mean().detach() if weight > 0 else totals.new_zeros(())))
             pred_items += fraction * per_item.detach()
             loss_items += fraction * combined.detach()
             del prediction, expected, per_item, combined, scaled, recon_items
+    timing.finish(plan, checkpoint_blocks)
     trainer._last_loss_per_sample = pred_items
     if getattr(trainer, "_collect_concept_sample_loss", False):
         trainer._pending_concept_sample_loss = loss_items

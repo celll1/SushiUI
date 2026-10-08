@@ -95,7 +95,29 @@ adapter, nested U-Net, global adapter and 64-channel/16x target-native VAE bridg
 
 Partition execution currently refuses REPA, TREAD, BlockSkip, stochastic block
 dropout and crop-decode auxiliary loss rather than silently dropping them. Run
-#173 has these options disabled. Capability/API/UI gates, combined artifact and
-resume verification and run #174 creation remain pending. The implementation is
-not yet advertised as an executable training capability. CPU tests do not
-establish real-model convergence or performance.
+#173 has these options disabled. The handler, config converter, runner preflight,
+rewiring gate, frontend controls and OpenAPI now expose the implementation.
+Combined full-parameter artifacts preserve every model tensor exactly. Restored
+full-frame and region predictions agree within FP32 rounding tolerance (1e-6),
+and named optimizer moments restore even with reversed parameter traversal.
+CPU tests do not establish real-model convergence or performance. Run #174
+creation and final runtime acceptance remain pending.
+
+## DRAM investigation
+
+A read-only snapshot on 2026-10-08 measured 57.31 GiB working set in the active
+#173 training process, versus 4.50 GiB in the backend process. This is process
+resident memory, not a tensor ownership census or proof of a leak. The current
+run uses asynchronous activation offload with a 2048 MiB pinned arena budget.
+That arena alone does not explain the training process's footprint.
+
+Prioritize an ownership census at encoding, backward, optimizer-step and save
+boundaries: CPU weights and mirrors, optimizer state, activation arena, text and
+latent swap buffers, and checkpoint staging. Account unique storage rather than
+tensor references. Inspect high-water buffers and in-flight transfers before
+reducing prefetch depth; a smaller buffer may increase encoder swap frequency.
+Successful shared VAE calibration deletes its retained source-VAE owner; the
+failure path retains it for retry, so it must be distinguished from a leak.
+Anima's frozen FP8 option copies its base during quantization, but full DiT FT
+does not take that path. Avoid adding a second inference model or full-canvas
+prediction graph while the owner's run is active.

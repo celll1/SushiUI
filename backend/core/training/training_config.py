@@ -497,6 +497,9 @@ def _build_train_section(
 
     from core.rewiring.training import validate_training_rewiring
     mode, topology = validate_training_rewiring(p, arch)
+    if arch == "anima":
+        from core.models.anima.partition_training import validate_training_options
+        validate_training_options(p)
     train["dit_rewiring_mode"] = mode
     train["dit_rewiring_spec"] = topology
 

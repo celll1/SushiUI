@@ -12,6 +12,12 @@ from core.training.components.wiring import ANIMA_WIRING
 
 class AnimaArchHandler(ArchHandler):
     cfg_null_stage = "caption"
+    dit_checkpoint_block_count = 28
+    supports_dit_partition_training = True
+
+    def dit_partition_adapter(self):
+        from core.models.anima.partition import AnimaPartitionAdapter
+        return AnimaPartitionAdapter()
 
     # Its forward installs these on the inner module (ops/anima_ops.py).
     consumes_block_loop_features = True

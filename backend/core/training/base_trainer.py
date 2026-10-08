@@ -15073,6 +15073,11 @@ class BaseTrainer(ABC):
         generate an identical list under any of 8/16/32 in any case.
         """
         alignment = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
+        if getattr(self, "is_anima", False):
+            import math
+            from core.models.anima.vae_alignment import generation_token_stride
+            # The handler can be recreated after swap; the installed codec owns geometry.
+            alignment = math.lcm(alignment, generation_token_stride(self.transformer))
         if any(getattr(self, flag, False) for flag in ("is_ming_image_01", "is_qwen_image_21", "is_zimage", "is_krea2", "is_lens", "is_flux2", "is_anima", "is_minit2i")):
             import math
             from core.models.components.latent_adapter import topology_alignment

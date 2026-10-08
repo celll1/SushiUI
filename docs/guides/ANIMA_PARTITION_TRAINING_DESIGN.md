@@ -245,3 +245,65 @@ Raw results: `local/verification/anima174_batch_benchmark.json`. Reproduce using
 the benchmark tool with `--samples 3 --batches 1 2 4 --resolutions 1024` plus the
 explicit model, params and output arguments. The tool now requires batch sizes
 and resolutions explicitly. #174 stays pending; GPU memory returned to 1.8 GiB.
+
+### Frozen encoder reuse (2026-10-08)
+
+Concept sample multipliers expose an item repeatedly inside nearby batch
+windows. Previously the shared swap producer encoded every occurrence and
+discarded its result at the next refill. The latent consumer remains keyed by
+image path, so 603 encoding calls could leave only 187 entries. Ming's native
+producer similarly discarded results after consuming each batch position.
+
+The implementation plan and completed sequence are:
+
+1. Introduce one trainer-owned CPU LRU with a tensor-payload budget and entry
+   limit, without adding a disk cache or changing REST/config parameters.
+2. Reuse frozen, eval-mode VAE posterior parameters for identical processed
+   pixels; keep the native sampling and normalization operations outside the
+   cache. VAE swaps wrap the raw codec inside the normalized facade.
+3. Reuse frozen TE outputs by resolved caption, lyrics, null-condition flag,
+   producer identity, precision and run configuration. Preserve occurrence
+   caption processing; shuffled/dropped captions are different keys.
+4. Deduplicate Anima's true CPU-prefetch TE batch misses, and wire Ming's
+   native swap and CPU-prefetch conditioning producers by actual processed
+   token/vision inputs and dimensions. Single/batched TE payload formats use
+   separate namespaces.
+5. Check RNG, invalidation, cancellation, ownership, capacity and existing
+   concept-plan/resume paths with synthetic inputs. Restore original module
+   modes after Anima, SD/SDXL and Lens sample generation, including mixed
+   trainable/frozen children.
+
+`backend/core/training/encoder_reuse.py` owns the policy. Internal defaults live
+in `backend/api/param_defaults.py`: at most 512 MiB of stored tensor payload and
+4096 entries per trainer. Metadata, transient copies and existing swap/prefetch
+buffers are additional memory. Oversized entries are not retained; eviction
+only affects performance. Logs expose cumulative hits, misses, evictions and
+retained tensor bytes at swap refills.
+
+VAE reuse currently recognizes the standard diffusers diagonal Gaussian
+posterior only; other return types bypass it. Exact pixels include the actual
+crop, flip and channel preprocessing. A batch-shaped VAE result is cached as a
+whole, so different regroupings of its images miss. TE reuse in the common path
+is enabled for the reviewed Anima, SD1.5, SDXL, Qwen-Image 2.1, Z-Image, FLUX.2,
+Lens and Krea2 producers; other architectures bypass pending contract review.
+Trainable encoders, training-mode encoders, reference-conditioned common TE
+calls and producer changes bypass or invalidate reuse. Ming separately keys
+its actual prepared multimodal inputs. Normal parameter updates/replacements,
+configuration and small normalization buffers participate in identity;
+large buffer moves conservatively cause a miss.
+
+Caches are process-local and absent from checkpoints. Restart/resume rebuilds
+them without modifying the saved occurrence plan or adding RNG draws. Each
+posterior sample still executes at the original call site; the existing
+per-image-path latent-buffer consumer semantics are unchanged. Caption/null
+draws and training timesteps remain occurrence-specific. Anima true-batch TE
+deduplication can change padding/batch dimensions and floating-point rounding;
+it does not promise bitwise equality across different producer batch shapes.
+
+The synthetic 603-exposure/187-input regression executes 187 VAE forwards with
+416 hits. Posterior samples and generator state match uncached calls exactly
+for both raw and normalized toy codecs. This is an operation-count check,
+not a measured #174 wall-time speedup. Input loading, preprocessing, input
+hashing and component residency transfers still execute; all-hit windows do
+not yet skip GPU residency transitions. No owner images or sidecars are read
+for these tests, and no training run is started by the verification.

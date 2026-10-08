@@ -538,6 +538,9 @@ def generate_sample(
     latent_h = height // stride
     latent_w = width // stride
 
+    training_modes = [(module, module.training) for root in
+                      (trainer.transformer, trainer.vae, trainer.text_encoder) if root is not None
+                      for module in root.modules()]
     trainer.transformer.eval()
     trainer.vae.eval()
 
@@ -606,7 +609,5 @@ def generate_sample(
         return image
 
     finally:
-        trainer.transformer.train()
-        trainer.vae.train()
-        if trainer.text_encoder is not None:
-            trainer.text_encoder.train()
+        for module, training in training_modes:
+            module.training = training

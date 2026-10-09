@@ -118,7 +118,8 @@ def test_unsupported_training_features_are_explicit():
     config = dict(dit_rewiring_spec=declaration(), training_method="full_finetune")
     validate_training_features(config, "anima")
     validate_training_features(dict(config, dit_partition_training_enabled=True), "anima")
-    for fields in (dict(training_method="lora"),):
+    validate_training_features(dict(config, training_method="lora"), "anima")
+    for fields in (dict(training_method="relora"), dict(training_method="controlnet")):
         with pytest.raises(ValueError):
             validate_training_features(dict(config, **fields), "anima")
 

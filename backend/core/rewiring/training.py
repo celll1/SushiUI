@@ -30,8 +30,8 @@ def validate_training_features(config, architecture=None):
         if (any(skip_storage(item) == "recompute" for item in requested["skips"])
                 and int(config.get("blocks_to_swap", TRAINING_DEFAULTS["blocks_to_swap"])) > 0):
             raise ValueError("Hybrid encoder replay is incompatible with Block Swap; use blocks_to_swap=0")
-        if config.get("training_method") not in (None, "full", "full_finetune"):
-            raise ValueError("Hybrid U-Net currently requires full-parameter training")
+        if config.get("training_method") not in (None, "full", "full_finetune", "lora"):
+            raise ValueError("Hybrid U-Net supports full-parameter or LoRA training")
         if architecture != "anima" and int(config.get("blocks_to_swap", TRAINING_DEFAULTS["blocks_to_swap"])) > 0:
             raise ValueError("Hybrid U-Net training Block Swap currently supports Anima only; use blocks_to_swap=0 and activation offload for other architectures")
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
@@ -47,6 +47,14 @@ def validate_training_features(config, architecture=None):
 
 
 NO_RESUME_SPEC = object()
+
+
+def validate_loaded_hybrid_training(trainer, model):
+    spec = getattr(model, "_residual_unet_spec", None)
+    if spec is not None and spec["method"] == "hybrid_unet_ssdit":
+        from core.training.ops.training_method import resolve_training_method
+        validate_training_features(dict(trainer.config, dit_rewiring_spec=spec,
+            training_method=resolve_training_method(trainer)), spec["architecture"])
 
 
 def prepare_topology_io_rebase(config, architecture, source_config, *, declaration=None):

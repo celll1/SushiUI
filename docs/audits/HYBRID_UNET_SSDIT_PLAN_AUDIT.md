@@ -74,6 +74,11 @@ individual records' limitations.
    Historical teacher fitting adds 1046.156 recorded wall seconds, so this does
    not close the equal-total-budget requirement. Test student-state trajectory
    initialization before promoting the current candidate.
+   The subsequent three-round student-state probe
+   (`hybrid_anima_student_trajectory_2026-10.json`) kept the native parameters
+   exact but increased texture/detail degradation in the reviewed outputs.
+   It is not promoted into the public initializer. Change high-resolution stage
+   allocation as one factor before trying additional fitting recipes.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

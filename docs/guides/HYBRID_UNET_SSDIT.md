@@ -335,6 +335,56 @@ and calibration digest are tracked in
 script remains under `local/verification/hybrid_anima_matrix.py`. Re-measure if
 the graph or execution policy changes during remaining quality acceptance.
 
+## Final initialized Anima compute matrix
+
+The 2026-10-10 final rerun uses the official native Anima, BF16, Flash training
+attention, AdamW8bit with stochastic rounding, native checkpoint prefix 24 and
+1024px synthetic exposures. Each isolated worker has a fresh model/optimizer;
+each batch has one warm-up and three timed updates. Hybrid conditions load the
+same retained 3300-update general-only teacher-fitted structural weights before
+any codec change, check exact BF16 loading and preserve their digest on rebasing.
+This is an explicitly identified prototype initialization, not a public
+initializer export. Swap conditions share the same saved general calibration and
+production spatial bridge/noise-alignment classes. No image encoding is repeated.
+
+| Batch | Condition | Forward ms | Backward ms | Optimizer ms | Update s | Images/s | Allocated GiB | Reserved GiB |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | native | 227.3 | 766.3 | 159.5 | 1.156 | 0.87 | 12.09 | 12.16 |
+| 1 | hybrid | 150.3 | 298.3 | 166.5 | 0.625 | 1.60 | 12.17 | 12.23 |
+| 1 | swap | 88.0 | 212.4 | 143.0 | 0.438 | 2.28 | 11.59 | 11.76 |
+| 1 | hybrid + swap | 124.0 | 265.4 | 159.5 | 0.562 | 1.78 | 11.61 | 11.82 |
+| 2 | native | 489.6 | 1588.2 | 154.8 | 2.234 | 0.90 | 14.37 | 15.13 |
+| 2 | hybrid | 236.1 | 584.1 | 162.4 | 0.985 | 2.03 | 14.21 | 14.61 |
+| 2 | swap | 111.8 | 294.0 | 154.1 | 0.562 | 3.56 | 11.73 | 11.96 |
+| 2 | hybrid + swap | 136.2 | 243.7 | 165.4 | 0.547 | 3.66 | 11.78 | 11.98 |
+| 4 | native | 1100.8 | 3364.6 | 156.8 | 4.625 | 0.86 | 20.84 | 22.28 |
+| 4 | hybrid | 511.4 | 1308.9 | 163.5 | 1.984 | 2.02 | 20.50 | 21.20 |
+| 4 | swap | 215.7 | 702.1 | 160.0 | 1.078 | 3.71 | 12.11 | 12.22 |
+| 4 | hybrid + swap | 151.7 | 269.4 | 161.5 | 0.578 | 6.92 | 12.18 | 12.23 |
+
+At batch four, combined execution is 8.00x faster than native and 1.87x faster
+than swap alone, with 41.6% lower peak allocated memory than native. At batch one,
+combined execution is 28.3% slower than swap alone; batch two differs by only
+2.7%, too small for a robust advantage from three samples. Small token grids make
+the additional spatial/skip execution significant, while the approximately
+160ms full-weight optimizer update remains largely independent of token count.
+The codec reduces native image tokens from 4096 to 1024. Hybrid alone preserves
+native weights and adds 4,958,208 parameters, so it barely changes allocated peak.
+
+These are compute results, not quality acceptance or end-to-end training speed.
+VAE/TE/IO, partition/global adapters, EMA and Block Swap are excluded; no explicit
+host-device activation offload runs in the measured interval. Input creation and
+allocator clearing occur outside timing. Model/bridge setup takes 2.24-2.52s;
+historical teacher fitting and VAE calibration costs are separate and were not
+repeated. Process RSS is 2.29-2.88GiB; peaks exclude the independent backend and
+desktop context. All workers exit; GPU memory returns to the pre-probe baseline
+of about 1931MiB, with the owner's CPU-resident Ming Layer unchanged. Complete
+per-update data, configuration, initialization/calibration hashes and limitations
+are in `docs/audits/data/hybrid_anima_final_matrix_2026-10.json`. The executable
+probe remains `local/verification/hybrid_anima_final_matrix.py` (dry-run by
+default; `--arm native|hybrid|swap|hybrid_swap --execute` opts into GPU work).
+The earlier zero-initialized matrix above is historical, not the final result.
+
 ## Same-input training/inference diagnostic
 
 Anima base v1.0 was also compared in training and evaluation modes on the same

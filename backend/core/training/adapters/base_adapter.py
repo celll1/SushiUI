@@ -554,7 +554,7 @@ class BaseLoRAAdapter(ABC):
         for stem, layer in lora_layers.items():
             for name, tensor in layer.export_tensors().items():
                 state_dict[f"{stem}.{name}"] = tensor
-            if self.CHECKPOINT_WRITES_ALPHA:
+            if self.CHECKPOINT_WRITES_ALPHA and getattr(layer, "CHECKPOINT_WRITES_ALPHA", True):
                 state_dict[f"{stem}.alpha"] = torch.tensor(
                     float(self.lora_alpha), dtype=torch.float32
                 )

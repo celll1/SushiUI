@@ -23,8 +23,13 @@ def validate_training_rewiring(config, architecture, *, checkpoint_inheritance=F
 def validate_training_features(config, architecture=None):
     from api.param_defaults import TRAINING_DEFAULTS
     requested = config.get("dit_rewiring_spec")
-    hybrid = requested is not None and validate_spec(requested)["method"] == "hybrid_unet_ssdit"
+    requested = None if requested is None else validate_spec(requested)
+    hybrid = requested is not None and requested["method"] == "hybrid_unet_ssdit"
     if hybrid:
+        from .hybrid_spec import skip_storage
+        if (any(skip_storage(item) == "recompute" for item in requested["skips"])
+                and int(config.get("blocks_to_swap", TRAINING_DEFAULTS["blocks_to_swap"])) > 0):
+            raise ValueError("Hybrid encoder replay is incompatible with Block Swap; use blocks_to_swap=0")
         if config.get("training_method") not in (None, "full", "full_finetune"):
             raise ValueError("Hybrid U-Net currently requires full-parameter training")
         if architecture != "anima" and int(config.get("blocks_to_swap", TRAINING_DEFAULTS["blocks_to_swap"])) > 0:

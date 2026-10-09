@@ -94,7 +94,8 @@ def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
         output = modules.forward_stream(hidden.reshape(batch, height*width, channels),
             "main", height, width, 0, (rotary, height, width), execute, coarse_context,
             checkpoint_modules=any(getattr(block, "gradient_checkpoint_mode", "none") != "none" for block in model.blocks),
-            checkpoint_offload=any(getattr(block, "gradient_checkpoint_mode", "none") in ("cpu_offload", "async_cpu_offload") for block in model.blocks))
+            checkpoint_offload=any(getattr(block, "gradient_checkpoint_mode", "none") in ("cpu_offload", "async_cpu_offload") for block in model.blocks),
+            allow_encoder_replay=offloader is None)
     else:
         output = run_rewired_stream(hidden.reshape(batch, height*width, channels),
             spec, "main", height, width, 0, (rotary, height, width), execute, coarse_context)

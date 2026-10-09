@@ -30,7 +30,8 @@ function ActivationSummary({ layout, stream }: {
   const peak = layout.streams.find(item => item.stream === stream);
   const entries = layout.entries.filter(item => item.stream === stream);
   const mib = (elements: number, bytes: number) => (elements * bytes / 2 ** 20).toFixed(2);
-  const labels = { bypass: "Region bypass", low_input: "Region low input", compressed_skip: "Compressed skip" };
+  const labels = { bypass: "Region bypass", low_input: "Region low input", compressed_skip: "Compressed skip",
+    encoder_replay_input: "Shared encoder replay input" };
   return <details className="rounded border border-gray-700 p-2">
     <summary className="cursor-pointer text-gray-300">Retained forward payload: {peak ? `${mib(peak.peak_elements, 2)} MiB BF16 / ${mib(peak.peak_elements, 4)} MiB FP32` : "unavailable"}</summary>
     <p className="my-2 text-gray-400">Per image grid and batch item; multiply by batch size and ordered layer grids.
@@ -40,7 +41,7 @@ function ActivationSummary({ layout, stream }: {
       <thead><tr><th>Tensor</th><th>Training storage</th><th>Lifetime</th><th>BF16 MiB</th><th>FP32 MiB</th></tr></thead>
       <tbody>{entries.map(item => <tr key={`${item.kind}/${item.id}`}>
         <td>{item.id} / {labels[item.kind]}</td>
-        <td>{item.kind === "compressed_skip" ? (item.training_storage?.toUpperCase() ?? "Schema default") : "Execution device"}</td>
+        <td>{item.training_storage?.toUpperCase() ?? (item.kind === "compressed_skip" ? "Schema default" : "Execution device")}</td>
         <td>{item.capture_phase} {item.capture_block} → before {item.release_before_block}</td>
         <td>{mib(item.elements, 2)}</td><td>{mib(item.elements, 4)}</td>
       </tr>)}</tbody>
@@ -114,7 +115,7 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
       const sx = x(source.index + 0.5), tx = x(target.index + 0.5), base = y(source.depth) - 20;
       return <path key={`learned-${edge.id}`} d={`M ${sx} ${base} Q ${(sx + tx) / 2} ${base - 30} ${tx} ${base}`}
         fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="5 3">
-        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}${retained ? `; ${retained.elements.toLocaleString()} retained elements per image grid/batch item; training storage ${retained.training_storage ?? "schema default"}` : ""}`}</title>
+        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}${retained ? `; ${retained.elements.toLocaleString()} retained elements per image grid/batch item; training storage ${retained.training_storage ?? "schema default"}${retained.recomputed_elements ? `; ${retained.recomputed_elements.toLocaleString()} elements replayed at destination` : ""}` : ""}`}</title>
       </path>;
     })}
     {spec.method === "hybrid_unet_ssdit" && spec.refiners.filter(item => item.stream === stream.name).map(item => {

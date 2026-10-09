@@ -93,14 +93,19 @@ def validate_hybrid_spec(value):
     for item in result["skips"]:
         keys = ("id", "stream", "source_after", "destination_before", "rank")
         check(item, (*keys, "storage") if isinstance(item, dict) and "storage" in item else keys)
-        if skip_storage(item) not in ("gpu", "cpu"):
-            raise ValueError("Hybrid skip storage must be gpu or cpu")
+        if skip_storage(item) not in ("gpu", "cpu", "recompute"):
+            raise ValueError("Hybrid skip storage must be gpu, cpu or recompute")
         block(item, "source_after")
         block(item, "destination_before")
         if item["source_after"] >= item["destination_before"]:
             raise ValueError("Hybrid skips must point forward")
         if active(item["stream"], item["source_after"]) != active(item["stream"], item["destination_before"]):
             raise ValueError("Hybrid skips must connect the same region grid")
+    for item in result["skips"]:
+        if skip_storage(item) == "recompute" and any(
+                other["stream"] == item["stream"] and other["destination_before"] <= item["source_after"]
+                for other in result["skips"]):
+            raise ValueError("Hybrid encoder replay source must precede every skip destination in its stream")
     for key in ("boundaries", "refiners", "skips"):
         result[key].sort(key=lambda item: item["id"])
     if result["module_layout_sha256"] != digest(module_layout(result)):
@@ -192,8 +197,8 @@ def hybrid_preview(value, height, width, *, batch_size, element_bytes):
     _integer(element_bytes, "element bytes", 1, 16)
     preview = preview_plan(legacy_topology(value), height, width)
     blocks = {(block["stream"], block["index"]): block for block in preview["blocks"]}
-    preview["learned_skip_edges"] = [dict(item, stored_bytes=batch_size * item["rank"] * element_bytes *
-        blocks[item["stream"], item["source_after"]]["tokens"]) for item in value["skips"]]
+    preview["learned_skip_edges"] = [dict(item, stored_bytes=(0 if skip_storage(item) == "recompute" else batch_size * item["rank"] * element_bytes *
+        blocks[item["stream"], item["source_after"]]["tokens"])) for item in value["skips"]]
     return preview
 
 
@@ -211,13 +216,19 @@ def activation_layout(value, preview, height, width):
                 elements=tokens*channels, capture_block=region["start_block"], capture_phase="before",
                 release_before_block=region["end_block"]))
     for item in value["skips"]:
+        elements = blocks[item["stream"], item["source_after"]]["tokens"]*item["rank"]
         entries.append(dict(id=item["id"], kind="compressed_skip", stream=item["stream"],
             training_storage=skip_storage(item),
-            elements=blocks[item["stream"], item["source_after"]]["tokens"]*item["rank"],
+            elements=0 if skip_storage(item) == "recompute" else elements,
+            recomputed_elements=elements if skip_storage(item) == "recompute" else 0,
             capture_block=item["source_after"], capture_phase="after",
             release_before_block=item["destination_before"]))
     streams = []
     for stream in value["streams"]:
+        if any(item["stream"] == stream["name"] and skip_storage(item) == "recompute" for item in value["skips"]):
+            entries.append(dict(id=stream["name"], kind="encoder_replay_input", stream=stream["name"],
+                training_storage="cpu", elements=height*width*value["stream_widths"][stream["name"]],
+                capture_block=0, capture_phase="before", release_before_block=stream["block_count"]))
         events = {}
         for entry in entries:
             if entry["stream"] != stream["name"]:

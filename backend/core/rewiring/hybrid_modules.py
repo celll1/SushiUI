@@ -59,7 +59,7 @@ class HybridModules(nn.Module):
             self.skips[item["id"]] = CompressedSkip(widths[item["stream"]], item["rank"])
 
     def forward_stream(self, hidden, stream, height, width, prefix, context, execute_block, coarse_context, *,
-                       grid_groups=1, checkpoint_modules=False, checkpoint_offload=False):
+                       grid_groups=1, checkpoint_modules=False, checkpoint_offload=False, allow_encoder_replay=True):
         if hidden.shape[-1] != self.declaration["stream_widths"].get(stream):
             raise ValueError("Hybrid hidden width differs from declaration")
         if type(grid_groups) is not int or grid_groups < 1 or height % grid_groups:
@@ -67,20 +67,57 @@ class HybridModules(nn.Module):
         hybrid_preview(self.declaration, height // grid_groups, width,
                        batch_size=hidden.shape[0] * grid_groups, element_bytes=hidden.element_size())
         execution = HybridExecution(self, stream, grid_groups, checkpoint_modules, checkpoint_offload)
+        if torch.is_grad_enabled() and any(item["stream"] == stream and skip_storage(item) == "recompute"
+                                           for item in self.declaration["skips"]):
+            if not allow_encoder_replay:
+                raise ValueError("Hybrid encoder replay is incompatible with Block Swap")
+            execution.configure_replay(hidden, height, width, prefix, context, execute_block, coarse_context)
         return run_rewired_stream(hidden, legacy_topology(self.declaration), stream, height, width, prefix,
             context, execute_block, coarse_context, grid_groups=grid_groups, extensions=execution)
 
 
 class HybridExecution:
     """Per-forward activation ownership; module state never retains a skip graph."""
-    def __init__(self, modules, stream, grid_groups=1, checkpoint_modules=False, checkpoint_offload=False):
+    def __init__(self, modules, stream, grid_groups=1, checkpoint_modules=False, checkpoint_offload=False,
+                 capture_skips=True, capture_target=None):
         self.modules = modules
         self.stream = stream
         self.grid_groups = grid_groups
         self.checkpoint_modules = checkpoint_modules
         self.checkpoint_offload = checkpoint_offload
         self.saved = {}
+        self.capture_skips = capture_skips
+        self.capture_target = capture_target
+        self.captured = None
+        self.replay = None
+        self.replay_input = None
         self.boundaries = {item["region"]: item["id"] for item in modules.declaration["boundaries"]}
+
+    def configure_replay(self, hidden, height, width, prefix, context, execute_block, coarse_context):
+        from torch.utils.checkpoint import checkpoint
+        device = hidden.device
+        devices = [device.index if device.index is not None else torch.cuda.current_device()] if hidden.is_cuda else []
+        cpu_rng = torch.get_rng_state()
+        cuda_rng = torch.cuda.get_rng_state(device) if hidden.is_cuda else None
+        topology = legacy_topology(self.modules.declaration)
+        modules, stream, groups = self.modules, self.stream, self.grid_groups
+        self.replay_input = hidden.to("cpu")
+        cpu_input = self.replay_input
+
+        def replay(item):
+            def prefix_forward(value):
+                with torch.random.fork_rng(devices=devices):
+                    torch.set_rng_state(cpu_rng)
+                    if cuda_rng is not None:
+                        torch.cuda.set_rng_state(cuda_rng, device)
+                    # Each replay owns its dictionaries; checkpoint never mutates the live execution.
+                    execution = HybridExecution(modules, stream, groups, capture_skips=False, capture_target=item)
+                    run_rewired_stream(value.to(device), topology, stream, height, width,
+                        prefix, context, execute_block, coarse_context, grid_groups=groups,
+                        extensions=execution, stop_after=item["source_after"])
+                    return execution.captured
+            return checkpoint(prefix_forward, cpu_input, use_reentrant=False)
+        self.replay = replay
 
     def call(self, function, value):
         if not self.checkpoint_modules or not torch.is_grad_enabled():
@@ -121,20 +158,26 @@ class HybridExecution:
             # Transfer inside the checkpoint so replay does not retain a GPU copy.
             def restore(value, module=module, device=device):
                 return module.restore_grid(value.to(device))
-            grid = grid + self.call(restore, self.saved.pop(item["id"])).to(grid)
+            value = self.replay(item) if self.replay is not None and skip_storage(item) == "recompute" else self.saved.pop(item["id"])
+            grid = grid + self.call(restore, value).to(grid)
         return self.merge(hidden, prefix, grid)
 
     def after(self, index, hidden, prefix, height, width):
         refiners = [item for item in self.modules.declaration["refiners"]
                     if item["stream"] == self.stream and item["after_block"] == index]
         sources = [item for item in self.modules.declaration["skips"]
-                   if item["stream"] == self.stream and item["source_after"] == index]
-        if not refiners and not sources:
+                   if self.capture_skips and item["stream"] == self.stream and item["source_after"] == index]
+        target = self.capture_target if self.capture_target is not None and self.capture_target["source_after"] == index else None
+        if not refiners and not sources and target is None:
             return hidden
         grid = self.grid(hidden, prefix, height, width)
         for item in refiners:
             grid = grid + self.call(self.modules.local[item["id"]], grid).to(grid)
+        if target is not None:
+            self.captured = self.modules.skips[target["id"]].capture_grid(grid)
         for item in sources:
+            if self.replay is not None and skip_storage(item) == "recompute":
+                continue
             value = self.call(self.modules.skips[item["id"]].capture_grid, grid)
             if torch.is_grad_enabled() and skip_storage(item) == "cpu":
                 value = value.to("cpu")

@@ -34,7 +34,7 @@ global activation dispatcher can cover the ordinary checkpoint path. Residual
 bypasses still occupy their execution device; checkpointing does not remove
 those explicit graph references.
 
-Each compressed skip optionally declares training `storage: gpu | cpu`.
+Each compressed skip optionally declares training `storage: gpu | cpu | recompute`.
 The schema's `hybrid_defaults.skip_storage` resolves omitted policies; old
 declarations retain their exact metadata/hash. GPU remains the default. CPU
 storage moves the compressed output synchronously to host without detaching
@@ -49,8 +49,24 @@ hash excludes it because parameter shapes and ownership do not change. An
 existing run/checkpoint is not silently rewritten. Storage is editable in the
 draft, survives the canonical API builder and is displayed in the activation
 lifetime table and skip tooltip. Its total capacity remains a logical payload
-across devices, not a VRAM prediction. Encoder recomputation is not implemented;
-replaying a skip projection alone is not equivalent to recomputing the encoder.
+across devices, not a VRAM prediction.
+
+Experimental `recompute` stores one shared stream input on CPU and checkpoints
+actual encoder-prefix execution from that input through each skip's source.
+The capture runs at the original after-refiner location and tensor layout;
+capturing again after token merging can select different convolution kernels.
+Each replay creates fresh local activation dictionaries and restores the original
+CPU/CUDA RNG in a forked scope. Native callbacks retain the same conditioning,
+timestep, grouped-layer geometry and partition coordinates. Encoder gradients
+remain connected through the CPU input; no original compressed skip is retained.
+The source must precede every skip destination in its stream, avoiding recursive
+skip replays and duplicate dependency graphs. Block Swap is rejected at request,
+resolved-checkpoint and Anima/Ming runtime boundaries. Inference captures skips
+normally on the execution device. This policy trades repeated encoder computation
+and a full-width host input for skip storage; it is not a speed optimization and
+can cost more DRAM than compressed CPU storage. Region bypasses remain separate.
+The preview includes one shared CPU replay-input lifetime and zero live compressed
+payload for these edges; replayed element counts are reported separately.
 
 `hybrid_skip_storage_test.py` verifies CPU/CUDA output equality, input and all
 learned-parameter gradients, checkpointed and CPU-saved checkpoint inputs,
@@ -60,6 +76,18 @@ The combined CPU graph/native/partition suites passed 60 tests, and the storage
 suite passed 16 CPU/CUDA cases. API checks cover CPU and unchanged legacy
 roundtrips and unsupported-policy rejection. These use synthetic tensor grids;
 actual full-training CPU-skip memory/speed acceptance is not yet measured.
+
+`hybrid_skip_recompute_test.py` checks actual stochastic prefix call counts in
+forward and backward, unchanged post-forward CPU/CUDA RNG, non-square grids,
+grouped layers, conditioning/coordinate preservation and all input/native/spatial
+gradients. Its CUDA gradient oracle disables TF32 convolution/matmul; no runtime
+precision setting is changed. Native Anima (including internal CPU checkpointing),
+Ming caption-prefix and Qwen causal-prefix outputs match the resident-skip path
+exactly; native gradients use FP32 accumulation tolerances. Anima's partition/global
+adapter core-weighted backward is also checked. The final combined CPU suites
+passed 78 cases; 11 CUDA transfer/replay/inference cases passed. API validation
+roundtrips replay declarations and rejects unsupported policies. Official-weight
+replay throughput/peak-memory acceptance and image-quality comparisons remain pending.
 
 Training Block Swap is supported for Anima full-frame execution without EMA.
 Ming/Qwen hybrid training still requires zero swapped blocks. The earlier Anima

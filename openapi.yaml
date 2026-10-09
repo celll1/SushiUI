@@ -3889,12 +3889,20 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [presets, runtime_architectures]
+                required: [presets, hybrid_defaults, runtime_architectures]
                 properties:
                   presets:
                     type: object
                     description: Native-layout presets can include pending integrations; runtime_architectures determines public configure support
                     additionalProperties: true
+                  hybrid_defaults:
+                    type: object
+                    required: [rank, kernel, refiner_interval, skip_interval]
+                    properties:
+                      rank: {type: integer, minimum: 1}
+                      kernel: {type: integer, enum: [3, 5]}
+                      refiner_interval: {type: integer, minimum: 1}
+                      skip_interval: {type: integer, minimum: 1}
                   runtime_architectures:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
@@ -3955,6 +3963,10 @@ paths:
                 properties:
                   architecture: {type: string}
                   streams: {type: array, items: {type: object}}
+                  hybrid_default_spec:
+                    allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+                    nullable: true
+                    description: Opt-in experimental hybrid preset for Anima, Ming and Qwen 2.1; does not replace an existing default or inherited checkpoint.
                   base_config_sha256: {type: string}
                   block_layout_sha256: {type: string}
                   topology_sha256: {type: string, nullable: true}
@@ -4019,6 +4031,38 @@ paths:
                   spec_sha256: {type: string}
         '422':
           description: Unsupported source, incompatible graph, invalid filename or existing output
+  /models/rewiring/hybrid/build:
+    post:
+      tags: [models]
+      summary: Canonicalize an explicitly requested hybrid U-Net graph
+      description: Recomputes the learned-module hash and validates all placements. Does not load weights, modify a checkpoint, or prove model compatibility. All fields are required; module lists may be empty.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [base_spec, stream_widths, boundaries, refiners, skips]
+              properties:
+                base_spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+                stream_widths: {type: object, additionalProperties: {type: integer, minimum: 1, maximum: 16384}}
+                boundaries: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/HybridDiTBoundary'}}
+                refiners: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/HybridDiTRefiner'}}
+                skips: {type: array, maxItems: 128, items: {$ref: '#/components/schemas/HybridDiTSkip'}}
+      responses:
+        '200':
+          description: Canonical hybrid graph and hash
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [spec, spec_sha256]
+                properties:
+                  spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
+                  spec_sha256: {type: string}
+        '422':
+          description: Invalid modules, graph, widths or unsupported architecture
   /models/rewiring/validate:
     post:
       tags: [models]

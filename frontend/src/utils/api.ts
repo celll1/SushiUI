@@ -9975,6 +9975,7 @@ export interface DiTRewiringParameterCounts {
   blocks: { stream: string; index: number; count: number }[];
 }
 export interface DiTRewiringModelInfo {
+  hybrid_default_spec?: HybridDiTRewiringSpec | null;
   ming_partition_global?: MingGlobalSummaryInfo | null;
   parameter_counts?: DiTRewiringParameterCounts | null;
   architecture: string; streams: DiTRewiringSpec["streams"];
@@ -9986,6 +9987,7 @@ export interface DiTRewiringModelInfo {
   video_geometry?: DiTRewiringVideoGeometry;
 }
 export const getDiTRewiringSchema = async (): Promise<{
+  hybrid_defaults: { rank: number; kernel: 3 | 5; refiner_interval: number; skip_interval: number };
   presets: Record<string, unknown>; runtime_architectures: string[];
 }> => (await api.get("/schema/dit-rewiring")).data;
 export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiringModelInfo> =>
@@ -9997,6 +9999,13 @@ export const previewDiTRewiring = async (spec: DiTRewiringSpec, tokenHeight: num
 export const exportDiTRewiring = async (modelPath: string, outputName: string, spec: DiTRewiringSpec):
   Promise<{ model_path: string; spec_sha256: string }> =>
   (await api.post("/models/rewiring/export", { model_path: modelPath, output_name: outputName, spec })).data;
+
+export const buildHybridDiTRewiring = async (spec: HybridDiTRewiringSpec):
+  Promise<{ spec: HybridDiTRewiringSpec; spec_sha256: string }> =>
+  (await api.post("/models/rewiring/hybrid/build", {
+    base_spec: spec, stream_widths: spec.stream_widths,
+    boundaries: spec.boundaries, refiners: spec.refiners, skips: spec.skips,
+  })).data;
 
 
 export interface MingPromptSettings extends Omit<Qwen21PromptUpsampleSettings, "engine"> {

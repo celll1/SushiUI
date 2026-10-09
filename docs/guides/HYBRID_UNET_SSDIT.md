@@ -38,6 +38,16 @@ declared token streams. Architecture-owned callbacks own native blocks and posit
 
 ## Artifact and inspection boundary
 
+Native Anima, Ming and Qwen inspection returns a separate `hybrid_default_spec`.
+The training editor offers an explicit experimental preset button; inherited
+graphs and existing defaults remain unchanged. Preset rank, kernel and placement
+intervals come from `DIT_HYBRID_DEFAULTS` in `api/param_defaults.py`. Mirror skips
+are included only when both endpoints occupy the same nested region grid.
+`POST /models/rewiring/hybrid/build` canonicalizes explicit module edits and
+recomputes their layout hash. It validates a declaration, not checkpoint identity;
+the native loader still checks dimensions and configuration. Arbitrary hybrid
+editing controls and official-weight GPU acceptance remain pending.
+
 Native artifacts use the existing `sushi.rewire.*` keys with schema version 2.
 Standalone module tools also support `sushi.hybrid.spec` and its hash. Their
 read/write functions validate the topology and module layout. Module

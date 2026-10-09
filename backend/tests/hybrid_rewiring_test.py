@@ -47,6 +47,35 @@ def test_metadata_roundtrip_and_tampering():
         validate_hybrid_spec(damaged)
 
 
+def test_opt_in_preset_preserves_base_and_equal_grid_skips():
+    from core.rewiring.hybrid_spec import default_hybrid_spec
+    base = legacy_topology(declaration())
+    saved = deepcopy(base)
+    preset = default_hybrid_spec(base, {"main": 8})
+    assert base == saved
+    assert preset["base_config_sha256"] == base["base_config_sha256"]
+    assert {item["region"] for item in preset["boundaries"]} == {"outer", "inner"}
+    assert preset["refiners"] and preset["skips"]
+    assert all(item["rank"] <= 8 for item in preset["skips"])
+    assert validate_hybrid_spec(preset) == preset
+
+
+def test_builder_rehashes_edits_and_rejects_cross_grid_skip():
+    from api.rewiring_routes import HybridBuildRequest, build_hybrid
+    from fastapi import HTTPException
+    spec = declaration()
+    request = dict(base_spec=spec, stream_widths=spec["stream_widths"],
+                   boundaries=deepcopy(spec["boundaries"]), refiners=spec["refiners"], skips=deepcopy(spec["skips"]))
+    request["boundaries"][0]["rank"] = 4
+    rebuilt = build_hybrid(HybridBuildRequest(**request))["spec"]
+    assert rebuilt["module_layout_sha256"] != spec["module_layout_sha256"]
+    assert validate_hybrid_spec(rebuilt) == rebuilt
+    request["skips"][0]["destination_before"] = 4
+    with pytest.raises(HTTPException) as error:
+        build_hybrid(HybridBuildRequest(**request))
+    assert error.value.status_code == 422
+
+
 def test_parameter_census_matches_registered_modules():
     spec = declaration()
     modules = HybridModules(spec)

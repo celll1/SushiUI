@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from safetensors import SafetensorError
 
-from api.param_defaults import DIT_REWIRING_PRESETS
+from api.param_defaults import DIT_REWIRING_PRESETS, DIT_HYBRID_DEFAULTS
 from core.rewiring.capability import RUNTIME_ARCHITECTURES
 from core.rewiring.spec import digest, preview_plan, validate_spec
 
@@ -21,7 +21,31 @@ class RewiringPreviewRequest(BaseModel):
 
 @router.get("/schema/dit-rewiring")
 def rewiring_schema():
-    return {"presets": deepcopy(DIT_REWIRING_PRESETS), "runtime_architectures": list(RUNTIME_ARCHITECTURES)}
+    return {"presets": deepcopy(DIT_REWIRING_PRESETS), "hybrid_defaults": deepcopy(DIT_HYBRID_DEFAULTS),
+            "runtime_architectures": list(RUNTIME_ARCHITECTURES)}
+
+
+class HybridBuildRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    base_spec: dict
+    stream_widths: dict
+    boundaries: list[dict] = Field(max_length=128)
+    refiners: list[dict] = Field(max_length=128)
+    skips: list[dict] = Field(max_length=128)
+
+
+@router.post("/models/rewiring/hybrid/build")
+def build_hybrid(request: HybridBuildRequest):
+    from core.rewiring.hybrid_spec import build_hybrid_spec, legacy_topology
+    try:
+        base = request.base_spec
+        if base.get("method") == "hybrid_unet_ssdit":
+            base = legacy_topology(base)
+        spec = build_hybrid_spec(base, stream_widths=request.stream_widths,
+                                boundaries=request.boundaries, refiners=request.refiners, skips=request.skips)
+        return {"spec": spec, "spec_sha256": digest(spec)}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/models/rewiring/validate")

@@ -109,6 +109,32 @@ def build_hybrid_spec(base, *, stream_widths, boundaries, refiners, skips):
     return validate_hybrid_spec(result)
 
 
+def default_hybrid_spec(base, stream_widths):
+    """Opt-in fixed-width preset; mirror skips only between equal spatial grids."""
+    from api.param_defaults import DIT_HYBRID_DEFAULTS
+    base = legacy_topology(base) if base.get("method") == METHOD else validate_spec(base)
+    settings = DIT_HYBRID_DEFAULTS
+    boundaries, refiners, skips = [], [], []
+    for region in base["regions"]:
+        boundaries.append(dict(id=f"downup_{region['id']}", region=region["id"],
+                               rank=min(settings["rank"], stream_widths[region["stream"]]), kernel=settings["kernel"]))
+    for stream in base["streams"]:
+        name, count = stream["name"], stream["block_count"]
+        rank = min(settings["rank"], stream_widths[name])
+        def active(index):
+            return tuple(region["id"] for region in base["regions"] if region["stream"] == name
+                         and region["start_block"] <= index < region["end_block"])
+        for index in range(0, count, settings["refiner_interval"]):
+            refiners.append(dict(id=f"local_{name}_{index}", stream=name, after_block=index,
+                                 rank=rank, kernel=settings["kernel"]))
+        for source in range(0, count // 2, settings["skip_interval"]):
+            target = count - 1 - source
+            if active(source) == active(target):
+                skips.append(dict(id=f"skip_{name}_{source}_{target}", stream=name,
+                                  source_after=source, destination_before=target, rank=rank))
+    return build_hybrid_spec(base, stream_widths=stream_widths, boundaries=boundaries, refiners=refiners, skips=skips)
+
+
 def hybrid_metadata(value):
     value = validate_hybrid_spec(value)
     return {META_SPEC: canonical_json(value), META_HASH: digest(value)}

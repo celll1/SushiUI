@@ -60,6 +60,12 @@ individual records' limitations.
    after adaptation, despite unaccepted free-running quality. Targeted IO/bridge
    and trajectory consistency work is indicated; this is not proof that hybrid
    topology is harmless or that the quality gate has passed.
+   A restricted IO/bridge probe (`hybrid_anima_io_adaptation_2026-10.json`)
+   then completed 200 updates with all frozen native/hybrid parameters exactly
+   unchanged. It used 54.063 seconds and 4.085 GiB but still failed reliable
+   free-running quality recovery; do not promote this initialization recipe.
+   Keep native-codec hybrid acceptance/equal-time structural comparison distinct
+   from the harder combined codec adaptation question.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

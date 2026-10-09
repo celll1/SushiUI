@@ -30,13 +30,16 @@ def export_initialized_anima(model, source, output_name, *, cancelled=None):
     return export_initialized_transformer(model,source,output_name,architecture="anima",cancelled=cancelled)
 
 
-def export_initialized_transformer(model, source, output_name, *, architecture, cancelled=None):
+def export_initialized_transformer(model, source, output_name, *, architecture, cancelled=None, output_directory=None):
     """Caller owns model exclusivity; source bytes and fitted modules are verified."""
     source = Path(source).resolve(strict=True)
     if not source.is_file() or source.suffix.lower() != ".safetensors":
         raise ValueError("Initialized export requires a standalone native safetensors source")
     validate_output_name(output_name)
-    output = source.parent / output_name
+    directory = source.parent if output_directory is None else Path(output_directory).resolve(strict=True)
+    if not directory.is_dir():
+        raise ValueError("Initialized export destination must be a directory")
+    output = directory / output_name
     if output.exists() or output.is_symlink():
         raise FileExistsError("Initialized export never overwrites an existing file")
     if architecture == "anima":
@@ -118,7 +121,7 @@ def export_initialized_transformer(model, source, output_name, *, architecture, 
             if len(encoded) > 16*1024*1024:
                 raise ValueError("Initialized safetensors header exceeds size limit")
             source_hash = hashlib.sha256(prefix+raw_header)
-            with tempfile.NamedTemporaryFile(dir=source.parent, prefix=".sushi-hybrid-", suffix=".tmp",
+            with tempfile.NamedTemporaryFile(dir=directory, prefix=".sushi-hybrid-", suffix=".tmp",
                                              delete=False) as target:
                 temporary = Path(target.name)
                 target.write(struct.pack("<Q", len(encoded)))
@@ -150,3 +153,64 @@ def export_initialized_transformer(model, source, output_name, *, architecture, 
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def export_initialized_qwen_package(model, source_manifest, destination, *, cancelled=None):
+    """Publish a loadable split package; unchanged assets remain referenced at their source."""
+    from core.models.qwen_image_21.artifact import load_manifest
+    from core.models.qwen_image_21.residual_unet import validate_topology_identity
+    source_manifest = Path(source_manifest).resolve(strict=True)
+    if source_manifest.is_dir():
+        source_manifest = source_manifest/"manifest.json"
+    manifest = load_manifest(str(source_manifest))
+    spec = validate_topology_identity(getattr(model,"_residual_unet_spec",None),manifest.transformer_config)
+    validate_record(getattr(model,"_hybrid_initialization",None),spec)
+    if manifest.transformer_config.get("vae_alignment") is not None:
+        raise ValueError("Initialization package requires a native source codec")
+    destination = Path(destination).absolute()
+    validate_output_name(destination.name+".safetensors")
+    if destination.name in (".","..") or destination.name.endswith((" ",".")):
+        raise ValueError("Initialized package requires a new directory basename")
+    if os.path.lexists(destination):
+        raise FileExistsError("Initialized package never overwrites an existing path")
+    if not destination.parent.is_dir():
+        raise FileNotFoundError(destination.parent)
+    references = {key:getattr(manifest,key) for key in
+                  ("text_encoder","vae","processor","text_encoder_config","scheduler")}
+    for key,path in references.items():
+        if path is not None and not Path(path).exists():
+            raise FileNotFoundError(f"Qwen source asset is missing: {key}")
+    with source_manifest.open(encoding="utf-8") as stream:
+        raw = json.load(stream,object_pairs_hook=_unique_object)
+    if (raw.get("transformer_config") != manifest.transformer_config
+            or (raw.get("vae_config") or {}) != manifest.vae_config):
+        raise ValueError("Qwen source manifest changed during initialization export")
+
+    def check_cancel():
+        if cancelled is not None and cancelled():
+            raise InitializationCancelled("Initialized package export cancelled")
+
+    with tempfile.TemporaryDirectory(dir=destination.parent,prefix=".sushi-qwen-init-") as temporary:
+        staging = Path(temporary)/"package"
+        staging.mkdir()
+        check_cancel()
+        result = export_initialized_transformer(model,manifest.transformer,"transformer.safetensors",
+            architecture="qwen_image_21",cancelled=cancelled,output_directory=staging)
+        raw["components"] = {**references,"transformer":"transformer.safetensors"}
+        raw["transformer_config"] = deepcopy(manifest.transformer_config)
+        with (staging/"manifest.json").open("w",encoding="utf-8") as stream:
+            json.dump(raw,stream,indent=2,allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        prepared = load_manifest(str(staging))
+        if Path(prepared.transformer) != staging/"transformer.safetensors":
+            raise ValueError("Initialized package transformer reference verification failed")
+        from .inspect import inspect_model
+        inspected = inspect_model(staging)
+        if inspected["topology"] != spec or inspected["initialization"] != result["initialization"]:
+            raise ValueError("Initialized package declarations differ from fitted modules")
+        check_cancel()
+        if os.path.lexists(destination):
+            raise FileExistsError("Initialized package destination was created during export")
+        os.rename(staging,destination)
+    return {"model_path":str(destination),"initialization":deepcopy(result["initialization"])}

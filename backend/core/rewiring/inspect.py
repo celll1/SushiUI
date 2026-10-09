@@ -4,7 +4,8 @@ from pathlib import Path
 
 from safetensors import safe_open
 
-from .artifacts import read_artifact_topology, read_directory_topology
+from .artifacts import (read_artifact_topology, read_directory_topology,
+                       read_artifact_declarations, read_directory_declarations)
 from .spec import OPERATORS, build_spec, digest
 
 
@@ -50,6 +51,7 @@ def _native_adapter(architecture):
 
 def inspect_model(model_path):
     path = Path(model_path)
+    initialization = None
     ming_marker = path / "transformer" / "config.json" if path.is_dir() else None
     if ming_marker is not None and ming_marker.is_file():
         with ming_marker.open(encoding="utf-8") as handle:
@@ -84,7 +86,7 @@ def inspect_model(model_path):
             manifest = load_manifest(str(path))
             architecture = "qwen_image_21"
             config = manifest.transformer_config
-            topology = read_artifact_topology(manifest.transformer)
+            topology, initialization = read_artifact_declarations(manifest.transformer)
         else:
             transformer_dir = path / "transformer" if (path / "transformer").is_dir() else path
             with (transformer_dir / "config.json").open(encoding="utf-8") as handle:
@@ -103,7 +105,7 @@ def inspect_model(model_path):
                             "Ideogram4Transformer2DModel": "ideogram4",
                             "LTX2VideoTransformer3DModel": "ltx2"}.get(class_name)
             _native_adapter(architecture)
-            topology = read_directory_topology(transformer_dir)
+            topology, initialization = read_directory_declarations(transformer_dir)
             if architecture == "ltx2":
                 from core.models.ltx2.loader import _transformer_shards
                 from core.models.ltx2.residual_unet import preflight_checkpoint, native_config
@@ -230,7 +232,7 @@ def inspect_model(model_path):
             if not metadata.get("krea2_config"):
                 raise ValueError("Residual inspection requires a Krea model config declaration")
             config = json.loads(metadata["krea2_config"])
-        topology = read_artifact_topology(path)
+        topology, initialization = read_artifact_declarations(path)
     if not isinstance(config, dict):
         raise ValueError("Native model config must be an object")
     adapter, token_scale, alignment = _native_adapter(architecture)
@@ -304,6 +306,7 @@ def inspect_model(model_path):
         from .hybrid_spec import default_hybrid_spec
         width = config["model_channels"] if architecture == "anima" else config["num_attention_heads"] * config["attention_head_dim"]
         info["hybrid_default_spec"] = default_hybrid_spec(info["default_spec"] or initial, {"main": width})
+        info["initialization"] = initialization
     return info
 
 
@@ -355,7 +358,7 @@ def _inspect_ming(path):
     from .parameters import parameter_counts
     artifact = inspect_artifact(path)
     config = adapter.native_config(artifact.configs["transformer"])
-    topology = read_directory_topology(artifact.components["transformer"])
+    topology, initialization = read_directory_declarations(artifact.components["transformer"])
     if topology is not None:
         topology = adapter.validate_topology_identity(topology, config)
     count = config["n_layers"]
@@ -366,6 +369,7 @@ def _inspect_ming(path):
         down_factor=DIT_REWIRING_REGION_DEFAULTS["down_factor"], **OPERATORS)], config)
     from .hybrid_spec import default_hybrid_spec
     return dict(architecture="ming_image_01", streams=streams, base_config_sha256=digest(config),
+        initialization=initialization,
         block_layout_sha256=digest(streams), topology=topology,
         topology_sha256=None if topology is None else digest(topology),
         default_spec=adapter.default_topology(config), initial_spec=initial,

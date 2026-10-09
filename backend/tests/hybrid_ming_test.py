@@ -123,6 +123,8 @@ def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_
     assert all(torch.equal(expected[key], actual[key]) for key in expected)
     assert restored.transformer._residual_unet_spec == components.transformer._residual_unet_spec
     assert restored.transformer._hybrid_initialization == initialization
+    from core.rewiring.inspect import inspect_model
+    assert inspect_model(exported)["initialization"] == initialization
     assert not any(p.device.type == "meta" for p in restored.transformer.parameters())
     frames = 2 if profile == "layer_decompose" else 1
     images, queries = [torch.randn(16, frames, 16, 24)], [torch.randn(5, 8)]

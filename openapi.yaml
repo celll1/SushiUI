@@ -3968,6 +3968,10 @@ paths:
                     allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
                     nullable: true
                     description: Opt-in experimental hybrid preset for Anima, Ming and Qwen 2.1; does not replace an existing default or inherited checkpoint.
+                  initialization:
+                    allOf: [{$ref: '#/components/schemas/HybridInitializationRecord'}]
+                    nullable: true
+                    description: Validated initialization lineage for Anima, Ming and Qwen. Null means unknown; its weights checksum describes initialization, not subsequent fine-tuning.
                   base_config_sha256: {type: string}
                   block_layout_sha256: {type: string}
                   topology_sha256: {type: string, nullable: true}
@@ -12136,6 +12140,38 @@ components:
               stream: {type: string}
               index: {type: integer, minimum: 0}
               count: {type: integer, minimum: 0}
+    HybridInitializationRecord:
+      type: object
+      additionalProperties: false
+      required: [schema_version, method, source_sha256, origin_spec, calibration_sha256, sample_count, seed, phases, initialized_weights_sha256]
+      description: Native teacher fitting lineage; excludes images and captions and is preserved after fine-tuning or compatible codec rebasing.
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        method: {type: string, enum: [native_teacher_velocity]}
+        source_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        calibration_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        initialized_weights_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        origin_spec:
+          allOf:
+            - $ref: '#/components/schemas/DiTRewiringSpec'
+            - type: object
+              properties:
+                schema_version: {type: integer, enum: [2]}
+                method: {type: string, enum: [hybrid_unet_ssdit]}
+        sample_count: {type: integer, minimum: 1, maximum: 1000000, example: 32}
+        seed: {type: integer, minimum: 0, maximum: 9223372036854775807, example: 718}
+        phases:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, updates, learning_rate]
+            properties:
+              kind: {type: string, enum: [data_noising, native_trajectory]}
+              updates: {type: integer, minimum: 1, maximum: 1000000, example: 1000}
+              learning_rate: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 1, example: 0.0003}
     DiTRewiringSpec:
       type: object
       additionalProperties: false

@@ -9981,7 +9981,14 @@ export interface DiTRewiringParameterCounts {
   total: number; shared: number; added: 0;
   blocks: { stream: string; index: number; count: number }[];
 }
+export interface HybridInitializationRecord {
+  schema_version: 1; method: "native_teacher_velocity";
+  source_sha256: string; calibration_sha256: string; initialized_weights_sha256: string;
+  origin_spec: HybridDiTRewiringSpec; sample_count: number; seed: number;
+  phases: { kind: "data_noising" | "native_trajectory"; updates: number; learning_rate: number }[];
+}
 export interface DiTRewiringModelInfo {
+  initialization?: HybridInitializationRecord | null;
   hybrid_default_spec?: HybridDiTRewiringSpec | null;
   ming_partition_global?: MingGlobalSummaryInfo | null;
   parameter_counts?: DiTRewiringParameterCounts | null;

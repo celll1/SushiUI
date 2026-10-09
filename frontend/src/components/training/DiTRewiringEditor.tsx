@@ -201,6 +201,11 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
+    {info?.topology?.method === "hybrid_unet_ssdit" && <p className="my-2 text-gray-400">
+      {info.initialization
+        ? `Checkpoint initialized with a native teacher: ${info.initialization.sample_count} samples, ${info.initialization.phases.reduce((total, phase) => total + phase.updates, 0)} updates, seed ${info.initialization.seed}. This records its origin; weights may have been fine-tuned since initialization.`
+        : "Checkpoint initialization lineage is unknown."}
+    </p>}
     {current?.method === "hybrid_unet_ssdit" && <p className="text-gray-400">Experimental learned spatial convolutions and compressed skips. Requires full-parameter training. {current.architecture === "anima" ? "Training Block Swap supports full-frame execution without EMA; partition training and encoder replay require Block Swap disabled." : "Training Block Swap must be disabled (0 blocks)."} Activation offload is supported. Selecting this preset creates a new module layout and does not convert checkpoint weights.</p>}
     {info && <DiTParameterSummary counts={info.parameter_counts} plan={plan} spec={current} />}
     {current && <>

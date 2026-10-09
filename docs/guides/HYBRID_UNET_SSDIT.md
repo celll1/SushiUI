@@ -1081,6 +1081,24 @@ Further work should separate guided-field error from resolution allocation
 before spending more updates on the same teacher-fitting objective.
 Evidence: `docs/audits/data/hybrid_anima_highres16_2026-10.json`.
 
+### Conditional/null field diagnostic
+
+A no-fit probe compared the retained 12/12/4 and 16/8/4 candidates with the
+same native teacher on four held-out general images, five noise levels and
+fixed noise. Both arms retained exact frozen parameter hashes. At sigma about
+0.1, mean conditional relative MSE decreases from 5.51% to 4.20%, and CFG4
+relative MSE from 6.96% to 5.88%. At sigma about 0.9, CFG4 relative MSE instead
+increases from 5.31% to 7.34%. These are mean per-image field-energy ratios,
+not image quality scores or free-running trajectory measurements.
+
+Null prediction error is not uniquely dominant. Conditional/null difference
+error remains and is amplified by guidance, while low-noise errors share a
+substantial component. The recorded CFG error obeys its expected algebraic
+identity; this is not evidence of a CFG implementation bug. A controlled paired
+conditional/null anchor versus guided-field fitting comparison is the next
+candidate experiment. No public objective or default has changed.
+Evidence: `docs/audits/data/hybrid_anima_guidance_diagnostic_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

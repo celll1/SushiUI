@@ -67,7 +67,13 @@
           "path": "samples\\step_000200_sample_2.png",
           "sha256": "4eaaf3be896ae5fb54fb69088ef5801704979fc427b870a67502e66b30a9a6b3"
         }
-      ]
+      ],
+      "cleanup": {
+        "run_db_deleted": true,
+        "archived_evidence": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_sr\\evidence",
+        "dataset_retained_for_teacher_initialization": true,
+        "checkpoint_directory_deleted": true
+      }
     },
     {
       "run_name": "hybrid_anima_native_low_lr_sr_control_20261010",
@@ -127,7 +133,13 @@
           "path": "samples\\step_000200_sample_2.png",
           "sha256": "e4c193ad17ae702fecf689ef592c5c8cbb13416055b8381f6e74d3092e56f7c3"
         }
-      ]
+      ],
+      "cleanup": {
+        "run_db_deleted": true,
+        "archived_evidence": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_low_lr\\evidence",
+        "dataset_retained_for_teacher_initialization": true,
+        "checkpoint_directory_deleted": true
+      }
     }
   ],
   "conclusions": [

@@ -427,6 +427,25 @@ initialization contract or quality acceptance. The prototype and images remain
 ignored local artifacts; only measurements and declarations are tracked in
 `docs/audits/data/hybrid_anima_teacher_init_2026-10.json`.
 
+Continuing from those module weights for another 2,000 updates at LR 5e-4
+uses a fresh optimizer and resets the private exposure RNG; this is not a
+training-resume test. Held-out mean MSE falls further to 0.138/0.022/0.007.
+Fitting takes 610.3 seconds with the same 4.17 GiB allocated peak. The native
+teacher PNG is unchanged, and the starting hybrid PNG exactly matches the
+first probe's final PNG. Prompt 0 now produces a recognizable portrait, with
+irregular contours at CFG 1 and substantially less grid noise at CFG 4.
+
+Two held-out prompts were generated through native and hybrid models at CFG
+1/4. At CFG 4, one hybrid retains the single-person silhouette, hair and
+background colors but distorts facial detail. The other fails to preserve
+the native two-person composition and produces a small single figure with
+a dark/banded background. This does not establish general quality acceptance
+or justify switching the production preset. Measurements and all eight sample
+hashes are in `docs/audits/data/hybrid_anima_teacher_init_extended_2026-10.json`.
+The native control run DB rows/checkpoints have been removed after archival;
+their temporary general-image dataset remains while initialization experiments
+use it. Owner run #174 remains unchanged.
+
 ## Actual Anima training lifecycle
 
 A temporary general-only eight-image dataset exercised full-parameter training

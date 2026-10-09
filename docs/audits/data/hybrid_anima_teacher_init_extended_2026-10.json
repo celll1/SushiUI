@@ -1,0 +1,259 @@
+{
+  "date": "2026-10-10",
+  "runtime_commit": "058acabc",
+  "architecture": "anima",
+  "prototype_only": true,
+  "initialization_from": "hybrid_anima_teacher_init/modules.pt (300 updates); fresh optimizer for 2000 additional updates",
+  "cumulative_updates": 2300,
+  "additional_updates": 2000,
+  "learning_rate": 0.0005,
+  "base_weights_frozen": true,
+  "native_vae": true,
+  "fit_images": 28,
+  "held_out_images": 4,
+  "rating": "general",
+  "trained_parameters": 4958208,
+  "optimizer_entries": 65,
+  "all_new_optimizer_counters": 2000,
+  "training_seconds": 610.25,
+  "peak_allocated_gib": 4.167520999908447,
+  "module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594",
+  "validation_before": [
+    {
+      "index": 28,
+      "sigma": 0.05,
+      "mse": 0.13617539405822754
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "mse": 0.027285832911729813
+    },
+    {
+      "index": 28,
+      "sigma": 0.95,
+      "mse": 0.016831815242767334
+    },
+    {
+      "index": 29,
+      "sigma": 0.05,
+      "mse": 0.2090875208377838
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "mse": 0.030673494562506676
+    },
+    {
+      "index": 29,
+      "sigma": 0.95,
+      "mse": 0.02283206209540367
+    },
+    {
+      "index": 30,
+      "sigma": 0.05,
+      "mse": 0.22852067649364471
+    },
+    {
+      "index": 30,
+      "sigma": 0.5,
+      "mse": 0.03667974844574928
+    },
+    {
+      "index": 30,
+      "sigma": 0.95,
+      "mse": 0.01670568436384201
+    },
+    {
+      "index": 31,
+      "sigma": 0.05,
+      "mse": 0.16807013750076294
+    },
+    {
+      "index": 31,
+      "sigma": 0.5,
+      "mse": 0.027463097125291824
+    },
+    {
+      "index": 31,
+      "sigma": 0.95,
+      "mse": 0.017969634383916855
+    }
+  ],
+  "validation_after": [
+    {
+      "index": 28,
+      "sigma": 0.05,
+      "mse": 0.10523981600999832
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "mse": 0.02020268328487873
+    },
+    {
+      "index": 28,
+      "sigma": 0.95,
+      "mse": 0.004853973630815744
+    },
+    {
+      "index": 29,
+      "sigma": 0.05,
+      "mse": 0.15853816270828247
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "mse": 0.020320486277341843
+    },
+    {
+      "index": 29,
+      "sigma": 0.95,
+      "mse": 0.011013749986886978
+    },
+    {
+      "index": 30,
+      "sigma": 0.05,
+      "mse": 0.16115328669548035
+    },
+    {
+      "index": 30,
+      "sigma": 0.5,
+      "mse": 0.025747399777173996
+    },
+    {
+      "index": 30,
+      "sigma": 0.95,
+      "mse": 0.0029569054022431374
+    },
+    {
+      "index": 31,
+      "sigma": 0.05,
+      "mse": 0.12835131585597992
+    },
+    {
+      "index": 31,
+      "sigma": 0.5,
+      "mse": 0.020323049277067184
+    },
+    {
+      "index": 31,
+      "sigma": 0.95,
+      "mse": 0.0071907201781868935
+    }
+  ],
+  "mean_held_out_mse_by_sigma": [
+    {
+      "sigma": 0.05,
+      "before": 0.18546343222260475,
+      "after": 0.13832064531743526
+    },
+    {
+      "sigma": 0.5,
+      "before": 0.0305255432613194,
+      "after": 0.02164840465411544
+    },
+    {
+      "sigma": 0.95,
+      "before": 0.018584799021482468,
+      "after": 0.006503837299533188
+    }
+  ],
+  "native_teacher_png_matches_first_probe": true,
+  "initial_png_matches_first_probe_final": true,
+  "samples": {
+    "teacher_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended\\native_teacher_cfg1.png",
+      "sha256": "ee513e04eb27851cbd9811951fdb0a1fa10cbd5805fe3dbf9e159bdb9fe878a1"
+    },
+    "initial_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended\\hybrid_step000000_cfg1.png",
+      "sha256": "ec0c20eec141f06cc4700ddb7397cb707c5af9c3f248e03773dacb1e3c71e373"
+    },
+    "final_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended\\hybrid_step002300_cfg1.png",
+      "sha256": "5e35039b2b2fe93bd1b41187098abd9c805a241a5dd0fa19c2a682678440d0b8"
+    },
+    "cfg4_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended\\hybrid_step002300_cfg4.png",
+      "sha256": "dd447985bca1ff25ad6f423eecfd9a644fc685c671fc9f7bfff1a0eb1e8b631e"
+    }
+  },
+  "modules_sha256": "e5f5ce8bb75cbe481c53cdcb19336abd2090a48e7e87a8427f8024881926d731",
+  "visual_review": {
+    "prompt_0_cfg1": "Recognizable person, hair and glasses; irregular/doubled contours remain",
+    "prompt_0_cfg4": "Recognizable cleaner portrait; fine grid substantially reduced; incomplete shape/detail fidelity"
+  },
+  "limits": [
+    "Frozen-base prototype; no production initialization or quality acceptance yet",
+    "Fresh optimizer and reset private exposure RNG for the additional 2000 updates; not an exact optimizer/RNG resume",
+    "Timing excludes encoding, held-out validation and sampling",
+    "Held-out prompt generation evaluation recorded separately"
+  ],
+  "held_out_prompt_evaluation": {
+    "samples": [
+      {
+        "index": 28,
+        "teacher": true,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p28_native_teacher_cfg1.png",
+        "sha256": "4b3c962cd900052c822b8f8ffcca1fc34805b3864508515d1ee2b0412e09e28f"
+      },
+      {
+        "index": 28,
+        "teacher": true,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p28_native_teacher_cfg4.png",
+        "sha256": "ec2f30f3dbdb9bff8a1d3df61575f5568579bd619a5990f22619f4326a181557"
+      },
+      {
+        "index": 28,
+        "teacher": false,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p28_hybrid_step002300_cfg1.png",
+        "sha256": "075fc6ac05f683e7b412d8050687162b24021a2cfa5c0d2f6ab1d3f2290c11e4"
+      },
+      {
+        "index": 28,
+        "teacher": false,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p28_hybrid_step002300_cfg4.png",
+        "sha256": "eeb6a24e3d8b7f5268a4dc79657c5fae942a65bc3109857837facba9c4667f8f"
+      },
+      {
+        "index": 29,
+        "teacher": true,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p29_native_teacher_cfg1.png",
+        "sha256": "f0a55cff16b334b5c11beb4ab5f559196035761104dc33970cab1e194eba5337"
+      },
+      {
+        "index": 29,
+        "teacher": true,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p29_native_teacher_cfg4.png",
+        "sha256": "2f81b66ef3ce4b2bc3692408ddff5fa6fcf74c4c35bc3a42a7615b1b121cfbfb"
+      },
+      {
+        "index": 29,
+        "teacher": false,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p29_hybrid_step002300_cfg1.png",
+        "sha256": "9f14ded2fc95cec7e7682208e48ff4a7e069812b318e4bf2916790b25ddead38"
+      },
+      {
+        "index": 29,
+        "teacher": false,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_extended_eval\\p29_hybrid_step002300_cfg4.png",
+        "sha256": "57c2b37fa138ad52f7a5d29e95a32eaf5f147896f94ccb97e4758f95fc233849"
+      }
+    ],
+    "reviewed_cfg": 4,
+    "visual_review": {
+      "28": "Fails to preserve native two-person composition; small single figure and dark/banded backdrop",
+      "29": "Retains one-person silhouette, light hair and blue/pink background; face/detail severely distorted"
+    },
+    "quality_accepted": false
+  }
+}

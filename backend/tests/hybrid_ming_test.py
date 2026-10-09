@@ -26,6 +26,11 @@ def hybrid_for(model):
 def test_native_hybrid_matches_baseline_then_trains_every_branch(padding):
     torch.manual_seed(112)
     model = create_transformer(config(padding), device="cpu", dtype=torch.float32)
+    # Native learned pads are checkpoint-loaded, not constructor-initialized.
+    if padding == "learned":
+        with torch.no_grad():
+            model.x_pad_token.normal_(0, .02)
+            model.cap_pad_token.normal_(0, .02)
     restore_topology(model, spec_for(model))
     baseline = deepcopy(model)
     restore_topology(model, hybrid_for(model))
@@ -48,7 +53,8 @@ def test_native_hybrid_matches_baseline_then_trains_every_branch(padding):
         optimizer.zero_grad(set_to_none=True)
         sum(output[:, :frames].square().mean() for output in forward(model)).backward()
         optimizer.step()
-    assert all(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0 for p in parameters)
+    for name, parameter in model.rewiring_modules.named_parameters():
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0, name
     from core.models.ming_image_01.vae_alignment import resize_backbone
     module_identity = model.rewiring_modules
     resize_backbone(model, 64)

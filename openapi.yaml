@@ -4087,7 +4087,9 @@ paths:
                   plan:
                     type: object
                     additionalProperties: true
-                    description: Resolution levels, blocks and skip edges. Hybrid plans report hybrid_parameter_counts with added parameters and per-module counts, and hybrid_convolution_halo mapping streams to height/width context radii in base token cells. Counts exclude VAE/global adapters and activation memory; halo excludes global attention equivalence.
+                    description: Resolution levels, blocks and skip edges. Hybrid plans report hybrid_parameter_counts, hybrid_convolution_halo and hybrid_activation_layout. Activation layout counts logical retained bypass, low-input and compressed-skip elements per image grid and batch item, with capture/release block phases and per-stream peak. Multiply by element bytes, batch and layer grids; this excludes autograd, aliased storage, prefix, temporaries, weights and optimizer and is not measured peak VRAM. Halo excludes global attention equivalence.
+                    properties:
+                      hybrid_activation_layout: {$ref: '#/components/schemas/HybridDiTActivationLayout'}
         '422':
           description: Invalid topology, unsupported operator or indivisible grid
   /models/load:
@@ -12086,6 +12088,34 @@ components:
       bearerFormat: JWT
 
   schemas:
+    HybridDiTActivationLayout:
+      type: object
+      required: [basis, entries, streams]
+      properties:
+        basis: {type: string, enum: [per_image_grid_per_batch_item]}
+        entries:
+          type: array
+          items:
+            type: object
+            required: [id, kind, stream, elements, capture_block, capture_phase, release_before_block]
+            properties:
+              id: {type: string}
+              kind: {type: string, enum: [bypass, low_input, compressed_skip]}
+              stream: {type: string}
+              elements: {type: integer, minimum: 0}
+              capture_block: {type: integer, minimum: 0}
+              capture_phase: {type: string, enum: [before, after]}
+              release_before_block: {type: integer, minimum: 0}
+        streams:
+          type: array
+          items:
+            type: object
+            required: [stream, peak_elements, peak_block, peak_phase]
+            properties:
+              stream: {type: string}
+              peak_elements: {type: integer, minimum: 0}
+              peak_block: {type: integer, minimum: 0}
+              peak_phase: {type: string, enum: [before, after]}
     DiTRewiringParameterCounts:
       type: object
       description: Logical native DiT parameter census for Anima, Ming-Image 0.1 and Qwen-Image 2.1. Includes internal conditioning bridges; excludes external text encoders, VAE and added hybrid modules.

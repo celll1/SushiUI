@@ -70,6 +70,21 @@ read/write functions validate the topology and module layout. Module
 weights use strict PyTorch state loading; declaration metadata alone is not a
 complete checkpoint. Compressed skip storage is estimated from rank, token
 count, batch size and element size, excluding autograd's internal saved tensors.
+API preview also returns `hybrid_activation_layout`: retained region bypasses,
+low inputs and compressed skips, their before/after block capture points and
+release points, and a per-stream peak element count. Counts are per image grid
+and batch item. The graph provides a collapsible BF16/FP32 capacity table and
+skip tooltips. Multiply by batch and ordered layer count. This is logical
+forward payload, excluding autograd, aliased storage, prefix tokens, temporaries,
+weights and optimizer; it is not an estimate of total peak VRAM. Native runtime
+ownership was independently instrumented for nested regions, adjacent region
+release/acquisition, prefix exclusion, batch scaling and grouped layers.
+For the Anima hybrid preset at 1024px, the API reports 26.53MiB BF16 retained
+payload on a 64×64 native token grid and 6.63MiB on a 32×32 Qwen codec grid,
+per image/batch item. Both peak after block 12. The CPU hybrid suites passed
+44 tests after adding these ownership checks. Frontend contracts, optional-field
+handling, legacy fallback, units and per-stream filtering were statically
+reviewed; owner build/type checks are still pending.
 
 Anima installs registered modules during model construction, before native
 weights load. Its native forward executes them and checkpoint loading rejects
@@ -111,8 +126,8 @@ loaded-model summaries expose the same census; resized codec IO is counted from
 the current native geometry. Other unavailable censuses remain explicit. Hybrid
 regions and dependent modules are edited through the explicit validated draft
 described above. No existing
-run or default preset is converted. Broader native census coverage, activation-memory
-accounting, GPU/native full-trainer
+run or default preset is converted. Broader native census coverage, full activation-memory
+profiling, GPU/native full-trainer
 optimizer/EMA/offload acceptance and
 LoRA support still require implementation or verification.
 

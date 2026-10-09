@@ -20,7 +20,31 @@ export default function DiTRewiringGraph(props: Props) {
       Convolution context: {props.plan.hybrid_convolution_halo?.[stream.name]?.join(" × ")} base token cells (H × W)
     </p>}
     <StreamGraph {...props} stream={stream} />
+    {props.plan.hybrid_activation_layout && <ActivationSummary layout={props.plan.hybrid_activation_layout} stream={stream.name} />}
   </div>)}</div>;
+}
+
+function ActivationSummary({ layout, stream }: {
+  layout: NonNullable<DiTRewiringPlan["hybrid_activation_layout"]>; stream: string;
+}) {
+  const peak = layout.streams.find(item => item.stream === stream);
+  const entries = layout.entries.filter(item => item.stream === stream);
+  const mib = (elements: number, bytes: number) => (elements * bytes / 2 ** 20).toFixed(2);
+  const labels = { bypass: "Region bypass", low_input: "Region low input", compressed_skip: "Compressed skip" };
+  return <details className="rounded border border-gray-700 p-2">
+    <summary className="cursor-pointer text-gray-300">Retained forward payload: {peak ? `${mib(peak.peak_elements, 2)} MiB BF16 / ${mib(peak.peak_elements, 4)} MiB FP32` : "unavailable"}</summary>
+    <p className="my-2 text-gray-400">Per image grid and batch item; multiply by batch size and ordered layer grids.
+      Logical payload excludes autograd, shared storage, prefix tokens, temporary tensors, weights and optimizer; this is not peak VRAM.
+      {peak && <> Peak ownership {peak.peak_phase} block {peak.peak_block}.</>}</p>
+    <div className="overflow-x-auto"><table className="w-full text-left text-gray-300">
+      <thead><tr><th>Tensor</th><th>Lifetime</th><th>BF16 MiB</th><th>FP32 MiB</th></tr></thead>
+      <tbody>{entries.map(item => <tr key={`${item.kind}/${item.id}`}>
+        <td>{item.id} / {labels[item.kind]}</td>
+        <td>{item.capture_phase} {item.capture_block} → before {item.release_before_block}</td>
+        <td>{mib(item.elements, 2)}</td><td>{mib(item.elements, 4)}</td>
+      </tr>)}</tbody>
+    </table></div>
+  </details>;
 }
 
 function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream }:
@@ -85,10 +109,11 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
       const source = blocks.find(block => block.index === edge.source_after);
       const target = blocks.find(block => block.index === edge.destination_before);
       if (!source || !target) return null;
+      const retained = plan.hybrid_activation_layout?.entries.find(item => item.kind === "compressed_skip" && item.id === edge.id);
       const sx = x(source.index + 0.5), tx = x(target.index + 0.5), base = y(source.depth) - 20;
       return <path key={`learned-${edge.id}`} d={`M ${sx} ${base} Q ${(sx + tx) / 2} ${base - 30} ${tx} ${base}`}
         fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="5 3">
-        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}`}</title>
+        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}${retained ? `; ${retained.elements.toLocaleString()} retained elements per image grid/batch item` : ""}`}</title>
       </path>;
     })}
     {spec.method === "hybrid_unet_ssdit" && spec.refiners.filter(item => item.stream === stream.name).map(item => {

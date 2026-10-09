@@ -37,9 +37,12 @@ def export_initialized_anima(model, source, output_name, *, cancelled=None):
     return export_initialized_transformer(model,source,output_name,architecture="anima",cancelled=cancelled)
 
 
-def export_initialized_transformer(model, source, output_name, *, architecture, cancelled=None, output_directory=None):
+def export_initialized_transformer(model, source, output_name, *, architecture, cancelled=None, output_directory=None,
+                                   _native_source_sha256=None, _append_modules=True):
     """Caller owns model exclusivity; source bytes and fitted modules are verified."""
     source = Path(source).resolve(strict=True)
+    if (_native_source_sha256 is not None or not _append_modules) and architecture != "ming_image_01":
+        raise ValueError("Shard publication is specific to the verified Ming package owner")
     if not source.is_file() or source.suffix.lower() != ".safetensors":
         raise ValueError("Initialized export requires a standalone native safetensors source")
     validate_output_name(output_name)
@@ -115,7 +118,7 @@ def export_initialized_transformer(model, source, output_name, *, architecture, 
             if read_checkpoint_metadata(metadata) is not None:
                 raise ValueError("Native source topology changed during initialization export")
             tensor_prefix = "net." if architecture == "anima" and "net."+input_key in keys else ""
-            if tensor_prefix+input_key not in keys:
+            if tensor_prefix+input_key not in keys and _native_source_sha256 is None:
                 raise ValueError("Initialization source contains no native input projection")
             if any(key.startswith(tensor_prefix+"rewiring_modules.") for key in keys):
                 raise ValueError("Initialization source already contains learned hybrid modules")
@@ -127,7 +130,7 @@ def export_initialized_transformer(model, source, output_name, *, architecture, 
             body_length = before.st_size-8-length
             offset = body_length
             encoded_tensors = []
-            for name, value in sorted(state.items()):
+            for name, value in sorted(state.items()) if _append_modules else ():
                 payload = value.reshape(-1).view(torch.uint8).numpy().tobytes()
                 key = tensor_prefix+"rewiring_modules."+name
                 header[key] = dict(dtype=_DTYPES[value.dtype], shape=list(value.shape),
@@ -157,12 +160,12 @@ def export_initialized_transformer(model, source, output_name, *, architecture, 
             identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
             if identity(before) != identity(after) or identity(before) != identity(source.stat()):
                 raise ValueError("Native source changed during initialization export")
-            if source_hash.hexdigest() != record["source_sha256"]:
+            if source_hash.hexdigest() != (_native_source_sha256 or record["source_sha256"]):
                 raise ValueError("Native source checksum differs from initialization provenance")
         with safe_open(str(temporary), framework="pt", device="cpu") as handle:
             if read_checkpoint_metadata(handle.metadata() or {}) != spec:
                 raise ValueError("Initialized export topology verification failed")
-            for name, value in state.items():
+            for name, value in state.items() if _append_modules else ():
                 if not torch.equal(handle.get_tensor(tensor_prefix+"rewiring_modules."+name), value):
                     raise ValueError("Initialized export module verification failed")
         check_cancel()
@@ -242,15 +245,15 @@ def export_initialized_ming_package(model, source, destination, *, cancelled=Non
     if artifact.configs["transformer"].get("vae_alignment") is not None or artifact.global_summary is not None:
         raise ValueError("Ming initialization requires a native source without VAE swap or global adapter")
     transformer_dir = artifact.components["transformer"]
-    weights = list(transformer_dir.glob("*.safetensors"))
-    if len(weights) != 1 or list(transformer_dir.glob("*.safetensors.index.json")):
-        raise ValueError("Ming initialization publication requires an unsharded native transformer")
-    if (weights[0].is_symlink() or not weights[0].resolve().is_relative_to(artifact.root)
-            or getattr(weights[0].lstat(),"st_file_attributes",0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
-        raise ValueError("Ming native transformer must be owned by its source package")
-    with safe_open(str(weights[0]),framework="pt",device="cpu") as handle:
-        if read_checkpoint_metadata(handle.metadata() or {}) is not None:
-            raise ValueError("Ming initialization requires a native source without U-Net")
+    from .ming_source import transformer_files, source_identity
+    from .artifacts import read_directory_declarations
+    weights,index = transformer_files(transformer_dir)
+    for path in weights+([index] if index is not None else []):
+        if (path.is_symlink() or not path.resolve().is_relative_to(artifact.root)
+                or getattr(path.lstat(),"st_file_attributes",0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError("Ming native transformer must be owned by its source package")
+    if read_directory_declarations(transformer_dir) != (None,None):
+        raise ValueError("Ming initialization requires a native source without U-Net")
     destination = Path(destination).absolute()
     validate_package_name(destination.name)
     if os.path.lexists(destination):
@@ -264,6 +267,21 @@ def export_initialized_ming_package(model, source, destination, *, cancelled=Non
         if cancelled is not None and cancelled():
             raise InitializationCancelled("Initialized Ming package export cancelled")
 
+    source_hash,hashes = source_identity(transformer_dir,cancelled=cancelled)
+    record = validate_record(getattr(model,"_hybrid_initialization",None),spec)
+    if source_hash != record["source_sha256"]:
+        raise ValueError("Native Ming source differs from initialization provenance")
+    config = artifact.configs["transformer"]
+    anchor = f"all_x_embedder.{config.get('all_patch_size',[2])[0]}-{config.get('all_f_patch_size',[1])[0]}.weight"
+    owner = None
+    for path in weights:
+        with safe_open(str(path),framework="pt",device="cpu") as handle:
+            if anchor in handle.keys():
+                owner = path
+    if owner is None:
+        raise ValueError("Native Ming transformer contains no input projection")
+    excluded = set(weights+([index] if index is not None else []))
+
     def copy_asset(path,target):
         check_cancel()
         if (path.is_symlink() or getattr(path.lstat(),"st_file_attributes",0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
@@ -272,7 +290,7 @@ def export_initialized_ming_package(model, source, destination, *, cancelled=Non
         if path.is_dir():
             target.mkdir()
             for child in sorted(path.iterdir()):
-                if child != weights[0]:
+                if child not in excluded:
                     copy_asset(child,target/child.name)
         elif path.is_file():
             with path.open("rb") as incoming, target.open("xb") as outgoing:
@@ -294,11 +312,32 @@ def export_initialized_ming_package(model, source, destination, *, cancelled=Non
         staging.mkdir()
         for name,path in artifact.components.items():
             copy_asset(path,staging/name)
-        quantization = artifact.root/"quantization.json"
-        if quantization.exists():
-            copy_asset(quantization,staging/quantization.name)
-        result = export_initialized_transformer(model,weights[0],weights[0].name,
-            architecture="ming_image_01",cancelled=cancelled,output_directory=staging/"transformer")
+        for filename in ("quantization.json","LICENSE","LICENSE.md","LICENSE.txt","NOTICE"):
+            asset = artifact.root/filename
+            if asset.exists():
+                copy_asset(asset,staging/filename)
+        for path in weights:
+            result = export_initialized_transformer(model,path,path.name,
+                architecture="ming_image_01",cancelled=cancelled,output_directory=staging/"transformer",
+                _native_source_sha256=hashes[path.name],_append_modules=path == owner)
+        if index is not None:
+            payload = index.read_bytes()
+            if hashlib.sha256(payload).hexdigest() != hashes[index.name]:
+                raise ValueError("Ming shard index changed during publication")
+            declaration = json.loads(payload,object_pairs_hook=_unique_object)
+            with safe_open(str(staging/"transformer"/owner.name),framework="pt",device="cpu") as handle:
+                added = {key:owner.name for key in handle.keys() if key.startswith("rewiring_modules.")}
+            declaration["weight_map"].update(added)
+            metadata = declaration.setdefault("metadata",{})
+            metadata.update(checkpoint_metadata(spec))
+            metadata.update(initialization_metadata(record,spec))
+            if "total_size" in metadata:
+                metadata["total_size"] = sum(value.byte_count for value in artifact.tensor_headers["transformer"].values()) + sum(
+                    value.numel()*value.element_size() for value in model.rewiring_modules.state_dict().values())
+            with (staging/"transformer"/index.name).open("w",encoding="utf-8") as stream:
+                json.dump(declaration,stream,indent=2,allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
         write_manifest(staging,source=artifact.source)
         prepared = inspect_artifact(staging)
         if prepared.config_fingerprint != artifact.config_fingerprint or prepared.profile != artifact.profile:

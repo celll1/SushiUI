@@ -4028,7 +4028,7 @@ paths:
         Restores the loaded native model after completion, cancellation or failure.
         Runtime calibration has no rating filter; callers choose authorized data.
         This execution binding supports native floating Anima and native floating
-        Qwen split packages and unsharded native floating Ming Design/Layer DiTs.
+        Qwen split packages and native floating Ming Design/Layer DiTs, including indexed shards.
         Ming copies native component assets into a self-contained package; packed
         conditioner weights are retained. Layer calibration uses a native-generated
         auxiliary canvas and one ordered layer, with the selected image as reference.

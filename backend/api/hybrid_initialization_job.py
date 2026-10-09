@@ -169,9 +169,8 @@ def _checked_ming_source(manager,options):
     if output.exists() or output.is_symlink():
         raise FileExistsError("Ming initialization output already exists")
     directory = artifact.components["transformer"]
-    weights = list(directory.glob("*.safetensors"))
-    if len(weights) != 1 or list(directory.glob("*.safetensors.index.json")):
-        raise ValueError("Ming initialization currently requires an unsharded native transformer")
+    from core.rewiring.ming_source import transformer_files
+    transformer_files(directory)
     components = manager.ming_image_01_components
     native = (components or {}).get("ming_native")
     if native is None or any(getattr(native,key,None) is None for key in

@@ -1,5 +1,6 @@
 """Initialized Ming packages own their unchanged assets and restore fitted modules."""
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,8 @@ from core.rewiring.initialized_export import export_initialized_ming_package
 
 
 @pytest.mark.parametrize("profile", ["generation_edit","layer_decompose"])
-def test_publish_fitted_ming_preserves_native_assets_and_restores(tmp_path,profile):
+@pytest.mark.parametrize("sharded", [False,True])
+def test_publish_fitted_ming_preserves_native_assets_and_restores(tmp_path,profile,sharded):
     torch.manual_seed(98)
     source = tmp_path/"native"
     source.mkdir()
@@ -25,9 +27,22 @@ def test_publish_fitted_ming_preserves_native_assets_and_restores(tmp_path,profi
     weights = source/"transformer"/"diffusion_pytorch_model.safetensors"
     native = {name:value.detach().clone().contiguous() for name,value in model.state_dict().items()}
     save_file(native,str(weights),metadata={"unrelated":"preserved"})
+    if sharded:
+        weights.unlink()
+        names = sorted(native)
+        mapping = {}
+        for index,keys in enumerate((names[:len(names)//2],names[len(names)//2:])):
+            filename = f"model-{index}.safetensors"
+            save_file({key:native[key] for key in keys},str(weights.parent/filename),metadata={"unrelated":"preserved"})
+            mapping.update({key:filename for key in keys})
+        (weights.parent/"model.safetensors.index.json").write_text(json.dumps(dict(
+            metadata=dict(total_size=sum(value.numel()*value.element_size() for value in native.values())),
+            weight_map=mapping)),encoding="utf-8")
     (source/"quantization.json").write_text('{"note":"source provenance"}',encoding="utf-8")
+    (source/"LICENSE").write_text("Synthetic license fixture",encoding="utf-8")
     assets = {path.relative_to(source):path.read_bytes() for path in source.rglob("*") if path.is_file()}
-    checksum = hashlib.sha256(weights.read_bytes()).hexdigest()
+    from core.rewiring.ming_source import source_identity
+    checksum,_ = source_identity(weights.parent)
     restore_topology(model,hybrid_for(model))
     frames = 3 if profile == "layer_decompose" else 1
     example = FitExample(([torch.randn(16,frames,16,24)],torch.tensor([.5]),[torch.randn(4,8)]),
@@ -41,11 +56,16 @@ def test_publish_fitted_ming_preserves_native_assets_and_restores(tmp_path,profi
     destination = Path(result["model_path"])
     for relative,payload in assets.items():
         assert (source/relative).read_bytes() == payload
-        if source/relative != weights:
+        if not (relative.parent.name == "transformer" and (relative.name.endswith(".safetensors") or relative.name.endswith(".index.json"))):
             assert (destination/relative).read_bytes() == payload
-    with safe_open(str(destination/"transformer"/weights.name),framework="pt",device="cpu") as handle:
-        assert handle.metadata()["unrelated"] == "preserved"
-        assert all(torch.equal(handle.get_tensor(name),value) for name,value in native.items())
+    seen = set()
+    for path in (destination/"transformer").glob("*.safetensors"):
+        with safe_open(str(path),framework="pt",device="cpu") as handle:
+            assert handle.metadata()["unrelated"] == "preserved"
+            for name in set(handle.keys()).intersection(native):
+                assert torch.equal(handle.get_tensor(name),native[name])
+                seen.add(name)
+    assert seen == set(native)
     loaded = load_components(destination,dtype=torch.float32,conditioner_attention="eager")
     assert loaded.artifact.profile == profile
     assert loaded.transformer._residual_unet_spec == model._residual_unet_spec

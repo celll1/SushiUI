@@ -82,10 +82,14 @@ def read_checkpoint_metadata(metadata, spec):
 
 def restore(model, metadata):
     record = read_checkpoint_metadata(metadata, getattr(model, "_residual_unet_spec", None))
+    restore_record(model, record)
+
+
+def restore_record(model, record):
     if record is None:
         model.__dict__.pop("_hybrid_initialization", None)
     else:
-        model._hybrid_initialization = record
+        model._hybrid_initialization = validate_record(record, getattr(model, "_residual_unet_spec", None))
 
 
 def model_metadata(model):

@@ -8,7 +8,7 @@ from .spec import read_checkpoint_metadata
 from .provenance import read_checkpoint_metadata as read_initialization
 
 
-def read_artifact_topology(path):
+def read_artifact_declarations(path):
     path = Path(path)
     if str(path).endswith(".safetensors") and not path.exists():
         sibling = Path(str(path) + ".index.json")
@@ -16,7 +16,9 @@ def read_artifact_topology(path):
             path = sibling
     if not str(path).endswith(".safetensors.index.json"):
         with safe_open(str(path), framework="pt", device="cpu") as handle:
-            return read_checkpoint_metadata(handle.metadata() or {})
+            metadata = handle.metadata() or {}
+        spec = read_checkpoint_metadata(metadata)
+        return spec, read_initialization(metadata, spec)
     with path.open(encoding="utf-8") as handle:
         index = json.load(handle)
     if not isinstance(index, dict):
@@ -41,14 +43,22 @@ def read_artifact_topology(path):
             shard_initialization = read_initialization(metadata, shard_spec)
         if shard_spec != spec or shard_initialization != initialization:
             raise ValueError("Checkpoint index and shard topology or initialization declarations disagree")
-    return spec
+    return spec, initialization
+
+
+def read_artifact_topology(path):
+    return read_artifact_declarations(path)[0]
+
+
+def read_directory_declarations(path):
+    declarations = [read_artifact_declarations(candidate) for candidate in sorted(Path(path).iterdir())
+                    if candidate.is_file() and str(candidate).endswith(
+                        (".safetensors", ".safetensors.index.json"))]
+    result = declarations[0] if declarations else (None, None)
+    if any(value != result for value in declarations):
+        raise ValueError("Directory transformer topology or initialization declarations disagree")
+    return result
 
 
 def read_directory_topology(path):
-    declarations = [read_artifact_topology(candidate) for candidate in sorted(Path(path).iterdir())
-                    if candidate.is_file() and str(candidate).endswith(
-                        (".safetensors", ".safetensors.index.json"))]
-    topology = declarations[0] if declarations else None
-    if any(value != topology for value in declarations):
-        raise ValueError("Directory transformer topology declarations disagree")
-    return topology
+    return read_directory_declarations(path)[0]

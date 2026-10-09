@@ -85,6 +85,8 @@ def _load_hybrid_directory(directory, config, dtype, topology):
     model = _finish_load(model, model.state_dict(), "Qwen hybrid directory")
     if declaration is not None and not model.vae_latent_bridge.ready:
         raise ValueError("Saved Qwen VAE alignment is not calibrated")
+    from core.rewiring.provenance import restore as restore_initialization
+    restore_initialization(model, metadata or {})
     return model
 
 
@@ -261,6 +263,8 @@ def load_qwen_image_21_components(
                 raise ValueError("Saved Qwen VAE alignment is not calibrated")
             transformer.to(dtype=torch_dtype)
             restore_topology(transformer, topology)
+            from core.rewiring.provenance import restore as restore_initialization
+            restore_initialization(transformer, metadata)
             if load_text_encoder and te_state:
                 te_config_path = (
                     components["manifest"].text_encoder_config

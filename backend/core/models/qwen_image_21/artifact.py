@@ -181,6 +181,8 @@ def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> t
     if variant == "bf16":
         model.to(dtype=dtype)
     restore_topology(model, topology)
+    from core.rewiring.provenance import restore as restore_initialization
+    restore_initialization(model, metadata)
     return model.to("cpu"), variant
 
 

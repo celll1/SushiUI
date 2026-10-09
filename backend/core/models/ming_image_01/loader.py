@@ -54,9 +54,9 @@ def _restore_native_rope(native) -> None:
 def load_components(path, *, dtype, conditioner_attention: str) -> MingComponents:
     # Complete preflight precedes construction or residency changes.
     artifact = inspect_artifact(path)
-    from core.rewiring.artifacts import read_directory_topology
+    from core.rewiring.artifacts import read_directory_declarations
     from .residual_unet import restore_topology, validate_topology_identity
-    topology = read_directory_topology(artifact.components["transformer"])
+    topology, initialization = read_directory_declarations(artifact.components["transformer"])
     if topology is not None:
         topology = validate_topology_identity(topology, artifact.configs["transformer"])
     if conditioner_attention not in {"eager", "flash_attention_2"}:
@@ -123,6 +123,8 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     else:
         transformer = load_quantized_transformer(quantized_transformer, artifact, dtype)
     restore_topology(transformer, topology)
+    from core.rewiring.provenance import restore_record
+    restore_record(transformer, initialization)
     from .vae_alignment import restore as restore_alignment, load_saved_vae
     alignment = restore_alignment(transformer, artifact, dtype)
     from .partition_global import payload_from_directory

@@ -56,6 +56,10 @@ def test_full_adapter_checkpoint_and_optimizer_resume(tmp_path, monkeypatch, sha
         monkeypatch.setattr("core.training.adapters.qwen_image_21_adapter.DEFAULT_EXPORT_SHARD_BYTES", 1024)
     model, spec, _ = model_and_spec()
     restore_topology(model, spec)
+    from hybrid_provenance_test import record
+    initialization = record()
+    initialization["origin_spec"] = deepcopy(spec)
+    model._hybrid_initialization = initialization
     trainer = _trainer(model)
     adapter = QwenImage21FullParameterAdapter(trainer)
     adapter.prepare_models_for_training()
@@ -72,6 +76,7 @@ def test_full_adapter_checkpoint_and_optimizer_resume(tmp_path, monkeypatch, sha
     loaded, variant = load_transformer(str(path), dict(model.config), torch.float32)
     assert variant == "bf16"
     assert loaded._residual_unet_spec == spec
+    assert loaded._hybrid_initialization == initialization
     for name, value in model.state_dict().items():
         if not name.startswith("qwen_partition_global_adapter."):
             assert torch.equal(value, loaded.state_dict()[name]), name
@@ -126,6 +131,10 @@ def test_hybrid_directory_strict_shard_loading(tmp_path, damage):
     from core.models.common.single_file_format import save_single_file_state
     model, spec, _ = model_and_spec()
     restore_topology(model, spec)
+    from hybrid_provenance_test import record
+    initialization = record()
+    initialization["origin_spec"] = deepcopy(spec)
+    from core.rewiring.provenance import checkpoint_metadata as initialization_metadata
     model.save_config(tmp_path)
     state = model.state_dict()
     name = next(key for key in state if key.startswith("rewiring_modules."))
@@ -133,13 +142,15 @@ def test_hybrid_directory_strict_shard_loading(tmp_path, damage):
         state.pop(name)
     elif damage == "nan":
         state[name].fill_(float("nan"))
-    save_single_file_state(state, checkpoint_metadata(spec), str(tmp_path / "diffusion_pytorch_model.safetensors"),
+    metadata = dict(checkpoint_metadata(spec), **initialization_metadata(initialization, spec))
+    save_single_file_state(state, metadata, str(tmp_path / "diffusion_pytorch_model.safetensors"),
         max_shard_bytes=4096)
     if damage:
         with pytest.raises(ValueError, match="Qwen"):
             _load_hybrid_directory(tmp_path, QwenImage21Transformer2DModel.load_config(tmp_path), torch.float32, spec)
     else:
         restored = _load_hybrid_directory(tmp_path, QwenImage21Transformer2DModel.load_config(tmp_path), torch.float32, spec)
+        assert restored._hybrid_initialization == initialization
         assert all(torch.equal(value, restored.state_dict()[key]) for key, value in state.items())
         grid = torch.randn(1, 8, 12, 8)
         torch.testing.assert_close(_forward(model, grid), _forward(restored, grid), rtol=1e-5, atol=1e-6)
@@ -150,6 +161,10 @@ def test_training_bundle_installs_modules_before_assigning_weights(tmp_path, mon
     import core.models.qwen_image_21.loader as loader
     model, spec, _ = model_and_spec()
     restore_topology(model, spec)
+    from hybrid_provenance_test import record
+    initialization = record()
+    initialization["origin_spec"] = deepcopy(spec)
+    from core.rewiring.provenance import checkpoint_metadata as initialization_metadata
     companion = tmp_path / "companion"
     companion.mkdir()
     monkeypatch.setattr(loader, "_source_components", lambda *args, **kwargs: dict(vae=torch.nn.Linear(1, 1)))
@@ -157,7 +172,9 @@ def test_training_bundle_installs_modules_before_assigning_weights(tmp_path, mon
     state["text_encoder.weight"] = torch.ones(1, 1)
     metadata = dict(artifact_metadata("training_bundle", dict(model.config)), **checkpoint_metadata(spec),
                     companion_path=str(companion), train_text_encoder="0")
+    metadata.update(initialization_metadata(initialization, spec))
     path = tmp_path / "bundle.safetensors"
     save_file(state, str(path), metadata=metadata)
     loaded = loader.load_qwen_image_21_components(str(path), torch_dtype=torch.float32, load_text_encoder=False)["transformer"]
+    assert loaded._hybrid_initialization == initialization
     assert all(torch.equal(value, loaded.state_dict()[key]) for key, value in model.state_dict().items())

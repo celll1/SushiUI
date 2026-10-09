@@ -88,6 +88,7 @@ def test_live_convolutions_do_not_mix_adjacent_layer_grids():
 @pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
 @pytest.mark.parametrize("quantized", [False, True])
 def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_path, profile, quantized):
+    torch.manual_seed(812)
     from core.models.ming_image_01.loader import load_components
     from core.models.ming_image_01.checkpoint import save_bundle
     from core.training.adapters.ming_image_01_adapter import MingImage01FullParameterAdapter
@@ -96,6 +97,10 @@ def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_
     write_tiny_package(source, profile=profile)
     components = load_components(source, dtype=torch.float32, conditioner_attention="eager")
     restore_topology(components.transformer, hybrid_for(components.transformer))
+    from hybrid_provenance_test import record
+    initialization = record()
+    initialization["origin_spec"] = deepcopy(components.transformer._residual_unet_spec)
+    components.transformer._hybrid_initialization = initialization
     components.transformer.requires_grad_(True)
     trainer = SimpleNamespace(ming_image_01_components=components, config={}, unet_lr=.001, learning_rate=.001)
     adapter = MingImage01FullParameterAdapter(trainer, conditioner_groups=set(), conditioner_lrs={})
@@ -117,6 +122,7 @@ def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_
     assert expected.keys() == actual.keys()
     assert all(torch.equal(expected[key], actual[key]) for key in expected)
     assert restored.transformer._residual_unet_spec == components.transformer._residual_unet_spec
+    assert restored.transformer._hybrid_initialization == initialization
     assert not any(p.device.type == "meta" for p in restored.transformer.parameters())
     frames = 2 if profile == "layer_decompose" else 1
     images, queries = [torch.randn(16, frames, 16, 24)], [torch.randn(5, 8)]

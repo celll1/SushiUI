@@ -99,6 +99,16 @@ individual records' limitations.
    null error alone does not explain the discrepancy. Compare paired field
    anchors with a guided-field fitting objective before adding it publicly.
    This diagnostic does not close free-running or equal-total-budget acceptance.
+   The paired fitting comparison (`hybrid_anima_guided_fit_2026-10.json`)
+   verified 200 matched updates per arm and exact frozen native hashes. Added
+   guided loss gives small field improvements but no clear selected visual
+   advantage, so it is not promoted. Paired-anchor images preserve coarse
+   figures and are retained for owner evaluation; exact native reproduction is
+   not the acceptance goal. The native p28 CFG1 image itself has split/collage
+   composition, so earlier CFG1 failures cannot all be assigned to rewiring.
+   Native p29 CFG1 remains coherent; compare prompt-specific controls.
+   Candidate compute/equal-total-budget and combined-codec acceptance remain
+   separate work, and no owner checkpoint or public initializer changed.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

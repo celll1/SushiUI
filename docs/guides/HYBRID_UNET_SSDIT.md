@@ -1367,3 +1367,23 @@ as a production artifact or made a default. No owner run or loaded model changes
 The first trial used the frame wrapper for RGB training input and failed before
 updates; the corrected trial uses the image wrapper.
 Evidence: `docs/audits/data/hybrid_anima_packed_io_fit_2026-10.json`.
+
+### Matched packed IO versus IO/structural adaptation
+
+A second bounded probe starts both arms from the same saved IO200 and structural
+3700 states. Both keep native body parameters fixed and use FP32 IO/bridge and
+structural storage with BF16 body/compute. Two hundred exposures match exactly
+by item, null draw, sigma and noise SHA-256. Fresh AdamW8bit states at LR 1e-4
+train either six IO/bridge tensors (1,130,624 parameters) or those plus all 65
+structural tensors (6,088,832 parameters). All optimizer counters reach 200 and
+both frozen-body hashes match the shared start. IO-only takes 64.562 seconds and
+4.104 GiB allocated; joint adaptation takes 81.344 seconds and 4.124 GiB.
+This is matched-exposure comparison, not equal-total-compute or optimizer resume.
+
+Last-50 matched training mean losses are 1.85723 and 1.52018 respectively; they
+are not held-out field scores. Four new held-prompt outputs at the same seed/CFG
+show smoother regions with joint adaptation, but two-person composition fails
+and severe block artifacts remain. This limited change does not justify default
+promotion. Further work must test a concrete geometry/field hypothesis rather
+than assuming that more of the same short fitting will fix the initialization.
+Evidence: `docs/audits/data/hybrid_anima_packed_joint_fit_2026-10.json`.

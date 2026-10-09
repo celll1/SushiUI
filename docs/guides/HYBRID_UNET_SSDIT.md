@@ -1220,8 +1220,15 @@ context only around each DiT prediction through its sampling bridge, preserving
 conditioner/VAE precision and FP32 adapter storage. No adapter algebra or API
 default changed. A native CPU BF16/FP32-LoRA preview regression checks the
 prediction context, unchanged weights, separate encoder/decoder contexts and
-context restoration; training-preview tests pass. Live retry/save/resume remains
-to be verified, so this fix alone is not Ming GPU LoRA acceptance.
+context restoration; training-preview tests pass. The subsequent real INT8
+ConvRot retry completed two updates and resumed step 2 to step 3. All 72
+structural payload tensors match the factory, and all 344 optimizer states,
+including 72 structural entries, were restored with none fresh and counters 3.
+Saved-payload API generation at four steps succeeded without warnings. The owner
+Ming Layer model was restored and only the owned smoke run was removed from DB
+and disk; logs/sample hashes remain. This is INT8-base functionality acceptance,
+not BF16-base or quality-recovery acceptance. Qwen GPU LoRA remains separate.
+Evidence: `docs/audits/data/hybrid_ming_lora_gpu_2026-10.json`.
 
 ## Mutable Block Swap integration
 

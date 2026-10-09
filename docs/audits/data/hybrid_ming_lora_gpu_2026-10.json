@@ -1,0 +1,67 @@
+{
+  "architecture": "ming_image_01",
+  "source": "M:\\model\\ming_image_01\\design_int8_convrot",
+  "base_quantization": "int8_convrot",
+  "runtime_fix_commit": "f032c0f2",
+  "method": "lora",
+  "resolution": 512,
+  "batch_size": 1,
+  "images": 32,
+  "rating": "general",
+  "rank": 8,
+  "alpha": 8,
+  "adapter_dtype": "fp32",
+  "first_updates": 2,
+  "resume_step": 2,
+  "final_step": 3,
+  "structural_tensors": 72,
+  "optimizer_entries": 344,
+  "structural_optimizer_entries": 72,
+  "optimizer_counters": 3,
+  "fresh_optimizer_entries": 0,
+  "checkpoint_sha256": "897c8ba0bf2c32bb3bdeb4a39e7a7b985967cbde6f76fd9831d80e0b44a78bad",
+  "generation": {
+    "success": true,
+    "steps": 4,
+    "cfg": 4,
+    "seed": 63,
+    "warnings": [],
+    "image_id": 11626
+  },
+  "resume_log_lines": [
+    "[LoRA Trainer] Resume: LoRA weights loaded from hybrid_ming_lora_gpu_20261010_step_000002.safetensors",
+    "[LoRA Trainer] Loaded training state: epoch=0, batch_idx=2",
+    "[LoRA Trainer] Loaded training state: epoch=0, batch_idx=2, global_step=2",
+    "[LoRA Trainer] Named optimizer state load OK from hybrid_ming_lora_gpu_20261010_step_000002_optimizer.pt: 344 tensor(s) restored, 0 start fresh",
+    "[LoRA Trainer] Metrics resume_seq = 1"
+  ],
+  "limits": [
+    "INT8 ConvRot base plus FP32 LoRA masters; not BF16-base or quality-recovery acceptance.",
+    "Fresh zero-correction hybrid payload; no teacher initialization or VAE swap.",
+    "Qwen live GPU acceptance remains separate."
+  ],
+  "samples": [
+    {
+      "filename": "step_000000_sample_0.png",
+      "sha256": "355ee2e8bc19418ca7b83950b4ce76eec3169bf71ce91ab251557cb8387558ad"
+    },
+    {
+      "filename": "step_000001_sample_0.png",
+      "sha256": "ff71298888e86516ae67b2399301cc92c15ad09b87c21afbf359c12a7b117c28"
+    },
+    {
+      "filename": "step_000002_sample_0.png",
+      "sha256": "f323eeb73145fed49d30433c6cfafc154adb399f1c31c14a5f11ba8820d088ae"
+    },
+    {
+      "filename": "step_000003_sample_0.png",
+      "sha256": "06924f94a482fedc37719a782598432f67941e84d17401187621bbb6b8fc724d"
+    }
+  ],
+  "cleanup": {
+    "run_db_deleted": true,
+    "run_disk_deleted": true,
+    "owner_model_restored": true,
+    "general_dataset_retained": true
+  }
+}

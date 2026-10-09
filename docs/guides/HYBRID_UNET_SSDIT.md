@@ -964,6 +964,29 @@ quality accepted. Next isolate latent IO/bridge adaptation and trajectory
 consistency while retaining the reduced target token grid.
 Evidence: `docs/audits/data/hybrid_anima_codec_diagnostic_2026-10.json`.
 
+## Restricted latent-boundary adaptation
+
+A following 200-update probe trained only `x_embedder.proj.1`,
+`final_layer.linear` and the input/output calibration projections: 1,130,624
+parameters, LR 1e-4, BF16 AdamW8bit with stochastic rounding. Native DiT,
+3300-update hybrid structural parameters, caption bridge, TE and VAE stayed
+frozen. Hashes of all frozen parameters matched exactly before and after.
+The same 28 general images and four retained adaptation-held-out images were
+used. Updates took 54.063 seconds with 4.085 GiB peak allocated, excluding
+encoding, hashing and sample generation. Four finite fixed-prompt outputs were
+produced. Three inspected outputs still contain strong block texture and
+distorted figures; reliable quality recovery is not established.
+
+Both scope and LR differ from the earlier full-parameter probe. Item/null draws
+follow the same independent seed, but stochastic rounding consumes global Torch
+RNG, so subsequent noise/timestep draws differ between scopes. Equal update
+counts are not equal GPU time. This probe supports the feasibility of inexpensive
+boundary adaptation, not its quality acceptance, and does not justify promoting
+the recipe into the production initializer. Native-codec hybrid quality and
+equal-time structural comparison remain separate requirements; a failed combined
+codec probe alone does not settle the architecture comparison.
+Evidence: `docs/audits/data/hybrid_anima_io_adaptation_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

@@ -755,6 +755,34 @@ Layer model stayed unchanged and CUDA was untouched. Temporary probe files were
 removed. This verifies artifact/API plumbing, not official-weight quality; see
 `docs/audits/data/hybrid_initialized_export_2026-10.json`.
 
+## Adapter artifact work in progress
+
+Hybrid LoRA remains refused until its complete save/load/resume contract is
+wired. `core/adapters/full_module.py` now supplies the shared full-module tensor
+protocol for auxiliary convolution/skip weights, separate from low-rank algebra.
+It exports every parameter and persistent buffer, without a synthetic alpha;
+the trainer exporter respects this per-module declaration. Loading prepares all
+exact keys/shapes and finite dtype conversions before mutation, preserves live
+parameter identities, and rejects changed module layouts. Nine CPU regressions
+cover round-trip, optimizer ownership, full/ordinary mixed export, invalid keys,
+shapes, integer/non-finite tensors and FP16 overflow with no partial mutation.
+The combined existing algebra suite reports 106 passed and one unrelated
+capability-census failure: its ordinary-LoRA test assumes every table row is
+enabled, but the unchanged Chimera row is explicitly empty.
+
+Remaining integration must register the resolved hybrid modules as one stable
+`rewiring_modules` payload, exclude their layers from low-rank target discovery,
+and carry the existing topology and initialization metadata. Resume must restore
+this payload before training, with exact named optimizer ownership. Generation
+must validate all declarations and tensors before installing either payload or
+low-rank branches, and restore the previous module/topology on failure, unload
+and model teardown. A full-module payload supplies structural weights rather
+than a scalable low-rank delta; its initial contract requires one owner at
+strength one with no step-range modulation. Conflicting payload owners must be
+refused, not silently summed or overwritten. These paths need joint acceptance
+before removing the training gate; the new tensor protocol alone does not enable
+hybrid LoRA.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

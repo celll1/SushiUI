@@ -7,19 +7,21 @@ import DiTRewiringGraph from "../common/DiTRewiringGraph";
 import MingGlobalSummary from "../common/MingGlobalSummary";
 import DiTParameterSummary from "../common/DiTParameterSummary";
 import HybridDiTModuleEditor from "./HybridDiTModuleEditor";
+import HybridInitializationPanel from "./HybridInitializationPanel";
 
 interface Props {
   modelPath: string; resolution: number;
   mode: "inherit" | "configure" | undefined; spec: DiTRewiringSpec | null | undefined;
   onChange: (mode: "inherit" | "configure", spec: DiTRewiringSpec | null) => void;
   onValidated?: (spec: DiTRewiringSpec | null) => void;
+  onInitialized?: (path: string) => void | Promise<void>;
 }
 const message = (error: unknown): string => {
   const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
   return typeof detail === "string" ? detail : error instanceof Error ? error.message : "Topology validation failed";
 };
 
-export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, onChange, onValidated }: Props) {
+export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, onChange, onValidated, onInitialized }: Props) {
   const [info, setInfo] = useState<DiTRewiringModelInfo | null>(null);
   const [plan, setPlan] = useState<DiTRewiringPlan | null>(null);
   const [validatedSpec, setValidatedSpec] = useState<DiTRewiringSpec | null>(null);
@@ -201,6 +203,10 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
+    {onInitialized && info?.architecture === "anima" && !info.topology &&
+      <HybridInitializationPanel key={modelPath} modelPath={modelPath}
+        spec={!pending && !error && !hybridEditing && validatedSpec?.method === "hybrid_unet_ssdit" ? validatedSpec : null}
+        onUse={onInitialized} />}
     {info?.topology?.method === "hybrid_unet_ssdit" && <p className="my-2 text-gray-400">
       {info.initialization
         ? `Checkpoint initialized with a native teacher: ${info.initialization.sample_count} samples, ${info.initialization.phases.reduce((total, phase) => total + phase.updates, 0)} updates, seed ${info.initialization.seed}. This records its origin; weights may have been fine-tuned since initialization.`

@@ -563,8 +563,16 @@ images. Metadata stores the bounded recipe and hashes, without image paths or
 caption contents; existing records without a recipe remain readable.
 
 The public execution binding currently supports floating native Anima only.
-Ming/Qwen execution bindings, the initialization UI and real GPU job acceptance
-remain pending; successful CPU ownership tests do not establish image quality.
+Training's native Anima topology editor exposes calibration dataset selection,
+the API-provided recipe, progress and cooperative cancellation. It polls the
+process-local job even after reopening, and leaves running jobs active when the
+panel closes. A completed artifact is applied only by an explicit button after
+refreshing the model index; this switches topology to inheritance and clears the
+old resume checkpoint. Stale polling responses cannot overwrite action results.
+UI types, paths and state transitions are statically reviewed; owner build and
+interactive acceptance remain pending. Ming/Qwen execution bindings and real
+GPU job acceptance also remain pending; CPU ownership tests do not establish
+image quality.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

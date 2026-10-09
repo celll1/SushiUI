@@ -36,6 +36,7 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
     from core.models.ming_image_01.sampling import MingSampler, MingTransformerBridge
     from core.models.ming_image_01.training_data import encode_frames
     from core.models.ming_image_01.vendor.diffusion.pipeline import ImageGenerationPipeline
+    from .ming_source import source_identity
 
     native = components["ming_native"]
     model,te,vae = native.transformer,native.conditioner,native.vae
@@ -55,7 +56,6 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
     frames = 2 if layer else 1
     latents,conditioning,pixels,pairs,phases,references = [],[],[],[],[],[]
     side = options["resolution"]
-    weights = next(native.artifact.components["transformer"].glob("*.safetensors"))
 
     class TeacherPipeline(ImageGenerationPipeline):
         @property
@@ -103,7 +103,8 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
     try:
         with torch.random.fork_rng(devices=[torch.cuda.current_device()] if device.type == "cuda" else []):
             torch.manual_seed(options["seed"])
-            source_hash = checksum(weights,"source_verification")
+            source_hash,_ = source_identity(native.artifact.components["transformer"],cancelled=cancelled,
+                progress=lambda completed,total:report("source_verification",completed,total,"bytes"))
             selection = torch.Generator().manual_seed(options["seed"])
             noise_rng = torch.Generator(device=device).manual_seed(options["seed"])
             for root in roots:

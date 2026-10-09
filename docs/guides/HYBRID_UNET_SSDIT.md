@@ -563,7 +563,7 @@ images. Metadata stores the bounded recipe and hashes, without image paths or
 caption contents; existing records without a recipe remain readable.
 
 The public execution binding supports floating native Anima and unsharded,
-floating native Qwen split packages, plus unsharded floating Ming Design/Layer DiTs.
+floating native Qwen split packages, plus floating Ming Design/Layer DiTs including indexed shards.
 Ming retains packed conditioner assets if present. Qwen/Ming save a sibling package directory;
 `output_name` is its directory basename, while Anima requires a safetensors
 filename. Existing topology, VAE swap, adapters and missing source assets are
@@ -624,7 +624,7 @@ This short recipe is functionality evidence, not quality recovery. Evidence:
 `docs/audits/data/hybrid_qwen_initialization_api_2026-10.json`.
 
 Ming's initialized package publisher is CPU-verified for both Design and Layer.
-`export_initialized_ming_package` streams an unsharded native transformer,
+`export_initialized_ming_package` streams a native transformer, including indexed shards,
 appending fitted modules and lineage, and copies its six native component trees
 in 8MiB chunks into a new, self-contained package. Quantization provenance is
 retained. Unlike Qwen's external references, Ming's manifest requires assets
@@ -634,6 +634,17 @@ early/late cancellation and existing destinations abort without partial output.
 Tiny native teacher fits, exact native/module tensor restoration and forward
 parity are verified for both profiles. Evidence:
 `docs/audits/data/hybrid_ming_initialized_export_2026-10.json`.
+
+Official Design/Layer DiTs use five/nine shards, so Ming publication retains
+their filenames and native payloads. Added modules occupy only the input-projection
+shard; every shard and the index carry identical topology/lineage. The index map
+and byte census include the new tensors. Sharded source identity hashes the sorted
+filenames and each file SHA-256, including the index; single-file identity keeps
+its original whole-file SHA-256. Export re-verifies this identity and each streamed
+shard. Unindexed extras or inconsistent declarations are refused. Native root
+license/notice files are copied along with the component assets. Both profiles
+have exact tensor/asset and strict reload tests with single-file and sharded
+sources; official-weight GPU execution remains a separate acceptance gate.
 
 Ming's public execution owner now uses native VAE encoding, native MLLM/connector
 conditioning and a private scheduler/sampler. Design noising uses encoded images;

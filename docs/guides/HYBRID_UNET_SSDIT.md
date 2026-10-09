@@ -1276,3 +1276,17 @@ and two slots (28 native blocks checkpointed), reaching step 4 with all 636
 optimizer counters advanced, including 160 tail entries. Resume consumed the
 regular step-2 and step-3 checkpoints.
 Records are in `docs/audits/data/hybrid_anima_blockswap_2026-10.json`.
+
+## Output-only codec cycle calibration probe
+
+A bounded output-only refit uses the existing calibrated input bridge's actual
+first-16-channel clean state, rather than native-codec targets, to fit a new 3x3
+16-to-64 output projection on 28 general images. Four images are excluded from
+this refit; their absence from the older retained calibration is not established.
+Token geometry and the input bridge are unchanged. Mean held reconstruction MSE
+changes from 0.615642 to 0.611011, with one of four cases worsening. The inspected
+single-figure face/outline improves, while the two-figure scene has stronger edge
+artifacts; block texture persists. This is clean codec reconstruction only, not
+DiT/noise-field or free-running generation acceptance. It does not justify a
+production/default change. The owned worker exited and no API model/run changed.
+Evidence: `docs/audits/data/hybrid_codec_cycle_probe_2026-10.json`.

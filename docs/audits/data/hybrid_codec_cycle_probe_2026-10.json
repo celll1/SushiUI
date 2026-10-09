@@ -1,0 +1,125 @@
+{
+  "rating": "general",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_indices": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "results": [
+    {
+      "index": 28,
+      "arm": "original",
+      "latent_mse": 0.6639490127563477
+    },
+    {
+      "index": 28,
+      "arm": "cycle_refit",
+      "latent_mse": 0.6953568458557129
+    },
+    {
+      "index": 29,
+      "arm": "original",
+      "latent_mse": 0.5903967618942261
+    },
+    {
+      "index": 29,
+      "arm": "cycle_refit",
+      "latent_mse": 0.5888593196868896
+    },
+    {
+      "index": 30,
+      "arm": "original",
+      "latent_mse": 0.6686645746231079
+    },
+    {
+      "index": 30,
+      "arm": "cycle_refit",
+      "latent_mse": 0.6509227752685547
+    },
+    {
+      "index": 31,
+      "arm": "original",
+      "latent_mse": 0.5395581722259521
+    },
+    {
+      "index": 31,
+      "arm": "cycle_refit",
+      "latent_mse": 0.5089043378829956
+    }
+  ],
+  "images": [
+    {
+      "index": 28,
+      "arm": "original",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_cycle_probe\\p28_original.png",
+      "sha256": "ef37de123eef5485eb868de114797baa2d0f47944800b9e4098a709cbd6c0428"
+    },
+    {
+      "index": 28,
+      "arm": "cycle_refit",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_cycle_probe\\p28_cycle_refit.png",
+      "sha256": "09678c69088df44cf84704c618f48c93d9bd90889c927c0279b66570cba61938"
+    },
+    {
+      "index": 29,
+      "arm": "original",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_cycle_probe\\p29_original.png",
+      "sha256": "3a28e3ca42d95e469bed70fed80c25beedf242b8383153331352882f5077ec87"
+    },
+    {
+      "index": 29,
+      "arm": "cycle_refit",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_cycle_probe\\p29_cycle_refit.png",
+      "sha256": "ceee3d948d81ff8b37b4f6993e87c5831bd8fe41579bbb96834a473e4ce2136e"
+    }
+  ],
+  "calibration_sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+  "seconds": 1.9309384999796748,
+  "peak_allocated_gib": 2.277888774871826,
+  "limits": [
+    "Clean codec reconstruction only; no DiT/sampler acceptance.",
+    "Existing input calibration retained; held items excluded from this output refit, not proved absent from the older calibration.",
+    "No owner artifact or production default changed."
+  ],
+  "mean_latent_mse": {
+    "original": 0.6156421303749084,
+    "cycle_refit": 0.6110108196735382
+  },
+  "review": {
+    "p28": "Coarse seated figures remain; more edge/block artifacts after refit.",
+    "p29": "Face and outlines clearer after refit; block texture remains.",
+    "decision": "Do not promote output-only clean cycle refit; no consistent held-out improvement or DiT generation evidence."
+  },
+  "output_state_sha256": "dda75afb6064c80cc30a883ec7eda8b78677705ada3fe770ca045c16fc3cdf35"
+}

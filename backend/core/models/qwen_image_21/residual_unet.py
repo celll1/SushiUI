@@ -67,7 +67,8 @@ def run_rewired_qwen(model, hidden, modulation, rotary, mask, target_mask,
         if modules is None or modules.declaration != spec:
             raise ValueError("Qwen hybrid modules do not match the installed declaration")
         return modules.forward_stream(hidden, "main", height, width, prefix,
-            (rotary, mask, target_mask, key_valid), execute, coarse_context)
+            (rotary, mask, target_mask, key_valid), execute, coarse_context,
+            checkpoint_modules=model.gradient_checkpointing and getattr(model, "_training_gradient_checkpointing_blocks", len(model.transformer_blocks)) > 0)
     return run_rewired_stream(hidden, spec, "main", height, width, prefix,
                              (rotary, mask, target_mask, key_valid), execute, coarse_context)
 

@@ -1,6 +1,7 @@
 # Hybrid U-Net ssDiT foundation
 
-Status: experimental native Anima/Ming/Qwen 2.1 integration; CPU acceptance only.
+Status: experimental native Anima/Ming/Qwen 2.1 integration; CPU contracts and
+synthetic official-weight Anima backward verified. Quality acceptance is pending.
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
@@ -23,6 +24,15 @@ on the same region grid. Prefix tokens are excluded from all spatial modules.
 stable IDs inside down/up/local/skip ModuleDicts. Skip activations are compressed
 to the declared rank and owned by one forward execution, without detaching the
 encoder graph or retaining activations in module state across calls.
+
+Learned convolutions and both skip projections use non-reentrant checkpointing
+when native checkpointing is enabled. Checkpoint calls wrap only pure tensor
+modules, never the mutable skip ownership dictionary. Anima CPU/async block
+offload modes also save these checkpoint inputs on CPU; new-module transfers
+currently use Torch's CPU saved-tensor path, not the native async engine. The
+global activation dispatcher can cover the ordinary checkpoint path. Live skip
+outputs and residual bypasses still occupy their execution device; checkpointing
+does not remove those explicit graph references.
 
 Learned correction outputs start at zero. Initial boundary execution matches
 the legacy pool/interpolation, allowing a controlled starting point and an
@@ -147,6 +157,16 @@ keeps its existing partition restrictions. These tests do not validate the
 caption encoder or official-weight GPU training.
 
 ## Requested Anima performance matrix
+
+2026-10-09 Anima base v1.0 GPU functional probe: BF16, 512px, batch 1,
+AdamW8bit, native VAE geometry and the new hybrid preset. Three updates completed
+with ordinary and CPU-offloaded checkpointing. After the zero-output branches'
+first update, all 65 learned parameter tensors had finite nonzero gradients;
+every final correction projection changed. Peak allocated VRAM was 11.47GiB.
+Synthetic conditioning/latents were used, without VAE/TE execution or checkpoint
+I/O. This proves native backward and module updates, not quality recovery or the
+requested four-way timing comparison. CPU FP32/BF16 checkpoint equivalence and
+the three native architecture suites passed 40 tests.
 
 After implementation, rerun the owner's four-way comparison: native/hybrid
 U-Net crossed with native/Qwen-Image 2.1 VAE. The previous batch comparison used

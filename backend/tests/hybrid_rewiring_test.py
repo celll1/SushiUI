@@ -102,6 +102,17 @@ def test_parameter_census_matches_registered_modules():
     assert preview_plan(spec, 8, 12)["hybrid_parameter_counts"] == census
 
 
+def test_new_graph_initialization_preserves_exposure_rng_and_is_reproducible():
+    torch.manual_seed(572)
+    before = torch.get_rng_state().clone()
+    first = HybridModules(declaration())
+    assert torch.equal(torch.get_rng_state(), before)
+    second = HybridModules(declaration())
+    assert torch.equal(torch.get_rng_state(), before)
+    for name, value in first.state_dict().items():
+        assert torch.equal(value, second.state_dict()[name]), name
+
+
 def test_unsupported_training_features_are_explicit():
     from core.rewiring.training import validate_training_features
     config = dict(dit_rewiring_spec=declaration(), training_method="full_finetune")

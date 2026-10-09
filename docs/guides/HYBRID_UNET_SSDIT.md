@@ -87,7 +87,41 @@ exactly; native gradients use FP32 accumulation tolerances. Anima's partition/gl
 adapter core-weighted backward is also checked. The final combined CPU suites
 passed 78 cases; 11 CUDA transfer/replay/inference cases passed. API validation
 roundtrips replay declarations and rejects unsupported policies. Official-weight
-replay throughput/peak-memory acceptance and image-quality comparisons remain pending.
+replay throughput/peak-memory measurements are recorded below; image-quality comparisons remain pending.
+
+## Skip storage measurement
+
+Anima official base v1.0 was measured at 1024px, BF16, AdamW8bit, 24 native
+checkpoint blocks, with all seven compressed skips using each policy. One warmup
+preceded three timed updates at batch 1/2/4. VAE/TE and I/O are excluded; swap
+cases reuse the same production general-only calibration as the earlier matrix.
+Each cell reports synchronized seconds/update and peak allocated GiB.
+
+| Codec | Storage | Batch 1 | Batch 2 | Batch 4 |
+|---|---|---:|---:|---:|
+| Native | GPU | 0.656 / 12.040 | 1.046 / 14.087 | 2.172 / 20.371 |
+| Native | CPU | 0.641 / 12.030 | 1.078 / 14.084 | 2.219 / 20.365 |
+| Native | Recompute | 2.219 / 12.251 | 4.422 / 13.992 | 9.656 / 20.179 |
+| Qwen 2.1 swap | GPU | 0.469 / 11.476 | 0.484 / 11.658 | 0.578 / 12.055 |
+| Qwen 2.1 swap | CPU | 0.469 / 11.479 | 0.484 / 11.658 | 0.578 / 12.061 |
+| Qwen 2.1 swap | Recompute | 1.219 / 11.623 | 1.281 / 11.831 | 1.890 / 12.269 |
+
+CPU skip transfers barely change total peak because compressed skips are small
+and native activations/gradients/optimizer dominate. At native batch 4, encoder
+replay saves about 196MiB but costs 4.45× step time. At native batch 1 and every
+swapped-codec batch it increases total peak: removing a retained skip does not
+remove the transient recomputed encoder graph. Post-update host RSS at native
+batch 4 is 2.71/2.73/3.22GiB for GPU/CPU/replay; these are samples, not peak RSS.
+GPU remains the practical default for this preset. None of these measurements
+establish quality recovery. Raw timing, loss, memory and declarations are in
+`docs/audits/data/hybrid_anima_skip_storage_2026-10.json`.
+
+New hybrid module initialization now forks the construction device's RNG so
+adding a topology does not advance the run's exposure generator. Initial weights
+remain reproducible; checkpoint loading still restores saved tensors. CPU native
+construction/reload suites passed 46 cases and a CUDA-device construction test
+preserved both CPU and CUDA RNG state. The benchmark resets exposure RNG explicitly
+per update, so this isolation does not change its measured inputs.
 
 Training Block Swap is supported for Anima full-frame execution without EMA.
 Ming/Qwen hybrid training still requires zero swapped blocks. The earlier Anima

@@ -154,6 +154,7 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
       }}>Add local refiner</button>
       <h5 className="font-medium">Learned compressed skips — source after block → destination before block</h5>
       <p className="text-gray-400">CPU storage frees the live compressed skip during training and preserves encoder gradients. Transfers are synchronous. Region bypasses and autograd storage are separate; inference keeps skips on its execution device.</p>
+      <p className="text-gray-400">Recompute shares one CPU copy of the stream input and replays encoder blocks for each skip. Its source must precede every skip destination in this stream. This adds computation and cannot be combined with Block Swap.</p>
       {draft.skips.map(item => {
         const update = (patch: Partial<typeof item>) => change({ ...draft, skips: draft.skips.map(value => value.id === item.id ? { ...value, ...patch } : value) });
         return <div key={item.id} className="flex flex-wrap items-center gap-3"><span>{item.id}</span>
@@ -165,7 +166,7 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
             value={item.storage ?? ""} className="ml-2 rounded bg-gray-800 p-1"
             onChange={event => {
               const storage = event.target.value;
-              if (storage === "gpu" || storage === "cpu") update({ storage });
+              if (storage === "gpu" || storage === "cpu" || storage === "recompute") update({ storage });
               else change({ ...draft, skips: draft.skips.map(value => {
                 if (value.id !== item.id) return value;
                 const rest = { ...value };
@@ -174,7 +175,7 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
               }) });
             }}>
             <option value="">Inherited schema default{defaults ? ` (${defaults.skip_storage})` : ""}</option>
-            <option value="gpu">GPU</option><option value="cpu">CPU</option>
+            <option value="gpu">GPU</option><option value="cpu">CPU</option><option value="recompute">Encoder replay</option>
           </select></label>
           <button type="button" className={buttonClass} onClick={() => change({ ...draft, skips: draft.skips.filter(value => value.id !== item.id) })}>Remove</button>
         </div>;

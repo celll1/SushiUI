@@ -9924,15 +9924,15 @@ export interface HybridDiTRewiringSpec extends Omit<ResidualDiTRewiringSpec, "sc
   stream_widths: Record<string, number>; module_layout_sha256: string;
   boundaries: { id: string; region: string; rank: number; kernel: 3 | 5 }[];
   refiners: { id: string; stream: string; after_block: number; rank: number; kernel: 3 | 5 }[];
-  skips: { id: string; stream: string; source_after: number; destination_before: number; rank: number; storage?: "gpu" | "cpu" }[];
+  skips: { id: string; stream: string; source_after: number; destination_before: number; rank: number; storage?: "gpu" | "cpu" | "recompute" }[];
 }
 export type DiTRewiringSpec = ResidualDiTRewiringSpec | HybridDiTRewiringSpec;
 export interface DiTRewiringPlan {
   hybrid_activation_layout?: {
     basis: "per_image_grid_per_batch_item";
-    entries: { id: string; kind: "bypass" | "low_input" | "compressed_skip"; stream: string;
+    entries: { id: string; kind: "bypass" | "low_input" | "compressed_skip" | "encoder_replay_input"; stream: string;
       elements: number; capture_block: number; capture_phase: "before" | "after"; release_before_block: number;
-      training_storage?: "gpu" | "cpu" }[];
+      training_storage?: "gpu" | "cpu" | "recompute"; recomputed_elements?: number }[];
     streams: { stream: string; peak_elements: number; peak_block: number; peak_phase: "before" | "after" }[];
   };
   hybrid_parameter_counts?: { scope: "learned_hybrid_modules"; added: number;
@@ -9994,7 +9994,7 @@ export interface DiTRewiringModelInfo {
   video_geometry?: DiTRewiringVideoGeometry;
 }
 export const getDiTRewiringSchema = async (): Promise<{
-  hybrid_defaults: { rank: number; kernel: 3 | 5; refiner_interval: number; skip_interval: number; skip_storage: "gpu" | "cpu" };
+  hybrid_defaults: { rank: number; kernel: 3 | 5; refiner_interval: number; skip_interval: number; skip_storage: "gpu" | "cpu" | "recompute" };
   presets: Record<string, unknown>; runtime_architectures: string[];
 }> => (await api.get("/schema/dit-rewiring")).data;
 export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiringModelInfo> =>

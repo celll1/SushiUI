@@ -31,7 +31,7 @@ def test_storage_roundtrip_preserves_old_layout_and_parameters():
                if item["kind"] == "compressed_skip")
 
 
-@pytest.mark.parametrize("storage", [None, "recompute", False, 1, [], {}])
+@pytest.mark.parametrize("storage", [None, "unknown", False, 1, [], {}])
 def test_unsupported_storage_rejected(storage):
     value = declaration()
     value["skips"][0]["storage"] = storage
@@ -101,10 +101,13 @@ def test_api_builder_and_preview_preserve_storage():
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-def test_inference_does_not_offload_skips(device):
+@pytest.mark.parametrize("storage", ["cpu", "recompute"])
+def test_inference_does_not_offload_skips(device, storage):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA needed for inference residency acceptance")
     spec = cpu_spec(declaration())
+    for item in spec["skips"]:
+        item["storage"] = storage
     execution = HybridExecution(HybridModules(spec).to(device), "main")
     with torch.no_grad():
         execution.after(0, torch.randn(1, 8*12, 8, device=device), 0, 8, 12)

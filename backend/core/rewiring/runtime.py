@@ -8,7 +8,7 @@ from .spec import preview_plan, validate_spec
 
 
 def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
-                       execute_block, coarse_context, *, grid_groups=1, extensions=None):
+                       execute_block, coarse_context, *, grid_groups=1, extensions=None, stop_after=None):
     """Callbacks own native attention, checkpointing, and block-swap execution."""
     spec = validate_spec(spec)
     if spec["method"] != "residual_delta_unet":
@@ -19,6 +19,8 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
     declaration = next((s for s in spec["streams"] if s["name"] == stream), None)
     if declaration is None:
         raise ValueError("Unknown rewired stream")
+    if stop_after is not None and (type(stop_after) is not int or not 0 <= stop_after < declaration["block_count"]):
+        raise ValueError("Invalid encoder replay stop block")
     if (hidden.ndim != 3 or type(prefix) is not int or prefix < 0
             or hidden.shape[1] != prefix + height * width):
         raise ValueError("Rewired stream requires a contiguous token-grid tail")
@@ -71,6 +73,8 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
             raise ValueError("Block changed the declared stream token layout")
         if extensions is not None:
             hidden = extensions.after(index, hidden, prefix, height, width)
+        if index == stop_after:
+            return hidden
     if stack:
         raise RuntimeError("Rewired stream did not restore its original grid")
     return hidden

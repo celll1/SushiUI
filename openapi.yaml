@@ -3903,7 +3903,7 @@ paths:
                       kernel: {type: integer, enum: [3, 5]}
                       refiner_interval: {type: integer, minimum: 1}
                       skip_interval: {type: integer, minimum: 1}
-                      skip_storage: {type: string, enum: [gpu, cpu]}
+                      skip_storage: {type: string, enum: [gpu, cpu, recompute]}
                   runtime_architectures:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
@@ -12252,8 +12252,8 @@ components:
         rank: {type: integer, minimum: 1}
         storage:
           type: string
-          enum: [gpu, cpu]
-          description: Training-only compressed skip storage. Omitted values use hybrid_defaults.skip_storage. CPU transfers preserve encoder gradients; inference keeps skips on its execution device. This does not offload region bypasses or autograd saved tensors.
+          enum: [gpu, cpu, recompute]
+          description: Training-only skip storage. Omitted values use hybrid_defaults.skip_storage. CPU transfers preserve encoder gradients. Recompute retains one shared stream input on CPU and checkpoints encoder-prefix replay with original RNG, conditioning and coordinates; its source must precede every skip destination in the stream, and Block Swap is refused. Inference keeps skips on its execution device. Region bypasses and autograd saved tensors have separate ownership.
     DiTRewiringPreviewRequest:
       type: object
       additionalProperties: false

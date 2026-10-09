@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { inspectDiTRewiring, previewDiTRewiring, temporalRewiringGrid } from "@/utils/api";
 import type { DiTRewiringModelInfo, DiTRewiringPlan, DiTRewiringSpec } from "@/utils/api";
 import DiTRewiringGraph from "../common/DiTRewiringGraph";
 import MingGlobalSummary from "../common/MingGlobalSummary";
 import DiTParameterSummary from "../common/DiTParameterSummary";
+import HybridDiTModuleEditor from "./HybridDiTModuleEditor";
 
 interface Props {
   modelPath: string; resolution: number;
@@ -28,6 +29,14 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
   const [pixels, setPixels] = useState({ height: resolution, width: resolution });
   const [frames, setFrames] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
+  const [hybridEditing, setHybridEditing] = useState(false);
+  const hybridEditingRef = useRef(false);
+  const onHybridEditingChange = useCallback((editing: boolean) => {
+    hybridEditingRef.current = editing;
+    setHybridEditing(editing);
+    if (editing) onValidated?.(null);
+  }, [onValidated]);
+  useEffect(() => { hybridEditingRef.current = false; setHybridEditing(false); }, [modelPath, mode]);
   useEffect(() => { setPixels({ height: resolution, width: resolution }); }, [resolution]);
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +56,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     onValidated?.(null);
     if (!info) return;
     setPending(false);
+    if (hybridEditing) return;
     if (!current) { setPlan(null); setError(null); return; }
     if ((current.base_config_sha256 !== info.base_config_sha256 && current.base_config_sha256 !== info.topology?.base_config_sha256) || current.block_layout_sha256 !== info.block_layout_sha256) {
       setError("This topology belongs to a different model configuration. Select the model preset to start a new topology.");
@@ -73,7 +83,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     const timer = setTimeout(() => {
       previewDiTRewiring(current, tokenHeight, tokenWidth)
          .then(value => {
-          if (cancelled) return;
+          if (cancelled || hybridEditingRef.current) return;
           if (!configuring && info.topology_sha256 !== value.spec_sha256) {
             setError("The inherited topology assertion differs from the checkpoint."); setPlan(null); return;
           }
@@ -84,7 +94,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         .finally(() => { if (!cancelled) setPending(false); });
     }, 120);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [current, info, configuring, spec, pixels, frames, onValidated]);
+  }, [current, info, configuring, spec, pixels, frames, onValidated, hybridEditing]);
   let timeGrid: { native: number; padded: number } | null = null;
   if (current && info?.temporal_geometry) {
     try { timeGrid = temporalRewiringGrid(current, frames ?? info.temporal_geometry.preview_frames,
@@ -212,6 +222,9 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         onBoundaryChange={editable ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}
       {plan && <div className="flex flex-wrap gap-3">{Array.from(gridSummary.entries()).map(([key, grid]) =>
         <span key={key}>{grid.stream} / {grid.height}×{grid.width}: {grid.tokens} tokens × {grid.count} blocks</span>)}</div>}
+      {configuring && current.method === "hybrid_unet_ssdit" && <HybridDiTModuleEditor
+        key={`${modelPath}:${mode}`} spec={current} onEditingChange={onHybridEditingChange}
+        onApply={value => onChange("configure", value)} />}
       {region && editable && <div className="flex flex-wrap items-center gap-3">
         <select aria-label="Region" className="rounded bg-gray-800 p-1" value={region.id} onChange={e => setSelected(e.target.value)}>
           {regions.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
@@ -245,7 +258,9 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         <button type="button" className="rounded bg-gray-700 px-2 py-1" disabled={!freeInterval(region.id)} onClick={() => addRegion(region.id)}>Add nested region</button>
         <button type="button" className="rounded bg-gray-700 px-2 py-1" disabled={!canRemove} onClick={removeRegion}>Remove region and children</button>
       </div>}
-      <p className="text-gray-400">Block indices start at 0; end boundaries are exclusive. Drag skip endpoints or edit the interval and per-axis shrink factors. Pooling and residual update addition preserve parameter count. RMS pooling preserves local feature magnitude; quality may still degrade without calibration.</p>
+      <p className="text-gray-400">Block indices start at 0; end boundaries are exclusive. {current.method === "hybrid_unet_ssdit"
+        ? "Pink spatial modules and yellow compressed skips add trainable parameters. Edit their placements and widths below the applied diagram."
+        : "Drag skip endpoints or edit the interval and per-axis shrink factors. Pooling and residual update addition preserve parameter count. RMS pooling preserves local feature magnitude; quality may still degrade without calibration."}</p>
     </>}
     {info && !current && <p className="text-gray-400">{configuring ? "No model preset is available. Create a region and edit its interval and shrink factors." : "The checkpoint uses the native DiT sequence."}</p>}
     {pending && <p className="text-gray-400">Validating topology…{plan && " The graph shows the last validated configuration."}</p>}

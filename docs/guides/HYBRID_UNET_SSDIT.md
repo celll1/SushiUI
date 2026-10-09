@@ -1411,3 +1411,34 @@ optimal coordinates. Any future position-policy adoption needs explicit
 artifact identity and matched fresh initialization, not silent existing-run edits.
 Concurrent IRIS generation means no isolated timing claim is made.
 Evidence: `docs/audits/data/hybrid_anima_source_span_2026-10.json`.
+
+## Fresh source-span initialization comparison
+
+The retrofit confound is now separated with two fresh native-codec Anima arms.
+Both start from identical new 16/8/4 structural modules and the same frozen
+native body; no retained correction weights are loaded. Each receives exactly
+300 teacher-fitting updates on 28 general images, AdamW8bit/SR at LR0.001,
+uniform sigma0.01..0.99 and null probability0.1. All image choices, null decisions,
+sigma values and noise hashes match. Initial module hashes and native body hashes
+match across arms, and the body remains unchanged. All 65 optimizer entries
+reach step300. Source-span retains source grid32x32 and is identity for the
+native teacher's full grid; its coarse angles are cell-center averages.
+
+Four new held 512px/28-step/CFG4/seed63 images exclude these prompts from fitting.
+Unit-grid yields two separate back-facing figures and a coherent single girl's
+outline, with floating hand-like and distorted-eye details still present.
+Fresh source-span fitting produces overlapping contours, smeared regions and
+worse facial/composition structure in both prompts. Last50 mean training loss is
+0.04618 for unit-grid and 0.05246 for source-span; these are training observations,
+not held quality scores. Model-update CUDA times are127.58s/120.17s and own peak
+allocation4.476/4.479GiB, excluding encoding, hashing and generation; a single
+ordered quality comparison does not establish a throughput advantage.
+
+Source-span32 is therefore not selected as the default by this bounded test.
+This also rejects attributing the earlier retrofit failure solely to lack of
+matching initialization. It does not prove that a longer fit, another geometry
+or another coordinate policy cannot work. Unit-grid's remaining defects and the
+combined-codec quality gate remain unresolved. No owner artifact, public policy
+or runtime default changes. Images and private module weights remain local;
+tracked evidence contains hashes, metadata and observations only.
+Evidence: `docs/audits/data/hybrid_anima_source_span_fit_2026-10.json`.

@@ -165,7 +165,14 @@ class PartitionExecutor:
     def __init__(self, model, plan, payloads=(), *, step_sources=(), use_cache=True, cancelled=lambda: False):
         self.model, self.plan = model, plan
         self.payloads = list(payloads)
-        self.use_cache = bool(use_cache and model.config.causal_condition)
+        topology = getattr(model, "_residual_unet_spec", None)
+        if topology is not None:
+            from core.rewiring.spec import preview_plan
+            if topology["method"] != "hybrid_unet_ssdit":
+                raise ValueError("Partition generation requires hybrid rather than residual U-Net topology")
+            for box in plan.inputs:
+                preview_plan(topology, box.height, box.width)
+        self.use_cache = bool(use_cache and model.config.causal_condition and topology is None)
         self.cancelled = cancelled
         self.modules = {}
         self.step_sources = list(step_sources)

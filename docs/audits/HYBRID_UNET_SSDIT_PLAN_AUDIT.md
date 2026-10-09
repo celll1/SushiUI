@@ -186,6 +186,15 @@ individual records' limitations.
    and do not fix packed blocks. Existing unit-grid-fitted corrections are not
    silently changed. This rejects that retrofit, not fresh source-span fitting;
    explicit position-policy identity and matched initialization would be required.
+   The matched fresh initialization control is now complete
+   (`hybrid_anima_source_span_fit_2026-10.json`): both arms start with identical
+   new 16/8/4 modules, preserve the same frozen body and match all 300 exposure,
+   null, sigma and noise records. All 65 optimizer entries reach300. Four new
+   held general outputs show unit-grid retaining clearer figure outlines while
+   source-span32 produces overlapping/smeared figures and worse faces. Reject
+   source-span32 as the default in this bounded test; neither unit-grid's quality
+   gate nor combined-codec acceptance is closed. Longer fits/other geometries
+   remain untested, and existing owner artifacts/defaults are unchanged.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

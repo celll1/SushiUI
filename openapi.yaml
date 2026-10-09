@@ -4023,12 +4023,15 @@ paths:
         Reserves the model lifecycle gate before returning. Refuses generation,
         training, adapters, existing rewiring and VAE swap. Encodes selected dataset
         items with native VAE/TE residency, fits only added modules and publishes
-        a new Anima standalone checkpoint or Qwen split package beside the source
+        a new Anima standalone checkpoint or Qwen/Ming package beside the source
         without overwriting it. Qwen reuses unchanged TE/VAE source assets by reference.
         Restores the loaded native model after completion, cancellation or failure.
         Runtime calibration has no rating filter; callers choose authorized data.
         This execution binding supports native floating Anima and native floating
-        Qwen split packages. Ming execution is pending.
+        Qwen split packages and unsharded native floating Ming Design/Layer DiTs.
+        Ming copies native component assets into a self-contained package; packed
+        conditioner weights are retained. Layer calibration uses a native-generated
+        auxiliary canvas and one ordered layer, with the selected image as reference.
       requestBody:
         required: true
         content:
@@ -12215,8 +12218,8 @@ components:
       additionalProperties: false
       required: [model_path, output_name, dataset_id]
       properties:
-        model_path: {type: string, minLength: 1, description: Must match the loaded native Anima source or Qwen split package directory}
-        output_name: {type: string, minLength: 1, example: anima-hybrid-initialized.safetensors, description: New safetensors filename for Anima or new package directory basename for Qwen}
+        model_path: {type: string, minLength: 1, description: Must match the loaded native Anima source or Qwen/Ming package path}
+        output_name: {type: string, minLength: 1, example: anima-hybrid-initialized.safetensors, description: New safetensors filename for Anima or new package directory basename for Qwen/Ming}
         dataset_id: {type: integer, minimum: 1}
         item_ids:
           type: array

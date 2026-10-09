@@ -7,7 +7,7 @@ import uuid
 
 from core.model_state_coordinator import model_state_coordinator, ModelStateBusyError
 
-INITIALIZER_ARCHITECTURES = ("anima", "qwen_image_21")
+INITIALIZER_ARCHITECTURES = ("anima", "qwen_image_21", "ming_image_01")
 _lock = threading.Lock()
 _job = None
 _thread = None
@@ -44,8 +44,10 @@ def _checked_source(manager, options):
     info = manager.current_model_info or {}
     if info.get("type") == "qwen_image_21":
         return _checked_qwen_source(manager,options)
+    if info.get("type") == "ming_image_01":
+        return _checked_ming_source(manager,options)
     if info.get("type") not in INITIALIZER_ARCHITECTURES:
-        raise ValueError("Hybrid initialization requires a loaded native Anima or Qwen split package")
+        raise ValueError("Hybrid initialization requires a loaded native Anima, Qwen or Ming model")
     source = Path(options["model_path"]).resolve(strict=True)
     if source != Path(info.get("source") or "").resolve():
         raise ValueError("Initialization source must match the currently loaded model")
@@ -141,11 +143,62 @@ def _checked_qwen_source(manager,options):
 
 
 def execute(components, source, spec, items, options, progress, cancelled):
+    if spec["architecture"] == "ming_image_01":
+        from core.rewiring.ming_initialization import initialize_loaded_ming
+        return initialize_loaded_ming(components,source,spec,items,options,progress,cancelled)
     if spec["architecture"] == "qwen_image_21":
         from core.rewiring.qwen_initialization import initialize_loaded_qwen
         return initialize_loaded_qwen(components,source,spec,items,options,progress,cancelled)
     from core.rewiring.anima_initialization import initialize_loaded_anima
     return initialize_loaded_anima(components,source,spec,items,options,progress,cancelled)
+
+
+def _checked_ming_source(manager,options):
+    import torch
+    from core.models.ming_image_01.artifact import inspect_artifact
+    from core.models.ming_image_01.residual_unet import validate_topology_identity
+    from core.rewiring.inspect import inspect_model
+    from core.rewiring.initialized_export import validate_package_name
+    from core.rewiring.spec import preview_plan
+    source = Path(options["model_path"]).resolve(strict=True)
+    if source != Path(manager.current_model_info.get("source") or "").resolve():
+        raise ValueError("Initialization source must match the loaded Ming package")
+    artifact = inspect_artifact(source)
+    validate_package_name(options["output_name"])
+    output = artifact.root.parent/options["output_name"]
+    if output.exists() or output.is_symlink():
+        raise FileExistsError("Ming initialization output already exists")
+    directory = artifact.components["transformer"]
+    weights = list(directory.glob("*.safetensors"))
+    if len(weights) != 1 or list(directory.glob("*.safetensors.index.json")):
+        raise ValueError("Ming initialization currently requires an unsharded native transformer")
+    components = manager.ming_image_01_components
+    native = (components or {}).get("ming_native")
+    if native is None or any(getattr(native,key,None) is None for key in
+                             ("transformer","conditioner","vae","processor","scheduler")):
+        raise ValueError("Loaded Ming components are incomplete")
+    model = native.transformer
+    inspected = inspect_model(source)
+    if (inspected["topology"] is not None or getattr(model,"_residual_unet_spec",None) is not None
+            or hasattr(model,"rewiring_modules") or hasattr(model,"vae_latent_bridge")
+            or artifact.configs["transformer"].get("vae_alignment") is not None
+            or artifact.global_summary is not None or getattr(model,"_ming_partition_global_payload",None) is not None):
+        raise ValueError("Ming initialization requires a native source without U-Net, VAE swap or global adapter")
+    if getattr(model,"_block_offloader",None) is not None or any(p.grad is not None for p in model.parameters()):
+        raise ValueError("Ming initialization requires resident blocks without existing gradients")
+    headers = artifact.tensor_headers["transformer"]
+    if any(value.dtype not in ("F32","F16","BF16") for name,value in headers.items() if name.endswith(".weight")):
+        raise ValueError("Ming initialization requires floating native DiT weights; packed conditioner weights are supported")
+    if any(name not in headers or tuple(value.shape) != headers[name].shape for name,value in model.named_parameters()):
+        raise ValueError("Loaded Ming parameter layout differs from source; remove adapters and reload")
+    if any(p.dtype not in (torch.float32,torch.float16,torch.bfloat16) for p in model.parameters()):
+        raise ValueError("Ming initialization requires floating native DiT weights")
+    spec = validate_topology_identity(options["spec"] or inspected["hybrid_default_spec"],model)
+    if spec["method"] != "hybrid_unet_ssdit":
+        raise ValueError("Ming initialization requires a hybrid declaration")
+    validate_topology_identity(spec,artifact.configs["transformer"])
+    preview_plan(spec,options["resolution"]//16,options["resolution"]//16)
+    return source,components,spec
 
 
 def start(manager, options, items):

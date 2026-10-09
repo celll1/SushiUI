@@ -563,7 +563,8 @@ images. Metadata stores the bounded recipe and hashes, without image paths or
 caption contents; existing records without a recipe remain readable.
 
 The public execution binding supports floating native Anima and unsharded,
-floating native Qwen split packages. Qwen saves a sibling package directory;
+floating native Qwen split packages, plus unsharded floating Ming Design/Layer DiTs.
+Ming retains packed conditioner assets if present. Qwen/Ming save a sibling package directory;
 `output_name` is its directory basename, while Anima requires a safetensors
 filename. Existing topology, VAE swap, adapters and missing source assets are
 refused before dispatch.
@@ -574,7 +575,7 @@ panel closes. A completed artifact is applied only by an explicit button after
 refreshing the model index; this switches topology to inheritance and clears the
 old resume checkpoint. Stale polling responses cannot overwrite action results.
 UI types, paths and state transitions are statically reviewed; owner build and
-interactive acceptance remain pending. Ming execution remains pending.
+interactive acceptance remain pending. Official-weight Ming GPU acceptance remains pending.
 Real Anima API acceptance used three general images (two fit, one
 holdout), two noising updates and one native-trajectory update at 512px. It
 completed export, inspect and reload of the fitted artifact. Cancellation was
@@ -631,10 +632,26 @@ inside the package; source assets are neither linked nor modified. Existing
 topology, VAE swap and global-adapter sources are refused. Source changes,
 early/late cancellation and existing destinations abort without partial output.
 Tiny native teacher fits, exact native/module tensor restoration and forward
-parity are verified for both profiles. Public Ming initialization dispatch and
-official-weight GPU execution remain pending; this publisher is not yet an
-additional UI capability. Evidence:
+parity are verified for both profiles. Evidence:
 `docs/audits/data/hybrid_ming_initialized_export_2026-10.json`.
+
+Ming's public execution owner now uses native VAE encoding, native MLLM/connector
+conditioning and a private scheduler/sampler. Design noising uses encoded images;
+Layer first generates an auxiliary canvas and one layer from each fit image as
+reference, then uses those native-generated latents for noising. The ordered
+frame axis is preserved, without duplicating RGB targets as fictitious layers.
+Native raw velocities are captured before CFG mixing/sign inversion; data noising
+uses Ming's `time=1-sigma` and its zero-conditioning branch. TE, VAE and DiT reside
+separately: Layer reference encoding finishes before the first DiT call moves
+the VAE to CPU and restores the DiT. All original component weights, gradient
+flags, training modes, attention/checkpoint policy and scheduler configuration
+are preserved on completion, cancellation and publication failure.
+Real tiny Design/Layer CPU tests execute encoding, native trajectories, fitting,
+package publication and strict reload; shared API ownership tests and source
+guards also pass. Schema capability and frontend package-name controls are wired
+and statically reviewed. Official-weight GPU/dtype acceptance and owner frontend
+build remain pending. Evidence:
+`docs/audits/data/hybrid_ming_initialization_2026-10.json`.
 
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.

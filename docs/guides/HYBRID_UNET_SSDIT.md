@@ -459,6 +459,25 @@ private unchanged generators. This does not rule out other training setups.
 Evidence is in `docs/audits/data/hybrid_anima_teacher_diagonal_2026-10.json`;
 its experimental module state is not loadable by the production factory.
 
+### Shared teacher ownership
+
+`core/rewiring/initialization.py:frozen_native_teacher` borrows a resident
+hybrid model as its native teacher without duplicating base weights. Only
+`rewiring_modules` parameters become trainable. Teacher calls disable topology
+under `no_grad` and restore it even when forward raises. Context exit restores
+every parameter flag, per-module train/eval mode, topology and CPU/device RNG;
+it clears fit gradients and releases the escaped teacher's model/parameter
+references. Existing training gradients, native/shared parameter aliases,
+nested ownership and active Block Swap are refused before changing ownership.
+
+Six CPU tests cover update isolation, exception/cancellation restoration,
+gradient preservation and ownership refusals. A real Anima GPU check matches
+native teacher output exactly, observes added-module gradients with no native
+gradients, and restores flags, modes and CPU/CUDA RNG without changing fitted
+weights. The caller still owns residency, fit optimizer, inputs, fresh-checkpoint
+policy and provenance. This utility does not roll back partially fitted weights
+and is not yet a production automatic-initialization option.
+
 ## Actual Anima training lifecycle
 
 A temporary general-only eight-image dataset exercised full-parameter training

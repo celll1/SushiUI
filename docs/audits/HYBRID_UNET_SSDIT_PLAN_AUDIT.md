@@ -136,6 +136,14 @@ individual records' limitations.
    comparison requirement, not broad quality/default acceptance. Shared input
    preprocessing/transfers and evaluation are excluded, so it is not total
    end-to-end GPU occupancy or the retained 3700-update recipe's comparison.
+   The output-only clean cycle refit (`hybrid_codec_cycle_probe_2026-10.json`)
+   retains the input bridge and token geometry, fits on 28 general images and
+   evaluates four excluded from that refit. Mean clean reconstruction MSE improves
+   by less than 1%, one case worsens, and inspected images retain block texture.
+   The single-figure face improves but the two-figure edges deteriorate. It is not
+   promoted and does not establish sampler/DiT improvement. Investigate retaining
+   more codec information in reduced-grid IO or joint field-aware initialization
+   rather than repeating this output-only fit.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

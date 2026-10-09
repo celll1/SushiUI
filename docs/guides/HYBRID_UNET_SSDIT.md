@@ -987,6 +987,38 @@ equal-time structural comparison remain separate requirements; a failed combined
 codec probe alone does not settle the architecture comparison.
 Evidence: `docs/audits/data/hybrid_anima_io_adaptation_2026-10.json`.
 
+## Equal post-initialization update budget
+
+At 512px, native 16ch/8x VAE, batch 1, BF16 AdamW8bit SR, LR 5e-6 and native
+24-block checkpointing, each arm received 120 seconds measured by CUDA events
+around forward/backward/optimizer. Shared cached general exposures and dedicated
+input RNG verify identical item/null/sigma selection for the common 216 updates.
+Warm-up is included; encoding, artifact publication and generation are excluded.
+
+| Arm | Updates | CUDA seconds | Median update ms | Peak allocated GiB |
+|---|---:|---:|---:|---:|
+| Native | 263 | 120.379 | 431.311 | 11.590 |
+| Legacy residual U-Net | 277 | 120.399 | 414.810 | 11.580 |
+| Initialized hybrid | 216 | 120.105 | 540.576 | 11.604 |
+
+This is not an equal-total-GPU-time comparison: hybrid reused the 3300-update
+teacher fit, whose recorded learning and trajectory-collection wall time totals
+1046.156 seconds, before encoding/setup. Native and legacy had no such fit.
+Initial update overhead contributes to the budget, but hybrid's median is also
+slower at this small shape. Do not generalize the previously measured 1024px /
+larger-batch speedup to 512px batch 1.
+
+Twelve fixed-seed outputs were generated (two prompts, CFG1/4 per arm); eight
+existing native/initialized-hybrid controls were reused. All six CFG4 outputs
+were inspected. Native retains coherent figures and the two-person composition.
+Legacy retains figures with substantial distortion. Hybrid preserves a selected
+single face/body, with cleaner selected lines than legacy, but the two-person
+composition and bodies still fail. No consistent quality advantage is established,
+and no production default is promoted. The next initialization experiment should
+predict the native teacher on states reached by the student, rather than only
+native-teacher or data-noising trajectories.
+Evidence: `docs/audits/data/hybrid_anima_equal_time_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

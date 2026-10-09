@@ -383,7 +383,7 @@ finite and nonzero. Final losses were 0.16454 / 0.16153 / 0.17947 respectively.
 These are functionality facts, not evidence of recovered generation quality.
 
 The inherited learning-rate/timestep setup therefore does not provide a stable
-native quality control. The cause of its deterioration remains unresolved; do
+native quality control. The follow-up below isolates learning-rate sensitivity; do
 not attribute all post-training failure to U-Net topology or promise that longer
 training fixes it. Separate the native learning/conditioning issue from the
 initial U-Net degradation before selecting a production preset or extending
@@ -396,6 +396,36 @@ Evidence, declarations, sample hashes and optimizer checks are tracked in
 files and logs are retained in ignored `local/verification/hybrid_anima_quality/`.
 No images or model weights are committed. The used temporary runs, checkpoints
 and dataset are removed after recording evidence; owner run #174 is unchanged.
+
+### Native learning-rate control and teacher initialization
+
+Two further native-only 200-update controls kept the same data and settings.
+Enabling stochastic rounding at LR 5e-5 still produced fragmented prompt-0
+samples. With rounding enabled and LR reduced to 5e-6, prompt 0 retained a
+recognizable person at both steps 100 and 200. All 567 optimizer counters reached
+200, and representative embedding/attention weights changed, so this was not
+merely an unchanged model. Rounding consumes RNG; the comparison to rounding-off
+is not an exact paired-noise experiment. These small controls identify settings
+sensitivity, not a universally safe LR or long-run quality acceptance. No
+production default or owner run was changed. Records are in
+`docs/audits/data/hybrid_anima_native_controls_2026-10.json`.
+
+A separate prototype freezes every native parameter and fits only the hybrid's
+65 added tensors (4,958,208 parameters) to the native model's velocity output.
+The same model serves as teacher with topology temporarily disabled during
+no-grad calls; no second base model is resident. It uses 28 general-only fit
+images and four held-out images, 512px, native VAE, batch 1, AdamW8bit with
+rounding, LR 1e-3 and 300 updates. Selection/noise generators are independent
+of optimizer randomness. Held-out mean MSE at sigma 0.05/0.5/0.95 falls from
+0.654/0.101/0.069 to 0.185/0.031/0.019 in 93.3 seconds of fitting; peak allocated
+GPU memory is 4.17 GiB. These exclude encoding, validation and sampling time.
+
+CFG-1 generation changes from a fine grid with no figure to partial face, hair
+and glasses structure, but severe fragmentation remains; CFG 4 does not repair
+it. This is evidence for continuing initialization research, not a production
+initialization contract or quality acceptance. The prototype and images remain
+ignored local artifacts; only measurements and declarations are tracked in
+`docs/audits/data/hybrid_anima_teacher_init_2026-10.json`.
 
 ## Actual Anima training lifecycle
 

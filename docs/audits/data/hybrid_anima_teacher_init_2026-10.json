@@ -1,0 +1,506 @@
+{
+  "architecture": "anima",
+  "native_vae": true,
+  "rating": "general",
+  "calibration_images": 32,
+  "training_images": 28,
+  "held_out_images": 4,
+  "steps": 300,
+  "base_weights_frozen": true,
+  "trained_parameters": 4958208,
+  "teacher": "Same frozen native DiT with topology disabled only during no-grad teacher calls",
+  "learning_rate": 0.001,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 28,
+  "losses": [
+    {
+      "step": 20,
+      "loss": 0.059963688254356384,
+      "seconds": 8.202999999979511
+    },
+    {
+      "step": 40,
+      "loss": 0.05094446986913681,
+      "seconds": 14.327999999979511
+    },
+    {
+      "step": 60,
+      "loss": 0.128483846783638,
+      "seconds": 20.125
+    },
+    {
+      "step": 80,
+      "loss": 0.024788759648799896,
+      "seconds": 26.264999999897555
+    },
+    {
+      "step": 100,
+      "loss": 0.028451234102249146,
+      "seconds": 32.093000000109896
+    },
+    {
+      "step": 120,
+      "loss": 0.05171489343047142,
+      "seconds": 38.23399999993853
+    },
+    {
+      "step": 140,
+      "loss": 0.08473119139671326,
+      "seconds": 44.343000000109896
+    },
+    {
+      "step": 160,
+      "loss": 0.11012466251850128,
+      "seconds": 50.125
+    },
+    {
+      "step": 180,
+      "loss": 0.16090430319309235,
+      "seconds": 56.28099999995902
+    },
+    {
+      "step": 200,
+      "loss": 0.02754184789955616,
+      "seconds": 62.311999999918044
+    },
+    {
+      "step": 220,
+      "loss": 0.032868675887584686,
+      "seconds": 68.8430000001099
+    },
+    {
+      "step": 240,
+      "loss": 0.17425411939620972,
+      "seconds": 74.85899999993853
+    },
+    {
+      "step": 260,
+      "loss": 0.006134147755801678,
+      "seconds": 81.1710000000894
+    },
+    {
+      "step": 280,
+      "loss": 0.07959465682506561,
+      "seconds": 87.4680000001099
+    },
+    {
+      "step": 300,
+      "loss": 0.07051344215869904,
+      "seconds": 93.28099999995902
+    }
+  ],
+  "declaration": {
+    "schema_version": 2,
+    "method": "hybrid_unet_ssdit",
+    "architecture": "anima",
+    "streams": [
+      {
+        "name": "main",
+        "block_count": 28
+      }
+    ],
+    "regions": [
+      {
+        "id": "r0",
+        "stream": "main",
+        "parent": null,
+        "start_block": 4,
+        "end_block": 24,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      },
+      {
+        "id": "r1",
+        "stream": "main",
+        "parent": "r0",
+        "start_block": 12,
+        "end_block": 16,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      }
+    ],
+    "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+    "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+    "stream_widths": {
+      "main": 2048
+    },
+    "boundaries": [
+      {
+        "id": "downup_r0",
+        "region": "r0",
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "downup_r1",
+        "region": "r1",
+        "rank": 64,
+        "kernel": 3
+      }
+    ],
+    "refiners": [
+      {
+        "id": "local_main_0",
+        "stream": "main",
+        "after_block": 0,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_12",
+        "stream": "main",
+        "after_block": 12,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_16",
+        "stream": "main",
+        "after_block": 16,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_20",
+        "stream": "main",
+        "after_block": 20,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_24",
+        "stream": "main",
+        "after_block": 24,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_4",
+        "stream": "main",
+        "after_block": 4,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_8",
+        "stream": "main",
+        "after_block": 8,
+        "rank": 64,
+        "kernel": 3
+      }
+    ],
+    "skips": [
+      {
+        "id": "skip_main_0_27",
+        "stream": "main",
+        "source_after": 0,
+        "destination_before": 27,
+        "rank": 64,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_10_17",
+        "stream": "main",
+        "source_after": 10,
+        "destination_before": 17,
+        "rank": 64,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_12_15",
+        "stream": "main",
+        "source_after": 12,
+        "destination_before": 15,
+        "rank": 64,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_2_25",
+        "stream": "main",
+        "source_after": 2,
+        "destination_before": 25,
+        "rank": 64,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_4_23",
+        "stream": "main",
+        "source_after": 4,
+        "destination_before": 23,
+        "rank": 64,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_6_21",
+        "stream": "main",
+        "source_after": 6,
+        "destination_before": 21,
+        "rank": 64,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_8_19",
+        "stream": "main",
+        "source_after": 8,
+        "destination_before": 19,
+        "rank": 64,
+        "storage": "gpu"
+      }
+    ],
+    "module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594"
+  },
+  "prototype_only": true,
+  "source": "M:\\model\\anima\\anima-base-v1.0.safetensors",
+  "validation_before": [
+    {
+      "index": 28,
+      "sigma": 0.05,
+      "mse": 0.5547116994857788
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "mse": 0.08430343866348267
+    },
+    {
+      "index": 28,
+      "sigma": 0.95,
+      "mse": 0.028720971196889877
+    },
+    {
+      "index": 29,
+      "sigma": 0.05,
+      "mse": 0.8700942397117615
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "mse": 0.10312065482139587
+    },
+    {
+      "index": 29,
+      "sigma": 0.95,
+      "mse": 0.07648840546607971
+    },
+    {
+      "index": 30,
+      "sigma": 0.05,
+      "mse": 0.650474488735199
+    },
+    {
+      "index": 30,
+      "sigma": 0.5,
+      "mse": 0.11996752768754959
+    },
+    {
+      "index": 30,
+      "sigma": 0.95,
+      "mse": 0.08658615499734879
+    },
+    {
+      "index": 31,
+      "sigma": 0.05,
+      "mse": 0.5404647588729858
+    },
+    {
+      "index": 31,
+      "sigma": 0.5,
+      "mse": 0.09625598043203354
+    },
+    {
+      "index": 31,
+      "sigma": 0.95,
+      "mse": 0.08394387364387512
+    }
+  ],
+  "teacher_sample": {
+    "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init\\native_teacher_cfg1.png",
+    "sha256": "ee513e04eb27851cbd9811951fdb0a1fa10cbd5805fe3dbf9e159bdb9fe878a1"
+  },
+  "initial_sample": {
+    "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init\\hybrid_step000000_cfg1.png",
+    "sha256": "63f8512bd7a87dc0eb8ed37364ac5832225b243988ccf179477483b69e2040c5"
+  },
+  "training_seconds": 93.28099999995902,
+  "peak_allocated_gib": 4.167520999908447,
+  "validation_after": [
+    {
+      "index": 28,
+      "sigma": 0.05,
+      "mse": 0.13617539405822754
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "mse": 0.027285832911729813
+    },
+    {
+      "index": 28,
+      "sigma": 0.95,
+      "mse": 0.016831815242767334
+    },
+    {
+      "index": 29,
+      "sigma": 0.05,
+      "mse": 0.2090875208377838
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "mse": 0.030673494562506676
+    },
+    {
+      "index": 29,
+      "sigma": 0.95,
+      "mse": 0.02283206209540367
+    },
+    {
+      "index": 30,
+      "sigma": 0.05,
+      "mse": 0.22852067649364471
+    },
+    {
+      "index": 30,
+      "sigma": 0.5,
+      "mse": 0.03667974844574928
+    },
+    {
+      "index": 30,
+      "sigma": 0.95,
+      "mse": 0.01670568436384201
+    },
+    {
+      "index": 31,
+      "sigma": 0.05,
+      "mse": 0.16807013750076294
+    },
+    {
+      "index": 31,
+      "sigma": 0.5,
+      "mse": 0.027463097125291824
+    },
+    {
+      "index": 31,
+      "sigma": 0.95,
+      "mse": 0.017969634383916855
+    }
+  ],
+  "final_sample": {
+    "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init\\hybrid_step000300_cfg1.png",
+    "sha256": "ec0c20eec141f06cc4700ddb7397cb707c5af9c3f248e03773dacb1e3c71e373"
+  },
+  "cfg4_sample": {
+    "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init\\hybrid_step000300_cfg4.png",
+    "sha256": "572f2707270af646c91bfd01fd4b660d7819401a43ac00471cfe61d7bf4c1d7d"
+  },
+  "optimizer_counters": [
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300,
+    300
+  ],
+  "runtime_commit": "99e69943",
+  "scope": "Frozen-native teacher initialization prototype, not production acceptance",
+  "visual_review": {
+    "prompt_0_cfg1": "Grid replaced by partial face/hair/glasses structure; severe fragmentation remains",
+    "prompt_0_cfg4": "Partial face with horizontal band and fragmented contours; insufficient quality",
+    "other_prompts": "not evaluated"
+  },
+  "mean_held_out_mse_by_sigma": [
+    {
+      "sigma": 0.05,
+      "before": 0.6539362967014313,
+      "after": 0.18546343222260475
+    },
+    {
+      "sigma": 0.5,
+      "before": 0.10091190040111542,
+      "after": 0.0305255432613194
+    },
+    {
+      "sigma": 0.95,
+      "before": 0.06893485132604837,
+      "after": 0.018584799021482468
+    }
+  ]
+}

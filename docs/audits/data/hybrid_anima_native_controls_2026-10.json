@@ -1,0 +1,144 @@
+{
+  "date": "2026-10-10",
+  "architecture": "anima",
+  "runtime_commit": "99e69943",
+  "data": "Same 32 API-revalidated general images; 512px, batch 1, 200 steps, seed 718",
+  "native_vae": {
+    "channels": 16,
+    "scale": 8
+  },
+  "rewiring": false,
+  "controls": [
+    {
+      "run_name": "hybrid_anima_native_sr_control_20261010",
+      "temporary_run_id": 175,
+      "learning_rate": 5e-05,
+      "stochastic_rounding": true,
+      "optimizer_entries": 567,
+      "all_optimizer_steps": 200,
+      "selected_weight_updates": [
+        {
+          "name": "net.x_embedder.proj.1.weight",
+          "elements": 139264,
+          "changed_fraction": 0.9169706702232361,
+          "mean_absolute_delta": 0.00048192989197559655
+        },
+        {
+          "name": "net.t_embedder.1.linear_2.weight",
+          "elements": 12582912,
+          "changed_fraction": 0.9837786555290222,
+          "mean_absolute_delta": 0.0004984217812307179
+        },
+        {
+          "name": "net.blocks.0.self_attn.v_proj.weight",
+          "elements": 4194304,
+          "changed_fraction": 0.9913225173950195,
+          "mean_absolute_delta": 0.00035554583882912993
+        }
+      ],
+      "initial_png_matches_native_baseline": true,
+      "final_loss": 0.2097739279270172,
+      "samples": [
+        {
+          "path": "samples\\step_000000_sample_0.png",
+          "sha256": "cd2d51c21613f7a97648c198f878d322056b301adc77cc30ad97119f5682dde4"
+        },
+        {
+          "path": "samples\\step_000100_sample_0.png",
+          "sha256": "f50159aa86af0c907eca5e8c09c2474b2ec2c68d7bda148802919d1c98d5e80a"
+        },
+        {
+          "path": "samples\\step_000100_sample_1.png",
+          "sha256": "a5e08dabe369b951d60e760bc953d43db888f2f9e3ab6d22fa158366032b62a9"
+        },
+        {
+          "path": "samples\\step_000100_sample_2.png",
+          "sha256": "b3da1e76e9be60255656b0fce6997e4906821700a2b6d466546e40e656479fb3"
+        },
+        {
+          "path": "samples\\step_000200_sample_0.png",
+          "sha256": "84bcf8cb0b2ce47c364daff1ff2355f7f4cd3f22bcdef49ce746e770eae023d9"
+        },
+        {
+          "path": "samples\\step_000200_sample_1.png",
+          "sha256": "c90c206c72ffaedcbdf13dbf01cbd28a446f80f50accc8ef88f3b0073790680b"
+        },
+        {
+          "path": "samples\\step_000200_sample_2.png",
+          "sha256": "4eaaf3be896ae5fb54fb69088ef5801704979fc427b870a67502e66b30a9a6b3"
+        }
+      ]
+    },
+    {
+      "run_name": "hybrid_anima_native_low_lr_sr_control_20261010",
+      "temporary_run_id": 176,
+      "learning_rate": 5e-06,
+      "stochastic_rounding": true,
+      "optimizer_entries": 567,
+      "all_optimizer_steps": 200,
+      "selected_weight_updates": [
+        {
+          "name": "net.x_embedder.proj.1.weight",
+          "elements": 139264,
+          "changed_fraction": 0.7920137047767639,
+          "mean_absolute_delta": 7.665177690796554e-05
+        },
+        {
+          "name": "net.t_embedder.1.linear_2.weight",
+          "elements": 12582912,
+          "changed_fraction": 0.9137532114982605,
+          "mean_absolute_delta": 7.4039249739144e-05
+        },
+        {
+          "name": "net.blocks.0.self_attn.v_proj.weight",
+          "elements": 4194304,
+          "changed_fraction": 0.9396915435791016,
+          "mean_absolute_delta": 4.476037429412827e-05
+        }
+      ],
+      "initial_png_matches_native_baseline": true,
+      "final_loss": 0.16104966402053833,
+      "samples": [
+        {
+          "path": "samples\\step_000000_sample_0.png",
+          "sha256": "cd2d51c21613f7a97648c198f878d322056b301adc77cc30ad97119f5682dde4"
+        },
+        {
+          "path": "samples\\step_000100_sample_0.png",
+          "sha256": "495373f882725f89b00a70b37858571d04e1ece063caa4e9d5c975149912e8f0"
+        },
+        {
+          "path": "samples\\step_000100_sample_1.png",
+          "sha256": "270b929207634e1d334232715f67a1767948f0377df061a3bee617e03da505f2"
+        },
+        {
+          "path": "samples\\step_000100_sample_2.png",
+          "sha256": "81aebf948c143992d0a5ef4af3750f86eeaea49ec7353b12e665e24789cb9673"
+        },
+        {
+          "path": "samples\\step_000200_sample_0.png",
+          "sha256": "de52f4efa5d9bdf7bd8086bdadcae9a4046e4510978112d98670ec85339cedb1"
+        },
+        {
+          "path": "samples\\step_000200_sample_1.png",
+          "sha256": "1c1b298a7c9bb38f64855101ca12eaebbddd3be5d2655ca6f7a1b86ac1c2073f"
+        },
+        {
+          "path": "samples\\step_000200_sample_2.png",
+          "sha256": "e4c193ad17ae702fecf689ef592c5c8cbb13416055b8381f6e74d3092e56f7c3"
+        }
+      ]
+    }
+  ],
+  "conclusions": [
+    "Stochastic rounding alone does not repair the high-LR degradation.",
+    "With SR enabled, reducing LR 5e-5 to 5e-6 preserves recognizable prompt-0 samples at steps 100/200.",
+    "This supports a settings sensitivity, not a diagnosed implementation bug or a universal safe learning rate.",
+    "U-Net initial degradation remains independent and unresolved."
+  ],
+  "limits": [
+    "SR consumes RNG and therefore changes later exposure draws; this is not exact paired-noise comparison.",
+    "Short, small-data learning controls do not establish long-run stability or quality recovery.",
+    "Only prompt 0 was visually evaluated; three sample prompts were generated."
+  ]
+}

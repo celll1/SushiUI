@@ -1,0 +1,296 @@
+{
+  "date": "2026-10-10",
+  "runtime_commit": "3c4bc073",
+  "architecture": "anima",
+  "native_vae": true,
+  "rating": "general",
+  "data": {
+    "images": 32,
+    "resolution": 512,
+    "batch_size": 1,
+    "seed": 718
+  },
+  "temporary_run_id": 175,
+  "run_name": "hybrid_anima_initialized_quality_20261010",
+  "initial_teacher_updates": 3300,
+  "teacher_trajectory_pairs": 1568,
+  "trajectory_collection_seconds": 101.56299999984913,
+  "trajectory_fitting_seconds": 241.06200000015087,
+  "trajectory_peak_allocated_gib": 4.168264865875244,
+  "trajectory_data_noising_validation_before": [
+    {
+      "index": 28,
+      "sigma": 0.05,
+      "mse": 0.10523981600999832
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "mse": 0.02020268328487873
+    },
+    {
+      "index": 28,
+      "sigma": 0.95,
+      "mse": 0.004853973630815744
+    },
+    {
+      "index": 29,
+      "sigma": 0.05,
+      "mse": 0.15853816270828247
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "mse": 0.020320486277341843
+    },
+    {
+      "index": 29,
+      "sigma": 0.95,
+      "mse": 0.011013749986886978
+    },
+    {
+      "index": 30,
+      "sigma": 0.05,
+      "mse": 0.16115328669548035
+    },
+    {
+      "index": 30,
+      "sigma": 0.5,
+      "mse": 0.025747399777173996
+    },
+    {
+      "index": 30,
+      "sigma": 0.95,
+      "mse": 0.0029569054022431374
+    },
+    {
+      "index": 31,
+      "sigma": 0.05,
+      "mse": 0.12835131585597992
+    },
+    {
+      "index": 31,
+      "sigma": 0.5,
+      "mse": 0.020323049277067184
+    },
+    {
+      "index": 31,
+      "sigma": 0.95,
+      "mse": 0.0071907201781868935
+    }
+  ],
+  "trajectory_data_noising_validation_after": [
+    {
+      "index": 28,
+      "sigma": 0.05,
+      "mse": 0.11269588023424149
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "mse": 0.02452627569437027
+    },
+    {
+      "index": 28,
+      "sigma": 0.95,
+      "mse": 0.005792966112494469
+    },
+    {
+      "index": 29,
+      "sigma": 0.05,
+      "mse": 0.159165620803833
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "mse": 0.024321746081113815
+    },
+    {
+      "index": 29,
+      "sigma": 0.95,
+      "mse": 0.01593795418739319
+    },
+    {
+      "index": 30,
+      "sigma": 0.05,
+      "mse": 0.16956010460853577
+    },
+    {
+      "index": 30,
+      "sigma": 0.5,
+      "mse": 0.03136307746171951
+    },
+    {
+      "index": 30,
+      "sigma": 0.95,
+      "mse": 0.00807117484509945
+    },
+    {
+      "index": 31,
+      "sigma": 0.05,
+      "mse": 0.12986579537391663
+    },
+    {
+      "index": 31,
+      "sigma": 0.5,
+      "mse": 0.02338062785565853
+    },
+    {
+      "index": 31,
+      "sigma": 0.95,
+      "mse": 0.011392678134143353
+    }
+  ],
+  "held_out_trajectory_samples": [
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg1.png",
+      "sha256": "4b3c962cd900052c822b8f8ffcca1fc34805b3864508515d1ee2b0412e09e28f"
+    },
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg4.png",
+      "sha256": "ec2f30f3dbdb9bff8a1d3df61575f5568579bd619a5990f22619f4326a181557"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg1.png",
+      "sha256": "8758436f5fcd035205fd47ff16d5d4a31c1e92a4e3c623a188299436a189c0dd"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg4.png",
+      "sha256": "a464739aadcf96e6ef51a43c64a196b7a2ff75021c9a8351cc50fbf403f2c849"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg1.png",
+      "sha256": "f0a55cff16b334b5c11beb4ab5f559196035761104dc33970cab1e194eba5337"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg4.png",
+      "sha256": "2f81b66ef3ce4b2bc3692408ddff5fa6fcf74c4c35bc3a42a7615b1b121cfbfb"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg1.png",
+      "sha256": "c2ece3c3353d995f219a5ca96631f0b6412724e11657e742bd2dfef53cc37fda"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg4.png",
+      "sha256": "c8546b05c1bb0fcff947aacbd66c94d0666cd3c7e497498de00a0dc88e0ca820"
+    }
+  ],
+  "teacher_context_check": {
+    "teacher_output_exact": true,
+    "native_gradients_absent": true,
+    "added_module_gradients_present": true,
+    "flags_modes_restored": true,
+    "cpu_cuda_rng_restored": true,
+    "fitted_weights_modified": false
+  },
+  "initial_api_png_matches_isolated_cfg4": false,
+  "full_ft": {
+    "steps": 200,
+    "learning_rate": 5e-06,
+    "stochastic_rounding": true,
+    "final_loss": 0.14185532927513123
+  },
+  "resume": {
+    "from_step": 200,
+    "to_step": 201,
+    "optimizer_entries": 632,
+    "hybrid_optimizer_entries": 65,
+    "all_optimizer_counters": 201,
+    "all_added_weights_finite": true,
+    "nonzero_final_projections": 18,
+    "topology_module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594"
+  },
+  "samples": [
+    {
+      "path": "samples\\step_000000_sample_0.png",
+      "sha256": "0b6379d7467c5391d5c2288c3dcdc8ce0072948f4b7623e739039dfcf5f49d24"
+    },
+    {
+      "path": "samples\\step_000100_sample_0.png",
+      "sha256": "433be56f3e48ff6718ed10af17c00dc02e6c17f7c6a7fd824d450d26a4a85f4f"
+    },
+    {
+      "path": "samples\\step_000100_sample_1.png",
+      "sha256": "4f836bc53d66ee4ccf7a36a4b1434acb56382c67038af94cfde92f8fe85c8b9c"
+    },
+    {
+      "path": "samples\\step_000100_sample_2.png",
+      "sha256": "cfbb79002043822e7cbce2fe7d9af8d19b6486d340866b022b83162c5c1b3919"
+    },
+    {
+      "path": "samples\\step_000200_sample_0.png",
+      "sha256": "3e88f6484a41c28f4aed2c794f76368c8f3e15c71044b30ca553bc9ee306cd02"
+    },
+    {
+      "path": "samples\\step_000200_sample_1.png",
+      "sha256": "2765754aa0be9333bdc03400dcdb71fbd3351cf719a973c64843e16d73c1590c"
+    },
+    {
+      "path": "samples\\step_000200_sample_2.png",
+      "sha256": "e4073736f7bb5df9d42e0527aa35f990edc7a2c07e936ab84b97b701cff182c2"
+    }
+  ],
+  "visual_review": {
+    "initial_prompt0": "Recognizable portrait with distorted glasses/eyes",
+    "step200_prompt0": "Face and glasses visibly improve; figure retained, some outlines/background still irregular",
+    "step200_prompt1": "Two-person back-view composition retained; detail/background remain rough",
+    "step200_prompt2": "not visually reviewed"
+  },
+  "limits": [
+    "Small, short general-only probe; no long-run or joint-VAE-swap quality acceptance",
+    "Teacher initialization cost is separate from iteration throughput",
+    "Not a paired low-LR zero-init comparison or an equal-total-GPU-time quality comparison"
+  ],
+  "initial_api_pixel_comparison": {
+    "exact": true,
+    "mean_absolute_byte_error": 0.0,
+    "max_absolute_byte_error": 0,
+    "api_png_metadata_keys": [
+      "prompt",
+      "negative_prompt",
+      "steps",
+      "cfg_scale",
+      "seed",
+      "width",
+      "height",
+      "cfg_schedule_type",
+      "cfg_schedule_min",
+      "cfg_schedule_max",
+      "cfg_schedule_power",
+      "sample_settings_revision"
+    ],
+    "prototype_png_metadata_keys": []
+  },
+  "cleanup": {
+    "run_db_deleted": true,
+    "evidence": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_initialized_quality\\evidence",
+    "dataset_retained_for_initializer_integration": true,
+    "checkpoint_directory_deleted": true,
+    "temporary_source_deleted": true,
+    "native_source_preserved": true
+  }
+}

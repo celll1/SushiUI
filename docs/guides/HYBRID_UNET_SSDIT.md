@@ -478,6 +478,34 @@ weights. The caller still owns residency, fit optimizer, inputs, fresh-checkpoin
 policy and provenance. This utility does not roll back partially fitted weights
 and is not yet a production automatic-initialization option.
 
+### Initialized model: bounded full fine-tuning and resume
+
+After the 2,300-update initialization, a further prototype collects 1,568 raw
+native velocity/input pairs along CFG-4 generation trajectories for the 28 fit
+prompts (28 steps each, conditional and unconditional calls). Collection takes
+101.6 seconds; 1,000 added-module updates at LR 3e-4 take 241.1 seconds with a
+4.17 GiB allocated peak. Prompt 0's CFG-1 contours improve; held-out generation
+retains more figure structure, but bands/text and facial defects remain.
+Data-noising held-out MSE slightly worsens, so this is not a universal improvement.
+
+The 3,300-update module weights were explicitly exported onto unchanged native
+Anima weights for a temporary run. The API's step-0 RGB pixels exactly match
+the isolated initialized model; PNG bytes differ because training adds metadata.
+Full FT then completes 200 updates on the same 32 general images at 512px,
+batch 1, LR 5e-6, AdamW8bit with rounding, native VAE and CFG-4 samples.
+Prompt 0's face/glasses visibly improve while retaining its figure. Prompt 1's
+two-person back-view composition is retained, with rough background/detail.
+Prompt 2 is generated but not visually reviewed. Final loss is 0.14186.
+
+Resume from step 200 restores all 632 named optimizer entries with none fresh
+and completes step 201. All counters reach 201, including 65 hybrid entries;
+all 65 added tensors are finite and the 18 final projections are nonzero.
+This establishes a useful initialization/fine-tuning direction and artifact
+continuation. It does not establish long-run, joint-VAE-swap, equal-total-GPU-time
+quality, or a paired low-LR zero-init comparison. Automatic initialization,
+provenance persistence and public API/UI wiring remain to be implemented.
+Evidence is in `docs/audits/data/hybrid_anima_initialized_full_ft_2026-10.json`.
+
 ## Actual Anima training lifecycle
 
 A temporary general-only eight-image dataset exercised full-parameter training

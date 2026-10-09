@@ -53,6 +53,13 @@ individual records' limitations.
    quality recovery in the two reviewed CFG4 conditions. It is not accepted.
    Separate codec reconstruction, matched-noise single prediction and free-running
    generation before extending training or selecting another structure.
+   That separation was subsequently measured on two general images in
+   `hybrid_anima_codec_diagnostic_2026-10.json`: direct target reconstruction is
+   sharp, while the calibrated native-channel bottleneck introduces artifacts
+   without DiT/U-Net processing. Six matched single-prediction errors improve
+   after adaptation, despite unaccepted free-running quality. Targeted IO/bridge
+   and trajectory consistency work is indicated; this is not proof that hybrid
+   topology is harmless or that the quality gate has passed.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

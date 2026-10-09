@@ -114,6 +114,24 @@ def hybrid_metadata(value):
     return {META_SPEC: canonical_json(value), META_HASH: digest(value)}
 
 
+def hybrid_parameter_counts(value):
+    value = validate_hybrid_spec(value)
+    widths = value["stream_widths"]
+    regions = {region["id"]: region for region in value["regions"]}
+    modules = []
+    for item in value["boundaries"]:
+        width = widths[regions[item["region"]]["stream"]]
+        count = 2 * width + 2 * item["kernel"]**2 * width + 4 * width * item["rank"]
+        modules.append(dict(id=item["id"], kind="boundary", count=count))
+    for item in value["refiners"]:
+        width = widths[item["stream"]]
+        count = 2 * width + item["kernel"]**2 * width + 2 * width * item["rank"]
+        modules.append(dict(id=item["id"], kind="refiner", count=count))
+    for item in value["skips"]:
+        modules.append(dict(id=item["id"], kind="skip", count=2 * widths[item["stream"]] * item["rank"]))
+    return dict(scope="learned_hybrid_modules", added=sum(item["count"] for item in modules), modules=modules)
+
+
 def read_hybrid_metadata(metadata):
     if not isinstance(metadata, dict):
         raise ValueError("Hybrid metadata must be an object")

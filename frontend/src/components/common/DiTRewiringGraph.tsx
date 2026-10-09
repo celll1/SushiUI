@@ -10,7 +10,11 @@ interface Props {
 }
 
 export default function DiTRewiringGraph(props: Props) {
-  return <div className="space-y-3">{props.spec.streams.map(stream => <div key={stream.name}>
+  return <div className="space-y-3">
+    {props.spec.method === "hybrid_unet_ssdit" && <p className="text-gray-400">
+      Solid curves: residual bypass. Yellow dashed curves: learned compressed skips. Pink squares: learned spatial convolutions.
+    </p>}
+    {props.spec.streams.map(stream => <div key={stream.name}>
     <p className="mb-1 text-gray-300">{stream.name} / {stream.block_count} blocks</p>
     {props.plan.hybrid_convolution_halo?.[stream.name] && <p className="mb-1 text-gray-400">
       Convolution context: {props.plan.hybrid_convolution_halo?.[stream.name]?.join(" × ")} base token cells (H × W)
@@ -86,6 +90,23 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
         fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="5 3">
         <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}`}</title>
       </path>;
+    })}
+    {spec.method === "hybrid_unet_ssdit" && spec.refiners.filter(item => item.stream === stream.name).map(item => {
+      const block = blocks.find(value => value.index === item.after_block);
+      if (!block) return null;
+      return <rect key={`local-${item.id}`} x={x(block.index + 0.5) - 4} y={y(block.depth) + 10}
+        width={8} height={8} fill="#fb7185">
+        <title>{`${item.id}: local ${item.kernel}×${item.kernel} convolution after block ${item.after_block}; rank ${item.rank}`}</title>
+      </rect>;
+    })}
+    {spec.method === "hybrid_unet_ssdit" && spec.boundaries.map(item => {
+      const region = spec.regions.find(value => value.id === item.region && value.stream === stream.name);
+      const level = plan.levels.find(value => value.id === item.region);
+      if (!region || !level) return null;
+      return <g key={`conv-${item.id}`}>{([region.start_block, region.end_block]).map((index, side) =>
+        <rect key={side} x={x(index) - 4} y={y(level.depth - 0.5) - 4} width={8} height={8} fill="#fb7185">
+          <title>{`${item.id}: learned ${side === 0 ? "down" : "up"} ${item.kernel}×${item.kernel} convolution; rank ${item.rank}`}</title>
+        </rect>)}</g>;
     })}
   </svg>;
 }

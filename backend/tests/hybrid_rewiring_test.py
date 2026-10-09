@@ -11,6 +11,7 @@ from core.rewiring.spec import OPERATORS, build_spec, digest, checkpoint_metadat
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.hybrid_spec import (build_hybrid_spec, validate_hybrid_spec, legacy_topology,
                                       hybrid_metadata, read_hybrid_metadata, hybrid_preview, module_layout)
+from core.rewiring.hybrid_spec import hybrid_parameter_counts
 from core.rewiring.hybrid_modules import HybridModules
 
 
@@ -44,6 +45,22 @@ def test_metadata_roundtrip_and_tampering():
     damaged["boundaries"][0]["rank"] = 4
     with pytest.raises(ValueError):
         validate_hybrid_spec(damaged)
+
+
+def test_parameter_census_matches_registered_modules():
+    spec = declaration()
+    modules = HybridModules(spec)
+    census = hybrid_parameter_counts(spec)
+    assert census["added"] == sum(parameter.numel() for parameter in modules.parameters())
+    for item in census["modules"]:
+        if item["kind"] == "boundary":
+            expected = sum(p.numel() for part in (modules.down[item["id"]], modules.up[item["id"]]) for p in part.parameters())
+        else:
+            group = modules.local if item["kind"] == "refiner" else modules.skips
+            expected = sum(p.numel() for p in group[item["id"]].parameters())
+        assert item["count"] == expected
+    from core.rewiring.spec import preview_plan
+    assert preview_plan(spec, 8, 12)["hybrid_parameter_counts"] == census
 
 
 def test_unsupported_training_features_are_explicit():

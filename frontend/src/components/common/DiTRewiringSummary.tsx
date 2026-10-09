@@ -36,7 +36,7 @@ export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry
     return () => { cancelled = true; };
   }, [spec, width, height, tokenStride, temporalGeometry, videoGeometry]);
   return <details className="mt-2 rounded border border-emerald-800 p-2 text-xs">
-    <summary className="cursor-pointer text-emerald-300">Residual U-Net / {spec.regions.length} regions / checkpoint topology</summary>
+    <summary className="cursor-pointer text-emerald-300">{spec.method === "hybrid_unet_ssdit" ? "Hybrid" : "Residual"} U-Net / {spec.regions.length} regions / checkpoint topology</summary>
     <p className="my-2 text-gray-400">{temporalGeometry && spec.architecture === "minimax_music3"
       ? `Read-only flow chunk topology. Preview: ${temporalGeometry.preview_frames} native audio tokens (${(temporalGeometry.preview_frames / temporalGeometry.frame_rate).toFixed(2)}s). The time token stays at full resolution. Autoregressive code generation is unchanged; flow KV caching is disabled.`
       : temporalGeometry && spec.architecture === "yue2"
@@ -45,7 +45,7 @@ export default function DiTRewiringSummary({ spec, tokenStride, temporalGeometry
       : videoGeometry ? `Per-frame spatial topology at ${width}×${height}px. Frames and audio tokens retain native resolution; pooling and skip connections never cross frame boundaries.`
       : spec.architecture === "ming_image_01" ? `Per-target-layer topology at ${width}×${height}px. Reference, caption and padding tokens retain native resolution; pooling and skips never cross layer boundaries. These tokens add attention cost beyond the graph. Denoising prefix KV caching is unsupported; frozen conditioner outputs can be cached.`
       : `Read-only restored topology. Preview at ${width}×${height}px; image dimensions follow the generation request. Image-token KV caching is disabled during rewired execution; immutable prefix KV remains available.`}</p>
-    <DiTParameterSummary counts={parameterCounts} plan={plan} />
+    <DiTParameterSummary counts={parameterCounts} plan={plan} spec={spec} />
     {plan && <DiTRewiringGraph spec={spec} plan={plan} />}
     {spec.regions.map(region => <p key={region.id} className="mt-1 text-gray-300">
       {region.stream} / {region.id}: [{region.start_block}, {region.end_block}) / parent {region.parent ?? "full grid"} / downsample {region.down_factor.join("×")} / {region.down === "rms_pool" ? "RMS pooling" : "average pooling"} / residual skip {region.start_block} → {region.end_block}

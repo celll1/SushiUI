@@ -1,0 +1,327 @@
+{
+  "architecture": "anima",
+  "base": "anima-base-v1.0",
+  "general_calibration_images": 8,
+  "calibration_resolution": 256,
+  "training_resolution": 512,
+  "batch_size": 1,
+  "method": "full_finetune",
+  "optimizer": "adamw8bit",
+  "checkpointed_native_blocks": 24,
+  "hybrid_parameters": 4958208,
+  "hybrid_tensor_count": 65,
+  "vae": "Qwen-Image-2.1 64ch 16x",
+  "partition": {
+    "enabled": true,
+    "count": 2,
+    "global_rank": 64,
+    "global_tokens": 16
+  },
+  "initial_training": {
+    "completed_steps": 2,
+    "loss": 2.0382750034332275,
+    "checkpoint_saved": true,
+    "periodic_sample_saved": true,
+    "nonzero_final_projections": 18,
+    "final_projection_count": 18,
+    "ownership": {
+      "optimizer_parameter_names": 641,
+      "optimizer_hybrid_parameters": 65,
+      "ema_hybrid_parameters": 65,
+      "ema_shadow_parameters": 641,
+      "optimizer_llm_parameters": 0
+    }
+  },
+  "resume": {
+    "completed_steps": 3,
+    "loss": 2.533414602279663,
+    "optimizer_parameters_restored": 641,
+    "optimizer_parameters_fresh": 0,
+    "ema_shadow_parameters_restored": 641,
+    "hybrid_optimizer_steps": [
+      {
+        "name": "transformer.rewiring_modules.down.downup_r0.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r0.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r0.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r0.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r0.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r1.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r1.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r1.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r1.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.down.downup_r1.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.up.downup_r0.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.up.downup_r0.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.up.downup_r0.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.up.downup_r1.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.up.downup_r1.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.up.downup_r1.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_0.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_0.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_0.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_0.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_0.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_12.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_12.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_12.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_12.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_12.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_16.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_16.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_16.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_16.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_16.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_20.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_20.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_20.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_20.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_20.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_24.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_24.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_24.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_24.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_24.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_4.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_4.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_4.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_4.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_4.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_8.norm.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_8.norm.bias",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_8.spatial.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_8.reduce.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.local.local_main_8.expand.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_0_27.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_0_27.restore.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_10_17.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_10_17.restore.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_12_15.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_12_15.restore.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_2_25.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_2_25.restore.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_4_23.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_4_23.restore.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_6_21.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_6_21.restore.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_8_19.capture.weight",
+        "step": 3
+      },
+      {
+        "name": "transformer.rewiring_modules.skips.skip_main_8_19.restore.weight",
+        "step": 3
+      }
+    ]
+  },
+  "generation_reload": {
+    "success": true,
+    "width": 512,
+    "height": 512,
+    "steps": 8,
+    "cfg": 1,
+    "restored_spec_sha256": "f7705c773a3c9c55df4c9c15c8dca48637cce179a2d4f8895c06772833172b07",
+    "vae_decode_seconds": 0.117
+  },
+  "block_swap": {
+    "blocks": 2,
+    "status": "failed",
+    "error": "CPU parameter with CUDA gradient during fused AdamW8bit update",
+    "already_applied_parameter_updates": 5,
+    "quarantined_partial_checkpoint": true,
+    "consistent_checkpoint_preserved": true,
+    "now_refused_before_training": true
+  },
+  "limits": [
+    "Three updates establish lifecycle functionality, not quality recovery.",
+    "LLM adapter frozen by unified train_adapter=False.",
+    "Block Swap remains unsupported; activation offload and conventional backward verified."
+  ]
+}

@@ -79,6 +79,16 @@ def test_conflicting_legacy_partition_settings_fail():
         region_count(trainer(qwen_partition_fixed_count=2), torch.zeros(1, 64, 48, 80))
 
 
+def test_api_refuses_global_without_partition_before_config_write():
+    from api.routes import TrainingRunCreateRequest
+    with pytest.raises(ValueError, match="require partition"):
+        TrainingRunCreateRequest(dataset_id=1, run_name="invalid_global",
+            base_model_path="M:/model/anima/anima-base-v1.0.safetensors",
+            training_method="full_finetune", total_steps=1,
+            dit_partition_global_adapter_enabled=True,
+            dit_partition_training_enabled=False)
+
+
 def test_api_config_keeps_anima_partition_global_and_checkpoint_settings():
     from unittest.mock import patch
     from api.routes import TrainingRunCreateRequest

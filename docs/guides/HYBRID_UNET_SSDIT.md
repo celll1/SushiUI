@@ -34,6 +34,14 @@ global activation dispatcher can cover the ordinary checkpoint path. Live skip
 outputs and residual bypasses still occupy their execution device; checkpointing
 does not remove those explicit graph references.
 
+Training Block Swap is currently refused for schema-2 hybrid graphs, including
+checkpoint-inherited graphs. An official-weight Anima resume with two swapped
+blocks failed during fused AdamW8bit backward: a parameter was on CPU while its
+gradient was on CUDA, after five parameter updates. The failed worker quarantined
+partial weights and preserved the previous consistent checkpoint. A residency
+schedule verified against the branched backward graph is required before this
+combination can be enabled; activation offload remains available.
+
 Learned correction outputs start at zero. Initial boundary execution matches
 the legacy pool/interpolation, allowing a controlled starting point and an
 independent comparison. This initialization does not restrict learned outputs
@@ -257,3 +265,27 @@ The trained checkpoint, caption tokenization, partition/global adapter, decoder
 and full multi-step sampling are excluded. Raw records are in
 `docs/audits/data/hybrid_anima_mode_parity_2026-10.json`; executable probe is
 `local/verification/hybrid_anima_mode_parity.py`. Existing runs were not changed.
+
+## Actual Anima training lifecycle
+
+A temporary general-only eight-image dataset exercised full-parameter training
+at 512px, batch 1, AdamW8bit, hybrid preset and Qwen 2.1 codec swap. Two-way
+partition training, rank-64 global summaries, CPU EMA and activation dispatch
+were enabled. The unified adapter-training flag kept the LLM adapter frozen.
+Two updates completed with all 18 final spatial/skip projections nonzero. The
+checkpoint and optimizer contained all 65 hybrid tensors; EMA owned the same
+65 tensors among 641 shadow parameters. Periodic generation and debug decode
+also completed.
+
+Resume restored 641 optimizer entries with none fresh, and all 641 EMA entries.
+All 65 hybrid optimizer counters advanced to step 3. Loading the saved model
+through `/models/load` restored its schema-2 declaration and bundled swapped VAE;
+an eight-step, CFG-1 generation completed. These three updates verify lifecycle
+ownership, not image quality recovery. Training Block Swap failed as recorded
+above, and is now refused before a worker starts. Anima global summaries without
+partition training now return 422 before config is written, rather than 500.
+
+The temporary run, dataset, checkpoints and generated image were removed, and
+the prior Ming Layer model was restored. Evidence is tracked in
+`docs/audits/data/hybrid_anima_lifecycle_2026-10.json`; full probe logs remain
+under `local/verification/hybrid_anima_lifecycle/logs/`.

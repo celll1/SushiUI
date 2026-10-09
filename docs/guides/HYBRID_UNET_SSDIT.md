@@ -1389,3 +1389,25 @@ and severe block artifacts remain. This limited change does not justify default
 promotion. Further work must test a concrete geometry/field hypothesis rather
 than assuming that more of the same short fitting will fix the initialization.
 Evidence: `docs/audits/data/hybrid_anima_packed_joint_fit_2026-10.json`.
+
+## Source-span RoPE retrofit experiment
+
+Current Anima full-frame coarse execution regenerates native unit-grid angles
+at each depth. A private alternative averages native linear angles over declared
+source-grid cells, retaining their physical span and cell centers without pooling
+sine/cosine. `core/experiments/anima_source_span.py` accepts only single-frame,
+full-canvas divisible grids; it does not mutate position buffers. Three CPU tests
+verify native layout, cell centers, identity, unchanged buffers and rejection.
+The real-import test leaves CUDA uninitialized while a separate IRIS job runs.
+
+Four new 512px/28-step/CFG4/seed63 general-prompt images use source grid32x32
+with native codec or packed64 codec and the retained unit-grid-fitted structural
+candidate. Existing controls are reused by hash; no fitting occurs. Native
+outputs worsen: two-person composition splits/fails and one-person facial
+structure degrades. Packed outputs retain stripes/blocks and fail figures.
+Thus source-span coordinates are not retrofitted or promoted. This experiment
+does not reject a freshly source-span-fitted model or establish universally
+optimal coordinates. Any future position-policy adoption needs explicit
+artifact identity and matched fresh initialization, not silent existing-run edits.
+Concurrent IRIS generation means no isolated timing claim is made.
+Evidence: `docs/audits/data/hybrid_anima_source_span_2026-10.json`.

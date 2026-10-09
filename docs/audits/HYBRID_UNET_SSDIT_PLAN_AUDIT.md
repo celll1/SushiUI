@@ -180,6 +180,12 @@ individual records' limitations.
    ranking from these wall times; per-worker allocated memory and functional
    matching/frozen-state evidence retain their stated scope.
    Check reduced-grid geometry/position and field mapping before further fitting.
+   The no-fit source-span RoPE retrofit
+   (`hybrid_anima_source_span_2026-10.json`) passes three GPU-free coordinate tests,
+   but four real held general images worsen native facial/composition structure
+   and do not fix packed blocks. Existing unit-grid-fitted corrections are not
+   silently changed. This rejects that retrofit, not fresh source-span fitting;
+   explicit position-policy identity and matched initialization would be required.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

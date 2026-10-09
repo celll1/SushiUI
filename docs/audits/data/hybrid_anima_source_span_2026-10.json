@@ -1,0 +1,241 @@
+{
+  "rating": "general",
+  "prompt_indices": [
+    28,
+    29
+  ],
+  "seed": 63,
+  "resolution": 512,
+  "steps": 28,
+  "cfg": 4,
+  "calibration_sha256": "bdb0c8fa9070af3d3edc110f3cd3f6dc276cf7ee808ac9f5581761fa1380dc31",
+  "initialization_sha256": "b04ca7ff52eee7ce7e1ba3da89e213d466d23082eb2692e0091abe6c34b02ee0",
+  "noise_center_rank_ratio": 0.0001537333128213406,
+  "output_calibration": "native_paired",
+  "noise_snapshot": "packed_head_average_repeat",
+  "samples": [
+    {
+      "arm": "packed_source_span",
+      "index": 28,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_source_span_generation\\p28_packed_source_span.png",
+      "sha256": "09e9e64d6c64d9e737e3b5aff576791bd75a03d1b9a4074daf0a54b30f9cb946"
+    },
+    {
+      "arm": "packed_source_span",
+      "index": 29,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_source_span_generation\\p29_packed_source_span.png",
+      "sha256": "bf85e89190d60cb01be93456e24cea9164ef6433afc447474a383951be2010b2"
+    },
+    {
+      "arm": "native_source_span",
+      "index": 28,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_source_span_generation\\p28_native_source_span.png",
+      "sha256": "ed973cb5dc455b8b4d21baad8b83362b02fad268eda4530d1a179558bdc9c765"
+    },
+    {
+      "arm": "native_source_span",
+      "index": 29,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_source_span_generation\\p29_native_source_span.png",
+      "sha256": "ec1f90d79c834a9f89c7f52960352e24da76dcfb63bf0bf1434847b3409080be"
+    }
+  ],
+  "reused_controls": [
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg1.png",
+      "sha256": "4b3c962cd900052c822b8f8ffcca1fc34805b3864508515d1ee2b0412e09e28f"
+    },
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg4.png",
+      "sha256": "ec2f30f3dbdb9bff8a1d3df61575f5568579bd619a5990f22619f4326a181557"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg1.png",
+      "sha256": "8758436f5fcd035205fd47ff16d5d4a31c1e92a4e3c623a188299436a189c0dd"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg4.png",
+      "sha256": "a464739aadcf96e6ef51a43c64a196b7a2ff75021c9a8351cc50fbf403f2c849"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg1.png",
+      "sha256": "f0a55cff16b334b5c11beb4ab5f559196035761104dc33970cab1e194eba5337"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg4.png",
+      "sha256": "2f81b66ef3ce4b2bc3692408ddff5fa6fcf74c4c35bc3a42a7615b1b121cfbfb"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg1.png",
+      "sha256": "c2ece3c3353d995f219a5ca96631f0b6412724e11657e742bd2dfef53cc37fda"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg4.png",
+      "sha256": "c8546b05c1bb0fcff947aacbd66c94d0666cd3c7e497498de00a0dc88e0ca820"
+    }
+  ],
+  "reused_swap": [
+    {
+      "arm": "swap",
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p28_swap_cfg1.png",
+      "sha256": "56ebd70c76f00cdc239f08cedba872a3f77aa5b621dfbdc765982efdf14428ce",
+      "denoise_seconds": 1.952999999979511
+    },
+    {
+      "arm": "swap",
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p28_swap_cfg4.png",
+      "sha256": "ba9c2d21c98dd16305efc2f2af9cd17aba68fbf4cc848b4820fe42ce5409f47c",
+      "denoise_seconds": 3.8589999999385327
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p29_swap_cfg1.png",
+      "sha256": "88d7dccaae6e77aa110d093c11f15a464402c8d17f9d85d1429272ae81abd275",
+      "denoise_seconds": 1.8599999998696148
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p29_swap_cfg4.png",
+      "sha256": "2f2d13ac7bcabda9a2302accb08fa3825ea065956401f967efc69c489008ccbb",
+      "denoise_seconds": 3.7660000000614673
+    }
+  ],
+  "reused_candidate_native_codec": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_fit\\p28_paired_anchor_cfg1.png",
+      "sha256": "08c38162679c1ea75fcad323f55c70aba3c07db7c5f003883ad43bcbe19d3470"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_fit\\p28_paired_anchor_cfg4.png",
+      "sha256": "167ad45eadf79cae3f8043bcd7f8ead0ee9bf24dad33e8f5a4474424d9c2f606"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_fit\\p29_paired_anchor_cfg1.png",
+      "sha256": "46d91455f54f62c2f23c241d601e40793a3fda9fd3df0442c1e4b6dfb471aced"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_fit\\p29_paired_anchor_cfg4.png",
+      "sha256": "595d3b38ba42cb2f1364d64c9d7631590993ff1e3a4c8f583c94d93d18d88d2e"
+    }
+  ],
+  "limits": [
+    "No new training; two general prompts, one seed.",
+    "Full-frame 512px with explicit source grid32; no partition/video or production policy acceptance.",
+    "Concurrent IRIS generation; timings are observation only."
+  ],
+  "position_policy": "experimental_source_span_32x32",
+  "reused_packed_before": [
+    {
+      "arm": "packed_swap",
+      "index": 28,
+      "gain": 2.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p28_packed_swap_g2.png",
+      "sha256": "c71724673cce145a99ce8479880276768b737710c604dc8e8930841ad6412340",
+      "denoise_seconds": 6.562999999849126,
+      "latent_moments": {
+        "mean": 0.017358267679810524,
+        "std": 0.9621530175209045,
+        "min": -4.40625,
+        "max": 5.0
+      }
+    },
+    {
+      "arm": "packed_swap",
+      "index": 29,
+      "gain": 2.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p29_packed_swap_g2.png",
+      "sha256": "3ebc134528ae81bb824da49de37dd087871706939da2c330708c728b3691ab39",
+      "denoise_seconds": 4.593000000109896,
+      "latent_moments": {
+        "mean": 0.041492313146591187,
+        "std": 0.9810482263565063,
+        "min": -4.03125,
+        "max": 4.5
+      }
+    },
+    {
+      "arm": "packed_hybrid",
+      "index": 28,
+      "gain": 2.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p28_packed_hybrid_g2.png",
+      "sha256": "b78cb19011a3c2d9f18c7394930cbcde3e2af96df433c31c5bc12a53e4fcd38a",
+      "denoise_seconds": 6.608999999938533,
+      "latent_moments": {
+        "mean": 0.04509032517671585,
+        "std": 0.9821937680244446,
+        "min": -5.0,
+        "max": 3.75
+      }
+    },
+    {
+      "arm": "packed_hybrid",
+      "index": 29,
+      "gain": 2.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p29_packed_hybrid_g2.png",
+      "sha256": "c434bc1ad9eee1204287ff7a7922ea995fc67ef5100005b3e744dfc17c0573d7",
+      "denoise_seconds": 5.686999999918044,
+      "latent_moments": {
+        "mean": 0.1055649146437645,
+        "std": 1.0914777517318726,
+        "min": -4.8125,
+        "max": 4.5
+      }
+    }
+  ],
+  "concurrent_gpu": "Separate IRIS generation active; quality probe only, no isolated timing claim",
+  "review": {
+    "native_p28": "Split/collage-like scene and failed two-person figures, worse than retained unit-grid candidate.",
+    "native_p29": "Coherent broad single-figure silhouette but cyclopean face, worse than retained candidate face.",
+    "packed_p28_p29": "Strong stripes/blocks and failed figures; no improvement.",
+    "decision": "Do not retrofit source-span coordinates onto existing unit-grid-fitted corrections. This does not reject fresh source-span initialization or prove the current coordinates universally optimal."
+  },
+  "tests": {
+    "passed": 3,
+    "cuda_initialized": false,
+    "scope": "Native angle layout, cell centers, identity, unchanged buffers and invalid image geometry"
+  },
+  "training_updates": 0,
+  "source_grid": [
+    32,
+    32
+  ]
+}

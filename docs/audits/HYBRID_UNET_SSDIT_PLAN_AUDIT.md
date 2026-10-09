@@ -47,7 +47,12 @@ individual records' limitations.
    `hybrid_anima_combined_quality_2026-10.json` probe fails joint free-running
    quality acceptance despite finite outputs and some retained single-figure
    outlines. Native-codec initialization is insufficient evidence for the
-   combined candidate; bounded joint adaptation remains necessary.
+   combined candidate. A subsequent 200-update combined Full FT probe
+   (`hybrid_anima_combined_adaptation_2026-10.json`, LR 5e-6) completed with
+   finite gradients but retained strong block texture and did not show consistent
+   quality recovery in the two reviewed CFG4 conditions. It is not accepted.
+   Separate codec reconstruction, matched-noise single prediction and free-running
+   generation before extending training or selecting another structure.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

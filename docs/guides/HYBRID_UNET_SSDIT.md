@@ -912,6 +912,35 @@ explicit native forwards and exercise combined-file backend loading, successful
 generation dispatch, failure cleanup and restoration of the original modules.
 These tests establish CPU wiring, not official-weight Qwen GPU acceptance.
 
+## Bounded combined-codec adaptation
+
+The initialized hybrid + Qwen 2.1 codec candidate received 200 additional Full FT
+updates at LR 5e-6, BF16, AdamW8bit with stochastic rounding, batch 1 and native
+24-block checkpointing. The DiT, structural modules, enlarged latent IO and
+alignment bridges were trainable; the caption bridge, TE and VAE stayed frozen.
+28 revalidated general images supplied training exposures, with independently
+drawn noise, logit-normal sigma and 0.1 conditioning dropout. Captions were fixed
+in this isolated experiment. Four remaining images were excluded from these
+updates, but the earlier initialization/calibration used the same image pool;
+this is not an unseen-image generalization test.
+
+The updates took 105.969 seconds and peaked at 11.597 GiB allocated, excluding
+caption/latent preprocessing and sample generation. All losses and clipped-gradient
+checks were finite. Four 512px outputs reused the prior two prompts, seed 63,
+28 steps and CFG 1/4; previous outputs were reused without regeneration.
+The reviewed CFG4 pair retained strong block texture: one figure became more
+prominent, while the other remained distorted, without consistent quality
+recovery. CFG1 outputs were generated but not visually reviewed. This bounded
+probe fails quality acceptance and does not establish an equal-GPU-time comparison.
+Evidence: `docs/audits/data/hybrid_anima_combined_adaptation_2026-10.json`.
+
+The private experiment state is retained separately from owner checkpoints.
+It is not a published initializer artifact or an optimizer-resumable training
+checkpoint. The worker ended, the owner's model remained CPU-resident, and GPU
+usage returned to the desktop/backend baseline. Reconstruction, matched-noise
+single prediction and free-running generation need separate diagnosis before
+extending the training budget or changing the preset.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

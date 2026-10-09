@@ -1,5 +1,6 @@
 """Job ownership must survive cancellation, worker failure and dispatch failure."""
 import threading
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,54 @@ from api import hybrid_initialization_job as job
 from api.rewiring_routes import HybridInitializationRequest, rewiring_schema
 from core.model_state_coordinator import ModelStateCoordinator, ModelStateBusyError
 from core.rewiring.fitting import InitializationCancelled
+from hybrid_anima_test import native
+
+
+def test_anima_source_guard_accepts_only_native_layout(native,tmp_path):
+    from safetensors.torch import save_file
+    from core.models.anima.residual_unet import restore_topology,native_config
+    model,spec = native
+    restore_topology(model,None)
+    source = tmp_path/"native.safetensors"
+    save_file({"net."+key:value for key,value in model.state_dict().items()},str(source),
+              metadata=dict(model_type="anima",transformer_config=json.dumps(native_config(model))))
+    manager = SimpleNamespace(current_model_info=dict(type="anima",source=str(source)),
+        anima_components=dict(transformer=model,text_encoder=object(),vae=object(),scheduler=object(),
+                              tokenizer=object(),t5_tokenizer=object()))
+    options = dict(model_path=str(source),output_name="initialized.safetensors",spec=spec,resolution=512)
+    checked,_,declaration = job._checked_source(manager,options)
+    assert checked == source and declaration == spec
+    restore_topology(model,spec)
+    with pytest.raises(ValueError,match="native source"):
+        job._checked_source(manager,options)
+
+
+def test_qwen_source_guard_validates_package_and_added_layout(tmp_path):
+    import torch
+    from safetensors.torch import save_file
+    from hybrid_qwen_test import model_and_spec
+    from core.models.qwen_image_21.artifact import artifact_metadata
+    from core.models.qwen_image_21.residual_unet import restore_topology
+    model,spec,_ = model_and_spec()
+    source = tmp_path/"native"
+    source.mkdir()
+    for name in ("te","vae","te_config"):
+        (source/name).touch()
+    (source/"processor").mkdir()
+    config = dict(model.config)
+    save_file(model.state_dict(),str(source/"transformer.safetensors"),metadata=artifact_metadata("transformer",config))
+    (source/"manifest.json").write_text(json.dumps(dict(model_type="qwen_image_21",format_version="1",
+        components=dict(transformer="transformer.safetensors",text_encoder="te",vae="vae",processor="processor",
+                        text_encoder_config="te_config"),transformer_config=config,vae_config={})),encoding="utf-8")
+    manager = SimpleNamespace(current_model_info=dict(type="qwen_image_21",source=str(source)),
+        qwen_image_21_components=dict(transformer=model,text_encoder=torch.nn.Linear(1,1),
+                                     vae=torch.nn.Linear(1,1),processor=object(),scheduler=object()))
+    options = dict(model_path=str(source),output_name="initialized-qwen",spec=spec,resolution=512)
+    checked,_,declaration = job._checked_source(manager,options)
+    assert checked == source and declaration == spec
+    restore_topology(model,spec)
+    with pytest.raises(ValueError,match="native source"):
+        job._checked_source(manager,options)
 
 
 def test_request_defaults_and_schema_agree():

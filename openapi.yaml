@@ -4018,16 +4018,17 @@ paths:
               schema: {$ref: '#/components/schemas/HybridInitializationJob'}
     post:
       tags: [models]
-      summary: Initialize a new hybrid U-Net from the loaded native Anima
+      summary: Initialize a new hybrid U-Net from the loaded native DiT
       description: >-
         Reserves the model lifecycle gate before returning. Refuses generation,
         training, adapters, existing rewiring and VAE swap. Encodes selected dataset
         items with native VAE/TE residency, fits only added modules and publishes
-        a new standalone checkpoint beside the source without overwriting it.
+        a new Anima standalone checkpoint or Qwen split package beside the source
+        without overwriting it. Qwen reuses unchanged TE/VAE source assets by reference.
         Restores the loaded native model after completion, cancellation or failure.
         Runtime calibration has no rating filter; callers choose authorized data.
-        This execution binding currently supports Anima. Ming/Qwen lineage support
-        does not yet imply an initialization execution binding.
+        This execution binding supports native floating Anima and native floating
+        Qwen split packages. Ming execution is pending.
       requestBody:
         required: true
         content:
@@ -12214,8 +12215,8 @@ components:
       additionalProperties: false
       required: [model_path, output_name, dataset_id]
       properties:
-        model_path: {type: string, minLength: 1, description: Must match the loaded native Anima source}
-        output_name: {type: string, minLength: 1, example: anima-hybrid-initialized.safetensors}
+        model_path: {type: string, minLength: 1, description: Must match the loaded native Anima source or Qwen split package directory}
+        output_name: {type: string, minLength: 1, example: anima-hybrid-initialized.safetensors, description: New safetensors filename for Anima or new package directory basename for Qwen}
         dataset_id: {type: integer, minimum: 1}
         item_ids:
           type: array

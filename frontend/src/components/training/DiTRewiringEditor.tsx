@@ -203,8 +203,8 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
-    {onInitialized && info?.architecture === "anima" && !info.topology &&
-      <HybridInitializationPanel key={modelPath} modelPath={modelPath}
+    {onInitialized && info && !info.topology &&
+      <HybridInitializationPanel key={modelPath} modelPath={modelPath} architecture={info.architecture}
         spec={!pending && !error && !hybridEditing && validatedSpec?.method === "hybrid_unet_ssdit" ? validatedSpec : null}
         onUse={onInitialized} />}
     {info?.topology?.method === "hybrid_unet_ssdit" && <p className="my-2 text-gray-400">

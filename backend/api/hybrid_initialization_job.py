@@ -7,7 +7,7 @@ import uuid
 
 from core.model_state_coordinator import model_state_coordinator, ModelStateBusyError
 
-INITIALIZER_ARCHITECTURES = ("anima",)
+INITIALIZER_ARCHITECTURES = ("anima", "qwen_image_21")
 _lock = threading.Lock()
 _job = None
 _thread = None
@@ -42,8 +42,10 @@ def _checked_source(manager, options):
     from core.rewiring.spec import preview_plan
 
     info = manager.current_model_info or {}
+    if info.get("type") == "qwen_image_21":
+        return _checked_qwen_source(manager,options)
     if info.get("type") not in INITIALIZER_ARCHITECTURES:
-        raise ValueError("Hybrid initialization execution currently requires a loaded native Anima")
+        raise ValueError("Hybrid initialization requires a loaded native Anima or Qwen split package")
     source = Path(options["model_path"]).resolve(strict=True)
     if source != Path(info.get("source") or "").resolve():
         raise ValueError("Initialization source must match the currently loaded model")
@@ -83,7 +85,65 @@ def _checked_source(manager, options):
     return source,components,spec
 
 
+def _checked_qwen_source(manager,options):
+    import torch
+    from safetensors import safe_open
+    from core.models.qwen_image_21.artifact import load_manifest
+    from core.models.qwen_image_21.residual_unet import validate_topology_identity
+    from core.rewiring.inspect import inspect_model
+    from core.rewiring.initialized_export import validate_package_name
+    from core.rewiring.spec import preview_plan
+    source = Path(options["model_path"]).resolve(strict=True)
+    if source != Path(manager.current_model_info.get("source") or "").resolve():
+        raise ValueError("Initialization source must match the loaded Qwen package")
+    if not source.is_dir() or not (source/"manifest.json").is_file():
+        raise ValueError("Qwen initialization requires a native split package directory")
+    validate_package_name(options["output_name"])
+    output = source.parent/options["output_name"]
+    if output.exists() or output.is_symlink():
+        raise FileExistsError("Qwen initialization output already exists")
+    manifest = load_manifest(str(source))
+    for key in ("text_encoder","vae","processor","text_encoder_config","scheduler"):
+        asset = getattr(manifest,key)
+        if asset is not None and not Path(asset).exists():
+            raise FileNotFoundError(f"Qwen source asset is missing: {key}")
+    if Path(manifest.transformer).suffix != ".safetensors":
+        raise ValueError("Qwen initialization currently requires an unsharded transformer component")
+    inspected = inspect_model(source)
+    components = manager.qwen_image_21_components
+    if not components or any(components.get(key) is None for key in
+                            ("transformer","text_encoder","vae","processor","scheduler")):
+        raise ValueError("Loaded Qwen components are incomplete")
+    model = components["transformer"]
+    if (inspected["topology"] is not None or getattr(model,"_residual_unet_spec",None) is not None
+            or hasattr(model,"rewiring_modules") or hasattr(model,"vae_latent_bridge")
+            or manifest.transformer_config.get("vae_alignment") is not None):
+        raise ValueError("Qwen initialization requires a native source without U-Net or VAE swap")
+    if getattr(model,"_block_offloader",None) is not None or any(p.grad is not None for p in model.parameters()):
+        raise ValueError("Qwen initialization requires resident blocks without existing gradients")
+    with safe_open(manifest.transformer,framework="pt",device="cpu") as handle:
+        keys,metadata = set(handle.keys()),handle.metadata() or {}
+    if metadata.get("model_type") != "qwen_image_21" or metadata.get("component") != "transformer":
+        raise ValueError("Qwen initialization requires a native transformer component")
+    if metadata.get("variant","bf16") != "bf16" or any(
+            p.dtype not in (torch.float32,torch.float16,torch.bfloat16) for p in model.parameters()):
+        raise ValueError("Qwen initialization currently requires floating native weights")
+    if any(name not in keys for name,_ in model.named_parameters()):
+        raise ValueError("Loaded Qwen parameter layout differs from source; remove adapters and reload")
+    spec = validate_topology_identity(options["spec"] or inspected["hybrid_default_spec"],dict(model.config))
+    if spec["method"] != "hybrid_unet_ssdit":
+        raise ValueError("Qwen initialization requires a hybrid declaration")
+    validate_topology_identity(spec,manifest.transformer_config)
+    import json
+    validate_topology_identity(spec,json.loads(metadata.get("config") or "{}"))
+    preview_plan(spec,options["resolution"]//16,options["resolution"]//16)
+    return source,components,spec
+
+
 def execute(components, source, spec, items, options, progress, cancelled):
+    if spec["architecture"] == "qwen_image_21":
+        from core.rewiring.qwen_initialization import initialize_loaded_qwen
+        return initialize_loaded_qwen(components,source,spec,items,options,progress,cancelled)
     from core.rewiring.anima_initialization import initialize_loaded_anima
     return initialize_loaded_anima(components,source,spec,items,options,progress,cancelled)
 

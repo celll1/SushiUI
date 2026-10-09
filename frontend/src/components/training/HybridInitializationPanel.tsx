@@ -16,8 +16,9 @@ const errorMessage = (error: unknown) => {
     : error instanceof Error ? error.message : "Initialization request failed";
 };
 
-export default function HybridInitializationPanel({ modelPath, spec, onUse }: {
+export default function HybridInitializationPanel({ modelPath, architecture, spec, onUse }: {
   modelPath: string; spec: HybridDiTRewiringSpec | null; onUse: (path: string) => void | Promise<void>;
+  architecture: string;
 }) {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [datasetId, setDatasetId] = useState("");
@@ -39,7 +40,7 @@ export default function HybridInitializationPanel({ modelPath, spec, onUse }: {
       const { spec: _spec, item_ids: _ids, ...defaults } = schema.initialization_defaults;
       setSettings(JSON.stringify(defaults, null, 2));
       setDatasets(data.datasets);
-      setSupported(schema.initializer_architectures.includes("anima"));
+      setSupported(schema.initializer_architectures.includes(architecture));
     }).catch(err => { if (!cancelled) setError(errorMessage(err)); });
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -52,7 +53,7 @@ export default function HybridInitializationPanel({ modelPath, spec, onUse }: {
     };
     void poll();
     return () => { cancelled = true; alive.current = false; clearTimeout(timer); };
-  }, []);
+  }, [architecture]);
   const start = async () => {
     if (actionPending.current || pending || active(job) || !spec) return;
     setPending(true); actionPending.current = true; setError(null);
@@ -87,10 +88,12 @@ export default function HybridInitializationPanel({ modelPath, spec, onUse }: {
   const busy = pending || active(job);
   const ownJob = samePath(job?.model_path, modelPath);
   const percent = job?.total ? Math.min(100, 100 * (job.completed ?? 0) / job.total) : 0;
+  if (!supported && settings) return null;
   return <details className="rounded border border-gray-700 p-3 text-xs">
     <summary className="cursor-pointer text-sky-300">Initialize hybrid modules with the native teacher</summary>
-    <p className="my-2 text-gray-400">Load this native Anima in Generate first, with adapters and VAE swap disabled.
+    <p className="my-2 text-gray-400">Load this native model in Generate first, with adapters and VAE swap disabled.
       Initialization freezes its existing weights and writes a new checkpoint beside the source.
+      {architecture === "qwen_image_21" && " Qwen writes a package directory with this name; original TE/VAE assets must remain available."}
       The final holdout images are excluded from fitting. Closing this panel leaves the job running.</p>
     <fieldset disabled={busy} className="space-y-2">
       <label className="block">Calibration dataset <select className="ml-2 rounded bg-gray-800 p-2"
@@ -98,8 +101,10 @@ export default function HybridInitializationPanel({ modelPath, spec, onUse }: {
         <option value="">Select dataset</option>{datasets.map(ds =>
           <option key={ds.id} value={ds.id}>{ds.name} (#{ds.id}, {ds.total_items} items)</option>)}
       </select></label>
-      <label className="block">New checkpoint filename <input className="ml-2 rounded bg-gray-800 p-2"
-        value={name} placeholder="anima-hybrid.safetensors" onChange={e => setName(e.target.value)} /></label>
+      <label className="block">{architecture === "qwen_image_21" ? "New package directory name" : "New checkpoint filename"}
+        <input className="ml-2 rounded bg-gray-800 p-2" value={name}
+          placeholder={architecture === "qwen_image_21" ? "qwen-hybrid" : "anima-hybrid.safetensors"}
+          onChange={e => setName(e.target.value)} /></label>
       <details><summary>Fitting settings and ordered phases</summary>
         <p className="my-2 text-gray-400">Defaults come from the API. Optional item_ids selects explicit dataset items in order;
           otherwise the first sample_count IDs are used.</p>

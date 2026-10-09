@@ -153,6 +153,7 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
           rank: Math.min(defaults.rank, draft.stream_widths[stream]), kernel: defaults.kernel }] });
       }}>Add local refiner</button>
       <h5 className="font-medium">Learned compressed skips — source after block → destination before block</h5>
+      <p className="text-gray-400">CPU storage frees the live compressed skip during training and preserves encoder gradients. Transfers are synchronous. Region bypasses and autograd storage are separate; inference keeps skips on its execution device.</p>
       {draft.skips.map(item => {
         const update = (patch: Partial<typeof item>) => change({ ...draft, skips: draft.skips.map(value => value.id === item.id ? { ...value, ...patch } : value) });
         return <div key={item.id} className="flex flex-wrap items-center gap-3"><span>{item.id}</span>
@@ -160,6 +161,21 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
           {(["source_after", "destination_before"] as const).map(side => <NumberField key={side} label={`${item.id} ${side}`}
             value={item[side]} min={side === "source_after" ? 0 : 1} max={count(item.stream) - 1} onChange={value => update({ [side]: value })} />)}
           <NumberField label={`${item.id} rank`} value={item.rank} min={1} max={draft.stream_widths[item.stream]} onChange={rank => update({ rank })} />
+          <label>{item.id} training storage<select aria-label={`${item.id} training storage`}
+            value={item.storage ?? ""} className="ml-2 rounded bg-gray-800 p-1"
+            onChange={event => {
+              const storage = event.target.value;
+              if (storage === "gpu" || storage === "cpu") update({ storage });
+              else change({ ...draft, skips: draft.skips.map(value => {
+                if (value.id !== item.id) return value;
+                const rest = { ...value };
+                delete rest.storage;
+                return rest;
+              }) });
+            }}>
+            <option value="">Inherited schema default{defaults ? ` (${defaults.skip_storage})` : ""}</option>
+            <option value="gpu">GPU</option><option value="cpu">CPU</option>
+          </select></label>
           <button type="button" className={buttonClass} onClick={() => change({ ...draft, skips: draft.skips.filter(value => value.id !== item.id) })}>Remove</button>
         </div>;
       })}
@@ -167,7 +183,8 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
         if (!defaults) return;
         const stream = draft.streams[0].name;
         change({ ...draft, skips: [...draft.skips, { id: freshId("skip"), stream, source_after: 0,
-          destination_before: count(stream) - 1, rank: Math.min(defaults.rank, draft.stream_widths[stream]) }] });
+          destination_before: count(stream) - 1, rank: Math.min(defaults.rank, draft.stream_widths[stream]),
+          storage: defaults.skip_storage }] });
       }}>Add compressed skip</button>
     </fieldset>
     <div className="flex items-center gap-3">

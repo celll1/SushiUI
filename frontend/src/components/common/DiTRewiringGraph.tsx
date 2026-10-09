@@ -37,9 +37,10 @@ function ActivationSummary({ layout, stream }: {
       Logical payload excludes autograd, shared storage, prefix tokens, temporary tensors, weights and optimizer; this is not peak VRAM.
       {peak && <> Peak ownership {peak.peak_phase} block {peak.peak_block}.</>}</p>
     <div className="overflow-x-auto"><table className="w-full text-left text-gray-300">
-      <thead><tr><th>Tensor</th><th>Lifetime</th><th>BF16 MiB</th><th>FP32 MiB</th></tr></thead>
+      <thead><tr><th>Tensor</th><th>Training storage</th><th>Lifetime</th><th>BF16 MiB</th><th>FP32 MiB</th></tr></thead>
       <tbody>{entries.map(item => <tr key={`${item.kind}/${item.id}`}>
         <td>{item.id} / {labels[item.kind]}</td>
+        <td>{item.kind === "compressed_skip" ? (item.training_storage?.toUpperCase() ?? "Schema default") : "Execution device"}</td>
         <td>{item.capture_phase} {item.capture_block} → before {item.release_before_block}</td>
         <td>{mib(item.elements, 2)}</td><td>{mib(item.elements, 4)}</td>
       </tr>)}</tbody>
@@ -113,7 +114,7 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
       const sx = x(source.index + 0.5), tx = x(target.index + 0.5), base = y(source.depth) - 20;
       return <path key={`learned-${edge.id}`} d={`M ${sx} ${base} Q ${(sx + tx) / 2} ${base - 30} ${tx} ${base}`}
         fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="5 3">
-        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}${retained ? `; ${retained.elements.toLocaleString()} retained elements per image grid/batch item` : ""}`}</title>
+        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}${retained ? `; ${retained.elements.toLocaleString()} retained elements per image grid/batch item; training storage ${retained.training_storage ?? "schema default"}` : ""}`}</title>
       </path>;
     })}
     {spec.method === "hybrid_unet_ssdit" && spec.refiners.filter(item => item.stream === stream.name).map(item => {

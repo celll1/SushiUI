@@ -3897,12 +3897,13 @@ paths:
                     additionalProperties: true
                   hybrid_defaults:
                     type: object
-                    required: [rank, kernel, refiner_interval, skip_interval]
+                    required: [rank, kernel, refiner_interval, skip_interval, skip_storage]
                     properties:
                       rank: {type: integer, minimum: 1}
                       kernel: {type: integer, enum: [3, 5]}
                       refiner_interval: {type: integer, minimum: 1}
                       skip_interval: {type: integer, minimum: 1}
+                      skip_storage: {type: string, enum: [gpu, cpu]}
                   runtime_architectures:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
@@ -12249,6 +12250,10 @@ components:
         source_after: {type: integer, minimum: 0}
         destination_before: {type: integer, minimum: 1}
         rank: {type: integer, minimum: 1}
+        storage:
+          type: string
+          enum: [gpu, cpu]
+          description: Training-only compressed skip storage. Omitted values use hybrid_defaults.skip_storage. CPU transfers preserve encoder gradients; inference keeps skips on its execution device. This does not offload region bypasses or autograd saved tensors.
     DiTRewiringPreviewRequest:
       type: object
       additionalProperties: false

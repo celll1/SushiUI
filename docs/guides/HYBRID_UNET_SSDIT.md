@@ -30,9 +30,36 @@ when native checkpointing is enabled. Checkpoint calls wrap only pure tensor
 modules, never the mutable skip ownership dictionary. Anima CPU/async block
 offload modes also save these checkpoint inputs on CPU; new-module transfers
 currently use Torch's CPU saved-tensor path, not the native async engine. The
-global activation dispatcher can cover the ordinary checkpoint path. Live skip
-outputs and residual bypasses still occupy their execution device; checkpointing
-does not remove those explicit graph references.
+global activation dispatcher can cover the ordinary checkpoint path. Residual
+bypasses still occupy their execution device; checkpointing does not remove
+those explicit graph references.
+
+Each compressed skip optionally declares training `storage: gpu | cpu`.
+The schema's `hybrid_defaults.skip_storage` resolves omitted policies; old
+declarations retain their exact metadata/hash. GPU remains the default. CPU
+storage moves the compressed output synchronously to host without detaching
+its graph and restores it on the destination's execution device. The restore
+transfer runs inside the projection checkpoint so backward replay does not
+keep another live GPU copy. Inference ignores this training storage policy.
+This trades transfers and host memory for the compressed tensor's forward
+lifetime; region bypasses, low inputs and autograd-saved tensors are unaffected.
+Native activation checkpoint/offload policies remain independently necessary.
+The topology hash includes an explicit storage choice, while the module-layout
+hash excludes it because parameter shapes and ownership do not change. An
+existing run/checkpoint is not silently rewritten. Storage is editable in the
+draft, survives the canonical API builder and is displayed in the activation
+lifetime table and skip tooltip. Its total capacity remains a logical payload
+across devices, not a VRAM prediction. Encoder recomputation is not implemented;
+replaying a skip projection alone is not equivalent to recomputing the encoder.
+
+`hybrid_skip_storage_test.py` verifies CPU/CUDA output equality, input and all
+learned-parameter gradients, checkpointed and CPU-saved checkpoint inputs,
+forward CPU ownership and execution-device inference. CUDA gradients are checked
+within FP32 accumulation tolerance; CPU gradients and all outputs match exactly.
+The combined CPU graph/native/partition suites passed 60 tests, and the storage
+suite passed 16 CPU/CUDA cases. API checks cover CPU and unchanged legacy
+roundtrips and unsupported-policy rejection. These use synthetic tensor grids;
+actual full-training CPU-skip memory/speed acceptance is not yet measured.
 
 Training Block Swap is supported for Anima full-frame execution without EMA.
 Ming/Qwen hybrid training still requires zero swapped blocks. The earlier Anima

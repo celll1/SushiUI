@@ -18,7 +18,15 @@ def legacy_topology(value):
 
 
 def module_layout(value):
-    return {key: value[key] for key in ("stream_widths", "boundaries", "refiners", "skips")}
+    result = {key: value[key] for key in ("stream_widths", "boundaries", "refiners")}
+    result["skips"] = [{key: item for key, item in skip.items() if key != "storage"} if isinstance(skip, dict) else skip
+                       for skip in value["skips"]]
+    return result
+
+
+def skip_storage(item):
+    from api.param_defaults import DIT_HYBRID_DEFAULTS
+    return item.get("storage", DIT_HYBRID_DEFAULTS["skip_storage"])
 
 
 def validate_hybrid_spec(value):
@@ -83,7 +91,10 @@ def validate_hybrid_spec(value):
         return tuple(region["id"] for region in base["regions"] if region["stream"] == stream
                      and region["start_block"] <= index < region["end_block"])
     for item in result["skips"]:
-        check(item, ("id", "stream", "source_after", "destination_before", "rank"))
+        keys = ("id", "stream", "source_after", "destination_before", "rank")
+        check(item, (*keys, "storage") if isinstance(item, dict) and "storage" in item else keys)
+        if skip_storage(item) not in ("gpu", "cpu"):
+            raise ValueError("Hybrid skip storage must be gpu or cpu")
         block(item, "source_after")
         block(item, "destination_before")
         if item["source_after"] >= item["destination_before"]:
@@ -131,7 +142,8 @@ def default_hybrid_spec(base, stream_widths):
             target = count - 1 - source
             if active(source) == active(target):
                 skips.append(dict(id=f"skip_{name}_{source}_{target}", stream=name,
-                                  source_after=source, destination_before=target, rank=rank))
+                                  source_after=source, destination_before=target, rank=rank,
+                                  storage=settings["skip_storage"]))
     return build_hybrid_spec(base, stream_widths=stream_widths, boundaries=boundaries, refiners=refiners, skips=skips)
 
 
@@ -200,6 +212,7 @@ def activation_layout(value, preview, height, width):
                 release_before_block=region["end_block"]))
     for item in value["skips"]:
         entries.append(dict(id=item["id"], kind="compressed_skip", stream=item["stream"],
+            training_storage=skip_storage(item),
             elements=blocks[item["stream"], item["source_after"]]["tokens"]*item["rank"],
             capture_block=item["source_after"], capture_phase="after",
             release_before_block=item["destination_before"]))

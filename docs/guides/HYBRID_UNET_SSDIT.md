@@ -589,9 +589,16 @@ fitted modules and provenance. A tiny native Qwen CPU test performs teacher fit,
 export, strict component reload and inspect; every tensor matches exactly, and
 forward parity uses the existing Qwen checkpoint tolerance (1e-5/1e-6). Anima's
 wrapper delegates to this common publisher and its failure/atomicity tests remain
-passing. This component publisher alone does not produce a complete Qwen split
-package or enable public Qwen initialization jobs; those execution/package
-bindings remain outstanding.
+passing. `export_initialized_qwen_package` publishes a new directory with the
+initialized transformer and a verified manifest. Unchanged TE, VAE, processor,
+encoder config and scheduler assets are referenced by absolute source paths;
+they are not duplicated and must remain available. The package follows the
+existing generation/training split loader contract. CPU tests verify manifest
+resolution, strict transformer reload and declarations through the package,
+existing-destination refusal, early cancellation and cancellation after the
+manifest has been written; temporary directories are removed in both cases.
+Public Qwen initialization execution and real full-pipeline package acceptance
+remain outstanding.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

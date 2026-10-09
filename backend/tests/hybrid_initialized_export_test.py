@@ -1,6 +1,7 @@
 """The new initialized artifact must preserve the entire native payload exactly."""
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -53,6 +54,38 @@ def test_qwen_initialized_component_retains_payload_and_reloads(tmp_path):
     with torch.no_grad():
         torch.testing.assert_close(_forward(model,example.args[0]),_forward(loaded,example.args[0]),rtol=1e-5,atol=1e-6)
     assert not list(tmp_path.glob(".sushi-hybrid-*"))
+    from core.rewiring.initialized_export import export_initialized_qwen_package
+    from core.models.qwen_image_21.artifact import load_manifest
+    assets = tmp_path/"assets"
+    assets.mkdir()
+    for name in ("text_encoder","vae","text_encoder_config"):
+        (assets/name).write_bytes(b"unchanged asset")
+    (assets/"processor").mkdir()
+    (assets/"scheduler").mkdir()
+    manifest_path = tmp_path/"manifest.json"
+    manifest_path.write_text(json.dumps(dict(model_type="qwen_image_21",format_version="1",
+        components=dict(transformer=source.name,**{key:"assets/"+key for key in
+            ("text_encoder","vae","text_encoder_config","processor","scheduler")}),
+        transformer_config=config,vae_config={},unrelated="preserved")),encoding="utf-8")
+    package = export_initialized_qwen_package(model,manifest_path,tmp_path/"initialized-package")
+    declaration = load_manifest(package["model_path"])
+    assert Path(declaration.transformer).parent == tmp_path/"initialized-package"
+    assert Path(declaration.text_encoder) == assets/"text_encoder"
+    assert Path(declaration.vae) == assets/"vae"
+    assert inspect_model(package["model_path"])["initialization"] == result["initialization"]
+    restored,_ = load_transformer(declaration.transformer,declaration.transformer_config,torch.float32)
+    assert all(torch.equal(value,restored.state_dict()[name]) for name,value in model.state_dict().items())
+    assert sorted(p.name for p in (tmp_path/"initialized-package").iterdir()) == ["manifest.json","transformer.safetensors"]
+    with pytest.raises(FileExistsError):
+        export_initialized_qwen_package(model,manifest_path,tmp_path/"initialized-package")
+    with pytest.raises(InitializationCancelled):
+        export_initialized_qwen_package(model,manifest_path,tmp_path/"cancelled-package",cancelled=lambda:True)
+    assert not (tmp_path/"cancelled-package").exists()
+    with pytest.raises(InitializationCancelled):
+        export_initialized_qwen_package(model,manifest_path,tmp_path/"late-cancelled-package",
+            cancelled=lambda:any(tmp_path.glob(".sushi-qwen-init-*/package/manifest.json")))
+    assert not (tmp_path/"late-cancelled-package").exists()
+    assert not list(tmp_path.glob(".sushi-qwen-init-*"))
 
 
 def prepare(model, root, prefix="net."):

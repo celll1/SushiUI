@@ -79,6 +79,11 @@ individual records' limitations.
    exact but increased texture/detail degradation in the reviewed outputs.
    It is not promoted into the public initializer. Change high-resolution stage
    allocation as one factor before trying additional fitting recipes.
+   The 8/16/4 versus 12/12/4 private placement probe
+   (`hybrid_anima_highres_allocation_2026-10.json`) starts with identical retained
+   module weights and verifies 200 matched teacher inputs. Selected CFG4 figure
+   placement improves at modest fitting cost, but distortions/lettering remain
+   and inspected CFG1 still fails. This does not promote the candidate default.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

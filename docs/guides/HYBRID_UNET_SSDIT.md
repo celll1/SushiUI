@@ -1038,6 +1038,29 @@ added to the public initializer or its defaults. The next controlled experiment
 should vary high-resolution stage allocation before adding more fitting recipes.
 Evidence: `docs/audits/data/hybrid_anima_student_trajectory_2026-10.json`.
 
+## Higher-resolution layer allocation
+
+A one-factor private candidate moved Anima's outer region from blocks [4,24)
+to [6,22), keeping the inner [12,16) region. Full/half/quarter-resolution block
+counts changed from 8/16/4 to 12/12/4. Module IDs, widths, ranks, kernels,
+refiner positions and skip connections stayed fixed. The module layout and tensor
+shapes are identical, but execution placement differs: both arms explicitly
+received the same retained 3300-update weights, followed by 200 identical
+data-noising teacher exposures at LR 1e-4. This is a declared private transfer,
+not an implicit owner-checkpoint change or a fresh per-layout initializer test.
+
+Frozen native parameter hashes match before/after for both arms. Fitting took
+68.000 / 75.734 seconds and peaked at 4.440 / 4.461 GiB, respectively; these
+figures include teacher prediction and structural-only fitting, not full FT.
+Eight fixed-seed outputs were generated. The reviewed CFG4 higher-resolution
+candidate retains more coherent two-figure/body placement than the fitted
+original-layout arm, and some cleaner single-figure outlines. Anatomy/pose
+distortion and spurious lettering remain. The inspected higher-resolution CFG1
+two-person scene still fragments. This is a positive selected CFG4 trend, not
+production acceptance or evidence of a general advantage. Keep the current
+default unchanged while examining this allocation tradeoff.
+Evidence: `docs/audits/data/hybrid_anima_highres_allocation_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

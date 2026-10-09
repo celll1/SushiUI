@@ -6453,6 +6453,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <DiTRewiringEditor modelPath={baseModelPath} resolution={Math.max(...baseResolutions)}
                 mode={params.dit_rewiring_mode} spec={params.dit_rewiring_spec}
                 onValidated={onRewiringValidated}
+                onInitialized={async (path) => {
+                  const response = await getModels();
+                  const models: ModelInfo[] = response.models ?? [];
+                  const normalized = path.replace(/\\/g, "/").toLowerCase();
+                  const exported = models.find(model => model.path.replace(/\\/g, "/").toLowerCase() === normalized);
+                  if (!exported) throw new Error("Initialized checkpoint was saved, but is absent from the model list. Refresh the model index before selecting it.");
+                  setAvailableModels(models);
+                  setBaseModelPath(exported.path);
+                  setValidatedRewiring(null);
+                  setParams(prev => ({ ...prev, dit_rewiring_mode: "inherit", dit_rewiring_spec: null,
+                    resume_from_checkpoint: null }));
+                }}
                 onChange={(mode, spec) => {
                   setValidatedRewiring(null);
                   setParams(prev => ({ ...prev, dit_rewiring_mode: mode, dit_rewiring_spec: spec }));

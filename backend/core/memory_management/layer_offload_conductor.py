@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from .layer_offload_strategy import LayerOffloadStrategy
 from .offload_transfer_engine import MutableLruTransferEngine
+from .parameter_update_fence import ParameterUpdateFence
 
 
 class LayerOffloadConductor:
@@ -69,10 +70,12 @@ class LayerOffloadConductor:
         self._closed = False
         self.hook_handles: List[Any] = []
         self.optimizer_hook_handles: List[Any] = []
+        self._internal_checkpoint_layers = []
         self.saved_activations: Dict[int, Any] = {}
         self.layer_cpu_copies: Dict[int, Dict[str, torch.Tensor]] = {}
 
         self._initialize_layers()
+        self._update_fences = {idx: ParameterUpdateFence(params) for idx, params in self._trainable.items()}
         self.engine = MutableLruTransferEngine(
             keys=self.swappable,
             masters=self._masters,
@@ -182,6 +185,8 @@ class LayerOffloadConductor:
     def _prefetch_neighbor(self, layer_idx: int, *, backward: bool) -> None:
         if not self.enable_prefetch or self.ring_size < 2:
             return
+        if len(self.engine.active) >= self.ring_size:
+            return
         position = self.swappable.index(layer_idx)
         position += -1 if backward else 1
         if 0 <= position < len(self.swappable):
@@ -198,12 +203,13 @@ class LayerOffloadConductor:
     def _after_forward(self, layer_idx: int) -> None:
         if self._inside_backward():
             return
+        if torch.is_grad_enabled():
+            self._update_fences[layer_idx].capture_forward_nodes()
         self.engine.release(layer_idx, dirty=False)
         self.layer_states[layer_idx] = "cpu"
 
     def _all_updates_applied(self, layer_idx: int) -> bool:
-        params = self._trainable[layer_idx]
-        return not params or all(param.grad is None for param in params)
+        return self._update_fences[layer_idx].ready()
 
     def _release_if_ready(self, layer_idx: int) -> bool:
         if layer_idx not in self._backward_seen or not self._all_updates_applied(layer_idx):
@@ -212,6 +218,7 @@ class LayerOffloadConductor:
         self.layer_states[layer_idx] = "cpu"
         self._backward_seen.discard(layer_idx)
         self._recompute_seen.discard(layer_idx)
+        self._update_fences[layer_idx].reset()
         return True
 
     def _try_release_ready_layers(self) -> None:
@@ -223,6 +230,10 @@ class LayerOffloadConductor:
             return
         for layer_idx in self.swappable:
             layer = self.layers[layer_idx]
+            setter = getattr(layer, "set_offload_recompute_callback", None)
+            if setter is not None:
+                setter(lambda idx=layer_idx: self._acquire(idx))
+                self._internal_checkpoint_layers.append(layer)
 
             def pre_hook(module, inputs, idx=layer_idx):
                 self._acquire(idx)
@@ -231,12 +242,18 @@ class LayerOffloadConductor:
                 self._after_forward(idx)
 
             def backward_hook(module, grad_input, grad_output, idx=layer_idx):
+                recomputed = idx in self._recompute_seen
                 if idx not in self._recompute_seen:
-                    raise RuntimeError(
-                        "mutable block swap requires non-reentrant gradient "
-                        f"checkpoint recomputation; layer {idx} reached backward without it"
-                    )
+                    if any(gradient is not None for gradient in grad_input):
+                        raise RuntimeError(
+                            "mutable block swap requires non-reentrant gradient "
+                            f"checkpoint recomputation; layer {idx} reached backward without it"
+                        )
+                    # With frozen inputs Torch fires the output hook before recomputation.
+                    self._acquire(idx)
                 self._backward_seen.add(idx)
+                if recomputed:
+                    self._update_fences[idx].backward_complete()
                 self._release_if_ready(idx)
 
             self.hook_handles.append(layer.register_forward_pre_hook(pre_hook))
@@ -251,6 +268,7 @@ class LayerOffloadConductor:
         for layer_idx in self.swappable:
             for parameter in self._trainable[layer_idx]:
                 def update_observer(tensor, idx=layer_idx):
+                    self._update_fences[idx].observe_accumulation(tensor)
                     if tensor.grad is None:
                         self._try_release_ready_layers()
 
@@ -285,6 +303,8 @@ class LayerOffloadConductor:
         self.engine.synchronize()
         self._backward_seen.clear()
         self._recompute_seen.clear()
+        for fence in self._update_fences.values():
+            fence.reset()
 
     def managed_tensor_ids(self) -> set[int]:
         """Tensor ownership excluded from ordinary model device moves."""
@@ -318,6 +338,9 @@ class LayerOffloadConductor:
         self.finish_backward()
 
     def remove_hooks(self) -> None:
+        for layer in self._internal_checkpoint_layers:
+            layer.set_offload_recompute_callback(None)
+        self._internal_checkpoint_layers.clear()
         for handle in (*self.hook_handles, *self.optimizer_hook_handles):
             handle.remove()
         self.hook_handles.clear()

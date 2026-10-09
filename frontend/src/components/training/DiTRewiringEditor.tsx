@@ -201,7 +201,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
-    {current?.method === "hybrid_unet_ssdit" && <p className="text-gray-400">Experimental learned spatial convolutions and compressed skips. Requires full-parameter training and Block Swap disabled (0 blocks); activation offload is supported. Selecting this preset creates a new module layout and does not convert checkpoint weights.</p>}
+    {current?.method === "hybrid_unet_ssdit" && <p className="text-gray-400">Experimental learned spatial convolutions and compressed skips. Requires full-parameter training. {current.architecture === "anima" ? "Training Block Swap supports full-frame execution without EMA; partition training requires Block Swap disabled." : "Training Block Swap must be disabled (0 blocks)."} Activation offload is supported. Selecting this preset creates a new module layout and does not convert checkpoint weights.</p>}
     {info && <DiTParameterSummary counts={info.parameter_counts} plan={plan} spec={current} />}
     {current && <>
       {info?.video_geometry && <p className="my-2 text-gray-400">Spatial grids and skip connections apply independently to each video frame. Frame count and audio tokens stay at native resolution.</p>}

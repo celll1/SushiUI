@@ -79,6 +79,29 @@ def test_conflicting_legacy_partition_settings_fail():
         region_count(trainer(qwen_partition_fixed_count=2), torch.zeros(1, 64, 48, 80))
 
 
+def test_swapped_tail_blocks_override_checkpoint_prefix_limit():
+    model = SimpleNamespace(blocks=[SimpleNamespace(gradient_checkpoint_mode="async_cpu_offload")
+                                   for _ in range(8)])
+    configure(model, {"dit_gradient_checkpointing_blocks": 2, "blocks_to_swap": 3})
+    assert [b.gradient_checkpoint_mode for b in model.blocks] == (
+        ["async_cpu_offload"]*2 + ["none"]*3 + ["async_cpu_offload"]*3)
+    model.blocks[-1].gradient_checkpoint_mode = "none"
+    with pytest.raises(ValueError, match="require gradient checkpointing"):
+        configure(model, {"blocks_to_swap": 1})
+
+
+@pytest.mark.parametrize("extra, message", [
+    ({"gradient_checkpointing": False}, "requires gradient checkpointing"),
+    ({"dit_partition_training_enabled": True}, "conventional backward"),
+    ({"use_ema": True}, "does not support EMA")])
+def test_api_rejects_anima_fused_backward_combinations(extra, message):
+    from api.routes import TrainingRunCreateRequest
+    with pytest.raises(ValueError, match=message):
+        TrainingRunCreateRequest(dataset_id=1, run_name="invalid_swap",
+            base_model_path="M:/model/anima/anima-base-v1.0.safetensors",
+            training_method="full_finetune", total_steps=1, blocks_to_swap=2, **extra)
+
+
 def test_api_refuses_global_without_partition_before_config_write():
     from api.routes import TrainingRunCreateRequest
     with pytest.raises(ValueError, match="require partition"):

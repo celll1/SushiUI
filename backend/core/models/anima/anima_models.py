@@ -638,6 +638,9 @@ class Block(nn.Module):
         self.cross_attn.init_weights()
         self.mlp.init_weights()
 
+    def set_offload_recompute_callback(self, callback):
+        self._offload_recompute_callback = callback
+
     def forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
                 use_fp32=False, rope_emb_L_1_1_D=None, adaln_lora_B_T_3D=None,
                 extra_per_block_pos_emb=None):
@@ -654,6 +657,9 @@ class Block(nn.Module):
             )
 
         def _custom(x_in, emb_in, ctx_in, rope_in, adaln_in, extra_in):
+            callback = getattr(self, "_offload_recompute_callback", None)
+            if callback is not None and torch._C._current_graph_task_id() >= 0:
+                callback()
             return self._forward_impl(
                 x_in, emb_in, ctx_in, attn_params,
                 use_fp32=use_fp32,

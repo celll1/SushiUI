@@ -130,6 +130,9 @@ def load_components(trainer) -> None:
               f"(mode={ckpt_mode})")
     from core.models.anima.checkpointing import configure as configure_checkpointing
     configure_checkpointing(trainer.transformer, trainer.config)
+    if trainer.blocks_to_swap > 0:
+        print(f"{trainer.log_prefix} Checkpointing all {trainer.blocks_to_swap} swapped tail blocks "
+              "in addition to the configured native prefix")
     if trainer.gradient_checkpointing and hasattr(trainer.text_encoder, "gradient_checkpointing_enable"):
         trainer.text_encoder.gradient_checkpointing_enable()
         print(f"{trainer.log_prefix} Gradient checkpointing enabled for Qwen3 text encoder")

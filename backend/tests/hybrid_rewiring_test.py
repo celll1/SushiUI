@@ -33,8 +33,9 @@ def declaration():
 def test_hybrid_block_swap_rejected_before_partial_optimizer_updates():
     from core.rewiring.training import validate_training_features
     config = dict(training_method="full_finetune", dit_rewiring_spec=declaration(), blocks_to_swap=2)
-    with pytest.raises(ValueError, match="blocks_to_swap=0"):
-        validate_training_features(config, "anima")
+    with pytest.raises(ValueError, match="Anima only"):
+        validate_training_features(config, "ming_image_01")
+    validate_training_features(config, "anima")
     config["blocks_to_swap"] = 0
     validate_training_features(config, "anima")
 

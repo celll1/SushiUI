@@ -20,6 +20,13 @@ def config_value(config, name):
 
 
 def validate_training_options(config, *, method=None):
+    if config.get("blocks_to_swap", TRAINING_DEFAULTS["blocks_to_swap"]):
+        if not config.get("gradient_checkpointing", TRAINING_DEFAULTS["gradient_checkpointing"]):
+            raise ValueError("Anima Block Swap requires gradient checkpointing")
+        if config.get("use_ema", TRAINING_DEFAULTS["use_ema"]):
+            raise ValueError("Anima Block Swap fused backward does not support EMA")
+        if config_value(config, "training_enabled"):
+            raise ValueError("Anima partition training requires conventional backward; disable Block Swap")
     if config.get("dit_partition_global_adapter_enabled", TRAINING_DEFAULTS["dit_partition_global_adapter_enabled"]):
         if method is not None and method != "full_finetune":
             raise ValueError("Anima trainable global summaries currently require full_finetune")

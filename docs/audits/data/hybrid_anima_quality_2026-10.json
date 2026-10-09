@@ -1,0 +1,580 @@
+{
+  "date": "2026-10-10",
+  "architecture": "anima",
+  "base": "anima-base-v1.0",
+  "worker_runtime_commit": "3ffbaeb2",
+  "resolution": 512,
+  "batch_size": 1,
+  "seed": 718,
+  "rating": "general",
+  "revalidated_images": 32,
+  "steps_per_arm": 200,
+  "learning_rate": 5e-05,
+  "optimizer": "AdamW8bit",
+  "precision": "bf16",
+  "native_checkpoint_blocks": 24,
+  "activation_dispatch": true,
+  "native_vae": {
+    "channels": 16,
+    "spatial_scale": 8
+  },
+  "codec_swap": false,
+  "llm_adapter_trainable": false,
+  "ema": false,
+  "partition": false,
+  "block_swap": false,
+  "conditioning_dropout": 0.1,
+  "sampling": {
+    "seed": 63,
+    "steps": 28,
+    "resolutions": [
+      512
+    ],
+    "cfg": [
+      1,
+      4
+    ],
+    "prompt0_at_step0": true,
+    "three_prompts_at_steps": [
+      100,
+      200
+    ]
+  },
+  "timestep_sampling": {
+    "distribution": "normal",
+    "mean": 0.9,
+    "std": 0.3,
+    "minimum": 0,
+    "maximum": 1
+  },
+  "quality_acceptance": false,
+  "cleanup": {
+    "temporary_run_rows_removed": [175, 176, 177],
+    "temporary_dataset_row_removed": 44,
+    "temporary_checkpoint_directories_removed": true,
+    "copied_dataset_directory_removed": true,
+    "source_images_preserved": true,
+    "sample_debug_log_evidence_preserved_ignored": true,
+    "no_remaining_probe_or_training_workers": true,
+    "backend_generation_idle": true,
+    "backend_loaded_architecture": "ming_image_01"
+  },
+  "arms": [
+    {
+      "arm": "native",
+      "temporary_run_id": 175,
+      "final_loss": 0.16454383730888367,
+      "worker_returncode": 0,
+      "optimizer_entries": 567,
+      "all_optimizer_steps": 200,
+      "hybrid_optimizer_entries": 0,
+      "output_projections": [],
+      "samples": [
+        {
+          "path": "samples\\step_000000_sample_0.png",
+          "sha256": "cd2d51c21613f7a97648c198f878d322056b301adc77cc30ad97119f5682dde4"
+        },
+        {
+          "path": "samples\\step_000100_sample_0.png",
+          "sha256": "e578f0125db44b40c92cfa748a31fff853a8b8d91f430a3289318d499c09e326"
+        },
+        {
+          "path": "samples\\step_000100_sample_1.png",
+          "sha256": "67ab4c73fc2048914a7c5df2f68b7c8f6747b7a231f8bde40f11bc9ee08e1fab"
+        },
+        {
+          "path": "samples\\step_000100_sample_2.png",
+          "sha256": "ac481a46793523cd0a19b5759dcc83c3c0e112e00a7c303c4ce4b5b7dc2d9cc0"
+        },
+        {
+          "path": "samples\\step_000200_sample_0.png",
+          "sha256": "1f1e331bbf710a00a1dda7f20d54a8206af9d4f6533863230de2ca496f7239df"
+        },
+        {
+          "path": "samples\\step_000200_sample_1.png",
+          "sha256": "d1e189df0db17f91550a82535dd4a995ab85258e682522ca707f0f1da675e864"
+        },
+        {
+          "path": "samples\\step_000200_sample_2.png",
+          "sha256": "70fb0b4a65dbc0ef3162ca6e6e6effe9070ebd35209e18b0f4e03baf7045e836"
+        }
+      ],
+      "cfg4": {
+        "arm": "native",
+        "source": "M:\\sushiUI\\training\\hybrid_anima_quality_native_20261010\\hybrid_anima_quality_native_20261010_step_000200.safetensors",
+        "training_step": 200,
+        "cfg": 4.0,
+        "seed": 63,
+        "steps": 28,
+        "resolution": 512,
+        "rating": "general",
+        "prompt_index": 0,
+        "image": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_quality\\native_step200_cfg4.png",
+        "sha256": "ebafc8dcf85d8e07607f5c54f498b8691c9509941683c8eaf6edd4af593a509c",
+        "denoise_seconds": 3.672000000020489,
+        "denoise_peak_allocated_gib": 3.97816801071167,
+        "graph": null,
+        "backend_unchanged": true,
+        "isolated_worker": true
+      },
+      "topology": null
+    },
+    {
+      "arm": "legacy",
+      "temporary_run_id": 176,
+      "final_loss": 0.1615302562713623,
+      "worker_returncode": 0,
+      "optimizer_entries": 567,
+      "all_optimizer_steps": 200,
+      "hybrid_optimizer_entries": 0,
+      "output_projections": [],
+      "samples": [
+        {
+          "path": "samples\\step_000000_sample_0.png",
+          "sha256": "ffa721c70418765e90b7c2981c9f6c341502e263866f7d5dc92255e0eab2f185"
+        },
+        {
+          "path": "samples\\step_000100_sample_0.png",
+          "sha256": "7cd48e5b103c556cf861ddd364dc2afe9e86bc9230bb21f640cb90b8a123a8e5"
+        },
+        {
+          "path": "samples\\step_000100_sample_1.png",
+          "sha256": "5f6b9b91fd202b30065973b2639f0c8457b2020437e9fea02ad7649a83cdbc8e"
+        },
+        {
+          "path": "samples\\step_000100_sample_2.png",
+          "sha256": "e131f5576863193d357dfd30490e5e23a50a14fdeb1b096ea52bf114a4c39abd"
+        },
+        {
+          "path": "samples\\step_000200_sample_0.png",
+          "sha256": "de48bc93edacaca12d5d16d4eb5bde6cc7c8d31ee7f458c958e08ed8e5a8c5a9"
+        },
+        {
+          "path": "samples\\step_000200_sample_1.png",
+          "sha256": "8d7dc359ce733231fbc15933cdb7a72f05c815f45e6b28803e9039fd41cc8a31"
+        },
+        {
+          "path": "samples\\step_000200_sample_2.png",
+          "sha256": "120b71385400133e764d8517373dbf3e032f7508540fc7b572f589679ec577bf"
+        }
+      ],
+      "cfg4": {
+        "arm": "legacy",
+        "source": "M:\\sushiUI\\training\\hybrid_anima_quality_legacy_20261010\\hybrid_anima_quality_legacy_20261010_step_000200.safetensors",
+        "training_step": 200,
+        "cfg": 4.0,
+        "seed": 63,
+        "steps": 28,
+        "resolution": 512,
+        "rating": "general",
+        "prompt_index": 0,
+        "image": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_quality\\legacy_step200_cfg4.png",
+        "sha256": "4b6bb7cc26e545ec55c49dae189188e1a19815e2399f89cef04361468a467bb5",
+        "denoise_seconds": 3.547000000020489,
+        "denoise_peak_allocated_gib": 3.99794340133667,
+        "graph": null,
+        "backend_unchanged": true,
+        "isolated_worker": true
+      },
+      "topology": {
+        "schema_version": 1,
+        "method": "residual_delta_unet",
+        "architecture": "anima",
+        "streams": [
+          {
+            "name": "main",
+            "block_count": 28
+          }
+        ],
+        "regions": [
+          {
+            "id": "r0",
+            "stream": "main",
+            "parent": null,
+            "start_block": 4,
+            "end_block": 24,
+            "down_factor": [
+              2,
+              2
+            ],
+            "down": "avg_pool",
+            "up": "bilinear",
+            "align_corners": false,
+            "merge": "identity_delta_add",
+            "position_policy": "coarse_integer",
+            "grid_policy": "require_divisible",
+            "delta_dtype": "float32"
+          },
+          {
+            "id": "r1",
+            "stream": "main",
+            "parent": "r0",
+            "start_block": 12,
+            "end_block": 16,
+            "down_factor": [
+              2,
+              2
+            ],
+            "down": "avg_pool",
+            "up": "bilinear",
+            "align_corners": false,
+            "merge": "identity_delta_add",
+            "position_policy": "coarse_integer",
+            "grid_policy": "require_divisible",
+            "delta_dtype": "float32"
+          }
+        ],
+        "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+        "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48"
+      }
+    },
+    {
+      "arm": "hybrid",
+      "temporary_run_id": 177,
+      "final_loss": 0.17946946620941162,
+      "worker_returncode": 0,
+      "optimizer_entries": 632,
+      "all_optimizer_steps": 200,
+      "hybrid_optimizer_entries": 65,
+      "output_projections": [
+        {
+          "name": "net.rewiring_modules.down.downup_r0.expand.weight",
+          "absolute_sum": 56.712310791015625,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.down.downup_r1.expand.weight",
+          "absolute_sum": 33.440452575683594,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_0.expand.weight",
+          "absolute_sum": 80.67327880859375,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_12.expand.weight",
+          "absolute_sum": 32.65862274169922,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_16.expand.weight",
+          "absolute_sum": 36.73085021972656,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_20.expand.weight",
+          "absolute_sum": 33.36528778076172,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_24.expand.weight",
+          "absolute_sum": 28.199296951293945,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_4.expand.weight",
+          "absolute_sum": 57.76288604736328,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.local.local_main_8.expand.weight",
+          "absolute_sum": 37.94000244140625,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_0_27.restore.weight",
+          "absolute_sum": 39.9171028137207,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_10_17.restore.weight",
+          "absolute_sum": 46.886268615722656,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_12_15.restore.weight",
+          "absolute_sum": 45.265071868896484,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_2_25.restore.weight",
+          "absolute_sum": 80.22541809082031,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_4_23.restore.weight",
+          "absolute_sum": 61.03763961791992,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_6_21.restore.weight",
+          "absolute_sum": 57.46257781982422,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.skips.skip_main_8_19.restore.weight",
+          "absolute_sum": 49.519954681396484,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.up.downup_r0.expand.weight",
+          "absolute_sum": 122.02223205566406,
+          "finite": true
+        },
+        {
+          "name": "net.rewiring_modules.up.downup_r1.expand.weight",
+          "absolute_sum": 76.39952087402344,
+          "finite": true
+        }
+      ],
+      "samples": [
+        {
+          "path": "samples\\step_000000_sample_0.png",
+          "sha256": "ffa721c70418765e90b7c2981c9f6c341502e263866f7d5dc92255e0eab2f185"
+        },
+        {
+          "path": "samples\\step_000100_sample_0.png",
+          "sha256": "998b27b4c9c8a99e2b1e8ef6413d05f393233ca9acd93f226041c8d9f07eac1c"
+        },
+        {
+          "path": "samples\\step_000100_sample_1.png",
+          "sha256": "b84d0484968ccd00a250c3be999be35b1d6cac873df174cccbb6364e5426ad5e"
+        },
+        {
+          "path": "samples\\step_000100_sample_2.png",
+          "sha256": "c92e9a017bb2a8d0368bb705d1e0c89b24b9a3fa11cee1ed91a6982eef7ea9c4"
+        },
+        {
+          "path": "samples\\step_000200_sample_0.png",
+          "sha256": "0158373760daf4ea8dbb511d9c8683f9add3a2528de57b229bb3bc70d448235e"
+        },
+        {
+          "path": "samples\\step_000200_sample_1.png",
+          "sha256": "f713d73fbb94412690c6e40eb2af3b4ef66c5ee06784395f5f43bd27da84759c"
+        },
+        {
+          "path": "samples\\step_000200_sample_2.png",
+          "sha256": "9d343f93cab3a36581fcc35efeebc2dc5cd96a2c89c302444e413247fafd1319"
+        }
+      ],
+      "cfg4": {
+        "arm": "hybrid",
+        "source": "M:\\sushiUI\\training\\hybrid_anima_quality_hybrid_20261010\\hybrid_anima_quality_hybrid_20261010_step_000200.safetensors",
+        "training_step": 200,
+        "cfg": 4.0,
+        "seed": 63,
+        "steps": 28,
+        "resolution": 512,
+        "rating": "general",
+        "prompt_index": 0,
+        "image": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_quality\\hybrid_step200_cfg4.png",
+        "sha256": "467ebeabdf7c6caa19161c8fc2c3d92f0d6d7553beb0241a10e902659d32e5e4",
+        "denoise_seconds": 4.375,
+        "denoise_peak_allocated_gib": 4.007422924041748,
+        "graph": null,
+        "backend_unchanged": true,
+        "isolated_worker": true
+      },
+      "topology": {
+        "schema_version": 2,
+        "method": "hybrid_unet_ssdit",
+        "architecture": "anima",
+        "streams": [
+          {
+            "name": "main",
+            "block_count": 28
+          }
+        ],
+        "regions": [
+          {
+            "id": "r0",
+            "stream": "main",
+            "parent": null,
+            "start_block": 4,
+            "end_block": 24,
+            "down_factor": [
+              2,
+              2
+            ],
+            "down": "avg_pool",
+            "up": "bilinear",
+            "align_corners": false,
+            "merge": "identity_delta_add",
+            "position_policy": "coarse_integer",
+            "grid_policy": "require_divisible",
+            "delta_dtype": "float32"
+          },
+          {
+            "id": "r1",
+            "stream": "main",
+            "parent": "r0",
+            "start_block": 12,
+            "end_block": 16,
+            "down_factor": [
+              2,
+              2
+            ],
+            "down": "avg_pool",
+            "up": "bilinear",
+            "align_corners": false,
+            "merge": "identity_delta_add",
+            "position_policy": "coarse_integer",
+            "grid_policy": "require_divisible",
+            "delta_dtype": "float32"
+          }
+        ],
+        "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+        "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+        "stream_widths": {
+          "main": 2048
+        },
+        "boundaries": [
+          {
+            "id": "downup_r0",
+            "region": "r0",
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "downup_r1",
+            "region": "r1",
+            "rank": 64,
+            "kernel": 3
+          }
+        ],
+        "refiners": [
+          {
+            "id": "local_main_0",
+            "stream": "main",
+            "after_block": 0,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_12",
+            "stream": "main",
+            "after_block": 12,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_16",
+            "stream": "main",
+            "after_block": 16,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_20",
+            "stream": "main",
+            "after_block": 20,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_24",
+            "stream": "main",
+            "after_block": 24,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_4",
+            "stream": "main",
+            "after_block": 4,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_8",
+            "stream": "main",
+            "after_block": 8,
+            "rank": 64,
+            "kernel": 3
+          }
+        ],
+        "skips": [
+          {
+            "id": "skip_main_0_27",
+            "stream": "main",
+            "source_after": 0,
+            "destination_before": 27,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_10_17",
+            "stream": "main",
+            "source_after": 10,
+            "destination_before": 17,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_12_15",
+            "stream": "main",
+            "source_after": 12,
+            "destination_before": 15,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_2_25",
+            "stream": "main",
+            "source_after": 2,
+            "destination_before": 25,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_4_23",
+            "stream": "main",
+            "source_after": 4,
+            "destination_before": 23,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_6_21",
+            "stream": "main",
+            "source_after": 6,
+            "destination_before": 21,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_8_19",
+            "stream": "main",
+            "source_after": 8,
+            "destination_before": 19,
+            "rank": 64,
+            "storage": "gpu"
+          }
+        ],
+        "module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594"
+      }
+    }
+  ],
+  "source_images_opened_for_probe": "Only the 32 API-revalidated general images in the temporary dataset.",
+  "limits": [
+    "Native also deteriorates during this short learning-rate/timestep setting; the cause is unresolved.",
+    "CFG 1 and CFG 4 free-running samples are separated from single-step debug reconstruction.",
+    "This is equal-update comparison, not equal GPU-time comparison.",
+    "Do not use falling loss or successful artifact restoration as image quality evidence.",
+    "No dataset expansion or longer training was performed.",
+    "Existing owner run 174 was not changed."
+  ],
+  "legacy_hybrid_step0_png_identical": true,
+  "observations": {
+    "native_step0_cfg1": "Recognizable person, clothing, glasses and background.",
+    "hybrid_step0_cfg1": "Fine green-gray grid/no recognizable figure.",
+    "native_step100_200_cfg1": "Strong fragmented/block artifacts after training.",
+    "legacy_step200_cfg1": "Fragmented outlines; no quality acceptance.",
+    "hybrid_step200_cfg1": "Color structure emerges, but severe periodic fragments remain.",
+    "native_step200_cfg4": "CFG increase does not repair the degradation.",
+    "legacy_step200_cfg4": "Fragmented outlines remain.",
+    "hybrid_step200_cfg4": "Fine gray-green grid remains; less visible color structure than CFG 1.",
+    "native_step100_debug_sigma": "0.6211, recognizable target; predicted x0 contains rough fragments."
+  }
+}

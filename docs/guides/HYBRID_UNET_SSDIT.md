@@ -71,7 +71,8 @@ payload for these edges; replayed element counts are reported separately.
 `hybrid_skip_storage_test.py` verifies CPU/CUDA output equality, input and all
 learned-parameter gradients, checkpointed and CPU-saved checkpoint inputs,
 forward CPU ownership and execution-device inference. CUDA gradients are checked
-within FP32 accumulation tolerance; CPU gradients and all outputs match exactly.
+within FP32 accumulation tolerance; CPU gradients use accumulation tolerances
+and all outputs match exactly.
 The combined CPU graph/native/partition suites passed 60 tests, and the storage
 suite passed 16 CPU/CUDA cases. API checks cover CPU and unchanged legacy
 roundtrips and unsupported-policy rejection. These use synthetic tensor grids;
@@ -352,6 +353,49 @@ The trained checkpoint, caption tokenization, partition/global adapter, decoder
 and full multi-step sampling are excluded. Raw records are in
 `docs/audits/data/hybrid_anima_mode_parity_2026-10.json`; executable probe is
 `local/verification/hybrid_anima_mode_parity.py`. Existing runs were not changed.
+
+## Bounded real-caption quality comparison
+
+On 2026-10-10 three temporary runs trained native Anima, legacy residual U-Net
+and the new hybrid preset for 200 updates on the same 32 API-revalidated
+rating:general images. Here **native means no U-Net and no codec swap**;
+all three use Anima's native 16ch/8x VAE. Conditions were 512px, batch 1,
+BF16, AdamW8bit, LR 5e-5 constant, normal sigma sampling (mean 0.9, std 0.3),
+seed 718, 24 native checkpoint blocks and activation dispatch. The LLM adapter
+was frozen; partition, global adapter, EMA and Block Swap were disabled.
+Conditioning dropout was 0.1. This is an equal-update comparison, not an
+equal-GPU-time comparison or the 1024px compute matrix.
+
+Native Anima produced a recognizable person before training. Legacy and hybrid
+produced identical fine-grid/no-figure step-0 PNGs, confirming that zero-output
+correction initialization inherits the legacy topology's initial degradation.
+At steps 100/200, native generation also developed severe fragmented/block
+artifacts. Its sigma-0.6211 single-step debug prediction retained rough color
+structure but lost the target's sharp figure. Legacy and hybrid samples remained
+fragmented after 200 updates. Increasing CFG from 1 to 4 on all three saved
+checkpoints did not establish quality recovery; hybrid CFG-4 retained a strong
+fine-grid pattern. Only prompt 0 is compared at step 0; three fixed general tag
+prompts were generated at steps 100 and 200, and prompt 0 was checked at CFG 4.
+
+All 567 native/legacy and 632 hybrid optimizer entries reached step 200. The
+hybrid's 65 added tensors all advanced; every final spatial/skip projection was
+finite and nonzero. Final losses were 0.16454 / 0.16153 / 0.17947 respectively.
+These are functionality facts, not evidence of recovered generation quality.
+
+The inherited learning-rate/timestep setup therefore does not provide a stable
+native quality control. The cause of its deterioration remains unresolved; do
+not attribute all post-training failure to U-Net topology or promise that longer
+training fixes it. Separate the native learning/conditioning issue from the
+initial U-Net degradation before selecting a production preset or extending
+this experiment. The noising/velocity sign and timestep range match the
+[sd-scripts Anima full-training implementation](https://github.com/kohya-ss/sd-scripts/blob/main/anima_train.py#L486-L517);
+that source comparison does not validate this optimizer/caption/sampler lifecycle.
+
+Evidence, declarations, sample hashes and optimizer checks are tracked in
+`docs/audits/data/hybrid_anima_quality_2026-10.json`. General-only sample/debug
+files and logs are retained in ignored `local/verification/hybrid_anima_quality/`.
+No images or model weights are committed. The used temporary runs, checkpoints
+and dataset are removed after recording evidence; owner run #174 is unchanged.
 
 ## Actual Anima training lifecycle
 

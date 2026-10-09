@@ -1,6 +1,6 @@
 # Hybrid U-Net ssDiT foundation
 
-Status: internal CPU foundation, not exposed as a generation or training option.
+Status: experimental native Anima integration; CPU acceptance only.
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
@@ -37,17 +37,28 @@ is rejected. Architecture-owned callbacks still own native blocks and positions.
 
 ## Artifact and inspection boundary
 
-Hybrid declarations use `sushi.hybrid.spec` and `sushi.hybrid.spec_sha256`.
-Their read/write functions validate the topology and module layout. Module
+Native artifacts use the existing `sushi.rewire.*` keys with schema version 2.
+Standalone module tools also support `sushi.hybrid.spec` and its hash. Their
+read/write functions validate the topology and module layout. Module
 weights use strict PyTorch state loading; declaration metadata alone is not a
 complete checkpoint. Compressed skip storage is estimated from rank, token
 count, batch size and element size, excluding autograd's internal saved tensors.
 
-Native checkpoint loaders, parameter census, public API/OpenAPI, UI editor,
-full training optimizer/EMA/offload ownership, partition halo handling and
-LoRA artifact support are **not wired yet**. Neither Anima nor Ming currently
-selects these modules through its native forward. These missing integrations
-must be completed before advertising the new system as usable.
+Anima installs registered modules during model construction, before native
+weights load. Its native forward executes them and checkpoint loading rejects
+missing/unexpected or nonfinite hybrid parameters. Full-model state saving
+includes these modules. Topology reinstallation preserves parameter objects;
+codec IO rebasing preserves module declarations. OpenAPI and frontend types
+recognize v2. Explicit topology JSON can select it for Anima full-parameter,
+full-frame training. Frozen-base training and partition/global training are
+rejected until their artifact and convolution-halo contracts are implemented.
+
+The graph shows compressed learned skips with dashed yellow lines. Hybrid
+region editing is temporarily disabled to preserve dependent module settings;
+the complete hybrid editor and preset selection remain pending. No existing
+run or default preset is converted. Parameter census, GPU/native full-trainer
+optimizer/EMA/offload acceptance, partition halo, Ming/Qwen integration and
+LoRA support still require implementation or verification.
 
 ## Verification
 
@@ -56,7 +67,13 @@ edges and shapes, nested non-square grids with prefix tokens, zero-init
 equivalence in FP32/BF16, gradients through compressed skips and all correction
 parameters after training updates, strict module state restoration, optimizer
 state loading and compressed activation estimates. These are CPU functional
-checks, not image-quality, GPU speed or native architecture acceptance.
+checks, not image-quality or GPU speed acceptance. `hybrid_anima_test.py`
+additionally runs native Anima forward/backward and model updates, serializes
+a real safetensors artifact, loads it through the native loader, checks exact
+saved-weight restoration and optimizer-state restoration, compares outputs
+within FP32 tolerance, and rejects a checkpoint missing learned-module weights.
+Bitwise optimizer continuation is not promised across changed tensor layouts
+or attention execution kernels.
 
 The training-versus-generation behavior observed in the previous Anima
 VAE-swap run still needs independent diagnosis. Good single-step debug

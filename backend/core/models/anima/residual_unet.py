@@ -19,15 +19,33 @@ def validate_topology_identity(spec, config):
         raise ValueError("Anima rewiring requires image patches without extra absolute positions")
     if resolved["pos_emb_cls"] != "rope3d":
         raise ValueError("Anima rewiring requires native 3D RoPE")
-    return validate_model_identity(spec, "anima",
+    spec = validate_model_identity(spec, "anima",
         [{"name": "main", "block_count": resolved["num_blocks"]}], resolved)
+    if spec["method"] == "hybrid_unet_ssdit" and spec["stream_widths"] != {"main": resolved["model_channels"]}:
+        raise ValueError("Hybrid Anima stream width differs from native blocks")
+    return spec
 
 
 def restore_topology(model, spec):
     if spec is None:
         model.__dict__.pop("_residual_unet_spec", None)
+        if hasattr(model, "rewiring_modules"):
+            del model.rewiring_modules
     else:
-        model._residual_unet_spec = validate_topology_identity(spec, model)
+        spec = validate_topology_identity(spec, model)
+        if spec["method"] == "hybrid_unet_ssdit":
+            from core.rewiring.hybrid_modules import HybridModules
+            existing = getattr(model, "rewiring_modules", None)
+            if existing is None:
+                reference = next(model.parameters())
+                model.add_module("rewiring_modules", HybridModules(spec).to(device=reference.device, dtype=reference.dtype))
+            elif existing.declaration["module_layout_sha256"] != spec["module_layout_sha256"]:
+                raise ValueError("Changing hybrid modules requires an explicit fresh model")
+            else:
+                existing.declaration = spec
+        elif hasattr(model, "rewiring_modules"):
+            del model.rewiring_modules
+        model._residual_unet_spec = spec
 
 
 def model_topology_metadata(model):
@@ -39,6 +57,8 @@ def model_topology_metadata(model):
 def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
                        rotary, adaln, fps, spec, *, partition_box=None):
     spec = validate_topology_identity(spec, model)
+    if spec["method"] == "hybrid_unet_ssdit" and partition_box is not None:
+        raise ValueError("Hybrid partition convolution halo support is not installed yet")
     if hidden.ndim != 5 or hidden.shape[1] != 1:
         raise ValueError("Anima rewiring requires a single 2D image frame")
     for name in ("_style_ctx", "_fbcache", "_tread_config", "_blockskip_config",
@@ -69,8 +89,15 @@ def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
             offloader.submit_move_blocks_forward(index)
         return output.reshape(batch, h*w, channels)
 
-    output = run_rewired_stream(hidden.reshape(batch, height*width, channels),
-        spec, "main", height, width, 0, (rotary, height, width), execute, coarse_context)
+    if spec["method"] == "hybrid_unet_ssdit":
+        modules = getattr(model, "rewiring_modules", None)
+        if modules is None or modules.declaration != spec:
+            raise ValueError("Hybrid Anima modules are missing or disagree with the topology")
+        output = modules.forward_stream(hidden.reshape(batch, height*width, channels),
+            "main", height, width, 0, (rotary, height, width), execute, coarse_context)
+    else:
+        output = run_rewired_stream(hidden.reshape(batch, height*width, channels),
+            spec, "main", height, width, 0, (rotary, height, width), execute, coarse_context)
     return output.reshape(batch, 1, height, width, channels)
 
 

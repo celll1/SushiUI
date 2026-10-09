@@ -9913,12 +9913,20 @@ export interface DiTRewiringRegion {
   merge: "identity_delta_add"; position_policy: "coarse_integer";
   grid_policy: "require_divisible"; delta_dtype: "float32";
 }
-export interface DiTRewiringSpec {
+export interface ResidualDiTRewiringSpec {
   schema_version: 1; method: "residual_delta_unet"; architecture: string;
   streams: { name: string; block_count: number }[];
   regions: DiTRewiringRegion[];
   base_config_sha256: string; block_layout_sha256: string;
 }
+export interface HybridDiTRewiringSpec extends Omit<ResidualDiTRewiringSpec, "schema_version" | "method"> {
+  schema_version: 2; method: "hybrid_unet_ssdit";
+  stream_widths: Record<string, number>; module_layout_sha256: string;
+  boundaries: { id: string; region: string; rank: number; kernel: 3 | 5 }[];
+  refiners: { id: string; stream: string; after_block: number; rank: number; kernel: 3 | 5 }[];
+  skips: { id: string; stream: string; source_after: number; destination_before: number; rank: number }[];
+}
+export type DiTRewiringSpec = ResidualDiTRewiringSpec | HybridDiTRewiringSpec;
 export interface DiTRewiringPlan {
   levels: { id: string; depth: number; height: number; width: number; tokens: number }[];
   skip_edges: { region: string; stream: string; source: number; target: number; merge: string }[];

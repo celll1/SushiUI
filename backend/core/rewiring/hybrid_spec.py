@@ -33,6 +33,8 @@ def validate_hybrid_spec(value):
             or value.get("schema_version") != VERSION or value.get("method") != METHOD):
         raise ValueError("Unsupported hybrid topology version or method")
     base = legacy_topology(value)
+    if base["architecture"] != "anima":
+        raise ValueError("Hybrid native integration currently supports Anima only")
     if set(value) != set(base) | EXTRA_KEYS:
         raise ValueError("Hybrid topology has missing or unsupported fields")
     result = deepcopy(value)

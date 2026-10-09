@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
 import torch
 
-from core.rewiring.spec import OPERATORS, build_spec, digest
+from core.rewiring.spec import OPERATORS, build_spec, digest, checkpoint_metadata, read_checkpoint_metadata, rebase_spec
 from core.rewiring.runtime import run_rewired_stream
 from core.rewiring.hybrid_spec import (build_hybrid_spec, validate_hybrid_spec, legacy_topology,
                                       hybrid_metadata, read_hybrid_metadata, hybrid_preview, module_layout)
@@ -32,6 +32,10 @@ def declaration():
 def test_metadata_roundtrip_and_tampering():
     spec = declaration()
     assert read_hybrid_metadata(hybrid_metadata(spec)) == spec
+    assert read_checkpoint_metadata(checkpoint_metadata(spec)) == spec
+    rebound = rebase_spec(spec, {"changed_input_channels": 64})
+    assert rebound["skips"] == spec["skips"]
+    assert rebound["module_layout_sha256"] == spec["module_layout_sha256"]
     damaged = hybrid_metadata(spec)
     damaged["sushi.hybrid.spec_sha256"] = "0" * 64
     with pytest.raises(ValueError):
@@ -40,6 +44,15 @@ def test_metadata_roundtrip_and_tampering():
     damaged["boundaries"][0]["rank"] = 4
     with pytest.raises(ValueError):
         validate_hybrid_spec(damaged)
+
+
+def test_unsupported_training_features_are_explicit():
+    from core.rewiring.training import validate_training_features
+    config = dict(dit_rewiring_spec=declaration(), training_method="full_finetune")
+    validate_training_features(config, "anima")
+    for fields in (dict(training_method="lora"), dict(dit_partition_training_enabled=True)):
+        with pytest.raises(ValueError):
+            validate_training_features(dict(config, **fields), "anima")
 
 
 @pytest.mark.parametrize("change", [

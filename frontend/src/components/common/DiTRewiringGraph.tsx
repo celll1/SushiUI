@@ -74,5 +74,15 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
           }} />)}
       </g>;
     })}
+    {spec.method === "hybrid_unet_ssdit" && spec.skips.filter(edge => edge.stream === stream.name).map(edge => {
+      const source = blocks.find(block => block.index === edge.source_after);
+      const target = blocks.find(block => block.index === edge.destination_before);
+      if (!source || !target) return null;
+      const sx = x(source.index + 0.5), tx = x(target.index + 0.5), base = y(source.depth) - 20;
+      return <path key={`learned-${edge.id}`} d={`M ${sx} ${base} Q ${(sx + tx) / 2} ${base - 30} ${tx} ${base}`}
+        fill="none" stroke="#fbbf24" strokeWidth={2} strokeDasharray="5 3">
+        <title>{`${edge.id}: learned skip after ${edge.source_after} → before ${edge.destination_before}; rank ${edge.rank}`}</title>
+      </path>;
+    })}
   </svg>;
 }

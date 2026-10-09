@@ -41,6 +41,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
   }, [modelPath, onValidated]);
   const configuring = mode === "configure";
   const current = configuring ? (spec ?? info?.default_spec ?? null) : (spec ?? info?.topology ?? null);
+  const editable = configuring && current?.method !== "hybrid_unet_ssdit";
   useEffect(() => {
     let cancelled = false;
     onValidated?.(null);
@@ -112,7 +113,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     else gridSummary.set(key, { stream: block.stream, height: block.height, width: block.width, tokens: block.tokens, count: 1 });
   }
   const editRegion = (id: string, patch: Partial<NonNullable<typeof region>>) => {
-    if (!current || !configuring) return;
+    if (!current || !editable) return;
     onChange("configure", { ...current, regions: current.regions.map(r => r.id === id ? { ...r, ...patch } : r) });
   };
   const freeInterval = (parent: string | null): [number, number] | null => {
@@ -133,7 +134,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     return cursor < end ? [cursor, end] : null;
   };
   const addRegion = (parent: string | null) => {
-    if (!info || !stream || !configuring) return;
+    if (!info || !stream || !editable) return;
     if (!current) {
       const layout = customLayout();
       if (layout) { onChange("configure", layout); setSelected(layout.regions[0].id); }
@@ -176,10 +177,10 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
           {streams.map(s => <option key={s.name} value={s.name}>{s.name} / {s.block_count} blocks</option>)}
         </select>
       </label>}
-      {configuring && info && <button type="button" className="rounded bg-gray-700 px-3 py-2"
+      {editable && info && <button type="button" className="rounded bg-gray-700 px-3 py-2"
         disabled={!!current && !freeInterval(null)} onClick={() => addRegion(null)}>
         {current ? "Add independent region" : "Create first region"}</button>}
-      {configuring && info && current && <button type="button" className="rounded bg-gray-700 px-3 py-2"
+      {editable && info && current && <button type="button" className="rounded bg-gray-700 px-3 py-2"
         title="Replace the topology with one editable region in the selected stream" onClick={() => {
           const layout = customLayout();
           if (layout) { onChange("configure", layout); setSelected(layout.regions[0].id); }
@@ -203,10 +204,10 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
           : <span>Base token grid: {info ? `${pixels.height / (info.video_geometry?.height_scale_factor ?? info.latent_scale_factor)} × ${pixels.width / (info.video_geometry?.width_scale_factor ?? info.latent_scale_factor)}` : "…"}</span>}
       </div>
       {plan && <DiTRewiringGraph spec={validatedSpec ?? current} plan={plan} selected={region?.id} onSelect={selectRegion}
-        onBoundaryChange={configuring ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}
+        onBoundaryChange={editable ? (id, side, value) => editRegion(id, { [side]: value }) : undefined} />}
       {plan && <div className="flex flex-wrap gap-3">{Array.from(gridSummary.entries()).map(([key, grid]) =>
         <span key={key}>{grid.stream} / {grid.height}×{grid.width}: {grid.tokens} tokens × {grid.count} blocks</span>)}</div>}
-      {region && configuring && <div className="flex flex-wrap items-center gap-3">
+      {region && editable && <div className="flex flex-wrap items-center gap-3">
         <select aria-label="Region" className="rounded bg-gray-800 p-1" value={region.id} onChange={e => setSelected(e.target.value)}>
           {regions.map(r => <option key={r.id} value={r.id}>{r.id}</option>)}
         </select>

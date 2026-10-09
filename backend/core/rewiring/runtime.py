@@ -11,6 +11,8 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
                        execute_block, coarse_context, *, grid_groups=1, extensions=None):
     """Callbacks own native attention, checkpointing, and block-swap execution."""
     spec = validate_spec(spec)
+    if spec["method"] != "residual_delta_unet":
+        raise ValueError("Hybrid topology must execute through its installed learned modules")
     if extensions is not None and grid_groups != 1:
         raise ValueError("Hybrid extensions currently require a single image grid")
     if type(height) is not int or type(grid_groups) is not int or grid_groups < 1 or height % grid_groups:

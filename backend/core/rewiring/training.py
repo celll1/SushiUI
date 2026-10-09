@@ -22,6 +22,15 @@ def validate_training_rewiring(config, architecture, *, checkpoint_inheritance=F
 
 def validate_training_features(config, architecture=None):
     from api.param_defaults import TRAINING_DEFAULTS
+    requested = config.get("dit_rewiring_spec")
+    hybrid = requested is not None and validate_spec(requested)["method"] == "hybrid_unet_ssdit"
+    if hybrid:
+        if config.get("training_method") not in (None, "full", "full_finetune"):
+            raise ValueError("Hybrid U-Net currently requires full-parameter training")
+        for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",
+                    "dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled"):
+            if config.get(key):
+                raise ValueError("Hybrid partition/global training requires convolution halo integration")
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
         raise ValueError("Residual rewiring is incompatible with block_skip_rate")
     for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",
@@ -39,7 +48,7 @@ NO_RESUME_SPEC = object()
 
 def prepare_topology_io_rebase(config, architecture, source_config, *, declaration=None):
     """Validate source identity before IO migration; preserve its execution layout."""
-    from .spec import build_spec, validate_model_identity, digest
+    from .spec import rebase_spec, validate_model_identity, digest
     if declaration is not None:
         declaration["rewiring_source_config_sha256"] = digest(source_config)
     _, requested = validate_training_rewiring(config, architecture)
@@ -48,8 +57,7 @@ def prepare_topology_io_rebase(config, architecture, source_config, *, declarati
     requested = validate_model_identity(requested, architecture, requested["streams"], source_config)
 
     def finish(target_config):
-        config["dit_rewiring_spec"] = build_spec(architecture, requested["streams"],
-            requested["regions"], target_config)
+        config["dit_rewiring_spec"] = rebase_spec(requested, target_config)
 
     return finish
 
@@ -93,7 +101,7 @@ def resolve_training_topology(model, config, architecture, validate_topology_ide
         if (resuming or resume_spec is not NO_RESUME_SPEC) and resolved != inherited:
             raise ValueError("Resume requires the checkpoint topology without edits")
     if resolved is not None:
-        validate_training_features(config, architecture)
+        validate_training_features(dict(config, dit_rewiring_spec=resolved), architecture)
     if install:
         restore_topology(model, resolved)
         config["dit_rewiring_mode"] = mode

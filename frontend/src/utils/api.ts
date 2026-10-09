@@ -9986,7 +9986,32 @@ export interface HybridInitializationRecord {
   source_sha256: string; calibration_sha256: string; initialized_weights_sha256: string;
   origin_spec: HybridDiTRewiringSpec; sample_count: number; seed: number;
   phases: { kind: "data_noising" | "native_trajectory"; updates: number; learning_rate: number }[];
+  recipe?: { schema_version: 1; settings: HybridInitializationSettings };
 }
+export interface HybridInitializationSettings {
+  sample_count: number; holdout_count: number; resolution: number; seed: number;
+  caption_type: string; teacher_steps: number; teacher_cfg: number;
+  conditioning_dropout: number; clip_norm: number; optimizer: "adamw8bit" | "adamw";
+  stochastic_rounding: boolean; weight_decay: number; attention_backend: "flash" | "native";
+}
+export interface HybridInitializationRequest extends HybridInitializationSettings {
+  model_path: string; output_name: string; dataset_id: number;
+  item_ids?: number[] | null; spec?: HybridDiTRewiringSpec | null;
+  phases: HybridInitializationRecord["phases"];
+}
+export interface HybridInitializationJob {
+  state: "idle" | "queued" | "running" | "cancelling" | "completed" | "cancelled" | "failed";
+  job_id?: string; model_path?: string; output_name?: string; stage?: string;
+  completed?: number; total?: number; units?: string; loss?: number;
+  error?: string | null; started_at?: number; finished_at?: number | null;
+  result?: { model_path: string; initialization: HybridInitializationRecord } | null;
+}
+export const getHybridInitializationStatus = async (): Promise<HybridInitializationJob> =>
+  (await api.get("/models/rewiring/initialize")).data;
+export const startHybridInitialization = async (request: HybridInitializationRequest): Promise<HybridInitializationJob> =>
+  (await api.post("/models/rewiring/initialize", request)).data;
+export const cancelHybridInitialization = async (jobId: string): Promise<HybridInitializationJob> =>
+  (await api.delete(`/models/rewiring/initialize/${encodeURIComponent(jobId)}`)).data;
 export interface DiTRewiringModelInfo {
   initialization?: HybridInitializationRecord | null;
   hybrid_default_spec?: HybridDiTRewiringSpec | null;
@@ -10003,6 +10028,10 @@ export interface DiTRewiringModelInfo {
 export const getDiTRewiringSchema = async (): Promise<{
   hybrid_defaults: { rank: number; kernel: 3 | 5; refiner_interval: number; skip_interval: number; skip_storage: "gpu" | "cpu" | "recompute" };
   presets: Record<string, unknown>; runtime_architectures: string[];
+  initialization_defaults: HybridInitializationSettings & {
+    phases: HybridInitializationRecord["phases"]; spec: null; item_ids: null;
+  };
+  initializer_architectures: string[];
 }> => (await api.get("/schema/dit-rewiring")).data;
 export const inspectDiTRewiring = async (modelPath: string): Promise<DiTRewiringModelInfo> =>
   (await api.post("/models/rewiring/inspect", { model_path: modelPath })).data;

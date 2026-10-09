@@ -3889,8 +3889,16 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [presets, hybrid_defaults, runtime_architectures]
+                required: [presets, hybrid_defaults, runtime_architectures, initialization_defaults, initializer_architectures]
                 properties:
+                  initialization_defaults:
+                    type: object
+                    description: Central defaults for HybridInitializationRequest; includes the ordered fitting phases.
+                    additionalProperties: true
+                  initializer_architectures:
+                    type: array
+                    items: {type: string}
+                    description: Architectures with public initialization execution bindings.
                   presets:
                     type: object
                     description: Native-layout presets can include pending integrations; runtime_architectures determines public configure support
@@ -3998,6 +4006,59 @@ paths:
                     $ref: '#/components/schemas/DiTRewiringTemporalGeometry'
         '422':
           description: Unsupported model or incompatible artifact topology
+  /models/rewiring/initialize:
+    get:
+      tags: [models]
+      summary: Read the latest process-local hybrid initialization job
+      responses:
+        '200':
+          description: Progress or terminal result; idle after a backend restart
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HybridInitializationJob'}
+    post:
+      tags: [models]
+      summary: Initialize a new hybrid U-Net from the loaded native Anima
+      description: >-
+        Reserves the model lifecycle gate before returning. Refuses generation,
+        training, adapters, existing rewiring and VAE swap. Encodes selected dataset
+        items with native VAE/TE residency, fits only added modules and publishes
+        a new standalone checkpoint beside the source without overwriting it.
+        Restores the loaded native model after completion, cancellation or failure.
+        Runtime calibration has no rating filter; callers choose authorized data.
+        This execution binding currently supports Anima. Ming/Qwen lineage support
+        does not yet imply an initialization execution binding.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/HybridInitializationRequest'}
+      responses:
+        '202':
+          description: Accepted job; poll until terminal before loading its result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HybridInitializationJob'}
+        '404': {description: Dataset or selected items not found}
+        '409': {description: Busy model lifecycle, active job or output already exists}
+        '422': {description: Invalid request, source, caption selection or unsupported execution binding}
+  /models/rewiring/initialize/{job_id}:
+    delete:
+      tags: [models]
+      summary: Cooperatively cancel the matching hybrid initialization job
+      description: Cancellation is checked between encoding calls, teacher steps and fitting updates; a completed published result is retained.
+      parameters:
+        - in: path
+          name: job_id
+          required: true
+          schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+      responses:
+        '200':
+          description: Cancellation requested, or matching terminal job unchanged
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/HybridInitializationJob'}
+        '409': {description: Job ID does not match the current job}
   /models/rewiring/export:
     post:
       tags: [models]
@@ -12140,12 +12201,105 @@ components:
               stream: {type: string}
               index: {type: integer, minimum: 0}
               count: {type: integer, minimum: 0}
+    HybridInitializationPhase:
+      type: object
+      additionalProperties: false
+      required: [kind, updates, learning_rate]
+      properties:
+        kind: {type: string, enum: [data_noising, native_trajectory]}
+        updates: {type: integer, minimum: 1, maximum: 10000, example: 1000}
+        learning_rate: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 1, example: 0.0003}
+    HybridInitializationRequest:
+      type: object
+      additionalProperties: false
+      required: [model_path, output_name, dataset_id]
+      properties:
+        model_path: {type: string, minLength: 1, description: Must match the loaded native Anima source}
+        output_name: {type: string, minLength: 1, example: anima-hybrid-initialized.safetensors}
+        dataset_id: {type: integer, minimum: 1}
+        item_ids:
+          type: array
+          nullable: true
+          maxItems: 64
+          uniqueItems: true
+          items: {type: integer, minimum: 1}
+          description: Optional explicit ordered selection; otherwise select first sample_count items by ID
+        spec:
+          allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
+          nullable: true
+          description: Hybrid-only graph; omission resolves the inspected native hybrid preset
+        sample_count: {type: integer, minimum: 1, maximum: 64, example: 32}
+        holdout_count: {type: integer, minimum: 0, maximum: 63, example: 4, description: Must be smaller than sample_count; final selected items are excluded from fitting}
+        resolution: {type: integer, minimum: 64, maximum: 1024, multipleOf: 64, example: 512}
+        seed: {type: integer, minimum: 0, maximum: 2147483647, example: 718}
+        caption_type: {type: string, minLength: 1, maxLength: 64, example: tags}
+        teacher_steps: {type: integer, minimum: 1, maximum: 100, example: 28}
+        teacher_cfg: {type: number, minimum: 1, maximum: 20, example: 4}
+        conditioning_dropout: {type: number, minimum: 0, maximum: 1, example: 0.1}
+        clip_norm: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 100, example: 1}
+        optimizer: {type: string, enum: [adamw8bit, adamw]}
+        stochastic_rounding: {type: boolean}
+        weight_decay: {type: number, minimum: 0, maximum: 1, example: 0}
+        attention_backend: {type: string, enum: [flash, native]}
+        phases:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: {$ref: '#/components/schemas/HybridInitializationPhase'}
+          description: Ordered fresh-optimizer phases; defaults exposed by /schema/dit-rewiring
+    HybridInitializationJob:
+      type: object
+      required: [state]
+      properties:
+        state: {type: string, enum: [idle, queued, running, cancelling, completed, cancelled, failed]}
+        job_id: {type: string}
+        model_path: {type: string}
+        output_name: {type: string}
+        stage: {type: string}
+        completed: {type: integer}
+        total: {type: integer}
+        units: {type: string}
+        loss: {type: number}
+        error: {type: string, nullable: true}
+        started_at: {type: number}
+        finished_at: {type: number, nullable: true}
+        result:
+          type: object
+          nullable: true
+          properties:
+            model_path: {type: string}
+            initialization: {$ref: '#/components/schemas/HybridInitializationRecord'}
     HybridInitializationRecord:
       type: object
       additionalProperties: false
       required: [schema_version, method, source_sha256, origin_spec, calibration_sha256, sample_count, seed, phases, initialized_weights_sha256]
       description: Native teacher fitting lineage; excludes images and captions and is preserved after fine-tuning or compatible codec rebasing.
       properties:
+        recipe:
+          type: object
+          additionalProperties: false
+          required: [schema_version, settings]
+          description: Optional reproducible fitting settings; excludes source paths, images and captions
+          properties:
+            schema_version: {type: integer, enum: [1]}
+            settings:
+              type: object
+              additionalProperties: false
+              required: [sample_count, holdout_count, resolution, seed, caption_type, teacher_steps, teacher_cfg, conditioning_dropout, clip_norm, optimizer, stochastic_rounding, weight_decay, attention_backend]
+              properties:
+                sample_count: {$ref: '#/components/schemas/HybridInitializationRequest/properties/sample_count'}
+                holdout_count: {$ref: '#/components/schemas/HybridInitializationRequest/properties/holdout_count'}
+                resolution: {$ref: '#/components/schemas/HybridInitializationRequest/properties/resolution'}
+                seed: {$ref: '#/components/schemas/HybridInitializationRequest/properties/seed'}
+                caption_type: {$ref: '#/components/schemas/HybridInitializationRequest/properties/caption_type'}
+                teacher_steps: {$ref: '#/components/schemas/HybridInitializationRequest/properties/teacher_steps'}
+                teacher_cfg: {$ref: '#/components/schemas/HybridInitializationRequest/properties/teacher_cfg'}
+                conditioning_dropout: {$ref: '#/components/schemas/HybridInitializationRequest/properties/conditioning_dropout'}
+                clip_norm: {$ref: '#/components/schemas/HybridInitializationRequest/properties/clip_norm'}
+                optimizer: {$ref: '#/components/schemas/HybridInitializationRequest/properties/optimizer'}
+                stochastic_rounding: {$ref: '#/components/schemas/HybridInitializationRequest/properties/stochastic_rounding'}
+                weight_decay: {$ref: '#/components/schemas/HybridInitializationRequest/properties/weight_decay'}
+                attention_backend: {$ref: '#/components/schemas/HybridInitializationRequest/properties/attention_backend'}
         schema_version: {type: integer, enum: [1]}
         method: {type: string, enum: [native_teacher_velocity]}
         source_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}

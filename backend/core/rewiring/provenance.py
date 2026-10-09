@@ -11,6 +11,9 @@ META_HASH = "sushi.hybrid.initialization_sha256"
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _KEYS = {"schema_version", "method", "source_sha256", "origin_spec",
          "calibration_sha256", "sample_count", "seed", "phases", "initialized_weights_sha256"}
+RECIPE_FIELDS = {"sample_count", "holdout_count", "resolution", "seed", "caption_type", "teacher_steps",
+                 "teacher_cfg", "conditioning_dropout", "clip_norm", "optimizer", "stochastic_rounding",
+                 "weight_decay", "attention_backend"}
 
 
 def validate_record(value, current_spec):
@@ -21,7 +24,7 @@ def validate_record(value, current_spec):
             value = json.loads(value, object_pairs_hook=_unique_object)
         except (RecursionError, json.JSONDecodeError) as exc:
             raise ValueError("Invalid hybrid initialization JSON") from exc
-    if not isinstance(value, dict) or set(value) != _KEYS:
+    if not isinstance(value, dict) or not _KEYS <= set(value) or set(value)-_KEYS-{"recipe"}:
         raise ValueError("Hybrid initialization record has missing or unsupported fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ValueError("Unsupported hybrid initialization record version")
@@ -53,6 +56,30 @@ def validate_record(value, current_spec):
             raise ValueError("Invalid hybrid initialization learning rate")
     result = deepcopy(value)
     result["origin_spec"] = origin
+    if "recipe" in value:
+        recipe = value["recipe"]
+        if (not isinstance(recipe, dict) or set(recipe) != {"schema_version", "settings"}
+                or type(recipe["schema_version"]) is not int or recipe["schema_version"] != 1
+                or not isinstance(recipe["settings"], dict) or set(recipe["settings"]) != RECIPE_FIELDS):
+            raise ValueError("Invalid hybrid initialization recipe")
+        settings = recipe["settings"]
+        for key, low, high in (("sample_count",1,64),("holdout_count",0,63),("resolution",64,1024),
+                               ("seed",0,2**31-1),("teacher_steps",1,100)):
+            if type(settings[key]) is not int or not low <= settings[key] <= high:
+                raise ValueError(f"Invalid initialization recipe {key}")
+        if (settings["resolution"]%64 or settings["holdout_count"] >= settings["sample_count"]
+                or settings["sample_count"] != value["sample_count"] or settings["seed"] != value["seed"]):
+            raise ValueError("Initialization recipe disagrees with calibration or seed")
+        for key, low, high in (("teacher_cfg",1,20),("conditioning_dropout",0,1),
+                               ("clip_norm",0,100),("weight_decay",0,1)):
+            if type(settings[key]) not in (int,float) or not low <= settings[key] <= high:
+                raise ValueError(f"Invalid initialization recipe {key}")
+        if settings["clip_norm"] == 0 or type(settings["stochastic_rounding"]) is not bool:
+            raise ValueError("Invalid initialization clipping or stochastic rounding")
+        if (settings["optimizer"] not in ("adamw", "adamw8bit")
+                or settings["attention_backend"] not in ("native", "flash")
+                or not isinstance(settings["caption_type"],str) or not 1 <= len(settings["caption_type"]) <= 64):
+            raise ValueError("Unsupported hybrid initialization recipe setting")
     if len(canonical_json(result).encode("utf-8")) > MAX_JSON_BYTES:
         raise ValueError("Hybrid initialization record exceeds size limit")
     return result

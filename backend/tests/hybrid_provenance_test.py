@@ -33,6 +33,24 @@ def record():
                         dict(kind="native_trajectory", updates=1000, learning_rate=0.0003)])
 
 
+def test_recipe_roundtrip_and_legacy_record():
+    from api.param_defaults import DIT_HYBRID_INITIALIZATION_DEFAULTS
+    value = record()
+    assert provenance.validate_record(value, value["origin_spec"]) == value
+    value["recipe"] = dict(schema_version=1, settings={
+        key: deepcopy(DIT_HYBRID_INITIALIZATION_DEFAULTS[key]) for key in provenance.RECIPE_FIELDS})
+    assert provenance.validate_record(value, value["origin_spec"]) == value
+    for key, invalid in (("seed", 9), ("sample_count", 31), ("resolution", 513),
+                         ("teacher_cfg", float("nan")), ("stochastic_rounding", 1)):
+        broken = deepcopy(value)
+        broken["recipe"]["settings"][key] = invalid
+        with pytest.raises(ValueError):
+            provenance.validate_record(broken, broken["origin_spec"])
+    value["recipe"]["settings"]["image_path"] = "private.png"
+    with pytest.raises(ValueError):
+        provenance.validate_record(value, value["origin_spec"])
+
+
 def test_roundtrip_retains_origin_after_codec_rebase_and_training():
     model = TinyModel()
     original = record()

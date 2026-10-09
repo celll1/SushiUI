@@ -46,7 +46,7 @@ def state_digest(state):
 
 def fit_teacher_modules(model, phases, predict, optimizer_factory, *, source_sha256,
                         calibration_sha256, sample_count, seed, clip_norm,
-                        progress=None, cancelled=None):
+                        progress=None, cancelled=None, recipe=None):
     """Fit only new weights; preserve native ownership and roll back failed fits.
 
     Residency, input/noise RNG, encoding and output publication belong to the caller.
@@ -56,12 +56,15 @@ def fit_teacher_modules(model, phases, predict, optimizer_factory, *, source_sha
     phases = tuple(phases)
     if any(not isinstance(phase, FitPhase) for phase in phases):
         raise ValueError("Initialization requires FitPhase declarations")
-    record = validate_record(dict(schema_version=1, method="native_teacher_velocity",
+    record = dict(schema_version=1, method="native_teacher_velocity",
         source_sha256=source_sha256, calibration_sha256=calibration_sha256,
         initialized_weights_sha256="0"*64, origin_spec=model._residual_unet_spec,
         sample_count=sample_count, seed=seed,
         phases=[dict(kind=phase.kind, updates=phase.updates, learning_rate=phase.learning_rate)
-                for phase in phases]), model._residual_unet_spec)
+                for phase in phases])
+    if recipe is not None:
+        record["recipe"] = deepcopy(recipe)
+    record = validate_record(record, model._residual_unet_spec)
     if type(clip_norm) not in (int, float) or not math.isfinite(clip_norm) or clip_norm <= 0:
         raise ValueError("Initialization gradient clipping must be finite and positive")
     total = sum(phase.updates for phase in phases)

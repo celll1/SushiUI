@@ -76,6 +76,19 @@ DIT_HYBRID_DEFAULTS: Dict[str, Any] = {
     "skip_storage": "gpu",
 }
 
+DIT_HYBRID_INITIALIZATION_DEFAULTS: Dict[str, Any] = {
+    "spec": None, "item_ids": None, "sample_count": 32, "holdout_count": 4,
+    "resolution": 512, "seed": 718, "caption_type": "tags", "teacher_steps": 28,
+    "teacher_cfg": 4.0, "conditioning_dropout": 0.1, "clip_norm": 1.0,
+    "optimizer": "adamw8bit", "stochastic_rounding": True, "weight_decay": 0.0,
+    "attention_backend": "flash",
+    "phases": [
+        {"kind": "data_noising", "updates": 300, "learning_rate": 0.001},
+        {"kind": "data_noising", "updates": 2000, "learning_rate": 0.0005},
+        {"kind": "native_trajectory", "updates": 1000, "learning_rate": 0.0003},
+    ],
+}
+
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
     "yue2": {
         "block_count": 28,

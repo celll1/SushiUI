@@ -11053,6 +11053,9 @@ async def save_generation_settings(
 @router.post("/system/restart-backend")
 async def restart_backend(background_tasks: BackgroundTasks):
     """Restart the backend server"""
+    from api.hybrid_initialization_job import job_is_running
+    if job_is_running():
+        raise HTTPException(status_code=409, detail="Cancel hybrid initialization and wait for cleanup before restarting the backend")
     active = [str(run_id) for run_id in tuple(training_process_manager.processes)
               if training_process_manager.is_live(run_id)]
     if active:

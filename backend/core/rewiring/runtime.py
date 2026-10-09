@@ -8,9 +8,11 @@ from .spec import preview_plan, validate_spec
 
 
 def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
-                       execute_block, coarse_context, *, grid_groups=1):
+                       execute_block, coarse_context, *, grid_groups=1, extensions=None):
     """Callbacks own native attention, checkpointing, and block-swap execution."""
     spec = validate_spec(spec)
+    if extensions is not None and grid_groups != 1:
+        raise ValueError("Hybrid extensions currently require a single image grid")
     if type(height) is not int or type(grid_groups) is not int or grid_groups < 1 or height % grid_groups:
         raise ValueError("Rewired grid groups must evenly divide the token height")
     preview_plan(spec, height // grid_groups, width)
@@ -33,6 +35,8 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
             delta = delta.permute(0, 2, 1, 3, 4).reshape(batch * grid_groups, channels, height // grid_groups, width)
             height, width = entry["grid"]
             update = F.interpolate(delta, size=(height // grid_groups, width), mode="bilinear", align_corners=False)
+            if extensions is not None:
+                update = extensions.up(entry["region"], update)
             update = update.reshape(batch, grid_groups, channels, height // grid_groups, width)
             update = update.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
             hidden = torch.cat((hidden[:, :prefix],
@@ -51,16 +55,22 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
                 gain = (source_energy.clamp_min(1e-12) / pooled_energy.clamp_min(1e-12)).sqrt()
                 gain = torch.where(pooled_energy > 1e-12, gain, torch.ones_like(gain))
                 pooled = (pooled.float() * gain).to(pooled.dtype)
+            if extensions is not None:
+                pooled = extensions.down(region, grid, pooled)
             low_in = pooled.reshape(batch, grid_groups, channels, height // grid_groups // factor[0], width // factor[1])
             low_in = low_in.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
             stack.append(dict(end=region["end_block"], saved=saved, low_in=low_in,
-                              grid=(height, width), context=context))
+                              grid=(height, width), context=context, region=region))
             height, width = height // factor[0], width // factor[1]
             hidden = torch.cat((hidden[:, :prefix], low_in), dim=1)
             context = coarse_context(context, hidden, height, width, prefix)
+        if extensions is not None:
+            hidden = extensions.before(index, hidden, prefix, height, width)
         hidden = execute_block(index, hidden, context)
         if hidden.shape != (batch, prefix + height * width, channels):
             raise ValueError("Block changed the declared stream token layout")
+        if extensions is not None:
+            hidden = extensions.after(index, hidden, prefix, height, width)
     if stack:
         raise RuntimeError("Rewired stream did not restore its original grid")
     return hidden

@@ -1,0 +1,139 @@
+"""Strict, experimental fixed-width hybrid graph; legacy declarations stay unchanged."""
+from copy import deepcopy
+import json
+
+from .spec import canonical_json, digest, validate_spec, preview_plan, _name, _integer, _unique_object, MAX_JSON_BYTES
+
+METHOD = "hybrid_unet_ssdit"
+VERSION = 2
+META_SPEC = "sushi.hybrid.spec"
+META_HASH = "sushi.hybrid.spec_sha256"
+EXTRA_KEYS = {"stream_widths", "boundaries", "refiners", "skips", "module_layout_sha256"}
+
+
+def legacy_topology(value):
+    result = {key: deepcopy(item) for key, item in value.items() if key not in EXTRA_KEYS}
+    result.update(schema_version=1, method="residual_delta_unet")
+    return validate_spec(result)
+
+
+def module_layout(value):
+    return {key: value[key] for key in ("stream_widths", "boundaries", "refiners", "skips")}
+
+
+def validate_hybrid_spec(value):
+    if isinstance(value, str):
+        if len(value.encode()) > MAX_JSON_BYTES:
+            raise ValueError("Hybrid topology JSON exceeds size limit")
+        try:
+            value = json.loads(value, object_pairs_hook=_unique_object)
+        except (RecursionError, json.JSONDecodeError) as error:
+            raise ValueError("Invalid hybrid JSON") from error
+    if (not isinstance(value, dict) or type(value.get("schema_version")) is not int
+            or value.get("schema_version") != VERSION or value.get("method") != METHOD):
+        raise ValueError("Unsupported hybrid topology version or method")
+    base = legacy_topology(value)
+    if set(value) != set(base) | EXTRA_KEYS:
+        raise ValueError("Hybrid topology has missing or unsupported fields")
+    result = deepcopy(value)
+    result.update({key: item for key, item in base.items() if key not in ("schema_version", "method")})
+    widths = result["stream_widths"]
+    counts = {stream["name"]: stream["block_count"] for stream in base["streams"]}
+    if not isinstance(widths, dict) or set(widths) != set(counts):
+        raise ValueError("Hybrid widths must cover exactly the declared streams")
+    for width in widths.values():
+        _integer(width, "stream width", 1, 16384)
+    regions = {region["id"]: region for region in base["regions"]}
+    names = set()
+    def check(item, keys):
+        if not isinstance(item, dict) or set(item) != set(keys):
+            raise ValueError("Invalid hybrid module fields")
+        _name(item["id"], "hybrid module ID")
+        if item["id"] in names:
+            raise ValueError("Duplicate hybrid module ID")
+        names.add(item["id"])
+    for key in ("boundaries", "refiners", "skips"):
+        if not isinstance(result[key], list) or len(result[key]) > 128:
+            raise ValueError("Hybrid module lists must contain at most 128 entries")
+    boundary_regions = set()
+    for item in result["boundaries"]:
+        check(item, ("id", "region", "rank", "kernel"))
+        if not isinstance(item["region"], str) or item["region"] not in regions or item["region"] in boundary_regions:
+            raise ValueError("Hybrid boundary must own a unique existing region")
+        region = regions[item["region"]]
+        if region["down_factor"] != [2, 2]:
+            raise ValueError("Initial hybrid boundaries require isotropic 2x downsampling")
+        boundary_regions.add(item["region"])
+        _integer(item["rank"], "boundary rank", 1, widths[region["stream"]])
+        if type(item["kernel"]) is not int or item["kernel"] not in (3, 5):
+            raise ValueError("Hybrid kernels must be 3 or 5")
+    def block(item, field):
+        if not isinstance(item["stream"], str) or item["stream"] not in counts:
+            raise ValueError("Unknown hybrid module stream")
+        _integer(item[field], field, 0, counts[item["stream"]] - 1)
+        _integer(item["rank"], "module rank", 1, widths[item["stream"]])
+    for item in result["refiners"]:
+        check(item, ("id", "stream", "after_block", "rank", "kernel"))
+        block(item, "after_block")
+        if type(item["kernel"]) is not int or item["kernel"] not in (3, 5):
+            raise ValueError("Hybrid kernels must be 3 or 5")
+    def active(stream, index):
+        return tuple(region["id"] for region in base["regions"] if region["stream"] == stream
+                     and region["start_block"] <= index < region["end_block"])
+    for item in result["skips"]:
+        check(item, ("id", "stream", "source_after", "destination_before", "rank"))
+        block(item, "source_after")
+        block(item, "destination_before")
+        if item["source_after"] >= item["destination_before"]:
+            raise ValueError("Hybrid skips must point forward")
+        if active(item["stream"], item["source_after"]) != active(item["stream"], item["destination_before"]):
+            raise ValueError("Hybrid skips must connect the same region grid")
+    for key in ("boundaries", "refiners", "skips"):
+        result[key].sort(key=lambda item: item["id"])
+    if result["module_layout_sha256"] != digest(module_layout(result)):
+        raise ValueError("Hybrid module-layout hash mismatch")
+    if len(canonical_json(result).encode()) > MAX_JSON_BYTES:
+        raise ValueError("Hybrid topology JSON exceeds size limit")
+    return result
+
+
+def build_hybrid_spec(base, *, stream_widths, boundaries, refiners, skips):
+    result = deepcopy(validate_spec(base))
+    result.update(schema_version=VERSION, method=METHOD, stream_widths=deepcopy(stream_widths),
+                  boundaries=sorted(deepcopy(boundaries), key=lambda item: item["id"]),
+                  refiners=sorted(deepcopy(refiners), key=lambda item: item["id"]),
+                  skips=sorted(deepcopy(skips), key=lambda item: item["id"]))
+    result["module_layout_sha256"] = digest(module_layout(result))
+    return validate_hybrid_spec(result)
+
+
+def hybrid_metadata(value):
+    value = validate_hybrid_spec(value)
+    return {META_SPEC: canonical_json(value), META_HASH: digest(value)}
+
+
+def read_hybrid_metadata(metadata):
+    if not isinstance(metadata, dict):
+        raise ValueError("Hybrid metadata must be an object")
+    present = {META_SPEC, META_HASH}.intersection(metadata)
+    if not present:
+        return None
+    if present != {META_SPEC, META_HASH}:
+        raise ValueError("Incomplete hybrid topology metadata")
+    if any(not isinstance(metadata[key], str) for key in present):
+        raise ValueError("Hybrid metadata values must be strings")
+    value = validate_hybrid_spec(metadata[META_SPEC])
+    if metadata[META_HASH] != digest(value):
+        raise ValueError("Hybrid topology hash mismatch")
+    return value
+
+
+def hybrid_preview(value, height, width, *, batch_size, element_bytes):
+    value = validate_hybrid_spec(value)
+    _integer(batch_size, "preview batch", 1, 65536)
+    _integer(element_bytes, "element bytes", 1, 16)
+    preview = preview_plan(legacy_topology(value), height, width)
+    blocks = {(block["stream"], block["index"]): block for block in preview["blocks"]}
+    preview["learned_skip_edges"] = [dict(item, stored_bytes=batch_size * item["rank"] * element_bytes *
+        blocks[item["stream"], item["source_after"]]["tokens"]) for item in value["skips"]]
+    return preview

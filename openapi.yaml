@@ -12143,8 +12143,8 @@ components:
           properties:
             schema_version: {enum: [2]}
             method: {enum: [hybrid_unet_ssdit]}
-            architecture: {enum: [anima, ming_image_01]}
-          description: Experimental fixed-width Anima/Ming hybrid for full-parameter training. Ming layer grids use independent spatial convolutions. Partition planning automatically includes convolution context; full-frame attention equivalence is not promised. Editor integration remains under development.
+            architecture: {enum: [anima, ming_image_01, qwen_image_21]}
+          description: Experimental fixed-width Anima/Ming/Qwen 2.1 hybrid for full-parameter training. Ming layer grids use independent spatial convolutions. Partition planning includes convolution context and full-canvas positions; full-frame attention equivalence is not promised. Editor integration remains under development.
     HybridDiTBoundary:
       type: object
       additionalProperties: false

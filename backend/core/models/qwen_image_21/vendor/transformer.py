@@ -1259,13 +1259,15 @@ class QwenImage21Transformer2DModel(
         if rewiring is not None:
             if (kv_cache is not None or kv_cache_mode is not None
                     or len(img_shapes[0]) != 1
-                    or target_spatial_position_ids is not None
-                    or target_input_residual is not None or style_ctx is not None):
+                    or (rewiring["method"] != "hybrid_unet_ssdit" and
+                        (target_spatial_position_ids is not None or target_input_residual is not None))
+                    or style_ctx is not None):
                 raise ValueError("Qwen rewiring requires uncached single-target generation or training")
             from ..residual_unet import run_rewired_qwen
             joint_hidden_states = run_rewired_qwen(
                 self, joint_hidden_states, modulation, rotary_emb, attention_mask,
-                modulation_mask, block_segments, block_key_valid, img_shapes[0][-1], rewiring)
+                modulation_mask, block_segments, block_key_valid, img_shapes[0][-1], rewiring,
+                spatial_positions=target_spatial_position_ids)
         else:
             for index_block, block in enumerate(self.transformer_blocks):
                 layer_cache = kv_cache.get_layer(index_block) if kv_cache is not None else None

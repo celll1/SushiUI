@@ -136,6 +136,9 @@ def convrot_layers(state: dict[str, torch.Tensor], path: str) -> dict[str, dict[
 
 
 def _finish_load(module: torch.nn.Module, state: dict[str, torch.Tensor], label: str) -> torch.nn.Module:
+    for key, value in state.items():
+        if key.startswith("rewiring_modules.") and not torch.isfinite(value).all():
+            raise ValueError(f"{label}: hybrid weights must be finite: {key}")
     info = module.load_state_dict(state, strict=False, assign=True)
     missing = [key for key in info.missing_keys if not key.endswith(".weight_scale") and not key.endswith(".comfy_quant")]
     if missing or info.unexpected_keys:
@@ -161,6 +164,7 @@ def load_transformer(path: str, config: dict[str, Any], dtype: torch.dtype) -> t
         model = QwenImage21Transformer2DModel(**config)
         from .vae_alignment import install
         install(model, declaration)
+        restore_topology(model, topology)
     from .partition_global import stash_partition_global_payload
     stash_partition_global_payload(model, state, metadata)
     if variant == "int8_convrot":

@@ -91,7 +91,7 @@ def configure_swap(trainer, components):
     from core.models.components.wiring import QWEN_IMAGE_21_LATENT_IO
     from core.models.common.module_identity import module_fingerprint
     from .residual_unet import native_config, restore_topology
-    from core.rewiring.spec import build_spec
+    from core.rewiring.spec import rebase_spec
     source = resolve_vae_swap_source(trainer.config)
     if not source:
         return
@@ -132,8 +132,7 @@ def configure_swap(trainer, components):
     if finish_topology is not None:
         finish_topology(native_config(dict(model.config)))
     if topology is not None:
-        restore_topology(model,build_spec("qwen_image_21",
-            [{"name":"main","block_count":len(model.transformer_blocks)}],topology["regions"],native_config(dict(model.config))))
+        restore_topology(model,rebase_spec(topology,native_config(dict(model.config))))
     install(model,declaration)
     getattr(model,NAME).to(dtype=trainer.weight_dtype)
     trainer._qwen_vae_calibration_source = old.to("cpu").requires_grad_(False).eval()

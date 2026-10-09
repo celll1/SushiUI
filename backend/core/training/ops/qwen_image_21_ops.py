@@ -234,14 +234,23 @@ def _partition_plan(trainer, latent_h: int, latent_w: int):
              partition_region_count(trainer, latent_h=latent_h, latent_w=latent_w))
     if count == 1:
         raise ValueError("Full-frame Qwen training has no partition plan")
+    transformer = getattr(trainer, "transformer", None)
+    model = getattr(transformer, "module", transformer)
+    topology = getattr(model, "_residual_unet_spec", None)
+    halo = int(_partition_config(trainer.config, "halo_tokens", 0))
+    if (topology or {}).get("method") == "hybrid_unet_ssdit":
+        from core.rewiring.hybrid_partition import resolved_partition_halo, spatial_codec_radius
+        halo = resolved_partition_halo(topology, "main", halo,
+            codec_radius=spatial_codec_radius(getattr(model, "vae_latent_bridge", None), model.config.patch_size))
     key = (
         int(getattr(trainer, "_current_epoch", 0)),
         int(getattr(trainer, "_current_batch_position", 0)),
         int(latent_h),
         int(latent_w),
         count,
-        int(_partition_config(trainer.config, "halo_tokens", 0)),
+        halo,
         int(_partition_config(trainer.config, "seed", 0)),
+        repr(topology),
     )
     cached = getattr(trainer, "_qwen_partition_plan_cache", None)
     if cached is not None and cached[0] == key:
@@ -260,6 +269,20 @@ def _partition_plan(trainer, latent_h: int, latent_w: int):
         split_ratio_min=float(_partition_config(trainer.config, "split_ratio_min", 0.35)),
         split_ratio_max=float(_partition_config(trainer.config, "split_ratio_max", 0.65)),
     )
+    if (topology or {}).get("method") == "hybrid_unet_ssdit":
+        from dataclasses import replace
+        from core.models.components.latent_adapter import topology_alignment
+        from core.training.partition import PartitionBox, PartitionRegion
+        from core.training.partition.core import validate_partition_regions
+        ah, aw = topology_alignment(topology)
+        if plan.full_height % ah or plan.full_width % aw:
+            raise ValueError("Qwen hybrid partition canvas must match cumulative U-Net alignment")
+        regions = tuple(PartitionRegion(region.core, PartitionBox(
+            region.input.top // ah * ah, region.input.left // aw * aw,
+            min(plan.full_height, (region.input.bottom + ah - 1) // ah * ah),
+            min(plan.full_width, (region.input.right + aw - 1) // aw * aw))) for region in plan.regions)
+        validate_partition_regions(plan.full_height, plan.full_width, regions)
+        plan = replace(plan, regions=regions)
     trainer._qwen_partition_plan_cache = (key, plan)
     return plan
 
@@ -337,6 +360,10 @@ def load_components(trainer) -> None:
         trainer.transformer, trainer.config,
         resuming=is_resume and bool(components.get("checkpoint_path")),
         pending_adapter_resume=is_resume and not components.get("checkpoint_path"))
+    if (getattr(trainer.transformer, "_residual_unet_spec", None) or {}).get("method") == "hybrid_unet_ssdit":
+        from core.training.ops.training_method import is_full_finetune
+        if not is_full_finetune(trainer):
+            raise ValueError("Hybrid Qwen currently requires full-parameter training")
     trainer.transformer_original = trainer.transformer
     trainer.vae = components["vae"].to(dtype=trainer.vae_dtype)
     trainer.text_encoder = components["text_encoder"]

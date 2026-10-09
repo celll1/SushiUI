@@ -47,6 +47,10 @@ def generate_sample(trainer, ctx, *, step_progress_callback=None):
                 module.eval()
             preview = replace(components, scheduler=type(components.scheduler).from_config(components.scheduler.config))
             generator = MingGenerator(preview)
+            # FP32 adapter masters need the training autocast policy only in DiT prediction.
+            generator.sampler.pipe.transformer.forward_context = lambda: torch.autocast(
+                device_type=torch.device(trainer.device).type, dtype=trainer.training_dtype,
+                enabled=trainer.mixed_precision, cache_enabled=False)
             width, height = aligned_sample_dimensions(components.transformer,
                 generator.sampler.pipe.vae_scale_factor, ctx.width, ctx.height)
             if (width, height) != (ctx.width, ctx.height):

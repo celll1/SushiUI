@@ -35,6 +35,10 @@ def frozen_native_teacher(model):
     This context does not roll back fitted module weights.
     """
     declaration = validate_hybrid_spec(getattr(model, "_residual_unet_spec", None))
+    if getattr(model, "_hybrid_initialization", None) is not None:
+        from .provenance import validate_record
+        validate_record(model._hybrid_initialization, declaration)
+        raise ValueError("Initialized hybrid checkpoint must not be fitted again")
     modules = getattr(model, "rewiring_modules", None)
     if modules is None or modules.declaration != declaration:
         raise ValueError("Teacher initialization requires matching installed hybrid modules")

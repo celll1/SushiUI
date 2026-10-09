@@ -5,6 +5,7 @@ from pathlib import Path
 from safetensors import safe_open
 
 from .spec import read_checkpoint_metadata
+from .provenance import read_checkpoint_metadata as read_initialization
 
 
 def read_artifact_topology(path):
@@ -21,6 +22,7 @@ def read_artifact_topology(path):
     if not isinstance(index, dict):
         raise ValueError("Checkpoint index must be an object")
     spec = read_checkpoint_metadata(index.get("metadata") or {})
+    initialization = read_initialization(index.get("metadata") or {}, spec)
     weight_map = index.get("weight_map")
     if not isinstance(weight_map, dict) or not weight_map:
         raise ValueError("Checkpoint index requires a nonempty weight_map")
@@ -34,9 +36,11 @@ def read_artifact_topology(path):
         filenames.add(shard)
     for shard in filenames:
         with safe_open(str(shard), framework="pt", device="cpu") as handle:
-            shard_spec = read_checkpoint_metadata(handle.metadata() or {})
-        if shard_spec != spec:
-            raise ValueError("Checkpoint index and shard topology declarations disagree")
+            metadata = handle.metadata() or {}
+            shard_spec = read_checkpoint_metadata(metadata)
+            shard_initialization = read_initialization(metadata, shard_spec)
+        if shard_spec != spec or shard_initialization != initialization:
+            raise ValueError("Checkpoint index and shard topology or initialization declarations disagree")
     return spec
 
 

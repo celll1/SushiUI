@@ -104,8 +104,8 @@ modules with pink squares. Preview parameter counts cover each registered
 boundary, local refiner and skip, independently of native base weights. The
 UI adds those counts to its native census; pending hybrid counts are not shown
 as zero. An unavailable native census remains explicitly unavailable. Hybrid
-region editing is temporarily disabled to preserve dependent module settings;
-the complete hybrid editor and preset selection remain pending. No existing
+regions and dependent modules are edited through the explicit validated draft
+described above. No existing
 run or default preset is converted. Native census coverage, activation-memory
 accounting, GPU/native full-trainer
 optimizer/EMA/offload acceptance and
@@ -218,3 +218,22 @@ and calibration digest are tracked in
 `docs/audits/data/hybrid_anima_matrix_2026-10.json`; the executable measurement
 script remains under `local/verification/hybrid_anima_matrix.py`. Re-measure if
 the graph or execution policy changes during remaining quality acceptance.
+
+## Same-input training/inference diagnostic
+
+Anima base v1.0 was also compared in training and evaluation modes on the same
+512px synthetic noisy inputs, with native attention, BF16 and 24 checkpointed
+blocks. Standard, hybrid, calibrated codec swap and combined paths were checked
+at sigma 0.0625/0.5/0.9375 and CFG 1/4. Two synthetic 64-token conditioning
+streams were used. Hybrid-only and combined paths additionally used nonzero
+final spatial/skip projections (synthetic weights, not a quality-trained model).
+All 30 comparisons had exactly zero output difference. The four-way compute
+matrix therefore has no detected mode-switch discrepancy under this diagnostic.
+
+This is a conditional same-input test: both modes receive the same exposure
+noise. It does not establish equivalence between random training exposures and
+the sampler's evolving trajectory, nor explain the old #174 sample degradation.
+The trained checkpoint, caption tokenization, partition/global adapter, decoder
+and full multi-step sampling are excluded. Raw records are in
+`docs/audits/data/hybrid_anima_mode_parity_2026-10.json`; executable probe is
+`local/verification/hybrid_anima_mode_parity.py`. Existing runs were not changed.

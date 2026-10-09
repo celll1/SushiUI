@@ -1,0 +1,356 @@
+{
+  "date": "2026-10-09",
+  "attention_backend": "NATIVE",
+  "dtype": "bf16",
+  "cases": [
+    {
+      "arm": "native",
+      "resolution": 512,
+      "batch": 1,
+      "synthetic": true,
+      "calibration": null,
+      "checkpoint_blocks": 24,
+      "learned_modules": "zero-output initialization",
+      "context": "two synthetic 64-token conditioning streams, no LLM adapter tokenization",
+      "excludes": [
+        "sampler trajectory",
+        "TE",
+        "VAE encode/decode",
+        "partition/global adapter",
+        "trained checkpoint"
+      ],
+      "results": [
+        {
+          "sigma": 0.0625,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.3165082931518555,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.0625,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.716536045074463,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.3545770645141602,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.8174129724502563,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.0750490427017212,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.8366814851760864,
+          "relative_rms": 0.0
+        }
+      ]
+    },
+    {
+      "arm": "hybrid",
+      "resolution": 512,
+      "batch": 1,
+      "synthetic": true,
+      "calibration": null,
+      "checkpoint_blocks": 24,
+      "learned_modules": "zero-output initialization",
+      "context": "two synthetic 64-token conditioning streams, no LLM adapter tokenization",
+      "excludes": [
+        "sampler trajectory",
+        "TE",
+        "VAE encode/decode",
+        "partition/global adapter",
+        "trained checkpoint"
+      ],
+      "results": [
+        {
+          "sigma": 0.0625,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 4.975805282592773,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.0625,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 5.066588878631592,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.3346025943756104,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.7415390014648438,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.0454355478286743,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.7033677101135254,
+          "relative_rms": 0.0
+        }
+      ]
+    },
+    {
+      "arm": "swap",
+      "resolution": 512,
+      "batch": 1,
+      "synthetic": true,
+      "calibration": {
+        "sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+        "images": 40,
+        "rating": "general",
+        "images_reloaded": false,
+        "noise_policy": "gaussian_row_orthogonal_v1",
+        "noise_coefficients": "captured from saved fitted bridges"
+      },
+      "checkpoint_blocks": 24,
+      "learned_modules": "zero-output initialization",
+      "context": "two synthetic 64-token conditioning streams, no LLM adapter tokenization",
+      "excludes": [
+        "sampler trajectory",
+        "TE",
+        "VAE encode/decode",
+        "partition/global adapter",
+        "trained checkpoint"
+      ],
+      "results": [
+        {
+          "sigma": 0.0625,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.6483356952667236,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.0625,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 4.855842113494873,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.375898003578186,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.2584280967712402,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.1970038414001465,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.197662353515625,
+          "relative_rms": 0.0
+        }
+      ]
+    },
+    {
+      "arm": "hybrid",
+      "resolution": 512,
+      "batch": 1,
+      "synthetic": true,
+      "calibration": null,
+      "checkpoint_blocks": 24,
+      "learned_modules": "synthetic nonzero final projections",
+      "context": "two synthetic 64-token conditioning streams, no LLM adapter tokenization",
+      "excludes": [
+        "sampler trajectory",
+        "TE",
+        "VAE encode/decode",
+        "partition/global adapter",
+        "trained checkpoint"
+      ],
+      "results": [
+        {
+          "sigma": 0.0625,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 4.177785396575928,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.0625,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 3.9758472442626953,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.332931637763977,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.8283690214157104,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.0840246677398682,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.961169958114624,
+          "relative_rms": 0.0
+        }
+      ]
+    },
+    {
+      "arm": "hybrid_swap",
+      "resolution": 512,
+      "batch": 1,
+      "synthetic": true,
+      "calibration": {
+        "sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+        "images": 40,
+        "rating": "general",
+        "images_reloaded": false,
+        "noise_policy": "gaussian_row_orthogonal_v1",
+        "noise_coefficients": "captured from saved fitted bridges"
+      },
+      "checkpoint_blocks": 24,
+      "learned_modules": "synthetic nonzero final projections",
+      "context": "two synthetic 64-token conditioning streams, no LLM adapter tokenization",
+      "excludes": [
+        "sampler trajectory",
+        "TE",
+        "VAE encode/decode",
+        "partition/global adapter",
+        "trained checkpoint"
+      ],
+      "results": [
+        {
+          "sigma": 0.0625,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 4.501633644104004,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.0625,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 9.05612564086914,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.3202691078186035,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.5,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.45923113822937,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 1.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 1.2183059453964233,
+          "relative_rms": 0.0
+        },
+        {
+          "sigma": 0.9375,
+          "cfg": 4.0,
+          "max_abs": 0.0,
+          "rms_error": 0.0,
+          "reference_rms": 2.2813289165496826,
+          "relative_rms": 0.0
+        }
+      ]
+    }
+  ]
+}

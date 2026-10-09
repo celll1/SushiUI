@@ -570,9 +570,17 @@ panel closes. A completed artifact is applied only by an explicit button after
 refreshing the model index; this switches topology to inheritance and clears the
 old resume checkpoint. Stale polling responses cannot overwrite action results.
 UI types, paths and state transitions are statically reviewed; owner build and
-interactive acceptance remain pending. Ming/Qwen execution bindings and real
-GPU job acceptance also remain pending; CPU ownership tests do not establish
-image quality.
+interactive acceptance remain pending. Ming/Qwen execution bindings remain
+pending. Real Anima API acceptance used three general images (two fit, one
+holdout), two noising updates and one native-trajectory update at 512px. It
+completed export, inspect and reload of the fitted artifact. Cancellation was
+verified during source hashing and after optimizer updates; restart was refused
+while active. The source model was restored and the temporary artifact removed.
+The first GPU attempt exposed FP32 timesteps entering BF16 native modulation,
+which disables autocast; noising now preserves the latent/timestep dtype, with
+a checkpointed CPU backward regression. Successful jobs report terminal 1/1
+model progress. This short test establishes functionality, not image quality.
+Evidence: `docs/audits/data/hybrid_initialization_api_2026-10.json`.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

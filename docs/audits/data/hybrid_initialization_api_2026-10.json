@@ -1,0 +1,316 @@
+{
+  "quality_acceptance": false,
+  "resolution": 512,
+  "sample_count": 3,
+  "restart_while_running_status": 409,
+  "correction": "Noising timestep and latent now retain BF16 because native modulation disables autocast",
+  "phases": [
+    {
+      "kind": "data_noising",
+      "updates": 2,
+      "learning_rate": 0.001
+    },
+    {
+      "kind": "native_trajectory",
+      "updates": 1,
+      "learning_rate": 0.0003
+    }
+  ],
+  "original_model_restored": "M:\\model\\ming_image_01\\layer_int8_convrot",
+  "teacher_steps": 4,
+  "completion": {
+    "job_id": "197456f877414ccaab2d448d5e32cd0c",
+    "state": "completed",
+    "model_path": "M:\\model\\anima\\anima-base-v1.0.safetensors",
+    "output_name": "hybrid_api_probe_20261010.safetensors",
+    "stage": "saving",
+    "completed": 0,
+    "total": 1,
+    "units": "models",
+    "error": null,
+    "result": {
+      "model_path": "M:\\model\\anima\\hybrid_api_probe_20261010.safetensors",
+      "initialization": {
+        "schema_version": 1,
+        "method": "native_teacher_velocity",
+        "source_sha256": "bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e",
+        "calibration_sha256": "b728292b13699cfbb8cc388d53be4e95a554b3201f2fc42085f7316cf3934eaa",
+        "initialized_weights_sha256": "be9ef0e696191fff04e5aefffc4827ac456f1cdcfe6013c06cef080c04b82bbc",
+        "origin_spec": {
+          "schema_version": 2,
+          "method": "hybrid_unet_ssdit",
+          "architecture": "anima",
+          "streams": [
+            {
+              "name": "main",
+              "block_count": 28
+            }
+          ],
+          "regions": [
+            {
+              "id": "r0",
+              "stream": "main",
+              "parent": null,
+              "start_block": 4,
+              "end_block": 24,
+              "down_factor": [
+                2,
+                2
+              ],
+              "down": "avg_pool",
+              "up": "bilinear",
+              "align_corners": false,
+              "merge": "identity_delta_add",
+              "position_policy": "coarse_integer",
+              "grid_policy": "require_divisible",
+              "delta_dtype": "float32"
+            },
+            {
+              "id": "r1",
+              "stream": "main",
+              "parent": "r0",
+              "start_block": 12,
+              "end_block": 16,
+              "down_factor": [
+                2,
+                2
+              ],
+              "down": "avg_pool",
+              "up": "bilinear",
+              "align_corners": false,
+              "merge": "identity_delta_add",
+              "position_policy": "coarse_integer",
+              "grid_policy": "require_divisible",
+              "delta_dtype": "float32"
+            }
+          ],
+          "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+          "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+          "stream_widths": {
+            "main": 2048
+          },
+          "boundaries": [
+            {
+              "id": "downup_r0",
+              "region": "r0",
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "downup_r1",
+              "region": "r1",
+              "rank": 64,
+              "kernel": 3
+            }
+          ],
+          "refiners": [
+            {
+              "id": "local_main_0",
+              "stream": "main",
+              "after_block": 0,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_12",
+              "stream": "main",
+              "after_block": 12,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_16",
+              "stream": "main",
+              "after_block": 16,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_20",
+              "stream": "main",
+              "after_block": 20,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_24",
+              "stream": "main",
+              "after_block": 24,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_4",
+              "stream": "main",
+              "after_block": 4,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_8",
+              "stream": "main",
+              "after_block": 8,
+              "rank": 64,
+              "kernel": 3
+            }
+          ],
+          "skips": [
+            {
+              "id": "skip_main_0_27",
+              "stream": "main",
+              "source_after": 0,
+              "destination_before": 27,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_10_17",
+              "stream": "main",
+              "source_after": 10,
+              "destination_before": 17,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_12_15",
+              "stream": "main",
+              "source_after": 12,
+              "destination_before": 15,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_2_25",
+              "stream": "main",
+              "source_after": 2,
+              "destination_before": 25,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_4_23",
+              "stream": "main",
+              "source_after": 4,
+              "destination_before": 23,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_6_21",
+              "stream": "main",
+              "source_after": 6,
+              "destination_before": 21,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_8_19",
+              "stream": "main",
+              "source_after": 8,
+              "destination_before": 19,
+              "rank": 64,
+              "storage": "gpu"
+            }
+          ],
+          "module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594"
+        },
+        "sample_count": 3,
+        "seed": 718,
+        "phases": [
+          {
+            "kind": "data_noising",
+            "updates": 2,
+            "learning_rate": 0.001
+          },
+          {
+            "kind": "native_trajectory",
+            "updates": 1,
+            "learning_rate": 0.0003
+          }
+        ],
+        "recipe": {
+          "schema_version": 1,
+          "settings": {
+            "weight_decay": 0.0,
+            "sample_count": 3,
+            "holdout_count": 1,
+            "caption_type": "tags",
+            "stochastic_rounding": true,
+            "seed": 718,
+            "attention_backend": "flash",
+            "teacher_steps": 4,
+            "resolution": 512,
+            "conditioning_dropout": 0.1,
+            "teacher_cfg": 4.0,
+            "clip_norm": 1.0,
+            "optimizer": "adamw8bit"
+          }
+        }
+      }
+    },
+    "started_at": 1791572691.6315575,
+    "finished_at": 1791572710.2624333,
+    "phase": "native_trajectory",
+    "phase_update": 1,
+    "loss": 0.12968090176582336
+  },
+  "reloaded_artifact": {
+    "success": true,
+    "type": "anima",
+    "method": "hybrid_unet_ssdit"
+  },
+  "rating": "general",
+  "holdout_count": 1,
+  "scope": "Real Anima public initialization API functionality; not image quality acceptance",
+  "date": "2026-10-10",
+  "cancel_after_updates": {
+    "after": {
+      "job_id": "ae572813de22432dbb292153f8670eb2",
+      "state": "cancelled",
+      "model_path": "M:\\model\\anima\\anima-base-v1.0.safetensors",
+      "output_name": "hybrid_api_cancel_probe_20261010.safetensors",
+      "stage": "fitting",
+      "completed": 3,
+      "total": 10000,
+      "units": "updates",
+      "error": null,
+      "result": null,
+      "started_at": 1791572783.794801,
+      "finished_at": 1791572790.8266068,
+      "phase": "data_noising",
+      "phase_update": 3,
+      "loss": 0.0685139000415802
+    },
+    "before": {
+      "job_id": "ae572813de22432dbb292153f8670eb2",
+      "state": "running",
+      "model_path": "M:\\model\\anima\\anima-base-v1.0.safetensors",
+      "output_name": "hybrid_api_cancel_probe_20261010.safetensors",
+      "stage": "fitting",
+      "completed": 2,
+      "total": 10000,
+      "units": "updates",
+      "error": null,
+      "result": null,
+      "started_at": 1791572783.794801,
+      "finished_at": null,
+      "phase": "data_noising",
+      "phase_update": 2,
+      "loss": 0.23256996273994446
+    }
+  },
+  "early_cancel": {
+    "job_id": "85ec91afdf614e938e997b4a452a4fcf",
+    "state": "cancelled",
+    "model_path": "M:\\model\\anima\\anima-base-v1.0.safetensors",
+    "output_name": "hybrid_api_cancel_probe_20261010.safetensors",
+    "stage": "source_verification",
+    "completed": 58720256,
+    "total": 4182218328,
+    "units": "bytes",
+    "error": null,
+    "result": null,
+    "started_at": 1791572767.0193737,
+    "finished_at": 1791572767.4104483
+  }
+}

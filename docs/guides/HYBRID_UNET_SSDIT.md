@@ -1127,6 +1127,36 @@ Future acceptance should compare each candidate against its actual native
 control, prioritizing usable coarse structure for subsequent training.
 Evidence: `docs/audits/data/hybrid_anima_guided_fit_2026-10.json`.
 
+### Compute matrix for the high16 candidate
+
+The retained paired-anchor high16 candidate was remeasured at 1024px, BF16,
+AdamW8bit SR, Flash attention and 24 native checkpoint blocks. Each arm used
+a fresh worker/model/optimizer, one warmup and five timed updates per batch.
+The four arms all ran again; old baseline timings were not substituted. Entries
+below are median seconds/update / peak allocated GiB.
+
+| Configuration | Batch 1 | Batch 2 | Batch 4 |
+|---|---:|---:|---:|
+| Native Anima | 1.187 / 12.09 | 2.281 / 14.37 | 4.765 / 20.84 |
+| High16 hybrid | 0.828 / 12.14 | 1.546 / 14.49 | 3.094 / 21.06 |
+| Qwen codec swap | 0.516 / 11.59 | 0.578 / 11.73 | 1.109 / 12.11 |
+| High16 hybrid + swap | 0.531 / 11.61 | 0.578 / 11.77 | 0.781 / 12.16 |
+
+High16 alone is about 1.43–1.54 times as fast as native, but does not reduce
+Full FT peak allocated VRAM here. Combined batch 4 is 6.10 times as fast as
+native and 1.42 times as fast as swap alone, with 41.7% less allocated VRAM
+than native. At batch 1 combined is slightly slower than swap; batch 2 median
+times are equal. Five short measurements do not establish small differences.
+Preserving more full-resolution blocks costs speed relative to the previous
+8/16/4 hybrid; do not reuse its larger speedup for this quality candidate.
+
+The report retains forward/backward/optimizer CUDA timings, all measurements,
+reserved VRAM, process RSS and input/bridge/module hashes. This uses synthetic
+exposures and the production calibrated bridge, not a newly accepted combined
+generation checkpoint. VAE/TE encoding, IO and global/partition/EMA overhead
+are excluded. Formal publication and combined-codec quality remain separate.
+Evidence: `docs/audits/data/hybrid_anima_candidate_matrix_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

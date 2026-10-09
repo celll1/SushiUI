@@ -1,0 +1,22 @@
+{
+  "scope": "CPU tiny native Ming Design and Layer initialized package publication",
+  "profiles": ["generation_edit", "layer_decompose"],
+  "teacher_fit_updates_per_profile": 2,
+  "native_transformer_payload_exact": true,
+  "source_assets_unchanged": true,
+  "copied_component_assets_exact": true,
+  "quantization_provenance_retained": true,
+  "strict_all_component_reload": true,
+  "fitted_modules_and_lineage_exact": true,
+  "forward_tolerance": {"rtol": 0.00001, "atol": 0.000001},
+  "refusal_checks": ["existing_destination", "destination_inside_source", "source_asset_changed", "fitted_weights_changed"],
+  "cancellation_checks": ["before_asset_copy", "after_manifest_written"],
+  "failed_output_and_temporary_directories_removed": true,
+  "cuda_untouched": true,
+  "tests": "backend/tests/hybrid_ming_initialized_export_test.py",
+  "shared_export_regression": "15 passed, including two Ming profiles and thirteen Anima/Qwen cases",
+  "followup_source_race_checks": "2 passed, both Ming profiles",
+  "public_ming_initialization_dispatch": false,
+  "official_weight_gpu_execution": false,
+  "quality_acceptance": false
+}

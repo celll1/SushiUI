@@ -621,6 +621,21 @@ approximately 2.1GiB including the desktop; the native source was restored, and
 the temporary package was removed after restoring the owner's Ming Layer.
 This short recipe is functionality evidence, not quality recovery. Evidence:
 `docs/audits/data/hybrid_qwen_initialization_api_2026-10.json`.
+
+Ming's initialized package publisher is CPU-verified for both Design and Layer.
+`export_initialized_ming_package` streams an unsharded native transformer,
+appending fitted modules and lineage, and copies its six native component trees
+in 8MiB chunks into a new, self-contained package. Quantization provenance is
+retained. Unlike Qwen's external references, Ming's manifest requires assets
+inside the package; source assets are neither linked nor modified. Existing
+topology, VAE swap and global-adapter sources are refused. Source changes,
+early/late cancellation and existing destinations abort without partial output.
+Tiny native teacher fits, exact native/module tensor restoration and forward
+parity are verified for both profiles. Public Ming initialization dispatch and
+official-weight GPU execution remain pending; this publisher is not yet an
+additional UI capability. Evidence:
+`docs/audits/data/hybrid_ming_initialized_export_2026-10.json`.
+
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

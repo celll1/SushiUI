@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import struct
 import tempfile
 
@@ -64,8 +65,19 @@ def export_initialized_transformer(model, source, output_name, *, architecture, 
         topology = read_checkpoint_metadata(source_metadata)
         alignment = config.get("vae_alignment")
         config_key, input_key = "config", "img_in.weight"
+    elif architecture == "ming_image_01":
+        from core.models.ming_image_01.residual_unet import validate_topology_identity
+        with (source.parent/"config.json").open(encoding="utf-8") as stream:
+            config = json.load(stream,object_pairs_hook=_unique_object)
+        if not isinstance(config,dict) or config.get("_class_name") != "DiffusionTransformer":
+            raise ValueError("Ming initialized export requires a native transformer component")
+        with safe_open(str(source),framework="pt",device="cpu") as handle:
+            topology = read_checkpoint_metadata(handle.metadata() or {})
+        alignment = config.get("vae_alignment")
+        config_key = "transformer_config"
+        input_key = f"all_x_embedder.{config.get('all_patch_size',[2])[0]}-{config.get('all_f_patch_size',[1])[0]}.weight"
     else:
-        raise ValueError("Initialized standalone export supports Anima and Qwen-Image 2.1")
+        raise ValueError("Unsupported initialized transformer architecture")
     if topology is not None or alignment is not None:
         raise ValueError("Initialization export requires a native source without U-Net or VAE swap")
     spec = validate_topology_identity(getattr(model, "_residual_unet_spec", None), config)
@@ -213,6 +225,88 @@ def export_initialized_qwen_package(model, source_manifest, destination, *, canc
         inspected = inspect_model(staging)
         if inspected["topology"] != spec or inspected["initialization"] != result["initialization"]:
             raise ValueError("Initialized package declarations differ from fitted modules")
+        check_cancel()
+        if os.path.lexists(destination):
+            raise FileExistsError("Initialized package destination was created during export")
+        os.rename(staging,destination)
+    return {"model_path":str(destination),"initialization":deepcopy(result["initialization"])}
+
+
+def export_initialized_ming_package(model, source, destination, *, cancelled=None):
+    """Copy owned native assets in bounded chunks; append only fitted DiT modules."""
+    from core.models.ming_image_01.artifact import inspect_artifact, write_manifest
+    from core.models.ming_image_01.residual_unet import validate_topology_identity
+    artifact = inspect_artifact(source)
+    spec = validate_topology_identity(getattr(model,"_residual_unet_spec",None),artifact.configs["transformer"])
+    validate_record(getattr(model,"_hybrid_initialization",None),spec)
+    if artifact.configs["transformer"].get("vae_alignment") is not None or artifact.global_summary is not None:
+        raise ValueError("Ming initialization requires a native source without VAE swap or global adapter")
+    transformer_dir = artifact.components["transformer"]
+    weights = list(transformer_dir.glob("*.safetensors"))
+    if len(weights) != 1 or list(transformer_dir.glob("*.safetensors.index.json")):
+        raise ValueError("Ming initialization publication requires an unsharded native transformer")
+    if (weights[0].is_symlink() or not weights[0].resolve().is_relative_to(artifact.root)
+            or getattr(weights[0].lstat(),"st_file_attributes",0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+        raise ValueError("Ming native transformer must be owned by its source package")
+    with safe_open(str(weights[0]),framework="pt",device="cpu") as handle:
+        if read_checkpoint_metadata(handle.metadata() or {}) is not None:
+            raise ValueError("Ming initialization requires a native source without U-Net")
+    destination = Path(destination).absolute()
+    validate_package_name(destination.name)
+    if os.path.lexists(destination):
+        raise FileExistsError("Initialized package never overwrites an existing path")
+    if not destination.parent.is_dir():
+        raise FileNotFoundError(destination.parent)
+    if destination.resolve().is_relative_to(artifact.root):
+        raise ValueError("Initialized package must be outside its native source")
+
+    def check_cancel():
+        if cancelled is not None and cancelled():
+            raise InitializationCancelled("Initialized Ming package export cancelled")
+
+    def copy_asset(path,target):
+        check_cancel()
+        if (path.is_symlink() or getattr(path.lstat(),"st_file_attributes",0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                or not path.resolve().is_relative_to(artifact.root)):
+            raise ValueError("Ming source assets must remain inside their owned package")
+        if path.is_dir():
+            target.mkdir()
+            for child in sorted(path.iterdir()):
+                if child != weights[0]:
+                    copy_asset(child,target/child.name)
+        elif path.is_file():
+            with path.open("rb") as incoming, target.open("xb") as outgoing:
+                before = os.fstat(incoming.fileno())
+                while chunk := incoming.read(8*1024*1024):
+                    check_cancel()
+                    outgoing.write(chunk)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
+                after = os.fstat(incoming.fileno())
+            identity = lambda stat:(stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns)
+            if identity(before) != identity(after) or identity(before) != identity(path.stat()):
+                raise ValueError("Ming source asset changed during publication")
+        else:
+            raise ValueError("Unsupported Ming source asset")
+
+    with tempfile.TemporaryDirectory(dir=destination.parent,prefix=".sushi-ming-init-") as temporary:
+        staging = Path(temporary)/"package"
+        staging.mkdir()
+        for name,path in artifact.components.items():
+            copy_asset(path,staging/name)
+        quantization = artifact.root/"quantization.json"
+        if quantization.exists():
+            copy_asset(quantization,staging/quantization.name)
+        result = export_initialized_transformer(model,weights[0],weights[0].name,
+            architecture="ming_image_01",cancelled=cancelled,output_directory=staging/"transformer")
+        write_manifest(staging,source=artifact.source)
+        prepared = inspect_artifact(staging)
+        if prepared.config_fingerprint != artifact.config_fingerprint or prepared.profile != artifact.profile:
+            raise ValueError("Ming source configuration changed during publication")
+        from .inspect import inspect_model
+        inspected = inspect_model(staging)
+        if inspected["topology"] != spec or inspected["initialization"] != result["initialization"]:
+            raise ValueError("Initialized Ming declarations differ from fitted modules")
         check_cancel()
         if os.path.lexists(destination):
             raise FileExistsError("Initialized package destination was created during export")

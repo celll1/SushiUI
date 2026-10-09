@@ -252,21 +252,26 @@ class AnimaMixin:
         # ``warnings[]`` carries every code (refusal_error_code_cheap_test).
         self._anima_lora_missing: List[str] = []
         files = self._anima_lora_session.parse(lora_configs)
-        from copy import deepcopy
-        import weakref
         from core.adapters import AdapterIncompatible
-        from core.rewiring.adapters import resolve_adapter_topology
+        from core.rewiring.adapters import resolve_adapter_topology, HybridPayloadTransaction
         from core.models.anima.residual_unet import restore_topology, validate_topology_identity
         model = self.anima_components["transformer"]
-        base_topology = getattr(model, "_residual_unet_spec", None)
         try:
             required = resolve_adapter_topology(model, files, validate_topology_identity)
         except ValueError as exc:
             raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
-        applied = self._anima_lora_session.load(
-            files, self._anima_lora_components()).applied
-        restore_topology(model, required)
-        self._anima_topology_restore = (weakref.ref(model), deepcopy(base_topology))
+        transaction = HybridPayloadTransaction(model, files, required, restore_topology)
+        components = self._anima_lora_components()
+        try:
+            applied = self._anima_lora_session.load(files, components).applied
+            transaction.install()
+            self._anima_lora_session.own_cleanup(components[0], transaction.restore)
+        except Exception:
+            try:
+                self._anima_lora_session.unload(components)
+            finally:
+                transaction.restore()
+            raise
         if self._anima_lora_missing:
             # Restore first, so the failure leaves a clean DiT.
             self._unload_lora_anima()

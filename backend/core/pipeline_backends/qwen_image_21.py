@@ -120,13 +120,10 @@ class QwenImage21Mixin:
         self._unload_lora_qwen21()
         if not configs:
             return 0
-        from copy import deepcopy
-        import weakref
         from core.adapters import AdapterIncompatible
-        from core.rewiring.adapters import resolve_adapter_topology
+        from core.rewiring.adapters import resolve_adapter_topology, HybridPayloadTransaction
         from core.models.qwen_image_21.residual_unet import restore_topology, validate_topology_identity
         model = self.qwen_image_21_components["transformer"]
-        base_topology = getattr(model, "_residual_unet_spec", None)
         files = self._qwen21_lora_session.parse(configs)
         try:
             required = resolve_adapter_topology(model, files, validate_topology_identity)
@@ -135,9 +132,18 @@ class QwenImage21Mixin:
                 raise ValueError("Residual topology excludes partition-global adapters")
         except ValueError as exc:
             raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
-        result = self._qwen21_lora_session.load(files, self._qwen21_lora_components())
-        restore_topology(model, required)
-        self._qwen21_topology_restore = (weakref.ref(model), deepcopy(base_topology))
+        transaction = HybridPayloadTransaction(model, files, required, restore_topology)
+        components = self._qwen21_lora_components()
+        try:
+            result = self._qwen21_lora_session.load(files, components)
+            transaction.install()
+            self._qwen21_lora_session.own_cleanup(components[0], transaction.restore)
+        except Exception:
+            try:
+                self._qwen21_lora_session.unload(components)
+            finally:
+                transaction.restore()
+            raise
         self._qwen21_loaded_files = [file for file, _counts in result.files]
         return result.applied
 

@@ -118,18 +118,20 @@ class _ComponentState:
     survive.
     """
 
-    __slots__ = ("ref", "originals", "wrapped", "owned")
+    __slots__ = ("ref", "originals", "wrapped", "owned", "cleanups")
 
     def __init__(self) -> None:
         self.ref: Optional[weakref.ref] = None
         self.originals: Dict[str, nn.Module] = {}
         self.wrapped: set = set()
         self.owned: List[_OwnedBranch] = []
+        self.cleanups = []
 
     def reset(self, module: Optional[nn.Module]) -> None:
         self.originals.clear()
         self.wrapped.clear()
         self.owned.clear()
+        self.cleanups.clear()
         self.ref = weakref.ref(module) if module is not None else None
 
 
@@ -244,6 +246,12 @@ class AdapterSession:
             state.reset(None)
         self._states.clear()
 
+    def own_cleanup(self, component, cleanup):
+        """Restore auxiliary state on unload, component replacement and teardown."""
+        if not callable(cleanup):
+            raise TypeError("Adapter cleanup must be callable")
+        self.bind(component).cleanups.append(cleanup)
+
     def bind(self, component: AdapterComponent) -> _ComponentState:
         """The state for ``component``, reset if its module was replaced.
 
@@ -285,6 +293,8 @@ class AdapterSession:
         state.owned.clear()
         state.originals.clear()
         state.wrapped.clear()
+        while state.cleanups:
+            state.cleanups.pop()()
         return restored
 
     # -- reporting ---------------------------------------------------------
@@ -818,7 +828,7 @@ class AdapterSession:
         restored = 0
         for component in components:
             state = self.bind(component)
-            if component.module is None or not state.owned:
+            if component.module is None or not (state.owned or state.cleanups):
                 continue
             self._log(f"[{self._label}] Unloading {component.name} "
                       f"({len(state.wrapped)} wrapped module(s))...")

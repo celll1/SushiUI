@@ -1,8 +1,7 @@
 """Request-scoped native DiT adapters with restored base topology."""
 from contextlib import contextmanager
-from copy import deepcopy
 from core.adapters import AdapterComponent, AdapterSession, AdapterIncompatible, PreparedBranch, SHAPE_MISMATCH
-from core.rewiring.adapters import resolve_adapter_topology
+from core.rewiring.adapters import resolve_adapter_topology, HybridPayloadTransaction
 from core.adapters.base_identity import BaseLatentIdentity
 from .lora import iter_lora_slots, build_lora_branch, normalise_lora_state_dict, declared_branch_count
 from .residual_unet import restore_topology, validate_topology_identity
@@ -11,7 +10,6 @@ from .residual_unet import restore_topology, validate_topology_identity
 @contextmanager
 def generation_adapters(components, configs, *, resolve_path, warn=None):
     model = components.transformer
-    base = deepcopy(getattr(model, "_residual_unet_spec", None))
     missing=object();previous_global=getattr(model,"_ming_partition_global_generation",missing)
     global_entries=[]
 
@@ -59,9 +57,11 @@ def generation_adapters(components, configs, *, resolve_path, warn=None):
     slots = [AdapterComponent(name="transformer", module=model, iter_targets=iter_lora_slots, build_branch=build)]
     files = session.parse(configs)
     required = resolve_adapter_topology(model, files, validate_topology_identity)
+    transaction = HybridPayloadTransaction(model, files, required, restore_topology)
     try:
         session.load(files, slots)
-        restore_topology(model, required)
+        transaction.install()
+        session.own_cleanup(slots[0], transaction.restore)
         model._ming_partition_global_generation=([] if previous_global is missing else list(previous_global))+global_entries
         yield session
     finally:
@@ -69,7 +69,7 @@ def generation_adapters(components, configs, *, resolve_path, warn=None):
             session.unload(slots)
         finally:
             try:
-                restore_topology(model, base)
+                transaction.restore()
             finally:
                 if previous_global is missing:
                     if hasattr(model,"_ming_partition_global_generation"):del model._ming_partition_global_generation

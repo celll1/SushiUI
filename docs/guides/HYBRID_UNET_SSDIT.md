@@ -45,8 +45,14 @@ intervals come from `DIT_HYBRID_DEFAULTS` in `api/param_defaults.py`. Mirror ski
 are included only when both endpoints occupy the same nested region grid.
 `POST /models/rewiring/hybrid/build` canonicalizes explicit module edits and
 recomputes their layout hash. It validates a declaration, not checkpoint identity;
-the native loader still checks dimensions and configuration. Arbitrary hybrid
-editing controls and official-weight GPU acceptance remain pending.
+the native loader still checks dimensions and configuration. The training editor
+provides a separate draft for region intervals, nested regions, boundary ranks
+and kernels, local refiner placements and compressed skip endpoints/ranks.
+Validation and application are explicit; cancellation, model changes and late
+API responses cannot replace a newer draft. Unapplied or invalid drafts block
+run/preset saving, and hybrid graphs require full-parameter training. Inherited
+checkpoint graphs remain read-only. Frontend build/type checks and official-weight
+GPU acceptance remain pending.
 
 Native artifacts use the existing `sushi.rewire.*` keys with schema version 2.
 Standalone module tools also support `sushi.hybrid.spec` and its hash. Their

@@ -13,6 +13,7 @@ import TimestepDistributionGraph from "./TimestepDistributionGraph";
 import QwenTrainingObjective from "./QwenTrainingObjective";
 import MingConditionerTraining from "./MingConditionerTraining";
 import DiTRewiringEditor from "./DiTRewiringEditor";
+import type { DiTRewiringSpec } from "@/utils/api";
 import GpuSelect from "./GpuSelect";
 import VaeSwapSourceSelector from "./VaeSwapSourceSelector";
 import DanbooruAugmentationSection from "./DanbooruAugmentationSection";
@@ -74,6 +75,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const restoredRecipeRef = useRef<Partial<TrainingRunCreateRequest> | null>(null);
   const { trainingDefaults, trainingSampleDefaultsByArch, trainingGuidanceLossDefaultsByArch, timestepDefaultsByArch, bundleVaeDefaultsByArch, archCapabilities } = useStartup();
   const [rewiringArchitectures, setRewiringArchitectures] = useState<string[]>([]);
+  const [validatedRewiring, setValidatedRewiring] = useState<{ modelPath: string; input: DiTRewiringSpec | null | undefined } | null>(null);
   useEffect(() => {
     let cancelled = false;
     getDiTRewiringSchema().then(value => {
@@ -810,6 +812,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // and from the run's own lift params, so a CONDITIONAL entry (`unless`) is
   // resolved rather than presented as an absolute pin.
   const baseModelArch = getModelArchitecture(baseModelPath) ?? "";
+  const onRewiringValidated = useCallback((value: DiTRewiringSpec | null) => {
+    setValidatedRewiring(value ? { modelPath: baseModelPath, input: params.dit_rewiring_spec } : null);
+  }, [baseModelPath, params.dit_rewiring_spec]);
+  const hybridValidationNeeded = params.dit_rewiring_spec?.method === "hybrid_unet_ssdit";
+  const hybridSaveBlocked = hybridValidationNeeded && (trainingMethod !== "full_finetune"
+    || validatedRewiring?.modelPath !== baseModelPath || validatedRewiring?.input !== params.dit_rewiring_spec);
   // Which params can LIFT a conditional requirement here, read off the served
   // table: the backend owns that list (SenseNova's batch_size names
   // enable_bucketing), and a copy kept here would go stale silently.
@@ -2131,6 +2139,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   // Save current config as preset
   const handleSavePreset = async () => {
+    if (hybridSaveBlocked) {
+      alert("Validate and apply the hybrid U-Net draft with full-parameter training before saving.");
+      return;
+    }
     if (!presetName.trim()) {
       alert("Please enter a preset name");
       return;
@@ -2190,6 +2202,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       return;
     }
     e.preventDefault();
+
+    if (hybridSaveBlocked) {
+      setError("Validate and apply the hybrid U-Net draft with full-parameter training before saving.");
+      return;
+    }
 
     if (conceptOrder?.enabled) {
       if (conceptOrderUnsupported) {
@@ -6435,7 +6452,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             {rewiringArchitectures.includes(getModelArchitecture(baseModelPath) ?? "") && (trainingMethod === "lora" || trainingMethod === "full_finetune") && (
               <DiTRewiringEditor modelPath={baseModelPath} resolution={Math.max(...baseResolutions)}
                 mode={params.dit_rewiring_mode} spec={params.dit_rewiring_spec}
-                onChange={(mode, spec) => setParams(prev => ({ ...prev, dit_rewiring_mode: mode, dit_rewiring_spec: spec }))} />
+                onValidated={onRewiringValidated}
+                onChange={(mode, spec) => {
+                  setValidatedRewiring(null);
+                  setParams(prev => ({ ...prev, dit_rewiring_mode: mode, dit_rewiring_spec: spec }));
+                }} />
             )}
 
             {/* Per-bucket activation offload dispatcher */}
@@ -9070,7 +9091,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <button
             type="submit"
             className="px-3 sm:px-4 py-1.5 sm:py-2 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={loading || (!!editRunId && restoredEditRunId !== editRunId)}
+            disabled={loading || hybridSaveBlocked || (!!editRunId && restoredEditRunId !== editRunId)}
           >
             {loading ? (editRunId ? "Updating..." : "Creating...") : (editRunId ? "Update Training Run" : "Create Training Run")}
           </button>

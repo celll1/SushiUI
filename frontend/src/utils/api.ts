@@ -9928,6 +9928,12 @@ export interface HybridDiTRewiringSpec extends Omit<ResidualDiTRewiringSpec, "sc
 }
 export type DiTRewiringSpec = ResidualDiTRewiringSpec | HybridDiTRewiringSpec;
 export interface DiTRewiringPlan {
+  hybrid_activation_layout?: {
+    basis: "per_image_grid_per_batch_item";
+    entries: { id: string; kind: "bypass" | "low_input" | "compressed_skip"; stream: string;
+      elements: number; capture_block: number; capture_phase: "before" | "after"; release_before_block: number }[];
+    streams: { stream: string; peak_elements: number; peak_block: number; peak_phase: "before" | "after" }[];
+  };
   hybrid_parameter_counts?: { scope: "learned_hybrid_modules"; added: number;
     modules: { id: string; kind: "boundary" | "refiner" | "skip"; count: number }[] };
   hybrid_convolution_halo?: Record<string, [number, number]>;

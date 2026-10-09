@@ -199,3 +199,57 @@ def test_compressed_skip_storage_estimate():
     with pytest.raises(ValueError):
         HybridModules(declaration()).forward_stream(torch.randn(1, 80, 8), "main", 8, 10, 0,
                                                       None, execute, lambda *args: None)
+
+
+@pytest.mark.parametrize("batch,groups", [(1, 1), (2, 1), (1, 2)])
+def test_activation_lifetimes_match_runtime_ownership(batch, groups):
+    from core.rewiring.hybrid_modules import HybridExecution
+    from core.rewiring.spec import preview_plan
+    spec = declaration()
+    preview = preview_plan(spec, 8, 12)["hybrid_activation_layout"]
+    sizes = {(item["id"], item["kind"]): item["elements"] for item in preview["entries"]}
+    assert sizes == {("outer", "bypass"): 768, ("outer", "low_input"): 192,
+                     ("inner", "bypass"): 192, ("inner", "low_input"): 48,
+                     ("outer_skip", "compressed_skip"): 288, ("middle_skip", "compressed_skip"): 72}
+    assert preview["streams"] == [dict(stream="main", peak_elements=1560, peak_block=2, peak_phase="before")]
+    class Observed(HybridExecution):
+        def __init__(self):
+            super().__init__(HybridModules(spec), "main", groups)
+            self.region_elements = {}
+            self.peak = 0
+
+        def record(self):
+            self.peak = max(self.peak, sum(self.region_elements.values()) + sum(t.numel() for t in self.saved.values()))
+
+        def down(self, region, grid, pooled):
+            result = super().down(region, grid, pooled)
+            self.region_elements[region["id"]] = grid.numel() + result.numel()
+            self.record()
+            return result
+
+        def up(self, region, update):
+            del self.region_elements[region["id"]]
+            return super().up(region, update)
+
+        def after(self, *args):
+            result = super().after(*args)
+            self.record()
+            return result
+
+    observed = Observed()
+    run_rewired_stream(torch.randn(batch, 3 + 8*groups*12, 8), legacy_topology(spec),
+        "main", 8*groups, 12, 3, None, execute, lambda *args: None,
+        grid_groups=groups, extensions=observed)
+    assert observed.peak == 1560*batch*groups
+    assert not observed.saved and not observed.region_elements
+
+
+def test_activation_release_at_adjacent_regions_does_not_double_count():
+    from core.rewiring.spec import preview_plan
+    base = build_spec("anima", [{"name": "main", "block_count": 9}], [
+        dict(id="a", stream="main", parent=None, start_block=1, end_block=4, down_factor=[2, 2], **OPERATORS),
+        dict(id="b", stream="main", parent=None, start_block=4, end_block=7, down_factor=[2, 2], **OPERATORS)], {})
+    spec = build_hybrid_spec(base, stream_widths={"main": 8}, boundaries=[], refiners=[], skips=[])
+    layout = preview_plan(spec, 8, 12)["hybrid_activation_layout"]
+    assert len(layout["entries"]) == 4
+    assert layout["streams"][0]["peak_elements"] == 960

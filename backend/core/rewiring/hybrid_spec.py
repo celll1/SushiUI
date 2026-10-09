@@ -183,3 +183,43 @@ def hybrid_preview(value, height, width, *, batch_size, element_bytes):
     preview["learned_skip_edges"] = [dict(item, stored_bytes=batch_size * item["rank"] * element_bytes *
         blocks[item["stream"], item["source_after"]]["tokens"]) for item in value["skips"]]
     return preview
+
+
+def activation_layout(value, preview, height, width):
+    """Logical forward ownership, excluding autograd, aliases and temporary buffers."""
+    levels = {level["id"]: level for level in preview["levels"]}
+    blocks = {(block["stream"], block["index"]): block for block in preview["blocks"]}
+    entries = []
+    for region in value["regions"]:
+        parent = levels.get(region["parent"])
+        parent_tokens = parent["tokens"] if parent else height*width
+        channels = value["stream_widths"][region["stream"]]
+        for kind, tokens in (("bypass", parent_tokens), ("low_input", levels[region["id"]]["tokens"])):
+            entries.append(dict(id=region["id"], kind=kind, stream=region["stream"],
+                elements=tokens*channels, capture_block=region["start_block"], capture_phase="before",
+                release_before_block=region["end_block"]))
+    for item in value["skips"]:
+        entries.append(dict(id=item["id"], kind="compressed_skip", stream=item["stream"],
+            elements=blocks[item["stream"], item["source_after"]]["tokens"]*item["rank"],
+            capture_block=item["source_after"], capture_phase="after",
+            release_before_block=item["destination_before"]))
+    streams = []
+    for stream in value["streams"]:
+        events = {}
+        for entry in entries:
+            if entry["stream"] != stream["name"]:
+                continue
+            start = 2*entry["capture_block"] + int(entry["capture_phase"] == "after")
+            end = 2*entry["release_before_block"]
+            events[start] = events.get(start, 0) + entry["elements"]
+            events[end] = events.get(end, 0) - entry["elements"]
+        live = peak = peak_phase = 0
+        for phase, delta in sorted(events.items()):
+            live += delta
+            if live > peak:
+                peak, peak_phase = live, phase
+        if live:
+            raise ValueError("Hybrid activation lifetime did not close")
+        streams.append(dict(stream=stream["name"], peak_elements=peak,
+                            peak_block=peak_phase//2, peak_phase="after" if peak_phase%2 else "before"))
+    return dict(basis="per_image_grid_per_batch_item", entries=entries, streams=streams)

@@ -1,0 +1,312 @@
+{
+  "rating": "general",
+  "indices": [
+    28,
+    29
+  ],
+  "sigmas": [
+    0.1,
+    0.5,
+    0.9
+  ],
+  "cfg": 4,
+  "seed": 63,
+  "initialization_sha256": "8c7a063b37af6fcb60fc5e3c6c3b4810c5c1888da7afdd489eb7605eb6d6f7d2",
+  "calibration_sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+  "reconstructions": [
+    {
+      "index": 28,
+      "kind": "target_bridge_bottleneck",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_target_bridge_bottleneck.png",
+      "sha256": "26b072912be1c09b1310e30500bca48687ff01ca0fe100db10549042433d54e4",
+      "latent_mse": 0.663945198059082
+    },
+    {
+      "index": 28,
+      "kind": "native_down_bridge",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_native_down_bridge.png",
+      "sha256": "b8d463b2bae8ff17ed4c4c3b95495125270dabcd316fc974d725e24dc64a8c29",
+      "latent_mse": 0.7446383237838745
+    },
+    {
+      "index": 28,
+      "kind": "target_roundtrip",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_target_roundtrip.png",
+      "sha256": "4f12352939537cae728d39b9780deeb3dc4015eda26522095d5a7643287c9874",
+      "latent_mse": 0.0
+    },
+    {
+      "index": 29,
+      "kind": "target_bridge_bottleneck",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_target_bridge_bottleneck.png",
+      "sha256": "4b10f0aec45741a1679366bf97c4f274a57821faa901c3fafa26f1b5cae96a5c",
+      "latent_mse": 0.590348482131958
+    },
+    {
+      "index": 29,
+      "kind": "native_down_bridge",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_native_down_bridge.png",
+      "sha256": "55e407dac15153fabf836f28b49941b86d0398fe95da7dbd6c0dda4d7b22dbe7",
+      "latent_mse": 0.6656719446182251
+    },
+    {
+      "index": 29,
+      "kind": "target_roundtrip",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_target_roundtrip.png",
+      "sha256": "9f2dc1bfedbb03c9625a48583abe880084e7555a84ed26d7fd79d2bb2021cdd4",
+      "latent_mse": 0.0
+    },
+    {
+      "index": 28,
+      "kind": "native_roundtrip",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_native_roundtrip.png",
+      "sha256": "5273ec346f140030e78426a77a724994408fa093f0b564f89fbef901683a188d"
+    },
+    {
+      "index": 29,
+      "kind": "native_roundtrip",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_native_roundtrip.png",
+      "sha256": "3586b25de463aa540f3f95dd6e612dcf32cbbffed9ac75158e302866c5c5a9d2"
+    }
+  ],
+  "predictions": [
+    {
+      "arm": "swap",
+      "index": 28,
+      "sigma": 0.10009765625,
+      "clean_latent_mse": 0.013330897316336632,
+      "velocity_cond_mse": 1.2830860614776611,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_swap_s0.1.png",
+      "sha256": "af70fa741d0d0b97129e5524bfa7e978cb1c042977127a094e634ec8f15dfd55"
+    },
+    {
+      "arm": "swap",
+      "index": 28,
+      "sigma": 0.5,
+      "clean_latent_mse": 0.22128011286258698,
+      "velocity_cond_mse": 0.8389166593551636,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_swap_s0.5.png",
+      "sha256": "623331d1e7ddbdacf0de7251675f01774cb3e2af83c92b3a3b1285996b6a8f14"
+    },
+    {
+      "arm": "swap",
+      "index": 28,
+      "sigma": 0.8984375,
+      "clean_latent_mse": 0.9017979502677917,
+      "velocity_cond_mse": 0.9620757102966309,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_swap_s0.9.png",
+      "sha256": "6639bc1f3eb72096dd1960fd8d6f77d6c57ba9628301e236c2b69534d55c365e"
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "sigma": 0.10009765625,
+      "clean_latent_mse": 0.014825518243014812,
+      "velocity_cond_mse": 1.4292118549346924,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_swap_s0.1.png",
+      "sha256": "750bbd54aecdf64bb1fb82f7c85a608ce58621d811db81bb9dc001327eb9bdc3"
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "sigma": 0.5,
+      "clean_latent_mse": 0.2090654820203781,
+      "velocity_cond_mse": 0.789271354675293,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_swap_s0.5.png",
+      "sha256": "b68f90532a9ad68dd73f30a80bb3ba86c98867f0fa00726e39bb10c487112c6c"
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "sigma": 0.8984375,
+      "clean_latent_mse": 0.8337442874908447,
+      "velocity_cond_mse": 0.8500186204910278,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_swap_s0.9.png",
+      "sha256": "c7a945e46ee45876329cc271616c6a29f3cc9a89b01a195555cc569275302437"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 28,
+      "sigma": 0.10009765625,
+      "clean_latent_mse": 0.01455092802643776,
+      "velocity_cond_mse": 1.413952112197876,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_hybrid_swap_s0.1.png",
+      "sha256": "133bb679c01570dce26856d6d29e58a538907c08c2a53ea4660409e54a1e8632"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 28,
+      "sigma": 0.5,
+      "clean_latent_mse": 0.2293829619884491,
+      "velocity_cond_mse": 0.8681246042251587,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_hybrid_swap_s0.5.png",
+      "sha256": "a5def23d9c936d1eb83be6308c5e1f5779c22e1a24e3dc4cdc2354b7dbdfbbec"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 28,
+      "sigma": 0.8984375,
+      "clean_latent_mse": 0.8275859355926514,
+      "velocity_cond_mse": 0.9882492423057556,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_hybrid_swap_s0.9.png",
+      "sha256": "ccddf26eb81dca7dd7235fb5b8ddbf0019210edd97df562f827892f747fefc74"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 29,
+      "sigma": 0.10009765625,
+      "clean_latent_mse": 0.015513438731431961,
+      "velocity_cond_mse": 1.5187212228775024,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_hybrid_swap_s0.1.png",
+      "sha256": "200f12811649f415ca1e9f4954d5337bbddfb3b0bc563c12e669d7b5941d30e8"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 29,
+      "sigma": 0.5,
+      "clean_latent_mse": 0.21809527277946472,
+      "velocity_cond_mse": 0.8267512321472168,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_hybrid_swap_s0.5.png",
+      "sha256": "ed9ca32817f6be792a3e7474a3ddc07d00fcc42e38499fdf42c7e99f539a0c1f"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 29,
+      "sigma": 0.8984375,
+      "clean_latent_mse": 0.8567471504211426,
+      "velocity_cond_mse": 0.9246735572814941,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_hybrid_swap_s0.9.png",
+      "sha256": "ead0565eea00bf62bb5ecd0a2f448088f96aef5cf6ae6b3f34fac6e932524f6a"
+    },
+    {
+      "arm": "adapt200",
+      "index": 28,
+      "sigma": 0.10009765625,
+      "clean_latent_mse": 0.0126043651252985,
+      "velocity_cond_mse": 1.2555291652679443,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_adapt200_s0.1.png",
+      "sha256": "52bca4e2509fe296d688c65898916bce6e02f58f6ab6d7ed1d3b94a5bc27781b"
+    },
+    {
+      "arm": "adapt200",
+      "index": 28,
+      "sigma": 0.5,
+      "clean_latent_mse": 0.17608988285064697,
+      "velocity_cond_mse": 0.6659286022186279,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_adapt200_s0.5.png",
+      "sha256": "c7e8bc7b86b59990a4702369533557287e8667db21c0c316214a427dfdbe16fc"
+    },
+    {
+      "arm": "adapt200",
+      "index": 28,
+      "sigma": 0.8984375,
+      "clean_latent_mse": 0.7535889148712158,
+      "velocity_cond_mse": 0.8535259962081909,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p28_adapt200_s0.9.png",
+      "sha256": "bf73554caa6661aa937236092ab912f8dc80da79fcb7e364a1f8ed27d723c4dc"
+    },
+    {
+      "arm": "adapt200",
+      "index": 29,
+      "sigma": 0.10009765625,
+      "clean_latent_mse": 0.014015556313097477,
+      "velocity_cond_mse": 1.3813831806182861,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_adapt200_s0.1.png",
+      "sha256": "50107f20bb53ccec9fe97a1c32ae06ada90751800f8cc164755cee6c08e769db"
+    },
+    {
+      "arm": "adapt200",
+      "index": 29,
+      "sigma": 0.5,
+      "clean_latent_mse": 0.15355685353279114,
+      "velocity_cond_mse": 0.604282021522522,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_adapt200_s0.5.png",
+      "sha256": "fff361295c084e2bbda5ada711800ad61f5e1a1d9b7cf2dc9822909f3f709103"
+    },
+    {
+      "arm": "adapt200",
+      "index": 29,
+      "sigma": 0.8984375,
+      "clean_latent_mse": 0.6043974161148071,
+      "velocity_cond_mse": 0.7249531745910645,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_codec_diagnostic\\p29_adapt200_s0.9.png",
+      "sha256": "53fe997503a502045ef0b49326337014e42257ac202390aa79424aafaf544b84"
+    }
+  ],
+  "limits": [
+    "Two general images; fixed captions and noise; diagnostic, not quality acceptance."
+  ],
+  "visual_review": {
+    "reviewed": [
+      "p29_target_roundtrip",
+      "p29_target_bridge_bottleneck",
+      "p29_native_down_bridge",
+      "p28_target_bridge_bottleneck",
+      "p29_swap_s0.5",
+      "p29_hybrid_swap_s0.5",
+      "p29_adapt200_s0.5"
+    ],
+    "findings": [
+      "Target VAE direct roundtrip preserves sharp facial/body detail.",
+      "Truncating calibrated bridge features to the native 16-channel subspace introduces blur and block-like detail loss without any DiT/U-net forward; both inspected compositions retain their overall figures.",
+      "Native 2x spatial pooling followed by output calibration shows similar detail loss.",
+      "At sigma 0.5, the inspected swap-only prediction retains more facial features than initialized hybrid+swap; the adapted output remains blurred with lost facial detail.",
+      "These observations do not explain all free-running failures or prove hybrid is harmless."
+    ]
+  },
+  "matched_error_change": [
+    {
+      "index": 28,
+      "sigma": 0.1,
+      "before": 0.01455092802643776,
+      "after": 0.0126043651252985,
+      "reduction_percent": 13.37758593542986
+    },
+    {
+      "index": 28,
+      "sigma": 0.5,
+      "before": 0.2293829619884491,
+      "after": 0.17608988285064697,
+      "reduction_percent": 23.233233486838387
+    },
+    {
+      "index": 28,
+      "sigma": 0.9,
+      "before": 0.8275859355926514,
+      "after": 0.7535889148712158,
+      "reduction_percent": 8.9413096016965
+    },
+    {
+      "index": 29,
+      "sigma": 0.1,
+      "before": 0.015513438731431961,
+      "after": 0.014015556313097477,
+      "reduction_percent": 9.655386173663786
+    },
+    {
+      "index": 29,
+      "sigma": 0.5,
+      "before": 0.21809527277946472,
+      "after": 0.15355685353279114,
+      "reduction_percent": 29.59184691358902
+    },
+    {
+      "index": 29,
+      "sigma": 0.9,
+      "before": 0.8567471504211426,
+      "after": 0.6043974161148071,
+      "reduction_percent": 29.454400190568528
+    }
+  ],
+  "conclusions": [
+    "The calibrated 16-channel bottleneck can itself introduce artifacts before U-net processing.",
+    "All six matched single-prediction clean-latent errors improve after 200 updates; this does not imply free-running quality recovery.",
+    "Next compare targeted latent IO/bridge adaptation and trajectory consistency, maintaining the reduced target token grid; do not extend all-parameter low-LR training blindly."
+  ],
+  "worker_cleanup": {
+    "exit_code": 0,
+    "gpu_memory_mib_after_exit": 1930,
+    "owner_runs_modified": false,
+    "backend_code_modified": false
+  }
+}

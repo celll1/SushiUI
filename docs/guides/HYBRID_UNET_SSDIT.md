@@ -941,6 +941,29 @@ usage returned to the desktop/backend baseline. Reconstruction, matched-noise
 single prediction and free-running generation need separate diagnosis before
 extending the training budget or changing the preset.
 
+## Codec and matched-noise diagnosis
+
+The next two-general-image probe separates VAE-only reconstruction from one
+prediction at sigma 0.1/0.5/0.9, using identical external noise and CFG4 for
+swap-only, initialized hybrid+swap and the 200-update adapted candidate. Direct
+target VAE reconstruction retains sharp detail. Mapping through the calibrated
+bridge, discarding its extra channels to model the initial native 16-channel
+head, and mapping back introduces blur/block-like detail loss without any DiT
+or U-Net forward. Native latent 2x pooling followed by the calibrated output map
+shows similar loss. The two inspected bridge reconstructions retain overall
+figures, so this does not account for every free-running composition failure.
+
+All six matched clean-latent prediction errors decreased after the 200 updates.
+At sigma 0.5, reductions relative to initialized hybrid+swap are 23.2% and 29.6%
+for the two images. The reviewed single prediction still loses facial detail,
+and previous free-running outputs did not consistently improve. A small latent
+MSE from a low-noise input is not evidence for generation from pure noise.
+The result identifies codec bottleneck artifacts before U-Net processing and
+learning progress in single prediction, without proving hybrid harmless or
+quality accepted. Next isolate latent IO/bridge adaptation and trajectory
+consistency while retaining the reduced target token grid.
+Evidence: `docs/audits/data/hybrid_anima_codec_diagnostic_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

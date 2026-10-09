@@ -176,6 +176,9 @@ individual records' limitations.
    64.562s/4.104 GiB; four held outputs have somewhat smoother joint texture but
    still fail two-person structure and retain severe blocks. This does not close
    initialization/default quality acceptance, despite lower matched training loss.
+   A concurrent IRIS GPU generation worker invalidates isolated throughput
+   ranking from these wall times; per-worker allocated memory and functional
+   matching/frozen-state evidence retain their stated scope.
    Check reduced-grid geometry/position and field mapping before further fitting.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old

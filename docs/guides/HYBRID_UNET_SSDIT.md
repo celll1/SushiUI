@@ -1378,7 +1378,9 @@ train either six IO/bridge tensors (1,130,624 parameters) or those plus all 65
 structural tensors (6,088,832 parameters). All optimizer counters reach 200 and
 both frozen-body hashes match the shared start. IO-only takes 64.562 seconds and
 4.104 GiB allocated; joint adaptation takes 81.344 seconds and 4.124 GiB.
-This is matched-exposure comparison, not equal-total-compute or optimizer resume.
+This is matched-exposure comparison, not equal-total-compute or optimizer resume. A separate IRIS generation worker was present during
+this probe, so wall times are not isolated throughput measurements. Allocated
+VRAM is the probe worker allocation, not whole-device usage.
 
 Last-50 matched training mean losses are 1.85723 and 1.52018 respectively; they
 are not held-out field scores. Four new held-prompt outputs at the same seed/CFG

@@ -1,0 +1,52 @@
+{
+  "scope": "Real GPU public Ming Design initialization, indexed native BF16 DiT plus existing packed conditioner",
+  "official_transformer": {
+    "repository": "inclusionAI/Ming-Image-0.1-Design",
+    "revision": "208087ada1486931692c1896f38d4cd16ff3df82",
+    "shards": 5,
+    "native_parameters": 6154901056
+  },
+  "conditioner": "Existing verified Design INT8 ConvRot components, copied without requantization",
+  "source_owner_packages_untouched": true,
+  "data": {"source_dataset_id": 30, "item_ids": [3813125,3813130,3813135], "rating": "general", "fit_count": 2, "holdout_count": 1, "resolution": 512},
+  "recipe": {"teacher_steps": 4, "data_noising_updates": 2, "native_trajectory_updates": 1, "optimizer": "adamw8bit", "stochastic_rounding": true},
+  "completed_job_id": "f3224f0f4bdc4972bb6d0f3834d548a7",
+  "public_job_completed": true,
+  "new_package_strict_reload": true,
+  "generation_spec_matches_initialization_spec_exactly": true,
+  "generation": {
+    "image_id": 11622,
+    "filename": "ming_2bd64a38f7804d9dbfe9f9506a392db8_0.png",
+    "steps": 4,
+    "cfg_scale": 1.0,
+    "seed": 993,
+    "width": 512,
+    "height": 512,
+    "vae_decode_success": true,
+    "generation_seconds": 72.451,
+    "peak_vram_gb_as_reported_by_api": 18.558,
+    "peak_reserved_gb_as_reported_by_api": 18.617
+  },
+  "cancellation": {
+    "job_id": "22dcde09150948b1a081823b6f96c7b7",
+    "requested_after_update": 1,
+    "terminal_update": 2,
+    "state": "cancelled",
+    "error": null,
+    "output_absent": true,
+    "observed_gpu_usage_after_cancel_mib": 2230
+  },
+  "cleanup": {
+    "restored_owner_model": "Ming Layer INT8 ConvRot",
+    "probe_file_inventory_and_manifest_verified_before_deletion": true,
+    "both_owned_probe_packages_removed": true,
+    "model_index_refreshed_and_probe_entries_absent": true,
+    "disk_space_restored_gib": 61,
+    "no_training_run_created": true,
+    "backend_restarted_and_health_ok": true,
+    "observed_gpu_usage_after_restart_mib": 1930
+  },
+  "quality_recovery_acceptance": false,
+  "layer_gpu_initialization_acceptance": false,
+  "limitations": "Three updates and one generated image establish functionality, not recovered quality or throughput. Layer remains a separate real-GPU gate."
+}

@@ -575,7 +575,7 @@ panel closes. A completed artifact is applied only by an explicit button after
 refreshing the model index; this switches topology to inheritance and clears the
 old resume checkpoint. Stale polling responses cannot overwrite action results.
 UI types, paths and state transitions are statically reviewed; owner build and
-interactive acceptance remain pending. Official-weight Ming GPU acceptance remains pending.
+interactive acceptance remain pending. Official-weight Ming Layer GPU acceptance remains pending.
 Real Anima API acceptance used three general images (two fit, one
 holdout), two noising updates and one native-trajectory update at 512px. It
 completed export, inspect and reload of the fitted artifact. Cancellation was
@@ -660,9 +660,23 @@ are preserved on completion, cancellation and publication failure.
 Real tiny Design/Layer CPU tests execute encoding, native trajectories, fitting,
 package publication and strict reload; shared API ownership tests and source
 guards also pass. Schema capability and frontend package-name controls are wired
-and statically reviewed. Official-weight GPU/dtype acceptance and owner frontend
+and statically reviewed. Official-weight Layer GPU/dtype acceptance and owner frontend
 build remain pending. Evidence:
 `docs/audits/data/hybrid_ming_initialization_2026-10.json`.
+
+Real public Design GPU acceptance used the official five-shard BF16 DiT with
+the previously verified packed conditioner, three authorized general images
+(two fit, one held out), 512px, four teacher steps and three fitting updates.
+The completed package reloaded through the native loader; four-step CFG=1
+generation and VAE decode succeeded (gallery image 11622), with the restored
+generation spec exactly matching the initialization spec. A second job was
+cancelled after its first optimizer update, terminated at update two with no
+error and published no package. GPU usage returned to approximately 2.2GiB;
+after restoring the owner's Ming Layer and restarting the API it was 1.9GiB.
+Both inventoried temporary model packages were removed and the model index
+refreshed, restoring approximately 61GiB of disk space. This proves functionality
+on Design, not quality recovery, Layer acceptance or paired throughput. Evidence:
+`docs/audits/data/hybrid_ming_design_initialization_api_2026-10.json`.
 
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.

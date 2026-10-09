@@ -159,7 +159,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
     setSelected("");
   };
   return <section className="space-y-3 rounded border border-gray-700 p-3 text-xs">
-    <h4 className="font-medium text-gray-200">Residual U-Net topology</h4>
+    <h4 className="font-medium text-gray-200">{current?.method === "hybrid_unet_ssdit" ? "Hybrid" : "Residual"} U-Net topology</h4>
     <div className="flex flex-wrap items-center gap-3">
       <select aria-label="Topology source" value={mode ?? ""} disabled={!info}
         className="rounded bg-gray-800 p-2" onChange={e => onChange(e.target.value as "inherit" | "configure",
@@ -187,7 +187,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
-    {info && <DiTParameterSummary counts={info.parameter_counts} plan={plan} />}
+    {info && <DiTParameterSummary counts={info.parameter_counts} plan={plan} spec={current} />}
     {current && <>
       {info?.video_geometry && <p className="my-2 text-gray-400">Spatial grids and skip connections apply independently to each video frame. Frame count and audio tokens stay at native resolution.</p>}
       <div className="flex flex-wrap items-center gap-3">

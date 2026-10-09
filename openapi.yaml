@@ -4043,7 +4043,7 @@ paths:
                   plan:
                     type: object
                     additionalProperties: true
-                    description: Resolution levels, blocks and skip edges. Hybrid plans also report hybrid_convolution_halo, mapping each stream to height/width context radii in base token cells; this excludes global attention equivalence.
+                    description: Resolution levels, blocks and skip edges. Hybrid plans report hybrid_parameter_counts with added parameters and per-module counts, and hybrid_convolution_halo mapping streams to height/width context radii in base token cells. Counts exclude VAE/global adapters and activation memory; halo excludes global attention equivalence.
         '422':
           description: Invalid topology, unsupported operator or indivisible grid
   /models/load:

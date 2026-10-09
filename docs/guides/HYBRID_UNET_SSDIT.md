@@ -73,10 +73,15 @@ This bounds local-path padding effects; global attention can propagate boundary
 differences, so a finite halo does not prove whole-model equivalence with
 full-frame attention. Large halos can erase the memory/time benefit of splitting.
 
-The graph shows compressed learned skips with dashed yellow lines. Hybrid
+The graph shows compressed learned skips with dashed yellow lines and spatial
+modules with pink squares. Preview parameter counts cover each registered
+boundary, local refiner and skip, independently of native base weights. The
+UI adds those counts to its native census; pending hybrid counts are not shown
+as zero. An unavailable native census remains explicitly unavailable. Hybrid
 region editing is temporarily disabled to preserve dependent module settings;
 the complete hybrid editor and preset selection remain pending. No existing
-run or default preset is converted. Parameter census, GPU/native full-trainer
+run or default preset is converted. Native census coverage, activation-memory
+accounting, GPU/native full-trainer
 optimizer/EMA/offload acceptance and
 LoRA support still require implementation or verification.
 
@@ -124,3 +129,15 @@ Partition/global-summary forwards retain full-canvas coordinates after nested
 downsampling. Qwen hybrid remains uncached and single-target; legacy topology
 keeps its existing partition restrictions. These tests do not validate the
 caption encoder or official-weight GPU training.
+
+## Requested Anima performance matrix
+
+After implementation, rerun the owner's four-way comparison: native/hybrid
+U-Net crossed with native/Qwen-Image 2.1 VAE. The previous batch comparison used
+Anima base v1.0, BF16, AdamW8bit, 24 checkpointed native blocks, 1024px and batch
+1/2/4 on RTX 6000 Ada. It used synthetic latents and excluded codec/TE/IO and
+partitioning; its VAE swap did not include real calibration. Keep comparable
+compute measurements, but include the production bridge in the new swapped
+conditions and state calibration provenance. Report forward, backward, update,
+images/sec and peak allocated/reserved VRAM; separate preprocessing timings
+from the training step. Results are pending and no speedup is assumed.

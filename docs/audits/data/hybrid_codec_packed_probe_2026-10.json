@@ -1,0 +1,243 @@
+{
+  "rating": "general",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_indices": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "results": [
+    {
+      "index": 28,
+      "arm": "existing16",
+      "latent_mse": 0.6639487743377686
+    },
+    {
+      "index": 28,
+      "arm": "matched16_cycle",
+      "latent_mse": 0.7441966533660889
+    },
+    {
+      "index": 28,
+      "arm": "packed64_pair",
+      "latent_mse": 0.6823625564575195
+    },
+    {
+      "index": 28,
+      "arm": "packed64_cycle",
+      "latent_mse": 0.6287506222724915
+    },
+    {
+      "index": 28,
+      "arm": "native64_direct",
+      "latent_mse": 0.7358490228652954
+    },
+    {
+      "index": 29,
+      "arm": "existing16",
+      "latent_mse": 0.5903966426849365
+    },
+    {
+      "index": 29,
+      "arm": "matched16_cycle",
+      "latent_mse": 0.6064790487289429
+    },
+    {
+      "index": 29,
+      "arm": "packed64_pair",
+      "latent_mse": 0.5696700215339661
+    },
+    {
+      "index": 29,
+      "arm": "packed64_cycle",
+      "latent_mse": 0.48678702116012573
+    },
+    {
+      "index": 29,
+      "arm": "native64_direct",
+      "latent_mse": 0.6383686065673828
+    },
+    {
+      "index": 30,
+      "arm": "existing16",
+      "latent_mse": 0.6686643362045288
+    },
+    {
+      "index": 30,
+      "arm": "matched16_cycle",
+      "latent_mse": 0.6760685443878174
+    },
+    {
+      "index": 30,
+      "arm": "packed64_pair",
+      "latent_mse": 0.6527867317199707
+    },
+    {
+      "index": 30,
+      "arm": "packed64_cycle",
+      "latent_mse": 0.5344703197479248
+    },
+    {
+      "index": 30,
+      "arm": "native64_direct",
+      "latent_mse": 0.7123799324035645
+    },
+    {
+      "index": 31,
+      "arm": "existing16",
+      "latent_mse": 0.5395577549934387
+    },
+    {
+      "index": 31,
+      "arm": "matched16_cycle",
+      "latent_mse": 0.5243414044380188
+    },
+    {
+      "index": 31,
+      "arm": "packed64_pair",
+      "latent_mse": 0.4870988726615906
+    },
+    {
+      "index": 31,
+      "arm": "packed64_cycle",
+      "latent_mse": 0.41779235005378723
+    },
+    {
+      "index": 31,
+      "arm": "native64_direct",
+      "latent_mse": 0.5498442649841309
+    }
+  ],
+  "images": [
+    {
+      "index": 28,
+      "arm": "existing16",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p28_existing16.png",
+      "sha256": "f4d5f6e23825fafc0582700c7846ce0964456d3ae20d5afa9384588111dc091b"
+    },
+    {
+      "index": 28,
+      "arm": "matched16_cycle",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p28_matched16_cycle.png",
+      "sha256": "94ad2574645b7cec9ed5cd320d1f07f6fdcfca879515935f50f46fae382d05be"
+    },
+    {
+      "index": 28,
+      "arm": "packed64_pair",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p28_packed64_pair.png",
+      "sha256": "e34144215968a9a2126614f0493d3f6d1ba6bb848e2c4b12bcaa654153855596"
+    },
+    {
+      "index": 28,
+      "arm": "packed64_cycle",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p28_packed64_cycle.png",
+      "sha256": "97b07067acf26a1fd5795ebbb7e916b658e9936f5849de48628d255ab5a551ab"
+    },
+    {
+      "index": 28,
+      "arm": "native64_direct",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p28_native64_direct.png",
+      "sha256": "46191b2c7de3352cf4108dbde209fb27c71513aeffa1b2d7ee4c0e57c6f080ee"
+    },
+    {
+      "index": 29,
+      "arm": "existing16",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p29_existing16.png",
+      "sha256": "a6ff615b8500794c7b90c31c879f6012dbfe29060de7268b80918b8950ac5832"
+    },
+    {
+      "index": 29,
+      "arm": "matched16_cycle",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p29_matched16_cycle.png",
+      "sha256": "3e8b101a40b9368758ec2caa757d86d6cf0b51502348b5f0f160008d21bd8dc3"
+    },
+    {
+      "index": 29,
+      "arm": "packed64_pair",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p29_packed64_pair.png",
+      "sha256": "f04f6db82b671a53cbe6913a0ec729aaa336473f2103063e4a41cb8acc92c817"
+    },
+    {
+      "index": 29,
+      "arm": "packed64_cycle",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p29_packed64_cycle.png",
+      "sha256": "f4294355c580a447bf5669598a892e68ee33792d732248ba58f65481623f4050"
+    },
+    {
+      "index": 29,
+      "arm": "native64_direct",
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_codec_packed_matched_probe\\p29_native64_direct.png",
+      "sha256": "f3df8f25375d1b2065e2d8e206ed585e93661efcc44cb65fd9e85305088ccc25"
+    }
+  ],
+  "calibration_sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+  "seconds": 4.156330200145021,
+  "peak_allocated_gib": 2.277888774871826,
+  "grid": [
+    32,
+    32
+  ],
+  "channels": 64,
+  "limits": [
+    "Codec-only feasibility; original resized DiT ignores 48 extra channels at initialization.",
+    "Packed 64 channels require explicit IO/noise-field initialization before generation adoption.",
+    "Four held items excluded from new fits, not proved absent from older input calibration.",
+    "No production/default or owner artifact changed."
+  ],
+  "mean_latent_mse": {
+    "existing16": 0.6156418770551682,
+    "matched16_cycle": 0.637771412730217,
+    "native64_direct": 0.6591104567050934,
+    "packed64_cycle": 0.5169500783085823,
+    "packed64_pair": 0.5979795455932617
+  },
+  "relative_improvement_matched16": 0.1894430073377139,
+  "review": {
+    "p28": "Two seated figures retained, block/edge artifacts remain.",
+    "p29": "Face and hair outlines more detailed, strong block/edge texture remains.",
+    "decision": "Promising codec reconstruction feasibility, not generation/default acceptance."
+  },
+  "io_algebra": {
+    "input_max_error": 1.7763568394002505e-14,
+    "output_max_error": 0.0,
+    "native_tokens": 96,
+    "target_tokens": 24,
+    "in_channels": 64,
+    "patch_size": 2,
+    "limits": [
+      "Linear boundaries only; no transformer, RoPE or noise-distribution acceptance.",
+      "Padding assumption restricted to image patches; no partition/nonconstant-mask claim."
+    ]
+  },
+  "weights_sha256": "bdb0c8fa9070af3d3edc110f3cd3f6dc276cf7ee808ac9f5581761fa1380dc31"
+}

@@ -144,6 +144,15 @@ individual records' limitations.
    promoted and does not establish sampler/DiT improvement. Investigate retaining
    more codec information in reduced-grid IO or joint field-aware initialization
    rather than repeating this output-only fit.
+   The packed-native codec feasibility probe
+   (`hybrid_codec_packed_probe_2026-10.json`) matches all new fits to 28 general
+   images and excludes four evaluation images. Packed-64 cycle reconstruction
+   reduces mean latent MSE by 18.94% versus a freshly matched pooled-16 cycle,
+   retaining the replacement token grid. Block texture remains. An explicit
+   experimental Anima IO coefficient transfer passes synthetic linear-boundary
+   checks including nonzero patch-constant padding, with one quarter the tokens.
+   DiT/RoPE/noise-field and free-running generation remain unverified; no owner
+   artifact, production schema or default changes. Verify those before adoption.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

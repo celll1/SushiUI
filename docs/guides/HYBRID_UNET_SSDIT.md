@@ -1290,3 +1290,32 @@ artifacts; block texture persists. This is clean codec reconstruction only, not
 DiT/noise-field or free-running generation acceptance. It does not justify a
 production/default change. The owned worker exited and no API model/run changed.
 Evidence: `docs/audits/data/hybrid_codec_cycle_probe_2026-10.json`.
+
+## Reduced-grid packed codec IO experiment
+
+A new codec-only probe packs each native 16-channel 2x2 cell into 64 channels
+on the replacement codec's 32x32 grid at 512px. Both directions use 3x3 paired
+calibration. An additional output refit reconstructs target clean latents from
+the actual incoming projection. All new fits use the same 28 general images,
+with four excluded evaluation images. Mean target-latent reconstruction MSE is
+0.637771 for the freshly matched pooled-16 cycle, 0.516950 for packed-64 cycle
+(18.94% lower), and 0.615642 for the older retained production-geometry control.
+The improvement is not attributed to packing alone versus the older differently
+fitted control. Pair-only packed fitting gives 0.597980, while direct native
+packed-to-target fitting gives 0.659110. The inspected face/outline is more
+detailed but strong block/edge artifacts remain. These are codec reconstructions,
+not denoising or free-running generation. No default is promoted.
+
+`core/experiments/anima_packed_io.py` provides an explicit coefficient prototype
+for native 2x2 Anima IO: average four native input-patch embeddings into one
+reduced-grid token, and repeat the native output patch over four coarse cells.
+It respects distinct input channel-major and output patch-major orders. Synthetic
+FP64 testing, including nonzero patch-constant padding, gives input maximum error
+1.78e-14 and exact output agreement. Token count is 24 versus native 96 in that
+case, with 64 channels and unchanged patch size two. This is linear-boundary
+acceptance only: body/RoPE behavior, calibrated noise covariance and generated
+quality are unverified. Nonconstant padding/partition semantics are not accepted.
+The prototype is not installed into existing runs or checkpoints. Its next gate
+is an isolated DiT/noise-field comparison with explicit codec and IO state,
+followed by held general generation before any runtime/schema/default change.
+Evidence: `docs/audits/data/hybrid_codec_packed_probe_2026-10.json`.

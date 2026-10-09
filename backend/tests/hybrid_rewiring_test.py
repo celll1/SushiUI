@@ -165,6 +165,33 @@ def test_branches_learn_and_restore_full_state():
         restored.load_state_dict({}, strict=True)
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("cpu_offload", [False, True])
+def test_checkpointed_modules_preserve_outputs_and_all_gradients(dtype, cpu_offload):
+    torch.manual_seed(31)
+    plain = HybridModules(declaration()).to(dtype=dtype)
+    with torch.no_grad():
+        for parameter in plain.parameters():
+            parameter.normal_(0, 0.1)
+    checked = HybridModules(declaration()).to(dtype=dtype)
+    checked.load_state_dict(plain.state_dict())
+    original = torch.randn(2, 3 + 8*12, 8, dtype=dtype)
+    inputs, outputs = [], []
+    for modules, use_checkpoint in ((plain, False), (checked, True)):
+        value = original.clone().requires_grad_(True)
+        inputs.append(value)
+        output = modules.forward_stream(value, "main", 8, 12, 3, None, execute, lambda *args: None,
+                                       checkpoint_modules=use_checkpoint, checkpoint_offload=cpu_offload)
+        outputs.append(output)
+        output.float().square().mean().backward()
+    assert torch.equal(outputs[0], outputs[1])
+    assert torch.equal(inputs[0].grad, inputs[1].grad)
+    for (name, reference), (_, candidate) in zip(plain.named_parameters(), checked.named_parameters()):
+        assert reference.grad is not None and candidate.grad is not None, name
+        assert torch.isfinite(candidate.grad).all(), name
+        torch.testing.assert_close(reference.grad, candidate.grad, rtol=0, atol=0)
+
+
 def test_compressed_skip_storage_estimate():
     preview = hybrid_preview(declaration(), 8, 12, batch_size=2, element_bytes=4)
     sizes = {item["id"]: item["stored_bytes"] for item in preview["learned_skip_edges"]}

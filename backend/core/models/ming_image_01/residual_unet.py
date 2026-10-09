@@ -170,7 +170,8 @@ def run_rewired_ming(model, hidden, modulation, rotary, mask, image_positions,
         if modules is None or modules.declaration != spec:
             raise ValueError("Ming hybrid modules do not match the installed declaration")
         output = modules.forward_stream(transported, "main", frames*h, w, prefix,
-            (rotary, mask), execute, coarse_context, grid_groups=frames)
+            (rotary, mask), execute, coarse_context, grid_groups=frames,
+            checkpoint_modules=model.gradient_checkpointing and getattr(model, "_training_gradient_checkpointing_blocks", len(model.layers)) > 0)
     else:
         output = run_rewired_stream(transported, spec, "main", frames*h, w, prefix,
             (rotary, mask), execute, coarse_context, grid_groups=frames)

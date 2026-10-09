@@ -58,34 +58,46 @@ class HybridModules(nn.Module):
         for item in self.declaration["skips"]:
             self.skips[item["id"]] = CompressedSkip(widths[item["stream"]], item["rank"])
 
-    def forward_stream(self, hidden, stream, height, width, prefix, context, execute_block, coarse_context, *, grid_groups=1):
+    def forward_stream(self, hidden, stream, height, width, prefix, context, execute_block, coarse_context, *,
+                       grid_groups=1, checkpoint_modules=False, checkpoint_offload=False):
         if hidden.shape[-1] != self.declaration["stream_widths"].get(stream):
             raise ValueError("Hybrid hidden width differs from declaration")
         if type(grid_groups) is not int or grid_groups < 1 or height % grid_groups:
             raise ValueError("Hybrid grid groups must evenly divide token height")
         hybrid_preview(self.declaration, height // grid_groups, width,
                        batch_size=hidden.shape[0] * grid_groups, element_bytes=hidden.element_size())
-        execution = HybridExecution(self, stream, grid_groups)
+        execution = HybridExecution(self, stream, grid_groups, checkpoint_modules, checkpoint_offload)
         return run_rewired_stream(hidden, legacy_topology(self.declaration), stream, height, width, prefix,
             context, execute_block, coarse_context, grid_groups=grid_groups, extensions=execution)
 
 
 class HybridExecution:
     """Per-forward activation ownership; module state never retains a skip graph."""
-    def __init__(self, modules, stream, grid_groups=1):
+    def __init__(self, modules, stream, grid_groups=1, checkpoint_modules=False, checkpoint_offload=False):
         self.modules = modules
         self.stream = stream
         self.grid_groups = grid_groups
+        self.checkpoint_modules = checkpoint_modules
+        self.checkpoint_offload = checkpoint_offload
         self.saved = {}
         self.boundaries = {item["region"]: item["id"] for item in modules.declaration["boundaries"]}
 
+    def call(self, function, value):
+        if not self.checkpoint_modules or not torch.is_grad_enabled():
+            return function(value)
+        from torch.utils.checkpoint import checkpoint
+        if self.checkpoint_offload:
+            with torch.autograd.graph.save_on_cpu(pin_memory=value.is_cuda):
+                return checkpoint(function, value, use_reentrant=False)
+        return checkpoint(function, value, use_reentrant=False)
+
     def down(self, region, grid, pooled):
         name = self.boundaries.get(region["id"])
-        return pooled if name is None else pooled + self.modules.down[name](grid).to(pooled)
+        return pooled if name is None else pooled + self.call(self.modules.down[name], grid).to(pooled)
 
     def up(self, region, update):
         name = self.boundaries.get(region["id"])
-        return update if name is None else update + self.modules.up[name](update).to(update)
+        return update if name is None else update + self.call(self.modules.up[name], update).to(update)
 
     def grid(self, hidden, prefix, height, width):
         batch, channels = hidden.shape[0], hidden.shape[-1]
@@ -104,7 +116,7 @@ class HybridExecution:
             return hidden
         grid = self.grid(hidden, prefix, height, width)
         for item in items:
-            grid = grid + self.modules.skips[item["id"]].restore_grid(self.saved.pop(item["id"])).to(grid)
+            grid = grid + self.call(self.modules.skips[item["id"]].restore_grid, self.saved.pop(item["id"])).to(grid)
         return self.merge(hidden, prefix, grid)
 
     def after(self, index, hidden, prefix, height, width):
@@ -116,7 +128,7 @@ class HybridExecution:
             return hidden
         grid = self.grid(hidden, prefix, height, width)
         for item in refiners:
-            grid = grid + self.modules.local[item["id"]](grid).to(grid)
+            grid = grid + self.call(self.modules.local[item["id"]], grid).to(grid)
         for item in sources:
-            self.saved[item["id"]] = self.modules.skips[item["id"]].capture_grid(grid)
+            self.saved[item["id"]] = self.call(self.modules.skips[item["id"]].capture_grid, grid)
         return self.merge(hidden, prefix, grid)

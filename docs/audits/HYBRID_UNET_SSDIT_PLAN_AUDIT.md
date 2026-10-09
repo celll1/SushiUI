@@ -15,7 +15,7 @@ Existing owner runs and their artifacts are not migrated implicitly.
 | Stable module IDs, exact topology/module/native identities, strict complete payload loading | `spec.py`, `hybrid_spec.py`, native loaders; `hybrid_provenance_test.py`, export tests | Implemented; missing/non-finite/inconsistent payloads refused |
 | Full FT save/resume and named optimizer ownership | `hybrid_anima_lifecycle_2026-10.json`, `hybrid_anima_initialized_full_ft_2026-10.json` | Real Anima GPU continuation verified, including structural parameters |
 | LoRA complete structural payload and ordinary adapter algebra | `hybrid_adapter_training_2026-10.json`, `hybrid_adapter_generation_payload_2026-10.json` | All three native integrations CPU verified; Anima LoHa/LoKr follow capability tables |
-| Official-weight LoRA training/resume/generation | `hybrid_anima_lora_gpu_2026-10.json`, `hybrid_ming_lora_gpu_2026-10.json` | Anima BF16 and Ming INT8 ConvRot GPU verified; Qwen GPU and Ming BF16-base acceptance remain distinct |
+| Official-weight LoRA training/resume/generation | `hybrid_anima_lora_gpu_2026-10.json`, `hybrid_ming_lora_gpu_2026-10.json`, `hybrid_qwen_lora_gpu_2026-10.json` | Anima BF16 plus Ming/Qwen INT8 ConvRot GPU verified; untested BF16-base and quality scopes remain distinct |
 | VAE swap rebases native identity without replacing learned modules | Native `vae_alignment.py`; initialized/export and lifecycle tests | Anima/Ming/Qwen CPU contract; Anima combined GPU lifecycle verified |
 | EMA, checkpointing and activation ownership | Anima lifecycle and skip/checkpoint tests | Structural parameters owned once; CPU EMA and checkpoint/offload paths verified within recorded scope |
 | GPU/CPU/recompute skip policies preserve gradients and random conditions | `hybrid_skip_storage_test.py`, `hybrid_skip_recompute_test.py`, `hybrid_anima_skip_storage_2026-10.json` | CPU correctness and Anima GPU compute evidence; image-quality comparison is not established by compute evidence |
@@ -147,8 +147,13 @@ individual records' limitations.
    payload tensors match the factory, all 344 optimizer entries restore with
    none fresh and counters 3, and saved-payload generation has no warnings.
    The owned smoke run is removed and owner model restored. This closes Ming
-   INT8 functionality, not BF16-base or quality acceptance. Qwen LoRA numerical
-   restoration still has CPU acceptance rather than real GPU acceptance.
+   INT8 functionality, not BF16-base or quality acceptance. Qwen INT8 ConvRot
+   now also completes two updates, step-2-to-3 continuation and saved-payload
+   generation without warnings. Its 72 factory-matched structural tensors and
+   328 optimizer entries restore with none fresh and counters 3. Both owned
+   smoke runs are removed and the prior Ming Layer model restored. This closes
+   the bounded native-codec LoRA GPU functionality probes on all three supported
+   architectures; combined codec/partition and quality scopes remain separate.
    Their three-update initializer probes prove
    publication/load/generation functionality, not quality recovery. Prioritize
    Anima/combined quality work before expanding GPU model downloads.

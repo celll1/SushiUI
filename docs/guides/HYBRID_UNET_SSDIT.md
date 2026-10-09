@@ -1157,6 +1157,25 @@ generation checkpoint. VAE/TE encoding, IO and global/partition/EMA overhead
 are excluded. Formal publication and combined-codec quality remain separate.
 Evidence: `docs/audits/data/hybrid_anima_candidate_matrix_2026-10.json`.
 
+### High16 combined-codec generation
+
+Four new outputs combined the retained 3700-update paired-anchor high16 state
+with the existing production Gaussian-policy Qwen codec calibration. Native,
+native-codec candidate and swap-only controls were reused with verified hashes.
+No additional training, owner-run change or calibration-image processing occurred.
+The reviewed CFG4 pair still loses composition: p28 retains only a partial,
+enlarged figure and p29 an enlarged distorted head/body, both with strong block
+texture. The reviewed swap-only controls also have severe texture/composition
+loss. Increasing high-resolution blocks does not resolve this codec transition.
+
+Keep the native-codec outline-preserving candidate separate from the unaccepted
+combined initialization. The combined compute benefit is measured, but it does
+not prove an adequate coarse-structure starting point. The earlier reconstruction
+diagnostic establishes losses before DiT processing; neither record assigns all
+remaining failure to one subsystem. Do not extend structural-only fitting to
+address codec loss without a separate codec/IO initialization intervention.
+Evidence: `docs/audits/data/hybrid_anima_candidate_combined_quality_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

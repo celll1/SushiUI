@@ -161,6 +161,14 @@ individual records' limitations.
    outputs retain severe stripes/blocks and fail two-person structure. It is not
    adopted. Packed IO/field initialization needs further fitting before public
    publication or default changes; clean reconstruction gains are insufficient.
+   Packed IO-only learning (`hybrid_anima_packed_io_fit_2026-10.json`) completes
+   200 updates of six FP32 IO/bridge tensors (1,130,624 parameters) at LR 1e-4,
+   with exact frozen body/structural hashes, finite state and counters 200.
+   It costs 64.672 training seconds/4.095 GiB allocated; two new held general
+   outputs reduce exaggerated eyes but retain strong block artifacts and fail
+   two-person composition. No default/adoption or broad quality claim follows.
+   Short IO-only learning is insufficient; coherent IO/structural adaptation or
+   a different reduced-grid initialization still needs validation.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

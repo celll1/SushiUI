@@ -1344,3 +1344,26 @@ noise contract/default is changed; the prototype is not published as a checkpoin
 No new DiT fitting occurred. Further work must initialize IO/fields coherently
 before claiming a useful packed-codec candidate.
 Evidence: `docs/audits/data/hybrid_anima_packed_generation_2026-10.json`.
+
+### Packed IO-only initialization learning
+
+A bounded 200-update probe trains only the FP32 Anima input/output projections
+and two codec bridges (six tensors, 1,130,624 parameters), starting from the
+head-aware noise snapshot and native-paired output calibration. Native body,
+caption bridge and retained 3700-update high16 structural modules stay fixed;
+their before/after parameter hashes match exactly. Twenty-eight general images
+train, with indices 28–31 excluded from this adaptation. Fixed captions, independent
+noise, uniform sigma 0.01–0.99 and 0.1 null conditioning are used. AdamW8bit at
+LR 1e-4 completes all six optimizer counters to 200; tensors and losses are finite.
+Training takes 64.672 seconds and peaks at 4.095 GiB allocated. This excludes
+setup, codec/TE encoding, hashing and evaluation, and is not a Full FT memory claim.
+
+Two new held-prompt CFG4/seed63/28-step outputs reuse the preceding four-image
+control by hash. The earlier exaggerated eyes diminish and some figure outlines
+change, but strong block texture and failed two-person composition persist.
+There is no consistent quality advantage or coarse-initialization acceptance.
+The private six-tensor payload is retained for further experiments, not published
+as a production artifact or made a default. No owner run or loaded model changes.
+The first trial used the frame wrapper for RGB training input and failed before
+updates; the corrected trial uses the image wrapper.
+Evidence: `docs/audits/data/hybrid_anima_packed_io_fit_2026-10.json`.

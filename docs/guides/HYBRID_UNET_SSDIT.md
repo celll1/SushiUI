@@ -562,7 +562,11 @@ rating filter. Agent-operated acceptance still uses only owner-authorized genera
 images. Metadata stores the bounded recipe and hashes, without image paths or
 caption contents; existing records without a recipe remain readable.
 
-The public execution binding currently supports floating native Anima only.
+The public execution binding supports floating native Anima and unsharded,
+floating native Qwen split packages. Qwen saves a sibling package directory;
+`output_name` is its directory basename, while Anima requires a safetensors
+filename. Existing topology, VAE swap, adapters and missing source assets are
+refused before dispatch.
 Training's native Anima topology editor exposes calibration dataset selection,
 the API-provided recipe, progress and cooperative cancellation. It polls the
 process-local job even after reopening, and leaves running jobs active when the
@@ -570,8 +574,8 @@ panel closes. A completed artifact is applied only by an explicit button after
 refreshing the model index; this switches topology to inheritance and clears the
 old resume checkpoint. Stale polling responses cannot overwrite action results.
 UI types, paths and state transitions are statically reviewed; owner build and
-interactive acceptance remain pending. Ming/Qwen execution bindings remain
-pending. Real Anima API acceptance used three general images (two fit, one
+interactive acceptance remain pending. Ming execution remains pending.
+Real Anima API acceptance used three general images (two fit, one
 holdout), two noising updates and one native-trajectory update at 512px. It
 completed export, inspect and reload of the fitted artifact. Cancellation was
 verified during source hashing and after optimizer updates; restart was refused
@@ -597,8 +601,17 @@ existing generation/training split loader contract. CPU tests verify manifest
 resolution, strict transformer reload and declarations through the package,
 existing-destination refusal, early cancellation and cancellation after the
 manifest has been written; temporary directories are removed in both cases.
-Public Qwen initialization execution and real full-pipeline package acceptance
-remain outstanding.
+Qwen's execution owner encodes native RGBA latents and native text conditions
+with one component on GPU at a time. It captures target-only raw velocities on
+native sampler trajectories with KV caching disabled, fits the shared modules,
+then publishes the package. The sampler borrows the loaded transformer and
+explicitly uses its execution device while TE/VAE are offloaded; schedulers are
+private copies. Original attention processors, checkpoint policy, residency,
+training modes, gradient flags and Torch RNG are restored on all exits.
+CPU tests exercise source-header validation for both architectures and Qwen's
+packed conditioning/noising inputs with native-only teacher updates. Public API,
+schema and Training panel dispatch are wired for Qwen; full GPU job acceptance,
+including native trajectory capture and component residency, remains pending.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

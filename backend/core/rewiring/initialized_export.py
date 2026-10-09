@@ -26,6 +26,12 @@ def validate_output_name(output_name):
         raise ValueError("Initialized export requires a new safetensors basename")
 
 
+def validate_package_name(name):
+    if not isinstance(name,str) or not name or name in (".","..") or name.endswith((" ",".")):
+        raise ValueError("Initialized package requires a new directory basename")
+    validate_output_name(name+".safetensors")
+
+
 def export_initialized_anima(model, source, output_name, *, cancelled=None):
     return export_initialized_transformer(model,source,output_name,architecture="anima",cancelled=cancelled)
 
@@ -168,9 +174,7 @@ def export_initialized_qwen_package(model, source_manifest, destination, *, canc
     if manifest.transformer_config.get("vae_alignment") is not None:
         raise ValueError("Initialization package requires a native source codec")
     destination = Path(destination).absolute()
-    validate_output_name(destination.name+".safetensors")
-    if destination.name in (".","..") or destination.name.endswith((" ",".")):
-        raise ValueError("Initialized package requires a new directory basename")
+    validate_package_name(destination.name)
     if os.path.lexists(destination):
         raise FileExistsError("Initialized package never overwrites an existing path")
     if not destination.parent.is_dir():

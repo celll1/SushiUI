@@ -149,6 +149,7 @@ class InspectionContracts(unittest.TestCase):
                 info = inspect_model(str(source))
                 self.assertEqual(info, inspect_model(str(root)))
                 self.assertEqual(info["architecture"], "anima")
+                self.assertEqual(info["parameter_counts"]["total"], sum(p.numel() for p in model.parameters()))
                 self.assertEqual(info["topology"], topology)
                 self.assertEqual(info["streams"], [{"name": "main", "block_count": 7}])
                 self.assertIsNone(info["default_spec"])
@@ -273,6 +274,7 @@ with patch.object(safetensors, 'safe_open', HeaderOnly), \
     from core.rewiring.inspect import inspect_model
     info = inspect_model(sys.argv[2])
 assert info['architecture'] == 'anima'
+assert info['parameter_counts']['total'] == 2091068928
 assert info['streams'][0]['block_count'] == 28
 assert info['default_spec']['regions'][1]['end_block'] == 16
 assert 'core.models.anima.anima_models' not in sys.modules

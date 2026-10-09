@@ -14,6 +14,34 @@ with patch.object(torch.cuda, "get_device_capability", return_value=(8, 9)), \
 
 
 class ParameterCensusContracts(unittest.TestCase):
+    def test_anima_native_models_match_census_without_allocating_weight_storage(self):
+        from core.models.anima.config import ANIMA_DIT_CONFIG
+        with patch.object(torch.cuda, "get_device_capability", return_value=(8, 9)), \
+             patch.object(torch.cuda, "_lazy_init"), patch.object(torch._C, "_cuda_init"):
+            from core.models.anima.anima_models import Anima
+        configs = [dict(ANIMA_DIT_CONFIG)]
+        for lora in (False, True):
+            for extra in (False, True):
+                configs.append(dict(ANIMA_DIT_CONFIG, model_channels=24, num_heads=2,
+                    num_blocks=7, in_channels=64, out_channels=32, patch_spatial=4,
+                    patch_temporal=2, mlp_ratio=1.5, crossattn_emb_channels=12,
+                    adaln_lora_dim=8, use_adaln_lora=lora, use_llm_adapter=False,
+                    concat_padding_mask=False, extra_per_block_abs_pos_emb=extra))
+        for config in configs:
+            with self.subTest(config=config), torch.device("meta"):
+                native = Anima(**config)
+                actual = parameter_counts("anima", config)
+                self.assertEqual(actual["total"], sum(p.numel() for p in native.parameters()))
+                for block, count in zip(native.blocks, actual["blocks"]):
+                    self.assertEqual(count["count"], sum(p.numel() for p in block.parameters()))
+                self.assertEqual(actual["shared"], actual["total"] - sum(b["count"] for b in actual["blocks"]))
+        self.assertEqual(parameter_counts("anima", ANIMA_DIT_CONFIG)["total"], 2091068928)
+        for field, value in (("num_blocks", True), ("mlp_ratio", float("nan")),
+                             ("model_channels", 25), ("use_llm_adapter", 1)):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                parameter_counts("anima", dict(ANIMA_DIT_CONFIG, **{field: value}))
+        self.assertFalse(torch.cuda.is_initialized())
+
     def test_native_meta_models_match_per_block_and_shared_census(self):
         configs = [dict(DEFAULT_TRANSFORMER_CONFIG),
                    dict(DEFAULT_TRANSFORMER_CONFIG, num_layers=7, num_attention_heads=1,

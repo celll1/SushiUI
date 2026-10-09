@@ -8,7 +8,7 @@ from core.rewiring.spec import validate_spec
 
 
 def run_rewired_qwen(model, hidden, modulation, rotary, mask, target_mask,
-                     segments, key_valid, image_shape, spec):
+                     segments, key_valid, image_shape, spec, *, spatial_positions=None):
     from .vendor.transformer import build_qwenimage21_block_causal_mask
 
     spec = validate_spec(spec)
@@ -30,7 +30,15 @@ def run_rewired_qwen(model, hidden, modulation, rotary, mask, target_mask,
         old_rotary, old_mask, old_target, old_valid = context
         image_mask = torch.zeros(value.shape[1], dtype=torch.bool, device=value.device)
         image_mask[text_count:] = True
-        new_rotary = model.pos_embed([(1, h, w)], image_mask, value.device)
+        positions = None
+        if spatial_positions is not None:
+            fh, fw = height // h, width // w
+            positions = spatial_positions.reshape(height, width, 2)[::fh, ::fw].clone()
+            positions[..., 0] = torch.div(positions[..., 0], fh, rounding_mode="floor")
+            positions[..., 1] = torch.div(positions[..., 1], fw, rounding_mode="floor")
+            positions = positions.reshape(h * w, 2)
+        new_rotary = model.pos_embed([(1, h, w)], image_mask, value.device,
+                                    target_spatial_position_ids=positions)
         new_valid = None if old_valid is None else torch.cat((
             old_valid[:, :text_count], old_valid.new_ones(value.shape[0], h*w)), dim=1)
         new_mask = None
@@ -54,8 +62,14 @@ def run_rewired_qwen(model, hidden, modulation, rotary, mask, target_mask,
                      attention_mask=current_mask, target_token_mask=current_target,
                      segments=segments, key_valid=current_valid)
 
+    if spec["method"] == "hybrid_unet_ssdit":
+        modules = getattr(model, "rewiring_modules", None)
+        if modules is None or modules.declaration != spec:
+            raise ValueError("Qwen hybrid modules do not match the installed declaration")
+        return modules.forward_stream(hidden, "main", height, width, prefix,
+            (rotary, mask, target_mask, key_valid), execute, coarse_context)
     return run_rewired_stream(hidden, spec, "main", height, width, prefix,
-                              (rotary, mask, target_mask, key_valid), execute, coarse_context)
+                             (rotary, mask, target_mask, key_valid), execute, coarse_context)
 
 
 def native_config(config):
@@ -68,15 +82,35 @@ def validate_topology_identity(spec, config):
     resolved = native_config(config)
     if resolved["causal_condition"] is not True:
         raise ValueError("Qwen rewiring currently requires native causal modulation")
-    return validate_model_identity(spec, "qwen_image_21",
+    spec = validate_model_identity(spec, "qwen_image_21",
         [{"name": "main", "block_count": resolved["num_layers"]}], resolved)
+    width = resolved["num_attention_heads"] * resolved["attention_head_dim"]
+    if spec["method"] == "hybrid_unet_ssdit" and spec["stream_widths"] != {"main": width}:
+        raise ValueError("Hybrid Qwen stream width differs from native blocks")
+    return spec
 
 
 def restore_topology(model, spec):
     if spec is not None:
-        model._residual_unet_spec = validate_topology_identity(spec, dict(model.config))
+        spec = validate_topology_identity(spec, dict(model.config))
+        if spec["method"] == "hybrid_unet_ssdit":
+            from core.rewiring.hybrid_modules import HybridModules
+            existing = getattr(model, "rewiring_modules", None)
+            if existing is None:
+                reference = next(model.parameters())
+                with torch.device(reference.device):
+                    model.add_module("rewiring_modules", HybridModules(spec).to(dtype=reference.dtype))
+            elif existing.declaration["module_layout_sha256"] != spec["module_layout_sha256"]:
+                raise ValueError("Changing hybrid modules requires an explicit fresh model")
+            else:
+                existing.declaration = spec
+        elif hasattr(model, "rewiring_modules"):
+            del model.rewiring_modules
+        model._residual_unet_spec = spec
     else:
         model.__dict__.pop("_residual_unet_spec", None)
+        if hasattr(model, "rewiring_modules"):
+            del model.rewiring_modules
 
 
 def model_topology_metadata(model):

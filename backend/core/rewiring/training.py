@@ -32,7 +32,7 @@ def validate_training_features(config, architecture=None):
     for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",
                 "dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled",
                 "tread_enable", "repa_enable", "blockskip_enable"):
-        if architecture in {"ming_image_01", "anima"} and key in {"dit_partition_training_enabled", "qwen_partition_training_enabled",
+        if (architecture in {"ming_image_01", "anima"} or hybrid and architecture == "qwen_image_21") and key in {"dit_partition_training_enabled", "qwen_partition_training_enabled",
                 "dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled"}:
             continue
         if config.get(key):

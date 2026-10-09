@@ -11,6 +11,83 @@ from .artifact import load_manifest, load_text_encoder, load_transformer as load
 from .vendor import AutoencoderKLQwenImage21, QwenImage21Pipeline, QwenImage21Transformer2DModel
 
 
+def _load_hybrid_directory(directory, config, dtype, topology):
+    from pathlib import Path
+    from accelerate import init_empty_weights
+    from accelerate.utils import set_module_tensor_to_device
+    from safetensors import safe_open
+    from safetensors.torch import load_file
+    from .artifact import _finish_load
+    from .residual_unet import restore_topology
+    from .partition_global import GLOBAL_ADAPTER_NAME, stash_partition_global_payload
+
+    root = Path(directory).resolve()
+    indices = list(root.glob("*.safetensors.index.json"))
+    if len(indices) > 1:
+        raise ValueError("Qwen hybrid directory has ambiguous shard indices")
+    if indices:
+        with indices[0].open(encoding="utf-8") as handle:
+            index = json.load(handle)
+        mapping = index.get("weight_map") if isinstance(index, dict) else None
+        if not isinstance(mapping, dict) or not mapping or any(not isinstance(name, str) for name in mapping.values()):
+            raise ValueError("Qwen hybrid directory requires a valid shard weight_map")
+        names = sorted(set(mapping.values()))
+        paths = [(root / name).resolve() for name in names]
+        if any(path.parent != root or path.suffix != ".safetensors" for path in paths):
+            raise ValueError("Qwen hybrid shards must stay inside the transformer directory")
+    else:
+        paths = sorted(root.glob("*.safetensors"))
+    config = dict(config)
+    declaration = config.pop("vae_alignment", None)
+    with init_empty_weights():
+        model = QwenImage21Transformer2DModel.from_config(config)
+        from .vae_alignment import install
+        install(model, declaration)
+        restore_topology(model, topology)
+    expected = model.state_dict()
+    keys, metadata, global_state = set(), None, {}
+    for path in paths:
+        with safe_open(str(path), framework="pt", device="cpu") as handle:
+            if metadata is None:
+                metadata = handle.metadata() or {}
+            elif (handle.metadata() or {}) != metadata:
+                raise ValueError("Qwen hybrid shard metadata disagrees")
+            for key in handle.keys():
+                if indices and mapping.get(key) != path.name:
+                    raise ValueError("Qwen hybrid shard keys disagree with the index")
+                if key in keys:
+                    raise ValueError("Qwen hybrid directory has duplicate tensor keys")
+                keys.add(key)
+                if key.startswith(GLOBAL_ADAPTER_NAME + "."):
+                    continue
+                if key not in expected or tuple(handle.get_slice(key).get_shape()) != tuple(expected[key].shape):
+                    raise ValueError(f"Qwen hybrid directory state mismatch: {key}")
+    if set(expected) - keys:
+        raise ValueError("Qwen hybrid directory is missing native or learned weights")
+    if indices and keys != set(mapping):
+        raise ValueError("Qwen hybrid shard index has missing tensor keys")
+    for path in paths:
+        state = load_file(str(path), device="cpu")
+        for key, value in state.items():
+            if key.startswith(GLOBAL_ADAPTER_NAME + "."):
+                global_state[key] = value
+            else:
+                if expected[key].is_floating_point() and not value.is_floating_point():
+                    raise ValueError("Packed Qwen hybrid directory weights require a split artifact")
+                set_module_tensor_to_device(model, key, "cpu", value=value,
+                    dtype=dtype if expected[key].is_floating_point() else expected[key].dtype)
+        del state
+    if global_state:
+        stash_partition_global_payload(model, global_state, metadata or {})
+        if global_state:
+            raise ValueError("Qwen hybrid directory global payload was not restored")
+    # All bridge buffers must be assigned before their load hooks run.
+    model = _finish_load(model, model.state_dict(), "Qwen hybrid directory")
+    if declaration is not None and not model.vae_latent_bridge.ready:
+        raise ValueError("Saved Qwen VAE alignment is not calibrated")
+    return model
+
+
 def _source_components(
     model_path: str, dtype: torch.dtype, *, load_transformer_component: bool = True,
     load_text_encoder_component: bool = True,
@@ -31,9 +108,12 @@ def _source_components(
         if topology is not None:
             config = QwenImage21Transformer2DModel.load_config(model_path, subfolder="transformer")
             topology = validate_topology_identity(topology, config)
-    transformer = QwenImage21Transformer2DModel.from_pretrained(
-        model_path, subfolder="transformer", torch_dtype=dtype, low_cpu_mem_usage=True
-    ).eval() if load_transformer_component else None
+    if load_transformer_component and (topology or {}).get("method") == "hybrid_unet_ssdit":
+        transformer = _load_hybrid_directory(os.path.join(model_path, "transformer"), config, dtype, topology)
+    else:
+        transformer = QwenImage21Transformer2DModel.from_pretrained(
+            model_path, subfolder="transformer", torch_dtype=dtype, low_cpu_mem_usage=True
+        ).eval() if load_transformer_component else None
     if transformer is not None:
         restore_topology(transformer, topology)
     text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
@@ -173,6 +253,7 @@ def load_qwen_image_21_components(
                 transformer = QwenImage21Transformer2DModel(**config)
                 from .vae_alignment import install
                 install(transformer, declaration)
+                restore_topology(transformer, topology)
             from .partition_global import stash_partition_global_payload
             stash_partition_global_payload(transformer, transformer_state, metadata)
             transformer = _finish_load(transformer, transformer_state, "Qwen-Image 2.1 transformer")

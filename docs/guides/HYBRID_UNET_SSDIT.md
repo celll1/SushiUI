@@ -1,6 +1,6 @@
 # Hybrid U-Net ssDiT foundation
 
-Status: experimental native Anima/Ming integration; CPU acceptance only.
+Status: experimental native Anima/Ming/Qwen 2.1 integration; CPU acceptance only.
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
@@ -53,14 +53,17 @@ codec IO rebasing preserves module declarations. OpenAPI and frontend types
 recognize v2. Explicit topology JSON can select it for Anima full-parameter
 training, including partition/global-summary execution. Ming uses header-validated
 meta construction and shard assignment for hybrid bundles, including packed
-native Linear layers; learned convolution weights remain floating. Both native
+native Linear layers; learned convolution weights remain floating. Qwen installs
+modules before loading split artifacts and training bundles. Floating Diffusers
+directories use header-validated sequential shard assignment; packed native
+bases use the split artifact loader. All three native
 integrations preserve hybrid declarations when codec IO is resized. Frozen-base training
 remains rejected until its artifact contract is implemented.
 
 `hybrid_partition.py` propagates conservative spatial dependency radii through
 pooling, interpolation, learned boundary kernels, local kernels and skip edges.
-The Anima planner takes the larger of configured and required context, rounds
-it to its partition planner's even unit, and aligns the expanded real input
+The native planners take the larger of configured and required context, round
+it to their partition planner's even unit, and align the expanded real input
 region to cumulative U-Net factors. Loss and stitched output use only the
 non-overlapping cores. Installed codec bridges add their serial convolution
 context, accounting for packing and parallel Gaussian complements. Preview
@@ -74,7 +77,7 @@ The graph shows compressed learned skips with dashed yellow lines. Hybrid
 region editing is temporarily disabled to preserve dependent module settings;
 the complete hybrid editor and preset selection remain pending. No existing
 run or default preset is converted. Parameter census, GPU/native full-trainer
-optimizer/EMA/offload acceptance, Qwen integration and
+optimizer/EMA/offload acceptance and
 LoRA support still require implementation or verification.
 
 ## Verification
@@ -113,3 +116,11 @@ bases still requires the existing explicit dequantization option. Missing,
 wrong-shaped and nonfinite learned weights are rejected. Native outputs before
 and after reload are compared within FP32 tolerance; bitwise output identity
 across restored tensor layouts is not promised.
+
+`hybrid_qwen_test.py` checks native branch gradients, full-adapter optimizer
+ownership and optimizer-state restoration, single/sharded checkpoint reload,
+training-bundle construction and strict Diffusers-directory shard loading.
+Partition/global-summary forwards retain full-canvas coordinates after nested
+downsampling. Qwen hybrid remains uncached and single-target; legacy topology
+keeps its existing partition restrictions. These tests do not validate the
+caption encoder or official-weight GPU training.

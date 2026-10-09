@@ -1,0 +1,50 @@
+{
+  "scope": "Real GPU public Ming Layer initialization and ordered reference generation",
+  "official_transformer": {
+    "repository": "inclusionAI/Ming-Image-0.1-Design-Layer",
+    "revision": "9fabca8b62a67f1f53a957d46389c00451c11e52",
+    "shards": 9,
+    "saved_dtype": "FP32",
+    "runtime_dtype": "BF16",
+    "native_parameters": 6154908736
+  },
+  "conditioner": "Existing verified Layer INT8 ConvRot components, copied without requantization",
+  "source_owner_packages_untouched": true,
+  "data": {"source_dataset_id": 30, "item_ids": [3813125,3813130,3813135], "rating": "general", "fit_count": 2, "holdout_count": 1, "resolution": 512},
+  "recipe": {"teacher_steps": 4, "data_noising_updates": 2, "native_trajectory_updates": 1, "optimizer": "adamw8bit", "stochastic_rounding": true},
+  "completed_job_id": "a643ee78f3e7425d883f73aa117bba52",
+  "public_job_completed": true,
+  "native_reference_and_vision_conditioning_executed": true,
+  "native_ordered_canvas_and_layer_teacher_targets": true,
+  "new_package_strict_reload": true,
+  "both_generation_specs_match_initialization_spec_exactly": true,
+  "generation": {
+    "group_id": "9ab07573b677420c9d4aa37cea057cad",
+    "image_ids": [11623,11624],
+    "roles": ["auxiliary_canvas","layer_1"],
+    "reference_item_id": 3813125,
+    "steps": 4,
+    "cfg_scale": 1.0,
+    "seed": 994,
+    "width": 512,
+    "height": 512,
+    "both_vae_decodes_successful": true,
+    "generation_seconds": 60.856,
+    "peak_vram_gb_as_reported_by_api": 19.214,
+    "peak_reserved_gb_as_reported_by_api": 19.451
+  },
+  "cleanup": {
+    "restored_owner_model": "Ming Layer INT8 ConvRot",
+    "probe_file_inventory_and_manifest_verified_before_deletion": true,
+    "both_owned_probe_packages_removed": true,
+    "model_index_refreshed_and_probe_entries_absent": true,
+    "disk_space_restored_gib_approximate": 84,
+    "no_training_run_created": true,
+    "backend_restarted_and_health_ok": true,
+    "observed_gpu_usage_after_restart_mib": 1930
+  },
+  "quality_recovery_acceptance": false,
+  "separate_real_gpu_layer_cancellation_test": false,
+  "limitations": "Three updates and two ordered decoded outputs establish functionality, not recovered quality or throughput. Generation API peaks are not initializer peak measurements. CPU Layer cancellation and restoration tests are separate evidence.",
+  "local_evidence_directory": "local/verification/hybrid_ming_layer_initialization_api"
+}

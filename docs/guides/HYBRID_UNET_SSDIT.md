@@ -575,7 +575,8 @@ panel closes. A completed artifact is applied only by an explicit button after
 refreshing the model index; this switches topology to inheritance and clears the
 old resume checkpoint. Stale polling responses cannot overwrite action results.
 UI types, paths and state transitions are statically reviewed; owner build and
-interactive acceptance remain pending. Official-weight Ming Layer GPU acceptance remains pending.
+interactive acceptance remain pending. Official-weight Ming Design/Layer GPU
+initialization and restored generation are verified below.
 Real Anima API acceptance used three general images (two fit, one
 holdout), two noising updates and one native-trajectory update at 512px. It
 completed export, inspect and reload of the fitted artifact. Cancellation was
@@ -660,8 +661,7 @@ are preserved on completion, cancellation and publication failure.
 Real tiny Design/Layer CPU tests execute encoding, native trajectories, fitting,
 package publication and strict reload; shared API ownership tests and source
 guards also pass. Schema capability and frontend package-name controls are wired
-and statically reviewed. Official-weight Layer GPU/dtype acceptance and owner frontend
-build remain pending. Evidence:
+and statically reviewed. Owner frontend build remains pending. CPU evidence:
 `docs/audits/data/hybrid_ming_initialization_2026-10.json`.
 
 Real public Design GPU acceptance used the official five-shard BF16 DiT with
@@ -677,6 +677,20 @@ Both inventoried temporary model packages were removed and the model index
 refreshed, restoring approximately 61GiB of disk space. This proves functionality
 on Design, not quality recovery, Layer acceptance or paired throughput. Evidence:
 `docs/audits/data/hybrid_ming_design_initialization_api_2026-10.json`.
+
+Real public Layer GPU acceptance used the official nine-shard FP32 saved DiT,
+loaded in BF16, with the verified packed conditioner. Three authorized general
+images (two fit, one held out), 512px, four teacher steps and three fitting
+updates completed through native reference/vision conditioning and ordered
+canvas-plus-layer teacher targets. The new package reloaded strictly; a reference
+generation produced and decoded `auxiliary_canvas` and `layer_1` (gallery
+11623/11624). Both outputs carry exactly the initialized topology. API-reported
+generation peak allocated/reserved memory was 19.214/19.451GiB; these are
+generation measurements, not initializer peaks. The owner Layer model was
+restored, both inventoried temporary packages removed, and the index refreshed,
+restoring approximately 84GiB. Functionality is verified; quality recovery and
+a separate real-GPU Layer cancellation probe are not claimed. Evidence:
+`docs/audits/data/hybrid_ming_layer_initialization_api_2026-10.json`.
 
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
@@ -703,10 +717,10 @@ all native weights and CPU/CUDA RNG, and rolls back an actual update when the
 progress callback cancels. It uses synthetic inputs and verifies execution rather
 than official-weight quality; recorded in
 `docs/audits/data/hybrid_fitting_transaction_2026-10.json`.
-Automatic preparation, API/UI recipe selection, production residency/cancellation
-plumbing and official-weight GPU acceptance of this shared transaction remain
-to be wired. This infrastructure alone does not initialize fresh weights or
-establish image quality.
+Automatic preparation, API/UI recipe selection and production residency/cancellation
+are implemented by the architecture owners described above. Their real-GPU
+acceptance is separate from this synthetic transaction probe. Neither establishes
+recovered image quality by itself.
 
 ### Initialized artifact publication and inspection
 
@@ -732,7 +746,7 @@ Unknown lineage stays unknown. Model-path changes clear prior inspection state,
 and cancelled/stale inspections cannot overwrite a later model selection.
 Frontend types, response contract and these state transitions were reviewed
 statically; owner build/type checking remains pending. The automatic initialization
-job and its execution/progress/cancel UI remain unfinished.
+job and its execution/progress/cancel UI are wired as described above.
 
 A synthetic small Anima was fitted, exported and inspected through the restarted
 real REST API: all 150 native tensors remained exact, source checksum was unchanged,

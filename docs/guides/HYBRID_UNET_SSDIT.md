@@ -581,6 +581,17 @@ which disables autocast; noising now preserves the latent/timestep dtype, with
 a checkpointed CPU backward regression. Successful jobs report terminal 1/1
 model progress. This short test establishes functionality, not image quality.
 Evidence: `docs/audits/data/hybrid_initialization_api_2026-10.json`.
+
+The streaming publisher also accepts standalone Qwen transformer components via
+`export_initialized_transformer(..., architecture="qwen_image_21")`. It retains
+the original config/component metadata and native payload while adding verified
+fitted modules and provenance. A tiny native Qwen CPU test performs teacher fit,
+export, strict component reload and inspect; every tensor matches exactly, and
+forward parity uses the existing Qwen checkpoint tolerance (1e-5/1e-6). Anima's
+wrapper delegates to this common publisher and its failure/atomicity tests remain
+passing. This component publisher alone does not produce a complete Qwen split
+package or enable public Qwen initialization jobs; those execution/package
+bindings remain outstanding.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

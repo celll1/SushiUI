@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .hybrid_spec import validate_hybrid_spec, legacy_topology, hybrid_preview
+from .hybrid_spec import validate_hybrid_spec, legacy_topology, hybrid_preview, skip_storage
 from .runtime import run_rewired_stream
 
 
@@ -116,7 +116,12 @@ class HybridExecution:
             return hidden
         grid = self.grid(hidden, prefix, height, width)
         for item in items:
-            grid = grid + self.call(self.modules.skips[item["id"]].restore_grid, self.saved.pop(item["id"])).to(grid)
+            module = self.modules.skips[item["id"]]
+            device = grid.device
+            # Transfer inside the checkpoint so replay does not retain a GPU copy.
+            def restore(value, module=module, device=device):
+                return module.restore_grid(value.to(device))
+            grid = grid + self.call(restore, self.saved.pop(item["id"])).to(grid)
         return self.merge(hidden, prefix, grid)
 
     def after(self, index, hidden, prefix, height, width):
@@ -130,5 +135,8 @@ class HybridExecution:
         for item in refiners:
             grid = grid + self.call(self.modules.local[item["id"]], grid).to(grid)
         for item in sources:
-            self.saved[item["id"]] = self.call(self.modules.skips[item["id"]].capture_grid, grid)
+            value = self.call(self.modules.skips[item["id"]].capture_grid, grid)
+            if torch.is_grad_enabled() and skip_storage(item) == "cpu":
+                value = value.to("cpu")
+            self.saved[item["id"]] = value
         return self.merge(hidden, prefix, grid)

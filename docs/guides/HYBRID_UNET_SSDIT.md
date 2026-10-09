@@ -546,6 +546,25 @@ Codec rebasing and skip residency changes retain lineage when architecture,
 native block layout and learned module layout remain the same. Malformed,
 incomplete or mismatched records fail before use; shard/index records must agree.
 The common frozen teacher context refuses to fit an initialized artifact again.
+
+### Initialization job API
+
+`POST /api/v1/models/rewiring/initialize` creates a process-local, exclusive job
+from the loaded native Anima and selected dataset items. GET on the same path
+reports preparation, fitting and saving progress; DELETE with its job ID requests
+cooperative cancellation. Restart is refused until the job finishes cleanup.
+The live native weights are borrowed, frozen and restored; the fitted modules
+are published into a new standalone source-sibling artifact, never the source.
+Defaults and execution-capable architectures come from `/schema/dit-rewiring`.
+The request selects explicit ordered item IDs or the first IDs in a dataset;
+the final holdout items are excluded from fitting. Runtime calibration has no
+rating filter. Agent-operated acceptance still uses only owner-authorized general
+images. Metadata stores the bounded recipe and hashes, without image paths or
+caption contents; existing records without a recipe remain readable.
+
+The public execution binding currently supports floating native Anima only.
+Ming/Qwen execution bindings, the initialization UI and real GPU job acceptance
+remain pending; successful CPU ownership tests do not establish image quality.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

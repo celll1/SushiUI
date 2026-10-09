@@ -18,16 +18,20 @@ from .spec import checkpoint_metadata, read_checkpoint_metadata, _unique_object
 _DTYPES = {torch.float32: "F32", torch.float16: "F16", torch.bfloat16: "BF16"}
 
 
-def export_initialized_anima(model, source, output_name, *, cancelled=None):
-    """Caller owns model exclusivity; source bytes and fitted modules are verified."""
-    source = Path(source).resolve(strict=True)
-    if not source.is_file() or source.suffix.lower() != ".safetensors":
-        raise ValueError("Initialized Anima export requires a standalone native safetensors source")
+def validate_output_name(output_name):
     if (not isinstance(output_name, str) or not output_name.lower().endswith(".safetensors")
             or re.search(r'[<>:"/\\|?*\x00-\x1f]', output_name)
             or output_name[-1:] in (" ", ".")
             or re.fullmatch(r"(?i)(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", output_name)):
         raise ValueError("Initialized export requires a new safetensors basename")
+
+
+def export_initialized_anima(model, source, output_name, *, cancelled=None):
+    """Caller owns model exclusivity; source bytes and fitted modules are verified."""
+    source = Path(source).resolve(strict=True)
+    if not source.is_file() or source.suffix.lower() != ".safetensors":
+        raise ValueError("Initialized Anima export requires a standalone native safetensors source")
+    validate_output_name(output_name)
     output = source.parent / output_name
     if output.exists() or output.is_symlink():
         raise FileExistsError("Initialized export never overwrites an existing file")

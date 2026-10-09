@@ -610,8 +610,17 @@ private copies. Original attention processors, checkpoint policy, residency,
 training modes, gradient flags and Torch RNG are restored on all exits.
 CPU tests exercise source-header validation for both architectures and Qwen's
 packed conditioning/noising inputs with native-only teacher updates. Public API,
-schema and Training panel dispatch are wired for Qwen; full GPU job acceptance,
-including native trajectory capture and component residency, remains pending.
+schema and Training panel dispatch are wired for Qwen. Real Qwen GPU acceptance
+used the native original split package and three general images (two fit, one
+holdout): two noising updates plus one native-trajectory update at 512px and four
+teacher steps completed. The new package appeared in the model index and loaded
+all components; four-step 512px txt2img generation and VAE decode succeeded.
+A second job was cancelled after optimizer updates, returned `cancelled` and
+left no output package. After completion/cancellation GPU usage returned to
+approximately 2.1GiB including the desktop; the native source was restored, and
+the temporary package was removed after restoring the owner's Ming Layer.
+This short recipe is functionality evidence, not quality recovery. Evidence:
+`docs/audits/data/hybrid_qwen_initialization_api_2026-10.json`.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 

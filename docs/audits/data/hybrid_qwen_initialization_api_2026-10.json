@@ -1,0 +1,316 @@
+{
+  "quality_acceptance": false,
+  "temporary_package_removed": true,
+  "restored_source": "M:\\model\\ming_image_01\\layer_int8_convrot",
+  "architecture": "qwen_image_21",
+  "scope": "Public GPU initialization, package indexing/reload, txt2img/decode and cancellation; not image quality acceptance",
+  "resolution": 512,
+  "package_indexed": true,
+  "generation": {
+    "width": 512,
+    "steps": 4,
+    "success": true,
+    "image_id": 11621,
+    "height": 512,
+    "cfg_scale": 1.0,
+    "seed": 991,
+    "filename": "txt2img_20261010_042843_991.png"
+  },
+  "cancel_after_updates": {
+    "after": {
+      "job_id": "fa5e0345e3614d4cbc2b7ff2ee2dbad9",
+      "state": "cancelled",
+      "model_path": "M:\\model\\qwen21\\original",
+      "output_name": "hybrid_qwen_api_cancel_probe_20261010",
+      "stage": "fitting",
+      "completed": 2,
+      "total": 10000,
+      "units": "updates",
+      "error": null,
+      "result": null,
+      "started_at": 1791574145.1645887,
+      "finished_at": 1791574192.2897584,
+      "phase": "data_noising",
+      "phase_update": 2,
+      "loss": 1.0589803457260132
+    },
+    "before": {
+      "job_id": "fa5e0345e3614d4cbc2b7ff2ee2dbad9",
+      "state": "running",
+      "model_path": "M:\\model\\qwen21\\original",
+      "output_name": "hybrid_qwen_api_cancel_probe_20261010",
+      "stage": "fitting",
+      "completed": 1,
+      "total": 10000,
+      "units": "updates",
+      "error": null,
+      "result": null,
+      "started_at": 1791574145.1645887,
+      "finished_at": null,
+      "phase": "data_noising",
+      "phase_update": 1,
+      "loss": 0.3230450749397278
+    }
+  },
+  "rating": "general",
+  "teacher_steps": 4,
+  "holdout_count": 1,
+  "date": "2026-10-10",
+  "completion": {
+    "job_id": "98ea675701d948af979d5df847a036de",
+    "state": "completed",
+    "model_path": "M:\\model\\qwen21\\original",
+    "output_name": "hybrid_qwen_api_probe_20261010",
+    "stage": "completed",
+    "completed": 1,
+    "total": 1,
+    "units": "models",
+    "error": null,
+    "result": {
+      "model_path": "M:\\model\\qwen21\\hybrid_qwen_api_probe_20261010",
+      "initialization": {
+        "schema_version": 1,
+        "method": "native_teacher_velocity",
+        "source_sha256": "77a22361f5dc75a451013319390cbfb086201768c8aeee8cc9bbe2d15fb8cc46",
+        "calibration_sha256": "b728292b13699cfbb8cc388d53be4e95a554b3201f2fc42085f7316cf3934eaa",
+        "initialized_weights_sha256": "410d0d0e6ad072582dd7e8807e04cec77ad9d3ed9e806a8e41b9818e7b2425d1",
+        "origin_spec": {
+          "schema_version": 2,
+          "method": "hybrid_unet_ssdit",
+          "architecture": "qwen_image_21",
+          "streams": [
+            {
+              "name": "main",
+              "block_count": 32
+            }
+          ],
+          "regions": [
+            {
+              "id": "r0",
+              "stream": "main",
+              "parent": null,
+              "start_block": 4,
+              "end_block": 28,
+              "down_factor": [
+                2,
+                2
+              ],
+              "down": "avg_pool",
+              "up": "bilinear",
+              "align_corners": false,
+              "merge": "identity_delta_add",
+              "position_policy": "coarse_integer",
+              "grid_policy": "require_divisible",
+              "delta_dtype": "float32"
+            },
+            {
+              "id": "r1",
+              "stream": "main",
+              "parent": "r0",
+              "start_block": 14,
+              "end_block": 18,
+              "down_factor": [
+                2,
+                2
+              ],
+              "down": "avg_pool",
+              "up": "bilinear",
+              "align_corners": false,
+              "merge": "identity_delta_add",
+              "position_policy": "coarse_integer",
+              "grid_policy": "require_divisible",
+              "delta_dtype": "float32"
+            }
+          ],
+          "base_config_sha256": "4823640d7f0eb09022ef81bc6079f1b8b3ac4a72983f61861455acf0eb4e8542",
+          "block_layout_sha256": "9f706982cb819f7576a0d780e90cd1690e08d21c55bc7eb544267e393bbb494b",
+          "stream_widths": {
+            "main": 4096
+          },
+          "boundaries": [
+            {
+              "id": "downup_r0",
+              "region": "r0",
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "downup_r1",
+              "region": "r1",
+              "rank": 64,
+              "kernel": 3
+            }
+          ],
+          "refiners": [
+            {
+              "id": "local_main_0",
+              "stream": "main",
+              "after_block": 0,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_12",
+              "stream": "main",
+              "after_block": 12,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_16",
+              "stream": "main",
+              "after_block": 16,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_20",
+              "stream": "main",
+              "after_block": 20,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_24",
+              "stream": "main",
+              "after_block": 24,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_28",
+              "stream": "main",
+              "after_block": 28,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_4",
+              "stream": "main",
+              "after_block": 4,
+              "rank": 64,
+              "kernel": 3
+            },
+            {
+              "id": "local_main_8",
+              "stream": "main",
+              "after_block": 8,
+              "rank": 64,
+              "kernel": 3
+            }
+          ],
+          "skips": [
+            {
+              "id": "skip_main_0_31",
+              "stream": "main",
+              "source_after": 0,
+              "destination_before": 31,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_10_21",
+              "stream": "main",
+              "source_after": 10,
+              "destination_before": 21,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_12_19",
+              "stream": "main",
+              "source_after": 12,
+              "destination_before": 19,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_14_17",
+              "stream": "main",
+              "source_after": 14,
+              "destination_before": 17,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_2_29",
+              "stream": "main",
+              "source_after": 2,
+              "destination_before": 29,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_4_27",
+              "stream": "main",
+              "source_after": 4,
+              "destination_before": 27,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_6_25",
+              "stream": "main",
+              "source_after": 6,
+              "destination_before": 25,
+              "rank": 64,
+              "storage": "gpu"
+            },
+            {
+              "id": "skip_main_8_23",
+              "stream": "main",
+              "source_after": 8,
+              "destination_before": 23,
+              "rank": 64,
+              "storage": "gpu"
+            }
+          ],
+          "module_layout_sha256": "f972512fa1f1d29603f023cf48d133e4f9a37c57080f7876b01837434a874b2e"
+        },
+        "sample_count": 3,
+        "seed": 718,
+        "phases": [
+          {
+            "kind": "data_noising",
+            "updates": 2,
+            "learning_rate": 0.001
+          },
+          {
+            "kind": "native_trajectory",
+            "updates": 1,
+            "learning_rate": 0.0003
+          }
+        ],
+        "recipe": {
+          "schema_version": 1,
+          "settings": {
+            "clip_norm": 1.0,
+            "seed": 718,
+            "optimizer": "adamw8bit",
+            "resolution": 512,
+            "teacher_cfg": 4.0,
+            "caption_type": "tags",
+            "teacher_steps": 4,
+            "weight_decay": 0.0,
+            "holdout_count": 1,
+            "attention_backend": "flash",
+            "sample_count": 3,
+            "conditioning_dropout": 0.1,
+            "stochastic_rounding": true
+          }
+        }
+      }
+    },
+    "started_at": 1791573947.5190597,
+    "finished_at": 1791574015.078304,
+    "phase": "native_trajectory",
+    "phase_update": 1,
+    "loss": 0.7159746885299683
+  },
+  "reloaded": {
+    "source": "M:\\model\\qwen21\\hybrid_qwen_api_probe_20261010",
+    "type": "qwen_image_21",
+    "method": "hybrid_unet_ssdit"
+  },
+  "sample_count": 3
+}

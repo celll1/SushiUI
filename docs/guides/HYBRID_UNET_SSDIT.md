@@ -103,10 +103,15 @@ The graph shows compressed learned skips with dashed yellow lines and spatial
 modules with pink squares. Preview parameter counts cover each registered
 boundary, local refiner and skip, independently of native base weights. The
 UI adds those counts to its native census; pending hybrid counts are not shown
-as zero. An unavailable native census remains explicitly unavailable. Hybrid
+as zero. Anima, Ming and Qwen have native configuration parameter censuses,
+without loading tensors or allocating models. Anima's 2,091,068,928-parameter
+base count includes its internal LLM adapter and excludes rotary buffers,
+external encoders, VAE and additional spatial/skip modules. Inspection and
+loaded-model summaries expose the same census; resized codec IO is counted from
+the current native geometry. Other unavailable censuses remain explicit. Hybrid
 regions and dependent modules are edited through the explicit validated draft
 described above. No existing
-run or default preset is converted. Native census coverage, activation-memory
+run or default preset is converted. Broader native census coverage, activation-memory
 accounting, GPU/native full-trainer
 optimizer/EMA/offload acceptance and
 LoRA support still require implementation or verification.

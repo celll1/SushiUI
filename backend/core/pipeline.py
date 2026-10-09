@@ -751,10 +751,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     except Exception as e:
                         print(f"[Pipeline] Hash compute skipped: {e}")
 
+                from core.rewiring.parameters import parameter_counts
+                from core.models.anima.residual_unet import native_config
                 self.current_model_info = {
                     "source_type": source_type,
                     "source": source,
                     "type": "anima",
+                    "dit_rewiring_parameter_counts": parameter_counts(
+                        "anima", native_config(self.anima_components["transformer"])),
                     "dit_rewiring_spec": getattr(self.anima_components["transformer"], "_residual_unet_spec", None),
                     "dit_rewiring_token_stride": image_token_stride(model_result.get("vae"), "anima",
                         self.anima_components["transformer"].patch_spatial),

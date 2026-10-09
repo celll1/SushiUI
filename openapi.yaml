@@ -12088,6 +12088,7 @@ components:
   schemas:
     DiTRewiringParameterCounts:
       type: object
+      description: Logical native DiT parameter census for Anima, Ming-Image 0.1 and Qwen-Image 2.1. Includes internal conditioning bridges; excludes external text encoders, VAE and added hybrid modules.
       required: [scope, source, total, shared, added, blocks]
       properties:
         scope: {type: string, enum: [native_dit]}

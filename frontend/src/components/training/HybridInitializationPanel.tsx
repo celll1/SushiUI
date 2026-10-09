@@ -88,12 +88,14 @@ export default function HybridInitializationPanel({ modelPath, architecture, spe
   const busy = pending || active(job);
   const ownJob = samePath(job?.model_path, modelPath);
   const percent = job?.total ? Math.min(100, 100 * (job.completed ?? 0) / job.total) : 0;
+  const packageOutput = architecture === "qwen_image_21" || architecture === "ming_image_01";
   if (!supported && settings) return null;
   return <details className="rounded border border-gray-700 p-3 text-xs">
     <summary className="cursor-pointer text-sky-300">Initialize hybrid modules with the native teacher</summary>
     <p className="my-2 text-gray-400">Load this native model in Generate first, with adapters and VAE swap disabled.
       Initialization freezes its existing weights and writes a new checkpoint beside the source.
       {architecture === "qwen_image_21" && " Qwen writes a package directory with this name; original TE/VAE assets must remain available."}
+      {architecture === "ming_image_01" && " Ming copies native assets into a new package. Layer initialization uses a native-generated canvas and one layer with the calibration image as reference."}
       The final holdout images are excluded from fitting. Closing this panel leaves the job running.</p>
     <fieldset disabled={busy} className="space-y-2">
       <label className="block">Calibration dataset <select className="ml-2 rounded bg-gray-800 p-2"
@@ -101,9 +103,9 @@ export default function HybridInitializationPanel({ modelPath, architecture, spe
         <option value="">Select dataset</option>{datasets.map(ds =>
           <option key={ds.id} value={ds.id}>{ds.name} (#{ds.id}, {ds.total_items} items)</option>)}
       </select></label>
-      <label className="block">{architecture === "qwen_image_21" ? "New package directory name" : "New checkpoint filename"}
+      <label className="block">{packageOutput ? "New package directory name" : "New checkpoint filename"}
         <input className="ml-2 rounded bg-gray-800 p-2" value={name}
-          placeholder={architecture === "qwen_image_21" ? "qwen-hybrid" : "anima-hybrid.safetensors"}
+          placeholder={packageOutput ? `${architecture}-hybrid` : "anima-hybrid.safetensors"}
           onChange={e => setName(e.target.value)} /></label>
       <details><summary>Fitting settings and ordered phases</summary>
         <p className="my-2 text-gray-400">Defaults come from the API. Optional item_ids selects explicit dataset items in order;

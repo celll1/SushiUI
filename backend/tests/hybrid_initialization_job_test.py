@@ -63,6 +63,32 @@ def test_request_defaults_and_schema_agree():
     request = HybridInitializationRequest(model_path="native.safetensors", output_name="new.safetensors", dataset_id=1)
     defaults = rewiring_schema()["initialization_defaults"]
     assert all(request.model_dump()[key] == value for key, value in defaults.items())
+    assert "ming_image_01" in rewiring_schema()["initializer_architectures"]
+
+
+@pytest.mark.parametrize("profile", ["generation_edit","layer_decompose"])
+def test_ming_source_guard_validates_native_package(tmp_path,profile):
+    import torch
+    from safetensors.torch import save_file
+    from ming_image_01_conditioning_test import write_tiny_package
+    from hybrid_ming_test import hybrid_for
+    from core.models.ming_image_01.loader import load_components
+    from core.models.ming_image_01.residual_unet import restore_topology
+    source = tmp_path/"native"
+    source.mkdir()
+    _,model,_ = write_tiny_package(source,profile=profile)
+    restore_topology(model,None)
+    save_file(model.state_dict(),str(source/"transformer"/"diffusion_pytorch_model.safetensors"))
+    native = load_components(source,dtype=torch.float32,conditioner_attention="eager")
+    manager = SimpleNamespace(current_model_info=dict(type="ming_image_01",source=str(source)),
+                              ming_image_01_components=dict(ming_native=native))
+    spec = hybrid_for(native.transformer)
+    options = dict(model_path=str(source),output_name="initialized-ming",spec=spec,resolution=128)
+    checked,_,declaration = job._checked_source(manager,options)
+    assert checked == source and declaration == spec
+    restore_topology(native.transformer,spec)
+    with pytest.raises(ValueError,match="native source"):
+        job._checked_source(manager,options)
 
 
 @pytest.mark.parametrize("changes", [dict(resolution=513), dict(holdout_count=32),

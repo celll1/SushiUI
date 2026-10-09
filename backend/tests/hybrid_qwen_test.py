@@ -77,6 +77,8 @@ def test_full_adapter_checkpoint_and_optimizer_resume(tmp_path, monkeypatch, sha
     assert variant == "bf16"
     assert loaded._residual_unet_spec == spec
     assert loaded._hybrid_initialization == initialization
+    from core.rewiring.inspect import inspect_model
+    assert inspect_model(path)["initialization"] == initialization
     for name, value in model.state_dict().items():
         if not name.startswith("qwen_partition_global_adapter."):
             assert torch.equal(value, loaded.state_dict()[name]), name

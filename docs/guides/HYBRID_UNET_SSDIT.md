@@ -576,6 +576,39 @@ plumbing and official-weight GPU acceptance of this shared transaction remain
 to be wired. This infrastructure alone does not initialize fresh weights or
 establish image quality.
 
+### Initialized artifact publication and inspection
+
+`core/rewiring/initialized_export.py` publishes a standalone initialized Anima
+beside a native source file. Native tensor payload is copied in bounded chunks;
+only fitted module tensors are materialized on CPU. It preserves original
+metadata, adds topology and initialization lineage, and verifies the complete
+source-file checksum against fitting provenance. Already rewired or codec-swapped
+sources are refused. Both plain and `net.` native key layouts are supported.
+This initializer export requires the actual fitted module-state checksum to match;
+normal training saves continue to preserve lineage after weights have changed.
+
+Publication uses a verified temporary file and an atomic link that never
+overwrites another artifact. Cancellation, source changes, checksum disagreement,
+changed fitted weights or publication failure leave no partial model or temporary
+file. The caller must own model exclusivity throughout fitting and publication;
+this function does not acquire the application lifecycle gate itself.
+
+`POST /models/rewiring/inspect` returns `initialization` for Anima, Ming and Qwen.
+The Training topology editor shows source-checkpoint sample count, fitting update
+count and seed, while explicitly distinguishing lineage from current weights.
+Unknown lineage stays unknown. Model-path changes clear prior inspection state,
+and cancelled/stale inspections cannot overwrite a later model selection.
+Frontend types, response contract and these state transitions were reviewed
+statically; owner build/type checking remains pending. The automatic initialization
+job and its execution/progress/cancel UI remain unfinished.
+
+A synthetic small Anima was fitted, exported and inspected through the restarted
+real REST API: all 150 native tensors remained exact, source checksum was unchanged,
+lineage round-tripped and a native source returned null lineage. The loaded Ming
+Layer model stayed unchanged and CUDA was untouched. Temporary probe files were
+removed. This verifies artifact/API plumbing, not official-weight quality; see
+`docs/audits/data/hybrid_initialized_export_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

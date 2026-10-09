@@ -1,0 +1,13 @@
+{
+  "scope": "small native Anima synthetic initialization/export/real REST inspection",
+  "native_tensor_count": 150,
+  "native_payload_exact": true,
+  "source_file_unchanged": true,
+  "inspect_http_status": 200,
+  "inspect_lineage_exact": true,
+  "native_source_lineage_null": true,
+  "loaded_model_unchanged": true,
+  "cuda_untouched": true,
+  "temporary_files_removed": true,
+  "quality_acceptance": false
+}

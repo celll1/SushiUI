@@ -31,8 +31,12 @@ class FitPhase:
 
 
 def weights_digest(module):
+    return state_digest(module.state_dict())
+
+
+def state_digest(state):
     result = hashlib.sha256()
-    for name, tensor in sorted(module.state_dict().items()):
+    for name, tensor in sorted(state.items()):
         value = tensor.detach().cpu().contiguous()
         header = canonical_json(dict(name=name, dtype=str(value.dtype), shape=list(value.shape)))
         result.update(header.encode("utf-8") + b"\0")

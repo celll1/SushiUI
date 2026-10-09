@@ -92,6 +92,13 @@ individual records' limitations.
    retained initialization weights, not fresh per-layout acceptance. The new
    allocation has no 1024px compute matrix yet. Test guided-field consistency
    before extending the same fitting objective or promoting a default.
+   The no-fit conditional/null probe
+   (`hybrid_anima_guidance_diagnostic_2026-10.json`) measures 40 matched
+   image/noise cases, verifies frozen hashes and the CFG error identity.
+   High16 reduces low/mid-noise errors but worsens high-noise guided error;
+   null error alone does not explain the discrepancy. Compare paired field
+   anchors with a guided-field fitting objective before adding it publicly.
+   This diagnostic does not close free-running or equal-total-budget acceptance.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

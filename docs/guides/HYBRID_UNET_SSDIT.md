@@ -806,6 +806,20 @@ counter to step two. Continued weights match uninterrupted training at
 LoRA acceptance remains separate. UI wording is updated and statically reviewed;
 owner build/type checks remain pending.
 
+Official-weight Anima GPU LoRA acceptance now completes two BF16-base updates
+with rank-eight FP32 adapters and AdamW8bit, then resumes from step two with
+`inherit` topology and no explicit spec. All 625 optimizer entries restore with
+zero fresh entries; their counters reach step three, including all 65 structural
+parameters. The saved adapter contains the complete finite structural payload.
+Loading that file onto the native Anima through the real generation API produces
+a 512px four-step image without warnings (gallery 11625). Periodic training
+samples also succeed. The probe uses 32 revalidated general images, zero-initialized
+hybrid corrections and the native VAE; it establishes functionality, not quality
+recovery or joint VAE-swap acceptance. Evidence is recorded in
+`docs/audits/data/hybrid_anima_lora_gpu_2026-10.json`. The temporary run's DB and
+disk data are removed after retaining logs/sample evidence, and the owner's
+Ming Layer model is restored. Qwen/Ming GPU LoRA acceptance remains separate.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

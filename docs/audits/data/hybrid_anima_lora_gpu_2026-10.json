@@ -1,0 +1,65 @@
+{
+  "date": "2026-10-10",
+  "architecture": "anima",
+  "runtime_commit": "3b4b49d9",
+  "training_method": "lora",
+  "native_source": true,
+  "native_vae": true,
+  "images": 32,
+  "rating": "general",
+  "resolution": 512,
+  "batch_size": 1,
+  "seed": 718,
+  "rank": 8,
+  "alpha": 8,
+  "adapter_dtype": "fp32",
+  "base_dtype": "bf16",
+  "optimizer": "adamw8bit",
+  "first_updates": 2,
+  "resumed_from_step": 2,
+  "final_step": 3,
+  "structural_tensors": 65,
+  "structural_payload_flag": "1",
+  "optimizer_entries": 625,
+  "structural_optimizer_entries": 65,
+  "optimizer_counters": 3,
+  "fresh_optimizer_entries": 0,
+  "checkpoint_sha256": "863462668544ec51d867601c3188c52dc179bfea4c4717e88a2c3f8dcadb4b84",
+  "generation": {
+    "gallery_id": 11625,
+    "filename": "txt2img_20261010_055843_63.png",
+    "steps": 4,
+    "cfg": 4,
+    "seed": 63,
+    "warnings": []
+  },
+  "limits": [
+    "Functionality acceptance only; no quality-recovery claim.",
+    "Zero-initialized hybrid corrections; no teacher initialization or VAE swap in this probe.",
+    "Qwen/Ming official-weight LoRA GPU acceptance is not established by this Anima probe."
+  ],
+  "samples": [
+    {
+      "filename": "step_000000_sample_0.png",
+      "sha256": "9f2f365c3e5349afba030be6f1c32808e29dfa12e00578d0acff9129dd308969"
+    },
+    {
+      "filename": "step_000001_sample_0.png",
+      "sha256": "f97f64f8276e58bc94634d2d71e5a860d94882f90b7facaadd484324babec5a7"
+    },
+    {
+      "filename": "step_000002_sample_0.png",
+      "sha256": "8c601a4f1c2bcf8ee5a1618fb724e456b5c3e00251725c51778cbd10bb1567ce"
+    },
+    {
+      "filename": "step_000003_sample_0.png",
+      "sha256": "53c10f5982bc8ab0e09177b132d712666da6248a27e94e3489493bb29ebd0c13"
+    }
+  ],
+  "cleanup": {
+    "run_db_deleted": true,
+    "run_disk_deleted": true,
+    "owner_model_restored": true,
+    "general_dataset_retained_for_final_matrix": true
+  }
+}

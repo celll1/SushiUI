@@ -1,0 +1,64 @@
+{
+  "date": "2026-10-10",
+  "runtime_commit": "27244a7c",
+  "prototype_only": true,
+  "production_loadable": false,
+  "experimental_operator": "Zero-initialized per-channel depthwise residual path parallel to each rank-64 correction; no production schema change",
+  "architecture": "anima",
+  "rating": "general",
+  "fit_images": 28,
+  "held_out_images": 4,
+  "steps": 300,
+  "base_weights_frozen": true,
+  "learning_rate": 0.001,
+  "baseline_trained_parameters": 4958208,
+  "experimental_trained_parameters": 4980736,
+  "extra_parameters": 22528,
+  "initial_png_matches_baseline": true,
+  "native_teacher_png_matches_baseline": true,
+  "mean_held_out_mse_by_sigma": [
+    {
+      "sigma": 0.05,
+      "baseline_after": 0.18546343222260475,
+      "experimental_after": 0.18560288473963737
+    },
+    {
+      "sigma": 0.5,
+      "baseline_after": 0.0305255432613194,
+      "experimental_after": 0.031215430237352848
+    },
+    {
+      "sigma": 0.95,
+      "baseline_after": 0.018584799021482468,
+      "experimental_after": 0.015283736865967512
+    }
+  ],
+  "training_seconds": 93.51599999982864,
+  "peak_allocated_gib": 4.167730808258057,
+  "optimizer_entries": 76,
+  "all_optimizer_counters": 300,
+  "samples": {
+    "teacher_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_diagonal\\native_teacher_cfg1.png",
+      "sha256": "ee513e04eb27851cbd9811951fdb0a1fa10cbd5805fe3dbf9e159bdb9fe878a1"
+    },
+    "initial_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_diagonal\\hybrid_step000000_cfg1.png",
+      "sha256": "63f8512bd7a87dc0eb8ed37364ac5832225b243988ccf179477483b69e2040c5"
+    },
+    "final_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_diagonal\\hybrid_step000300_cfg1.png",
+      "sha256": "da5f856ee2930dadc51eba89ebfb826db7093a55aa4fd79d20fa2a67125ff931"
+    },
+    "cfg4_sample": {
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_diagonal\\hybrid_step000300_cfg4.png",
+      "sha256": "0b9c2e0ff6dc7b8200f3988b2b9a5db33306a1b8980e6387898c980f99a35eda"
+    }
+  },
+  "visual_review": "Prompt 0 remains severely fragmented at CFG1/4; no clear improvement over rank-only 300-step prototype",
+  "decision": "Do not add this branch to production on this evidence",
+  "limits": [
+    "Only short added-module teacher fitting; does not rule out benefit in other training setups",
+    "Extra parameters consume optimizer RNG, so later rounding draws are not paired; exposure/noise use private unchanged generators"
+  ]
+}

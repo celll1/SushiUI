@@ -446,6 +446,19 @@ The native control run DB rows/checkpoints have been removed after archival;
 their temporary general-image dataset remains while initialization experiments
 use it. Owner run #174 remains unchanged.
 
+A separate 300-update prototype adds a zero-initialized per-channel gain on
+each correction's existing depthwise output, alongside its rank-64 branch.
+It adds 22,528 parameters. Initial teacher and hybrid PNGs exactly match the
+rank-only probe, and a CPU check confirms that a zero gain preserves a learned
+correction's output while receiving finite nonzero gradients. After fitting,
+held-out MSE is 0.186/0.031/0.015 versus 0.185/0.031/0.019 for rank-only; prompt
+0 remains severely fragmented at CFG 1/4. This short experiment establishes no
+clear generation benefit, so the branch is not added to production. Optimizer
+rounding RNG differs with the extra tensors even though exposure/noise use
+private unchanged generators. This does not rule out other training setups.
+Evidence is in `docs/audits/data/hybrid_anima_teacher_diagonal_2026-10.json`;
+its experimental module state is not loadable by the production factory.
+
 ## Actual Anima training lifecycle
 
 A temporary general-only eight-image dataset exercised full-parameter training

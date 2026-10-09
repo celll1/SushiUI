@@ -1,0 +1,173 @@
+{
+  "rating": "general",
+  "prompt_indices": [
+    28,
+    29
+  ],
+  "seed": 63,
+  "resolution": 512,
+  "steps": 28,
+  "reused_controls": [
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg1.png",
+      "sha256": "4b3c962cd900052c822b8f8ffcca1fc34805b3864508515d1ee2b0412e09e28f"
+    },
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg4.png",
+      "sha256": "ec2f30f3dbdb9bff8a1d3df61575f5568579bd619a5990f22619f4326a181557"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg1.png",
+      "sha256": "8758436f5fcd035205fd47ff16d5d4a31c1e92a4e3c623a188299436a189c0dd"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg4.png",
+      "sha256": "a464739aadcf96e6ef51a43c64a196b7a2ff75021c9a8351cc50fbf403f2c849"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg1.png",
+      "sha256": "f0a55cff16b334b5c11beb4ab5f559196035761104dc33970cab1e194eba5337"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg4.png",
+      "sha256": "2f81b66ef3ce4b2bc3692408ddff5fa6fcf74c4c35bc3a42a7615b1b121cfbfb"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg1.png",
+      "sha256": "c2ece3c3353d995f219a5ca96631f0b6412724e11657e742bd2dfef53cc37fda"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg4.png",
+      "sha256": "c8546b05c1bb0fcff947aacbd66c94d0666cd3c7e497498de00a0dc88e0ca820"
+    }
+  ],
+  "initialized_updates": 3300,
+  "initialization_sha256": "8c7a063b37af6fcb60fc5e3c6c3b4810c5c1888da7afdd489eb7605eb6d6f7d2",
+  "calibration_sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+  "noise_policy": "gaussian_row_orthogonal_v1",
+  "samples": [
+    {
+      "arm": "swap",
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p28_swap_cfg1.png",
+      "sha256": "56ebd70c76f00cdc239f08cedba872a3f77aa5b621dfbdc765982efdf14428ce",
+      "denoise_seconds": 1.952999999979511
+    },
+    {
+      "arm": "swap",
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p28_swap_cfg4.png",
+      "sha256": "ba9c2d21c98dd16305efc2f2af9cd17aba68fbf4cc848b4820fe42ce5409f47c",
+      "denoise_seconds": 3.8589999999385327
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p29_swap_cfg1.png",
+      "sha256": "88d7dccaae6e77aa110d093c11f15a464402c8d17f9d85d1429272ae81abd275",
+      "denoise_seconds": 1.8599999998696148
+    },
+    {
+      "arm": "swap",
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p29_swap_cfg4.png",
+      "sha256": "2f2d13ac7bcabda9a2302accb08fa3825ea065956401f967efc69c489008ccbb",
+      "denoise_seconds": 3.7660000000614673
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p28_hybrid_swap_cfg1.png",
+      "sha256": "95fabe12cd225ccc128538d55a3abb7099b2b3bdaac64e274bb8691d97f8c815",
+      "denoise_seconds": 2.7339999999385327
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p28_hybrid_swap_cfg4.png",
+      "sha256": "bb88b7cb538c44e94003a7d3e9bf02b3ac46492a231579c027484f83c780a557",
+      "denoise_seconds": 4.890999999828637
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p29_hybrid_swap_cfg1.png",
+      "sha256": "dc77101b207fb745bcb268a46a997e95e3d806c36a04518e3fba1c859e74d5d2",
+      "denoise_seconds": 2.4839999999385327
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_combined_quality\\p29_hybrid_swap_cfg4.png",
+      "sha256": "04472a8d26718b5e5abc610f499bb9c47ce6dac74410112f8b6866f8ecb14cdf",
+      "denoise_seconds": 5.422000000020489
+    }
+  ],
+  "limits": [
+    "No new training; no equal-GPU-time quality acceptance."
+  ],
+  "date": "2026-10-10",
+  "runtime_commit": "69d431d2",
+  "fresh_samples": 8,
+  "reused_samples": 8,
+  "visual_review": {
+    "reviewed_cfg": 4,
+    "reviewed_new_samples": [
+      "p28_swap",
+      "p28_hybrid_swap",
+      "p29_swap",
+      "p29_hybrid_swap"
+    ],
+    "reviewed_controls": [
+      "p28_native_teacher",
+      "p28_hybrid_step003300"
+    ],
+    "p28_native": "Clear two-person back-view composition.",
+    "p28_hybrid_native_vae": "Two head-like forms remain, but bodies/composition are distorted and spurious text appears.",
+    "p28_swap": "One blurred back-view figure and scene fragments; strong block-like texture; two-person composition lost.",
+    "p28_hybrid_swap": "Blurred partial figure and scene fragments; strong block-like texture; two-person composition lost.",
+    "p29_swap": "Small recognizable face/body fragment with strong block texture and fragmented background.",
+    "p29_hybrid_swap": "Recognizable single face/body outline, severe detail distortion and block texture.",
+    "cfg1": "Generated but not visually reviewed in this audit."
+  },
+  "acceptance": {
+    "joint_quality": false,
+    "all_outputs_finite": true,
+    "native_hybrid_initialization_is_not_joint_codec_initialization": true,
+    "reason": "The native-codec fitted modules do not establish satisfactory free-running generation after codec rebasing."
+  },
+  "owner_model_unchanged": true,
+  "training_runs_created": 0
+}

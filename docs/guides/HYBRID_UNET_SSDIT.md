@@ -387,6 +387,32 @@ probe remains `local/verification/hybrid_anima_final_matrix.py` (dry-run by
 default; `--arm native|hybrid|swap|hybrid_swap --execute` opts into GPU work).
 The earlier zero-initialized matrix above is historical, not the final result.
 
+## Initialized hybrid plus codec quality probe
+
+A bounded 2026-10-10 probe reuses the earlier held-out general prompt indices
+28/29 at 512px, seed 63, 28 steps and CFG 1/4. The eight native/native-codec
+hybrid controls are checksum-verified and reused. Eight new outputs compare
+codec swap alone against the same 3300-update initialized hybrid plus swap,
+using the retained general calibration and current production Gaussian spatial
+bridge/sampler/normalized codec classes. No images are re-encoded or new training
+runs created. Only one of the DiT or VAE occupies the GPU during decode.
+
+All eight outputs are finite, but joint quality acceptance fails. At CFG four,
+prompt 28's native control has a clear two-person back-view composition; its
+native-codec hybrid control already distorts bodies and introduces text. Both
+codec-swap variants lose the two-person composition and retain strong block-like
+texture and blurred partial figures. Prompt 29's combined output retains a
+single face/body outline but has severe detail distortion; swap alone also has
+block texture and scene fragmentation. CFG-one outputs were generated but not
+visually reviewed in this audit. This is neither equal-GPU-time training evidence
+nor a proof that U-Net alone causes the old owner-run failure. Native-codec
+teacher fitting does not provide joint-codec initialization automatically.
+No default or existing run is changed. The next quality experiment must include
+bounded joint adaptation rather than infer quality from the compute matrix.
+Evidence and local image paths are in
+`docs/audits/data/hybrid_anima_combined_quality_2026-10.json`; generated pixels
+remain under `local/verification/hybrid_anima_combined_quality/`.
+
 ## Same-input training/inference diagnostic
 
 Anima base v1.0 was also compared in training and evaluation modes on the same

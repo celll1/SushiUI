@@ -43,7 +43,11 @@ individual records' limitations.
    equal-total-GPU-time legacy/hybrid quality comparison or an initialized
    hybrid + Qwen codec quality acceptance. Run a bounded, fixed general-prompt
    comparison that separates reconstruction, single prediction and free-running
-   generation before selecting a production default.
+   generation before selecting a production default. The subsequent eight-image
+   `hybrid_anima_combined_quality_2026-10.json` probe fails joint free-running
+   quality acceptance despite finite outputs and some retained single-figure
+   outlines. Native-codec initialization is insufficient evidence for the
+   combined candidate; bounded joint adaptation remains necessary.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

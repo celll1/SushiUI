@@ -133,3 +133,18 @@ def test_index_and_shard_initialization_must_agree(tmp_path):
     index.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="initialization declarations disagree"):
         read_artifact_topology(index)
+
+
+def test_directory_shards_must_have_one_initialization_lineage(tmp_path):
+    from core.rewiring.artifacts import read_directory_declarations
+    spec = declaration()
+    value = record()
+    metadata = dict(checkpoint_metadata(spec), **provenance.checkpoint_metadata(value, spec))
+    save_file({"first": torch.zeros(1)}, str(tmp_path/"one.safetensors"), metadata=metadata)
+    save_file({"second": torch.zeros(1)}, str(tmp_path/"two.safetensors"), metadata=metadata)
+    assert read_directory_declarations(tmp_path) == (spec, value)
+    value["seed"] += 1
+    metadata.update(provenance.checkpoint_metadata(value, spec))
+    save_file({"second": torch.zeros(1)}, str(tmp_path/"two.safetensors"), metadata=metadata)
+    with pytest.raises(ValueError, match="initialization declarations disagree"):
+        read_directory_declarations(tmp_path)

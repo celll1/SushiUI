@@ -107,18 +107,22 @@ def restore_topology(model, spec):
                 existing.declaration = spec
         elif hasattr(model, "rewiring_modules"):
             del model.rewiring_modules
+            model.__dict__.pop("_hybrid_initialization", None)
         model._residual_unet_spec = spec
     else:
         model.__dict__.pop("_residual_unet_spec", None)
         if hasattr(model, "rewiring_modules"):
             del model.rewiring_modules
+        model.__dict__.pop("_hybrid_initialization", None)
 
 
 def model_topology_metadata(model):
     from core.rewiring.spec import checkpoint_metadata
+    from core.rewiring.provenance import model_metadata
     spec = getattr(model, "_residual_unet_spec", None)
-    return {} if spec is None else checkpoint_metadata(
+    metadata = {} if spec is None else checkpoint_metadata(
         validate_topology_identity(spec, dict(model.config)))
+    return dict(metadata, **model_metadata(model))
 
 
 

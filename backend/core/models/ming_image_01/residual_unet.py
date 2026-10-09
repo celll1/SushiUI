@@ -50,6 +50,7 @@ def restore_topology(model, spec):
     model = getattr(model, "transformer", model)
     if spec is None:
         model.__dict__.pop("_residual_unet_spec", None)
+        model.__dict__.pop("_hybrid_initialization", None)
         if hasattr(model, "rewiring_modules"):
             del model.rewiring_modules
     else:
@@ -67,14 +68,17 @@ def restore_topology(model, spec):
                 existing.declaration = spec
         elif hasattr(model, "rewiring_modules"):
             del model.rewiring_modules
+            model.__dict__.pop("_hybrid_initialization", None)
         model._residual_unet_spec = spec
 
 
 def model_topology_metadata(model):
     from core.rewiring.spec import checkpoint_metadata
+    from core.rewiring.provenance import model_metadata
     model = getattr(model, "transformer", model)
     spec = getattr(model, "_residual_unet_spec", None)
-    return {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, model))
+    metadata = {} if spec is None else checkpoint_metadata(validate_topology_identity(spec, model))
+    return dict(metadata, **model_metadata(model))
 
 
 def default_topology(config):

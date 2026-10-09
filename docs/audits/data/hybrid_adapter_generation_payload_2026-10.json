@@ -1,0 +1,30 @@
+{
+  "scope": "Complete hybrid structural adapter payloads and generation session lifetime",
+  "architectures": ["anima", "qwen_image_21", "ming_image_01"],
+  "artifact": {
+    "metadata": "sushi.rewiring.full_module=1",
+    "tensor_prefix": "rewiring_modules.",
+    "single_structural_owner": true,
+    "requires_strength_one": true,
+    "step_modulation_refused": true,
+    "native_base_without_structural_payload_refused": true
+  },
+  "verification": {
+    "device": "CPU",
+    "cuda_not_initialized": true,
+    "compile_and_real_import": true,
+    "tests_passed": 98,
+    "subtests_passed": 6,
+    "test_files": ["hybrid_adapter_payload_test.py", "adapter_session_cheap_test.py", "dit_rewiring_anima_test.py", "dit_rewiring_lora_test.py", "adapter_layering_test.py"],
+    "exact_original_module_identity_restored": true,
+    "initialization_lineage_restored": true,
+    "original_native_weights_unchanged": true,
+    "native_and_inherited_hybrid_bases_tested": true,
+    "real_generation_loaders_with_safetensors_files": true,
+    "fitted_forward_parity_tolerance": {"rtol": 0.00001, "atol": 0.000001},
+    "restored_forward_parity_exact": true,
+    "cleanup_paths": ["unload", "session_release", "component_replacement"],
+    "refusals": ["missing_tensor", "nonfinite_tensor", "wrong_strength", "step_range", "multiple_structural_owners", "missing_payload_declaration"]
+  },
+  "limitations": "CPU generation/artifact functionality only. Hybrid LoRA training remains gated pending registration, saving and optimizer/resume acceptance. This is not official-weight GPU or quality acceptance."
+}

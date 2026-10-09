@@ -774,14 +774,21 @@ Remaining integration must register the resolved hybrid modules as one stable
 `rewiring_modules` payload, exclude their layers from low-rank target discovery,
 and carry the existing topology and initialization metadata. Resume must restore
 this payload before training, with exact named optimizer ownership. Generation
-must validate all declarations and tensors before installing either payload or
-low-rank branches, and restore the previous module/topology on failure, unload
-and model teardown. A full-module payload supplies structural weights rather
+now prepares full-module weights on CPU, validates exact layout and finite dtype
+conversion, then installs the payload and native low-rank branches transactionally
+for Anima, Qwen and Ming. `sushi.rewiring.full_module=1` declares the complete
+`rewiring_modules.*` tensor namespace; undeclared or incomplete payloads are
+refused. A hybrid adapter without structural weights cannot initialize a native
+base. The common session owns auxiliary cleanup, including component replacement
+and model teardown, preserving the original module object and initialization
+lineage. Tests compare actual native forward outputs before/after install,
+restore exact outputs on unload/release/replacement, and exercise real safetensors
+files through all three generation loaders. A full-module payload supplies structural weights rather
 than a scalable low-rank delta; its initial contract requires one owner at
 strength one with no step-range modulation. Conflicting payload owners must be
-refused, not silently summed or overwritten. These paths need joint acceptance
-before removing the training gate; the new tensor protocol alone does not enable
-hybrid LoRA.
+refused, not silently summed or overwritten. Training/resume and joint acceptance
+remain required before removing the training gate; generation support alone does
+not enable hybrid LoRA training.
 
 ## Mutable Block Swap integration
 

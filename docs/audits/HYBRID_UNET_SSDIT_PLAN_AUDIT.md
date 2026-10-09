@@ -169,6 +169,14 @@ individual records' limitations.
    two-person composition. No default/adoption or broad quality claim follows.
    Short IO-only learning is insufficient; coherent IO/structural adaptation or
    a different reduced-grid initialization still needs validation.
+   A matched IO-only versus IO+structural continuation
+   (`hybrid_anima_packed_joint_fit_2026-10.json`) verifies 200 identical item/null/
+   sigma/noise exposures and exact frozen-body hashes. All six versus 71 optimizer
+   counters reach 200. Joint adaptation costs 81.344s/4.124 GiB versus
+   64.562s/4.104 GiB; four held outputs have somewhat smoother joint texture but
+   still fail two-person structure and retain severe blocks. This does not close
+   initialization/default quality acceptance, despite lower matched training loss.
+   Check reduced-grid geometry/position and field mapping before further fitting.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

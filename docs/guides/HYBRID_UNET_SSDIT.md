@@ -5,6 +5,8 @@ actual Anima full-training/save/resume/generation verified. Quality acceptance i
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
+The requirement/evidence audit and remaining acceptance work are recorded in
+`docs/audits/HYBRID_UNET_SSDIT_PLAN_AUDIT.md`.
 
 ## Graph and modules
 
@@ -194,8 +196,8 @@ native Linear layers; learned convolution weights remain floating. Qwen installs
 modules before loading split artifacts and training bundles. Floating Diffusers
 directories use header-validated sequential shard assignment; packed native
 bases use the split artifact loader. All three native
-integrations preserve hybrid declarations when codec IO is resized. Frozen-base training
-remains rejected until its artifact contract is implemented.
+integrations preserve hybrid declarations when codec IO is resized. Hybrid LoRA
+now saves complete structural weights; see Adapter artifacts for its acceptance.
 
 `hybrid_partition.py` propagates conservative spatial dependency radii through
 pooling, interpolation, learned boundary kernels, local kernels and skip edges.
@@ -872,9 +874,12 @@ Ming Layer model is restored. Qwen/Ming GPU LoRA acceptance remains separate.
 
 Qwen hybrid generation also accepts partition/global-summary payloads, including
 combined hybrid LoRA artifacts. Full-canvas position IDs flow through the native
-partition executor and are reduced at each hybrid depth. Every tile, including
-its halo, must satisfy the declared downsampling grid; incompatible layouts are
-refused before prediction. KV caching remains disabled with hybrid topology.
+partition executor and are reduced at each hybrid depth. Generation uses the
+same conservative convolution/codec halo as training, expands actual neighboring
+context and rounds input bounds outward to the cumulative downsampling grid.
+Only each core is returned. Auto planning includes the required halo; an expanded
+input exceeding its token ceiling is refused before prediction. Incompatible
+canvas geometry is refused. KV caching remains disabled with hybrid topology.
 References/styles remain excluded, and legacy residual topology remains
 full-frame only. CPU tests compare real hybrid/global tile predictions against
 explicit native forwards and exercise combined-file backend loading, successful

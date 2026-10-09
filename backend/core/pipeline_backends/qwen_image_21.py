@@ -127,8 +127,9 @@ class QwenImage21Mixin:
         files = self._qwen21_lora_session.parse(configs)
         try:
             required = resolve_adapter_topology(model, files, validate_topology_identity)
-            if required is not None and (getattr(model, "_qwen_partition_global_payload", None) is not None
-                    or any(file.metadata.get("qwen_partition_global_adapter") for file in files)):
+            if (required is not None and required["method"] != "hybrid_unet_ssdit"
+                    and (getattr(model, "_qwen_partition_global_payload", None) is not None
+                    or any(file.metadata.get("qwen_partition_global_adapter") for file in files))):
                 raise ValueError("Residual topology excludes partition-global adapters")
         except ValueError as exc:
             raise AdapterIncompatible(str(exc), code="lora_rewiring_incompatible") from exc
@@ -245,10 +246,15 @@ class QwenImage21Mixin:
             if topology is not None:
                 from api.error_handlers import ValidationError
                 from core.rewiring.spec import digest, preview_plan
-                if plan is not None or images or reference_guides or style_transfers:
-                    raise ValidationError("Residual U-Net generation currently requires full-frame txt2img without references or styles")
+                if images or reference_guides or style_transfers:
+                    raise ValidationError("U-Net generation currently requires txt2img without references or styles")
+                if plan is not None and topology["method"] != "hybrid_unet_ssdit":
+                    raise ValidationError("Residual U-Net generation currently requires full-frame txt2img")
                 try:
                     preview_plan(topology, height // vae_scale_factor, width // vae_scale_factor)
+                    if plan is not None:
+                        for box in plan.inputs:
+                            preview_plan(topology, box.height, box.width)
                 except ValueError as exc:
                     raise ValidationError(str(exc)) from exc
                 params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
@@ -268,7 +274,7 @@ class QwenImage21Mixin:
                                 if file.apply_to_unet and file.qwen_global_payload is not None)
                 executor = PartitionExecutor(
                     model, plan, payloads, step_sources=files,
-                    use_cache=bool(params.get("qwen_image_21_kv_cache", True)),
+                    use_cache=topology is None and bool(params.get("qwen_image_21_kv_cache", True)),
                     cancelled=lambda: self.cancel_requested or pipe.interrupt,
                 )
                 if not payloads:

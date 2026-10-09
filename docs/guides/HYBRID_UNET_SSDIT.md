@@ -820,6 +820,17 @@ recovery or joint VAE-swap acceptance. Evidence is recorded in
 disk data are removed after retaining logs/sample evidence, and the owner's
 Ming Layer model is restored. Qwen/Ming GPU LoRA acceptance remains separate.
 
+Qwen hybrid generation also accepts partition/global-summary payloads, including
+combined hybrid LoRA artifacts. Full-canvas position IDs flow through the native
+partition executor and are reduced at each hybrid depth. Every tile, including
+its halo, must satisfy the declared downsampling grid; incompatible layouts are
+refused before prediction. KV caching remains disabled with hybrid topology.
+References/styles remain excluded, and legacy residual topology remains
+full-frame only. CPU tests compare real hybrid/global tile predictions against
+explicit native forwards and exercise combined-file backend loading, successful
+generation dispatch, failure cleanup and restoration of the original modules.
+These tests establish CPU wiring, not official-weight Qwen GPU acceptance.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

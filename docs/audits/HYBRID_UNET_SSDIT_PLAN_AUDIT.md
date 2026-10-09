@@ -66,6 +66,14 @@ individual records' limitations.
    free-running quality recovery; do not promote this initialization recipe.
    Keep native-codec hybrid acceptance/equal-time structural comparison distinct
    from the harder combined codec adaptation question.
+   The native-codec 120-second post-initialization comparison
+   (`hybrid_anima_equal_time_2026-10.json`) completed native/legacy/hybrid
+   263/277/216 updates. Hybrid preserves a selected single figure but fails the
+   two-person composition; no consistent quality advantage is established.
+   It is also slower at 512px batch 1, unlike the larger-shape compute matrix.
+   Historical teacher fitting adds 1046.156 recorded wall seconds, so this does
+   not close the equal-total-budget requirement. Test student-state trajectory
+   initialization before promoting the current candidate.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

@@ -28,6 +28,7 @@ class MingTransformerBridge(torch.nn.Module):
         self.partition_executor = None
         self.style_executor = None
         self.alignment_noise = None
+        self.forward_context = nullcontext
 
     @property
     def dtype(self):
@@ -39,6 +40,13 @@ class MingTransformerBridge(torch.nn.Module):
 
     def forward(self, hidden_states, timestep, encoder_hidden_states, *,
                 ref_hidden_states=None, encoder_hidden_states_2=None, return_dict=False):
+        with self.forward_context():
+            return self._predict(hidden_states, timestep, encoder_hidden_states,
+                ref_hidden_states=ref_hidden_states,
+                encoder_hidden_states_2=encoder_hidden_states_2, return_dict=return_dict)
+
+    def _predict(self, hidden_states, timestep, encoder_hidden_states, *,
+                 ref_hidden_states, encoder_hidden_states_2, return_dict):
         if self.style_executor is not None:
             return self.style_executor.predict(hidden_states,timestep,encoder_hidden_states,
                 ref_hidden_states=ref_hidden_states,encoder_hidden_states_2=encoder_hidden_states_2,return_dict=return_dict,

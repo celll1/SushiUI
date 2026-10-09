@@ -1210,6 +1210,19 @@ comparison requirement at this scope without selecting a default. The retained
 for this fresh experiment. No large Full checkpoint was written.
 Evidence: `docs/audits/data/hybrid_anima_equal_total_2026-10.json`.
 
+### Ming LoRA preview precision
+
+The INT8 ConvRot Ming GPU LoRA probe exposed a preview failure before its first
+update: BF16 activations reached FP32 LoRA masters without autocast. The common
+adapter reference algebra intentionally relies on caller-owned autocast; Qwen's
+trainer preview already provides it. Ming now applies the trainer's precision
+context only around each DiT prediction through its sampling bridge, preserving
+conditioner/VAE precision and FP32 adapter storage. No adapter algebra or API
+default changed. A native CPU BF16/FP32-LoRA preview regression checks the
+prediction context, unchanged weights, separate encoder/decoder contexts and
+context restoration; training-preview tests pass. Live retry/save/resume remains
+to be verified, so this fix alone is not Ming GPU LoRA acceptance.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

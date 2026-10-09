@@ -140,7 +140,10 @@ individual records' limitations.
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the
    owner artifact's noise policy to make a diagnostic pass.
-3. **GPU scope:** Qwen/Ming LoRA numerical restoration has CPU acceptance, not
+3. **GPU scope:** a real Ming INT8 ConvRot LoRA probe exposed a missing preview
+   autocast before its first update. DiT-only trainer precision is now wired
+   through the sampling bridge, with a native BF16/FP32-adapter CPU regression;
+   live retry/save/resume remains pending. Qwen/Ming LoRA numerical restoration has CPU acceptance, not
    official-weight GPU acceptance. Their three-update initializer probes prove
    publication/load/generation functionality, not quality recovery. Prioritize
    Anima/combined quality work before expanding GPU model downloads.

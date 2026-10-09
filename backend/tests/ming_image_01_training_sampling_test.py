@@ -114,6 +114,44 @@ def test_prefetch_suspend_releases_forward_and_resumes_next_batch(tmp_path):
         buffer.close()
 
 
+def test_preview_autocasts_fp32_lora_without_casting_encoders_or_vae(tmp_path, monkeypatch):
+    from core.adapters.layers import LoRALinearLayer
+    root = tmp_path / "package"
+    root.mkdir()
+    write_tiny_package(root)
+    monkeypatch.setitem(TRAINING_UNSUPPORTED, "ming_image_01", {})
+    owner = FullParameterTrainer(model_path=str(root), output_dir=str(tmp_path / "run"),
+        device="cpu", weight_dtype="bf16", training_dtype="bf16", vae_dtype="fp32",
+        mixed_precision=True, attention_backend="native")
+    name, base = next((name, module) for name, module in owner.transformer.named_modules()
+                      if isinstance(module, torch.nn.Linear))
+    parent_name, _, leaf = name.rpartition(".")
+    parent = owner.transformer.get_submodule(parent_name) if parent_name else owner.transformer
+    branch = LoRALinearLayer(base, rank=2, alpha=2, lora_name=name, lora_dtype=torch.float32)
+    with torch.no_grad():
+        branch.lora_up.weight.fill_(0.01)
+    setattr(parent, leaf, branch)
+    before = {name: value.detach().clone() for name, value in owner.transformer.named_parameters()}
+    observed = {"dit": [], "conditioner": [], "vae": []}
+    handles = []
+    for key, module in (("dit", owner.transformer), ("conditioner", owner.text_encoder), ("vae", owner.vae.decoder)):
+        handles.append(module.register_forward_pre_hook(
+            lambda _module, _args, key=key: observed[key].append(torch.is_autocast_enabled("cpu"))))
+    try:
+        sample = owner.arch.sample(owner, SampleContext(prompt="word5", width=64, height=64,
+            num_inference_steps=1, guidance_scale=1., seed=17))
+    finally:
+        for handle in handles:
+            handle.remove()
+    assert sample.size == (64, 64)
+    assert observed["dit"] and all(observed["dit"])
+    assert observed["conditioner"] and not any(observed["conditioner"])
+    assert observed["vae"] and not any(observed["vae"])
+    assert branch.lora_down.weight.dtype == branch.lora_up.weight.dtype == torch.float32
+    assert all(torch.equal(before[name], value) for name, value in owner.transformer.named_parameters())
+    assert not torch.is_autocast_enabled("cpu")
+
+
 def test_layer_publication_rolls_back_all_previous_frames(tmp_path, monkeypatch):
     import os
     from core.models.ming_image_01.results import MingResultGroup

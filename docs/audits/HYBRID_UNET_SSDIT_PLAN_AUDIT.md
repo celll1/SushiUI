@@ -84,6 +84,14 @@ individual records' limitations.
    module weights and verifies 200 matched teacher inputs. Selected CFG4 figure
    placement improves at modest fitting cost, but distortions/lettering remain
    and inspected CFG1 still fails. This does not promote the candidate default.
+   A further 16/8/4 placement probe
+   (`hybrid_anima_highres16_2026-10.json`) reused the 12/12/4 comparator and
+   verified all 200 matched exposures plus exact frozen hashes. Reviewed CFG4
+   figure placement/outline improves again, but CFG1 fragmentation and remaining
+   anatomy/text artifacts prevent acceptance. These are private transfers of
+   retained initialization weights, not fresh per-layout acceptance. The new
+   allocation has no 1024px compute matrix yet. Test guided-field consistency
+   before extending the same fitting objective or promoting a default.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

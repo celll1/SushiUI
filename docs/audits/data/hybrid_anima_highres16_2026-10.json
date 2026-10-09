@@ -1,0 +1,584 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "updates_per_arm": 200,
+  "learning_rate": 0.0001,
+  "initial_sha256": "8c7a063b37af6fcb60fc5e3c6c3b4810c5c1888da7afdd489eb7605eb6d6f7d2",
+  "initial_updates": 3300,
+  "layer_counts": {
+    "high16": [
+      16,
+      8,
+      4
+    ],
+    "reused_high12": [
+      12,
+      12,
+      4
+    ]
+  },
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out_indices": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "reused_original_controls": [
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg1.png",
+      "sha256": "4b3c962cd900052c822b8f8ffcca1fc34805b3864508515d1ee2b0412e09e28f"
+    },
+    {
+      "index": 28,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_native_teacher_cfg4.png",
+      "sha256": "ec2f30f3dbdb9bff8a1d3df61575f5568579bd619a5990f22619f4326a181557"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg1.png",
+      "sha256": "8758436f5fcd035205fd47ff16d5d4a31c1e92a4e3c623a188299436a189c0dd"
+    },
+    {
+      "index": 28,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p28_hybrid_step003300_cfg4.png",
+      "sha256": "a464739aadcf96e6ef51a43c64a196b7a2ff75021c9a8351cc50fbf403f2c849"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg1.png",
+      "sha256": "f0a55cff16b334b5c11beb4ab5f559196035761104dc33970cab1e194eba5337"
+    },
+    {
+      "index": 29,
+      "teacher": true,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_native_teacher_cfg4.png",
+      "sha256": "2f81b66ef3ce4b2bc3692408ddff5fa6fcf74c4c35bc3a42a7615b1b121cfbfb"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg1.png",
+      "sha256": "c2ece3c3353d995f219a5ca96631f0b6412724e11657e742bd2dfef53cc37fda"
+    },
+    {
+      "index": 29,
+      "teacher": false,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_teacher_init_trajectory_eval\\p29_hybrid_step003300_cfg4.png",
+      "sha256": "c8546b05c1bb0fcff947aacbd66c94d0666cd3c7e497498de00a0dc88e0ca820"
+    }
+  ],
+  "limits": [
+    "Private explicit module transfer: identical module IDs and tensor shapes, with changed region placement.",
+    "Equal additional updates from the same retained initialization, not equal GPU time or fresh per-layout initialization.",
+    "New placement may need different fitting; no production preset or owner checkpoint changed."
+  ],
+  "raw_report_path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres16\\report.json",
+  "raw_report_sha256": "55277e6a84f2fb815fce25c38e496319cbfefc6b87f3bee952e84d5d96fea0f6",
+  "arms": [
+    {
+      "arm": "high16",
+      "spec": {
+        "schema_version": 2,
+        "method": "hybrid_unet_ssdit",
+        "architecture": "anima",
+        "streams": [
+          {
+            "name": "main",
+            "block_count": 28
+          }
+        ],
+        "regions": [
+          {
+            "id": "r0",
+            "stream": "main",
+            "parent": null,
+            "start_block": 8,
+            "end_block": 20,
+            "down_factor": [
+              2,
+              2
+            ],
+            "down": "avg_pool",
+            "up": "bilinear",
+            "align_corners": false,
+            "merge": "identity_delta_add",
+            "position_policy": "coarse_integer",
+            "grid_policy": "require_divisible",
+            "delta_dtype": "float32"
+          },
+          {
+            "id": "r1",
+            "stream": "main",
+            "parent": "r0",
+            "start_block": 12,
+            "end_block": 16,
+            "down_factor": [
+              2,
+              2
+            ],
+            "down": "avg_pool",
+            "up": "bilinear",
+            "align_corners": false,
+            "merge": "identity_delta_add",
+            "position_policy": "coarse_integer",
+            "grid_policy": "require_divisible",
+            "delta_dtype": "float32"
+          }
+        ],
+        "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+        "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+        "stream_widths": {
+          "main": 2048
+        },
+        "boundaries": [
+          {
+            "id": "downup_r0",
+            "region": "r0",
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "downup_r1",
+            "region": "r1",
+            "rank": 64,
+            "kernel": 3
+          }
+        ],
+        "refiners": [
+          {
+            "id": "local_main_0",
+            "stream": "main",
+            "after_block": 0,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_12",
+            "stream": "main",
+            "after_block": 12,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_16",
+            "stream": "main",
+            "after_block": 16,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_20",
+            "stream": "main",
+            "after_block": 20,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_24",
+            "stream": "main",
+            "after_block": 24,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_4",
+            "stream": "main",
+            "after_block": 4,
+            "rank": 64,
+            "kernel": 3
+          },
+          {
+            "id": "local_main_8",
+            "stream": "main",
+            "after_block": 8,
+            "rank": 64,
+            "kernel": 3
+          }
+        ],
+        "skips": [
+          {
+            "id": "skip_main_0_27",
+            "stream": "main",
+            "source_after": 0,
+            "destination_before": 27,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_10_17",
+            "stream": "main",
+            "source_after": 10,
+            "destination_before": 17,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_12_15",
+            "stream": "main",
+            "source_after": 12,
+            "destination_before": 15,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_2_25",
+            "stream": "main",
+            "source_after": 2,
+            "destination_before": 25,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_4_23",
+            "stream": "main",
+            "source_after": 4,
+            "destination_before": 23,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_6_21",
+            "stream": "main",
+            "source_after": 6,
+            "destination_before": 21,
+            "rank": 64,
+            "storage": "gpu"
+          },
+          {
+            "id": "skip_main_8_19",
+            "stream": "main",
+            "source_after": 8,
+            "destination_before": 19,
+            "rank": 64,
+            "storage": "gpu"
+          }
+        ],
+        "module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594"
+      },
+      "frozen_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres16\\p28_high16_cfg1.png",
+          "sha256": "8e37b87827414ffbb8899911f26f3a3152601147a20756ab849384704ecf5d8f"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres16\\p28_high16_cfg4.png",
+          "sha256": "77435bf9eb8159600edb6bbfc2587ae8fa4f98242923d43e7bedae79ddfd2dd9"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres16\\p29_high16_cfg1.png",
+          "sha256": "09b41e422041e8ed8e30a0b398e04a99e725d87f968d2d85c9eeeeb5887d34b9"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres16\\p29_high16_cfg4.png",
+          "sha256": "709e4fd3d9fc5fa09b79bffc73d0e74b657a8020d888167f5dc412b4a907f290"
+        }
+      ],
+      "fitting_seconds": 68.95299999997951,
+      "peak_allocated_gib": 4.475597381591797,
+      "frozen_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "loss_summary": {
+        "count": 200,
+        "mean": 0.03659961747005582,
+        "first50_median": 0.033138830214738846,
+        "last50_median": 0.023605315014719963
+      }
+    }
+  ],
+  "reused_high12": {
+    "arm": "highres",
+    "spec": {
+      "schema_version": 2,
+      "method": "hybrid_unet_ssdit",
+      "architecture": "anima",
+      "streams": [
+        {
+          "name": "main",
+          "block_count": 28
+        }
+      ],
+      "regions": [
+        {
+          "id": "r0",
+          "stream": "main",
+          "parent": null,
+          "start_block": 6,
+          "end_block": 22,
+          "down_factor": [
+            2,
+            2
+          ],
+          "down": "avg_pool",
+          "up": "bilinear",
+          "align_corners": false,
+          "merge": "identity_delta_add",
+          "position_policy": "coarse_integer",
+          "grid_policy": "require_divisible",
+          "delta_dtype": "float32"
+        },
+        {
+          "id": "r1",
+          "stream": "main",
+          "parent": "r0",
+          "start_block": 12,
+          "end_block": 16,
+          "down_factor": [
+            2,
+            2
+          ],
+          "down": "avg_pool",
+          "up": "bilinear",
+          "align_corners": false,
+          "merge": "identity_delta_add",
+          "position_policy": "coarse_integer",
+          "grid_policy": "require_divisible",
+          "delta_dtype": "float32"
+        }
+      ],
+      "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+      "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+      "stream_widths": {
+        "main": 2048
+      },
+      "boundaries": [
+        {
+          "id": "downup_r0",
+          "region": "r0",
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "downup_r1",
+          "region": "r1",
+          "rank": 64,
+          "kernel": 3
+        }
+      ],
+      "refiners": [
+        {
+          "id": "local_main_0",
+          "stream": "main",
+          "after_block": 0,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_12",
+          "stream": "main",
+          "after_block": 12,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_16",
+          "stream": "main",
+          "after_block": 16,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_20",
+          "stream": "main",
+          "after_block": 20,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_24",
+          "stream": "main",
+          "after_block": 24,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_4",
+          "stream": "main",
+          "after_block": 4,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_8",
+          "stream": "main",
+          "after_block": 8,
+          "rank": 64,
+          "kernel": 3
+        }
+      ],
+      "skips": [
+        {
+          "id": "skip_main_0_27",
+          "stream": "main",
+          "source_after": 0,
+          "destination_before": 27,
+          "rank": 64,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_10_17",
+          "stream": "main",
+          "source_after": 10,
+          "destination_before": 17,
+          "rank": 64,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_12_15",
+          "stream": "main",
+          "source_after": 12,
+          "destination_before": 15,
+          "rank": 64,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_2_25",
+          "stream": "main",
+          "source_after": 2,
+          "destination_before": 25,
+          "rank": 64,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_4_23",
+          "stream": "main",
+          "source_after": 4,
+          "destination_before": 23,
+          "rank": 64,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_6_21",
+          "stream": "main",
+          "source_after": 6,
+          "destination_before": 21,
+          "rank": 64,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_8_19",
+          "stream": "main",
+          "source_after": 8,
+          "destination_before": 19,
+          "rank": 64,
+          "storage": "gpu"
+        }
+      ],
+      "module_layout_sha256": "94168acc61da48e68895f3dc86894de0f56d7a720b9469cb4b01b3c9abdc5594"
+    },
+    "frozen_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "samples": [
+      {
+        "index": 28,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres_allocation\\p28_highres_cfg1.png",
+        "sha256": "fd059467793bee483579371ca22c1b2c63da639fba3da07689a01a652e098584"
+      },
+      {
+        "index": 28,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres_allocation\\p28_highres_cfg4.png",
+        "sha256": "76512edde1fb97cd25cbefbf9452df544eaaa0d23bdcb19215590ec1b634b479"
+      },
+      {
+        "index": 29,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres_allocation\\p29_highres_cfg1.png",
+        "sha256": "a5f6731fe53e8258711a33924505355cc6594b7bff7cf09fddd61cc6ac155f29"
+      },
+      {
+        "index": 29,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_highres_allocation\\p29_highres_cfg4.png",
+        "sha256": "7582b62edf66aee64735a5f8471af9b58eca45c16216dbf815c44d458ced42ef"
+      }
+    ],
+    "fitting_seconds": 75.73400000017136,
+    "peak_allocated_gib": 4.460991859436035,
+    "frozen_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "loss_summary": {
+      "count": 200,
+      "mean": 0.04015719017130323,
+      "first50_median": 0.028392954729497433,
+      "last50_median": 0.026447508484125137
+    }
+  },
+  "matched_teacher_exposures": 200,
+  "visual_review": {
+    "high16": [
+      "p28_cfg4",
+      "p29_cfg4",
+      "p28_cfg1"
+    ],
+    "high12": [
+      "p28_cfg4",
+      "p29_cfg4"
+    ],
+    "observations": [
+      "At CFG4, high16 retains two seated-looking figures and clearer body outlines than the high12 comparator; anatomy/pose distortion and spurious text remain.",
+      "The high16 CFG4 single figure has a clearer face and outline, with remaining accessory/background and line distortions.",
+      "The inspected high16 CFG1 two-person scene is still heavily fragmented."
+    ],
+    "accepted_default": false
+  },
+  "limitations": [
+    "Private explicit module transfer: identical module IDs and tensor shapes, with changed region placement.",
+    "Equal additional updates from the same retained initialization, not equal GPU time or fresh per-layout initialization.",
+    "New placement may need different fitting; no production preset or owner checkpoint changed.",
+    "Selected visual inspection of two prompts is not broad quality acceptance.",
+    "Separate-run teacher-fitting time does not establish inference/full-FT speed ordering.",
+    "The high16 candidate is not included in the earlier 1024px compute matrix."
+  ]
+}

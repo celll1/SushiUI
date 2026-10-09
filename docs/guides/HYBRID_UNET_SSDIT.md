@@ -1061,6 +1061,26 @@ production acceptance or evidence of a general advantage. Keep the current
 default unchanged while examining this allocation tradeoff.
 Evidence: `docs/audits/data/hybrid_anima_highres_allocation_2026-10.json`.
 
+### Sixteen full-resolution blocks
+
+A further private placement moved the outer region to [8,20), retaining the
+inner [12,16) region: 16/8/4 full/half/quarter-resolution blocks. It reused the
+same 3300-update structural weights and matched all 200 subsequent teacher
+exposures to the 12/12/4 arm; frozen native parameter hashes remain exact.
+The existing 12/12/4 outputs were reused without retraining. Fitting took
+68.953 seconds with 4.476 GiB peak allocated VRAM. Separate-run fitting timings
+do not establish a throughput ranking, and this placement has not been measured
+in the earlier 1024px compute matrix.
+
+In the reviewed CFG4 pair, the two-figure scene has clearer body placement and
+the single figure has a clearer face/outline than the 12/12/4 comparator.
+Anatomy/pose distortion and spurious lettering remain; the inspected CFG1
+two-person scene is heavily fragmented. This supports a stage-allocation effect,
+not broad quality acceptance. The default and owner runs remain unchanged.
+Further work should separate guided-field error from resolution allocation
+before spending more updates on the same teacher-fitting objective.
+Evidence: `docs/audits/data/hybrid_anima_highres16_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

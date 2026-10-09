@@ -1,5 +1,6 @@
 """Experimental Anima IO coefficients for packed native latents on a reduced grid."""
 import torch
+from torch.nn import functional as F
 
 
 @torch.no_grad()
@@ -23,3 +24,11 @@ def packed_io_weights(in_weight, out_weight, channels):
     outgoing = out_weight.reshape(4, channels, hidden).permute(1, 0, 2).reshape(channels * 4, hidden)
     outgoing = outgoing.unsqueeze(0).expand(4, -1, -1).reshape(channels * 16, hidden).clone()
     return incoming.flatten(1), outgoing
+
+
+@torch.no_grad()
+def packed_head_noise(noise):
+    """Noise projection of the initial average-input/repeated-output boundaries."""
+    if noise.ndim != 4 or any(size % 2 for size in noise.shape[-2:]):
+        raise ValueError("Packed head noise requires an even BCHW grid")
+    return F.interpolate(F.avg_pool2d(noise, 2), scale_factor=2, mode="nearest")

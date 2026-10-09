@@ -153,3 +153,5 @@ def _run(gate,manager,job_id,source,components,spec,items,options):
         with _lock:
             if _job is not None and _job["job_id"] == job_id:
                 _job.update(state=terminal,result=result,error=error,finished_at=time.time())
+                if terminal == "completed":
+                    _job.update(stage="completed",completed=1,total=1,units="models")

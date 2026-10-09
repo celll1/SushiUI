@@ -13,6 +13,13 @@ from .spec import digest
 from .provenance import RECIPE_FIELDS
 
 
+def noising_input(latent, noise, sigma):
+    # Native modulation disables autocast; timestep embeddings must match the input dtype.
+    sigma = sigma.to(latent)
+    scale = sigma.reshape(-1, *([1] * (latent.ndim-1)))
+    return (1-scale)*latent+scale*noise, sigma
+
+
 def initialize_loaded_anima(components, source, spec, items, options, progress, cancelled):
     from core.attention import AttentionMode
     from core.models.anima.anima_attention import set_attention_backend
@@ -151,9 +158,10 @@ def initialize_loaded_anima(components, source, spec, items, options, progress, 
                         latent = latents[index].to(device=device,dtype=torch.bfloat16)
                         noise = torch.randn(latent.shape,device=device,dtype=latent.dtype,generator=noise_rng)
                         sigma = .01+.98*torch.rand(1,device=device,generator=noise_rng)
+                        value, sigma = noising_input(latent, noise, sigma)
                         if float(torch.rand(1,generator=selection)) < options["conditioning_dropout"]:
                             index = len(items)
-                        yield FitExample((),inputs((1-sigma)*latent+sigma*noise,sigma,index))
+                        yield FitExample((),inputs(value,sigma,index))
                     else:
                         pair = pairs[int(torch.randint(len(pairs),(1,),generator=selection))]
                         yield FitExample((),inputs(pair["x"].to(device),pair["sigma"].to(device),pair["conditioning_index"]),

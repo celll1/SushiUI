@@ -68,6 +68,9 @@ def test_worker_releases_exclusive_owner(monkeypatch, owner, outcome):
     assert not job.job_is_running()
     assert coordinator.snapshot()["mutation"] is None
     assert job.status()["state"] == {"cancel": "cancelled", "failure": "failed", "complete": "completed"}[outcome]
+    if outcome == "complete":
+        assert job.status()["completed"] == job.status()["total"] == 1
+        assert job.status()["stage"] == "completed"
     coordinator.begin_generation()
     coordinator.end_generation()
 

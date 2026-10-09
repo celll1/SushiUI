@@ -47,6 +47,25 @@ def forward(model):
                  padding_mask=torch.zeros(1, 1, 8, 12))
 
 
+def test_initialization_noising_preserves_bf16_modulation(native):
+    from core.rewiring.anima_initialization import noising_input
+    model, _ = native
+    model.to(torch.bfloat16).train().enable_gradient_checkpointing()
+    latent = torch.ones(2,4,1,8,12,dtype=torch.bfloat16)
+    noise = torch.zeros_like(latent)
+    value, sigma = noising_input(latent,noise,torch.tensor([.25,.75]))
+    assert value.dtype == sigma.dtype == torch.bfloat16
+    assert torch.equal(value[0],torch.full_like(value[0],.75))
+    assert torch.equal(value[1],torch.full_like(value[1],.25))
+    with torch.autocast("cpu",dtype=torch.bfloat16):
+        output = model(value,sigma,torch.ones(2,3,12,dtype=torch.bfloat16),
+                       padding_mask=torch.zeros(2,1,8,12,dtype=torch.bfloat16))
+        loss = output.float().square().mean()
+    loss.backward()
+    assert torch.isfinite(loss)
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.rewiring_modules.parameters())
+
+
 def test_native_training_and_strict_checkpoint_reload(native, tmp_path):
     from core.models.anima.anima_loader import load_anima_dit
     from core.models.anima.residual_unet import native_config, model_topology_metadata

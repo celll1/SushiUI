@@ -1099,6 +1099,34 @@ conditional/null anchor versus guided-field fitting comparison is the next
 candidate experiment. No public objective or default has changed.
 Evidence: `docs/audits/data/hybrid_anima_guidance_diagnostic_2026-10.json`.
 
+### Paired conditional/null fitting
+
+Two private 200-update arms started from the identical retained high16 state.
+Both predicted conditional and null fields on each identical noisy exposure;
+one minimized their mean MSE, and the other added half the CFG4-field MSE
+divided by 25. Native parameters remained exact and all 65 optimizer counters
+reached 200. Held-out field errors decreased in both arms. The added guided
+term lowered selected low/mid-noise guided errors slightly but did not improve
+the high-noise case or show a clear visual advantage in the inspected CFG4 pair.
+Do not add this term to public initialization defaults on this evidence.
+
+Both retain two-figure outlines and a single figure/face at CFG4, with remaining
+anatomy/pose distortion and spurious lettering. The paired-anchor outputs are a
+candidate coarse-structure-preserving starting point for owner evaluation, not
+an exact native-output reproduction. Their improvement over the previous state
+also includes 200 additional updates; this probe does not isolate pairing against
+an ordinary single-condition continuation arm. Fit wall times were 204.968 and
+128.703 seconds, with peaks 4.953/4.955 GiB. Unequal separate-run wall times do
+not establish an objective-specific speed advantage.
+
+Review of the reused native p28 CFG1 control shows split/collage-like composition
+already without rewiring. Earlier CFG1 fragmentation observations are valid
+descriptions of those hybrid images, but cannot all be attributed to U-Net
+conversion. The native p29 CFG1 control is coherent: this is prompt-specific.
+Future acceptance should compare each candidate against its actual native
+control, prioritizing usable coarse structure for subsequent training.
+Evidence: `docs/audits/data/hybrid_anima_guided_fit_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

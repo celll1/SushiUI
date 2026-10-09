@@ -1,0 +1,36 @@
+{
+  "scope": "small native Anima CUDA fitting transaction; synthetic inputs only",
+  "native_blocks": 7,
+  "stream_width": 24,
+  "fitted_updates": 3,
+  "events": [
+    {
+      "completed": 1,
+      "total": 3,
+      "phase": "data_noising",
+      "phase_update": 1,
+      "loss": 8.742926382865335e-09
+    },
+    {
+      "completed": 2,
+      "total": 3,
+      "phase": "data_noising",
+      "phase_update": 2,
+      "loss": 0.00013902236241847277
+    },
+    {
+      "completed": 3,
+      "total": 3,
+      "phase": "data_noising",
+      "phase_update": 3,
+      "loss": 1.4146028661343735e-05
+    }
+  ],
+  "seconds": 1.327999999979511,
+  "native_weights_unchanged": true,
+  "added_weights_changed": true,
+  "cpu_cuda_rng_restored": true,
+  "cancellation_rollback_exact": true,
+  "cancelled_fit_has_no_success_record": true,
+  "quality_acceptance": false
+}

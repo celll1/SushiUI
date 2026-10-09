@@ -539,7 +539,9 @@ data-noising/teacher-trajectory phases and the initially fitted module weights.
 Hashes record lineage; they are not compared against later fine-tuned weights.
 No image pixels or captions are stored in this record.
 
-Anima's full checkpoint metadata writer and native loader preserve the record.
+Anima, Ming and Qwen's full checkpoint metadata writers and native loaders preserve
+the record. Ming covers Design/Layer and floating/packed packages; Qwen covers
+split artifacts, hybrid Diffusers directories and training bundles.
 Codec rebasing and skip residency changes retain lineage when architecture,
 native block layout and learned module layout remain the same. Malformed,
 incomplete or mismatched records fail before use; shard/index records must agree.
@@ -547,11 +549,32 @@ The common frozen teacher context refuses to fit an initialized artifact again.
 Missing metadata remains unknown, rather than being upgraded to a success record.
 The earlier prototype-only hint is not migrated automatically.
 
-CPU tests exercise the real small Anima loader, a subsequent gradient update and
-another save/reload, as well as corrupt metadata, module layout changes and
-shard/index disagreement. Automatic fitting, API/UI recipe selection, Ming/Qwen
-lineage restoration and initialization cancellation remain to be wired. This
-contract alone does not initialize fresh weights or establish image quality.
+CPU tests exercise small native loaders, subsequent gradient updates and
+save/reload, as well as corrupt metadata, module layout changes and shard/index
+and directory-wide lineage disagreement. Missing metadata remains unknown.
+
+`core/rewiring/fitting.py` provides the common fitting transaction. Architecture
+owners supply native examples, velocity extraction, fresh optimizers, residency
+and private input/noise RNG. Each declared phase starts a fresh optimizer over
+exactly the added parameters and uses its declared learning rate. Data-noising
+examples may call the borrowed teacher directly; trajectory examples require
+captured native velocity targets. Progress counts completed updates.
+Non-finite loss/gradients/weights, incomplete phases, exceptions and cancellation
+roll back added weights in place. Native flags, modes, topology and Torch RNG
+are restored by the teacher context. Only successful completion publishes lineage
+with the actual fitted module-state digest. The main optimizer/EMA are not used.
+
+CPU tests confirm that weights changed before cancellation and then return
+exactly to their original values, with no success record. A seven-block,
+width-24 native Anima CUDA probe also completes three fitting updates, preserves
+all native weights and CPU/CUDA RNG, and rolls back an actual update when the
+progress callback cancels. It uses synthetic inputs and verifies execution rather
+than official-weight quality; recorded in
+`docs/audits/data/hybrid_fitting_transaction_2026-10.json`.
+Automatic preparation, API/UI recipe selection, production residency/cancellation
+plumbing and official-weight GPU acceptance of this shared transaction remain
+to be wired. This infrastructure alone does not initialize fresh weights or
+establish image quality.
 
 ## Mutable Block Swap integration
 

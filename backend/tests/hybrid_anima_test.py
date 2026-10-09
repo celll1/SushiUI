@@ -100,10 +100,44 @@ def test_reinstall_does_not_replace_learned_parameters(native):
     from core.models.anima.residual_unet import restore_topology
     model, graph = native
     parameters = list(model.rewiring_modules.parameters())
+    from hybrid_provenance_test import record
+    value = record()
+    value["origin_spec"] = deepcopy(graph)
+    model._hybrid_initialization = value
     restore_topology(model, graph)
     assert all(left is right for left, right in zip(parameters, model.rewiring_modules.parameters()))
+    assert model._hybrid_initialization == value
     restore_topology(model, None)
     assert not hasattr(model, "rewiring_modules")
+    assert not hasattr(model, "_hybrid_initialization")
+
+
+def test_initialization_lineage_survives_native_reload_and_fine_tuning(native, tmp_path):
+    from core.models.anima.anima_loader import load_anima_dit
+    from core.models.anima.residual_unet import native_config, model_topology_metadata
+    from hybrid_provenance_test import record
+    model, graph = native
+    value = record()
+    value["origin_spec"] = deepcopy(graph)
+    model._hybrid_initialization = value
+    path = tmp_path / "initialized.safetensors"
+    for _ in range(2):
+        metadata = dict(model_topology_metadata(model), model_type="anima",
+                        transformer_config=json.dumps(native_config(model)))
+        weights = {"net." + name: tensor.detach().contiguous()
+                   for name, tensor in model.state_dict().items()}
+        save_file(weights, str(path), metadata=metadata)
+        restored = load_anima_dit(str(path), device="cpu", dtype=torch.float32)
+        assert restored._hybrid_initialization == value
+        assert model_topology_metadata(restored) == model_topology_metadata(model)
+        for name, tensor in weights.items():
+            assert torch.equal(tensor, restored.state_dict()[name.removeprefix("net.")])
+        model = restored.train().requires_grad_(True)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.001)
+        forward(model).square().mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        assert model._hybrid_initialization == value
 
 
 def test_native_partition_and_global_adapter_backward(native):

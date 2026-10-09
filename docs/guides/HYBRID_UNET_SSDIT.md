@@ -530,6 +530,29 @@ the prior Ming Layer model was restored. Evidence is tracked in
 `docs/audits/data/hybrid_anima_lifecycle_2026-10.json`; full probe logs remain
 under `local/verification/hybrid_anima_lifecycle/logs/`.
 
+## Initialization lineage
+
+`core/rewiring/provenance.py` defines `sushi.hybrid.initialization` and its
+canonical SHA-256. The version-1 record identifies the native source, calibration
+selection fingerprint, original hybrid declaration, seed, sample count, ordered
+data-noising/teacher-trajectory phases and the initially fitted module weights.
+Hashes record lineage; they are not compared against later fine-tuned weights.
+No image pixels or captions are stored in this record.
+
+Anima's full checkpoint metadata writer and native loader preserve the record.
+Codec rebasing and skip residency changes retain lineage when architecture,
+native block layout and learned module layout remain the same. Malformed,
+incomplete or mismatched records fail before use; shard/index records must agree.
+The common frozen teacher context refuses to fit an initialized artifact again.
+Missing metadata remains unknown, rather than being upgraded to a success record.
+The earlier prototype-only hint is not migrated automatically.
+
+CPU tests exercise the real small Anima loader, a subsequent gradient update and
+another save/reload, as well as corrupt metadata, module layout changes and
+shard/index disagreement. Automatic fitting, API/UI recipe selection, Ming/Qwen
+lineage restoration and initialization cancellation remain to be wired. This
+contract alone does not initialize fresh weights or establish image quality.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

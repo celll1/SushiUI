@@ -217,6 +217,7 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
     from core.models.common.single_file_format import read_metadata
     import json
     global_declaration = None
+    artifact_metadata = {}
     if Path(dit_path).exists() or Path(str(dit_path)+".index.json").is_file():
         artifact_metadata = read_metadata(dit_path)
         if METADATA_KEY in artifact_metadata:
@@ -324,6 +325,8 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
         model = model.to(device)
     model = model.eval().requires_grad_(False)
     restore_topology(model, topology)
+    from core.rewiring.provenance import restore as restore_initialization
+    restore_initialization(model, artifact_metadata)
     return model
 
 

@@ -186,6 +186,8 @@ def read_checkpoint_metadata(metadata):
     keys = {META_VERSION, META_SPEC, META_HASH}
     present = keys.intersection(metadata)
     if not present:
+        from .provenance import read_checkpoint_metadata as read_initialization
+        read_initialization(metadata, None)
         return None
     if present != keys or metadata[META_VERSION] not in ("1", "2"):
         raise ValueError("Incomplete or unsupported checkpoint topology declaration")
@@ -196,6 +198,8 @@ def read_checkpoint_metadata(metadata):
         raise ValueError("Checkpoint topology version disagrees with spec")
     if metadata[META_HASH] != digest(spec):
         raise ValueError("Checkpoint topology hash mismatch")
+    from .provenance import read_checkpoint_metadata as read_initialization
+    read_initialization(metadata, spec)
     return spec
 
 

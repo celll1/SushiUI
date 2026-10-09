@@ -147,8 +147,15 @@ def training_plan(trainer,clean):
         return TRAINING_DEFAULTS[canonical] if candidate is None else candidate
     count=region_count(trainer,clean)
     if count == 1:raise ValueError("Ming full-frame execution has no partition plan")
+    model = getattr(trainer.transformer, "module", trainer.transformer)
+    topology = getattr(model, "_residual_unet_spec", None)
+    halo = value("halo_tokens")
+    if (topology or {}).get("method") == "hybrid_unet_ssdit":
+        from core.rewiring.hybrid_partition import resolved_partition_halo, spatial_codec_radius
+        codec_radius = spatial_codec_radius(getattr(model, "vae_latent_bridge", None), 2)
+        halo = resolved_partition_halo(topology, "main", halo, codec_radius=codec_radius)
     plan = MingPartitionAdapter().build_fixed_plan(clean.shape[-2]//2,clean.shape[-1]//2,count=count,
-        halo=value("halo_tokens"),seed=value("seed"),epoch=int(getattr(trainer,"_current_epoch",0)),
+        halo=halo,seed=value("seed"),epoch=int(getattr(trainer,"_current_epoch",0)),
         occurrence=int(getattr(trainer,"_current_batch_position",0)),
         split_ratio_min=value("split_ratio_min"),split_ratio_max=value("split_ratio_max"))
     from .residual_unet import spatial_alignment

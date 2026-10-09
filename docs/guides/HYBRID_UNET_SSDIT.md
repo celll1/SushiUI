@@ -1,6 +1,6 @@
 # Hybrid U-Net ssDiT foundation
 
-Status: experimental native Anima integration; CPU acceptance only.
+Status: experimental native Anima/Ming integration; CPU acceptance only.
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
@@ -32,8 +32,9 @@ preserve a zero update. The existing high-resolution region bypass remains.
 
 The shared residual runtime has optional extension hooks at down/up boundaries
 and before/after blocks. Calls without extensions retain legacy execution.
-Hybrid execution currently accepts single image grids only; temporal grouping
-is rejected. Architecture-owned callbacks still own native blocks and positions.
+Spatial modules process each ordered Ming layer grid independently, with no
+convolution across layer boundaries. Native attention still connects the
+declared token streams. Architecture-owned callbacks own native blocks and positions.
 
 ## Artifact and inspection boundary
 
@@ -50,7 +51,10 @@ missing/unexpected or nonfinite hybrid parameters. Full-model state saving
 includes these modules. Topology reinstallation preserves parameter objects;
 codec IO rebasing preserves module declarations. OpenAPI and frontend types
 recognize v2. Explicit topology JSON can select it for Anima full-parameter
-training, including partition/global-summary execution. Frozen-base training
+training, including partition/global-summary execution. Ming uses header-validated
+meta construction and shard assignment for hybrid bundles, including packed
+native Linear layers; learned convolution weights remain floating. Both native
+integrations preserve hybrid declarations when codec IO is resized. Frozen-base training
 remains rejected until its artifact contract is implemented.
 
 `hybrid_partition.py` propagates conservative spatial dependency radii through
@@ -70,7 +74,7 @@ The graph shows compressed learned skips with dashed yellow lines. Hybrid
 region editing is temporarily disabled to preserve dependent module settings;
 the complete hybrid editor and preset selection remain pending. No existing
 run or default preset is converted. Parameter census, GPU/native full-trainer
-optimizer/EMA/offload acceptance, Ming/Qwen integration and
+optimizer/EMA/offload acceptance, Qwen integration and
 LoRA support still require implementation or verification.
 
 ## Verification
@@ -100,3 +104,12 @@ checks do not establish large-image partition quality or GPU memory savings.
 The training-versus-generation behavior observed in the previous Anima
 VAE-swap run still needs independent diagnosis. Good single-step debug
 reconstruction is not evidence of good free-running generation.
+
+`hybrid_ming_test.py` exercises Design and Layer native forward/backward,
+learned branch gradients, independent layer-grid convolution, optimizer
+ownership, VAE IO rebasing and strict sharded package restoration. Floating
+and int8 native bases retain their exact saved state; full training of packed
+bases still requires the existing explicit dequantization option. Missing,
+wrong-shaped and nonfinite learned weights are rejected. Native outputs before
+and after reload are compared within FP32 tolerance; bitwise output identity
+across restored tensor layouts is not promised.

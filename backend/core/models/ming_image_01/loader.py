@@ -62,7 +62,7 @@ def load_components(path, *, dtype, conditioner_attention: str) -> MingComponent
     if conditioner_attention not in {"eager", "flash_attention_2"}:
         raise ValueError("Ming conditioner supports eager or flash_attention_2, not SDPA")
     from .quantization import prepare_quantized_transformer, load_quantized_transformer
-    quantized_transformer = prepare_quantized_transformer(artifact, dtype)
+    quantized_transformer = prepare_quantized_transformer(artifact, dtype, topology=topology)
     from .conditioner_quantization import prepare_conditioner_components
     from .quantization import load_quantized_component
     packed_conditioners = prepare_conditioner_components(artifact,dtype,conditioner_attention)

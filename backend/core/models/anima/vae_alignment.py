@@ -15,7 +15,7 @@ def initialize_swap(trainer,resolved,*,handler):
     from core.models.components.wiring import ANIMA_LATENT_IO
     from core.models.components.spatial_swap import initialize_image_swap
     from core.training.adapters.base_adapter import reject_quantized_base
-    from core.rewiring.spec import build_spec
+    from core.rewiring.spec import rebase_spec
     from .residual_unet import native_config,restore_topology
     model=trainer.transformer
     if model.patch_temporal!=1 or model.patch_spatial!=2 or not model.concat_padding_mask:
@@ -25,8 +25,7 @@ def initialize_swap(trainer,resolved,*,handler):
         topology=getattr(model,"_residual_unet_spec",None)
         report=resize_latent_io(model,ANIMA_LATENT_IO,channels)
         if topology is not None:
-            restore_topology(model,build_spec("anima",[{"name":"main","block_count":len(model.blocks)}],
-                topology["regions"],native_config(model)))
+            restore_topology(model,rebase_spec(topology,native_config(model)))
         return report
     from core.models.components.gaussian_alignment import POLICY
     source_wiring=handler.resolve_wiring(trainer)

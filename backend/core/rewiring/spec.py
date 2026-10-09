@@ -58,6 +58,9 @@ def validate_spec(value):
             value = json.loads(value, object_pairs_hook=_unique_object)
         except (RecursionError, json.JSONDecodeError) as exc:
             raise ValueError("Invalid topology JSON") from exc
+    if isinstance(value, dict) and value.get("method") == "hybrid_unet_ssdit":
+        from .hybrid_spec import validate_hybrid_spec
+        return validate_hybrid_spec(value)
     if not isinstance(value, dict) or set(value) != _SPEC_KEYS:
         raise ValueError("Topology has missing or unsupported fields")
     if type(value["schema_version"]) is not int or value["schema_version"] != VERSION or value["method"] != METHOD:
@@ -136,6 +139,9 @@ def build_spec(architecture, streams, regions, base_config):
 
 def preview_plan(spec, token_height, token_width):
     spec = validate_spec(spec)
+    if spec["method"] == "hybrid_unet_ssdit":
+        from .hybrid_spec import legacy_topology
+        spec = legacy_topology(spec)
     h = _integer(token_height, "token_height", 1, 65536)
     w = _integer(token_width, "token_width", 1, 65536)
     levels = {}
@@ -162,7 +168,7 @@ def preview_plan(spec, token_height, token_width):
 
 def checkpoint_metadata(spec):
     spec = validate_spec(spec)
-    return {META_VERSION: str(VERSION), META_SPEC: canonical_json(spec), META_HASH: digest(spec)}
+    return {META_VERSION: str(spec["schema_version"]), META_SPEC: canonical_json(spec), META_HASH: digest(spec)}
 
 
 def read_checkpoint_metadata(metadata):
@@ -172,14 +178,21 @@ def read_checkpoint_metadata(metadata):
     present = keys.intersection(metadata)
     if not present:
         return None
-    if present != keys or metadata[META_VERSION] != str(VERSION):
+    if present != keys or metadata[META_VERSION] not in ("1", "2"):
         raise ValueError("Incomplete or unsupported checkpoint topology declaration")
     if any(not isinstance(metadata[key], str) for key in keys):
         raise ValueError("Checkpoint topology metadata values must be strings")
     spec = validate_spec(metadata[META_SPEC])
+    if metadata[META_VERSION] != str(spec["schema_version"]):
+        raise ValueError("Checkpoint topology version disagrees with spec")
     if metadata[META_HASH] != digest(spec):
         raise ValueError("Checkpoint topology hash mismatch")
     return spec
+
+
+def rebase_spec(spec, base_config):
+    spec = validate_spec(spec)
+    return validate_spec(dict(spec, base_config_sha256=digest(base_config)))
 
 
 def validate_model_identity(spec, architecture, streams, base_config):

@@ -233,6 +233,7 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
         model = Anima(**config)
         install(model,alignment)
         install_global(model, global_declaration, dtype=dtype)
+        restore_topology(model, topology)
         model.to(dtype)
 
     if state_dict is not None:
@@ -297,6 +298,11 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
             f"architecture but carries none of its keys (an adapter file?)")
 
     missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
+    if any(key.startswith("rewiring_modules.") for key in (*missing, *unexpected)):
+        raise ValueError("Anima hybrid module weights are missing or unexpected")
+    if hasattr(model, "rewiring_modules") and any(
+            not torch.isfinite(parameter).all() for parameter in model.rewiring_modules.parameters()):
+        raise ValueError("Anima hybrid module weights must be finite")
     from .partition_global import validate_loaded as validate_global_loaded
     validate_global_loaded(model, missing, unexpected)
     # Filter out buffers that are re-initialized in __init__ (not saved in checkpoint).

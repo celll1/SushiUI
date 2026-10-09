@@ -12062,8 +12062,24 @@ components:
       additionalProperties: false
       required: [schema_version, method, architecture, streams, regions, base_config_sha256, block_layout_sha256]
       properties:
-        schema_version: {type: integer, enum: [1]}
-        method: {type: string, enum: [residual_delta_unet]}
+        schema_version: {type: integer, enum: [1, 2]}
+        method: {type: string, enum: [residual_delta_unet, hybrid_unet_ssdit]}
+        stream_widths:
+          type: object
+          additionalProperties: {type: integer, minimum: 1, maximum: 16384}
+        module_layout_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        boundaries:
+          type: array
+          maxItems: 128
+          items: {$ref: '#/components/schemas/HybridDiTBoundary'}
+        refiners:
+          type: array
+          maxItems: 128
+          items: {$ref: '#/components/schemas/HybridDiTRefiner'}
+        skips:
+          type: array
+          maxItems: 128
+          items: {$ref: '#/components/schemas/HybridDiTSkip'}
         architecture: {type: string}
         base_config_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
         block_layout_sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
@@ -12109,6 +12125,52 @@ components:
               position_policy: {type: string, enum: [coarse_integer]}
               grid_policy: {type: string, enum: [require_divisible]}
               delta_dtype: {type: string, enum: [float32]}
+      oneOf:
+        - properties:
+            schema_version: {enum: [1]}
+            method: {enum: [residual_delta_unet]}
+          not:
+            anyOf:
+              - required: [stream_widths]
+              - required: [module_layout_sha256]
+              - required: [boundaries]
+              - required: [refiners]
+              - required: [skips]
+        - required: [stream_widths, module_layout_sha256, boundaries, refiners, skips]
+          properties:
+            schema_version: {enum: [2]}
+            method: {enum: [hybrid_unet_ssdit]}
+            architecture: {enum: [anima]}
+          description: Experimental fixed-width Anima hybrid. Full-parameter, full-frame execution initially; editor and partition integration remain under development.
+    HybridDiTBoundary:
+      type: object
+      additionalProperties: false
+      required: [id, region, rank, kernel]
+      properties:
+        id: {type: string}
+        region: {type: string}
+        rank: {type: integer, minimum: 1}
+        kernel: {type: integer, enum: [3, 5]}
+    HybridDiTRefiner:
+      type: object
+      additionalProperties: false
+      required: [id, stream, after_block, rank, kernel]
+      properties:
+        id: {type: string}
+        stream: {type: string}
+        after_block: {type: integer, minimum: 0}
+        rank: {type: integer, minimum: 1}
+        kernel: {type: integer, enum: [3, 5]}
+    HybridDiTSkip:
+      type: object
+      additionalProperties: false
+      required: [id, stream, source_after, destination_before, rank]
+      properties:
+        id: {type: string}
+        stream: {type: string}
+        source_after: {type: integer, minimum: 0}
+        destination_before: {type: integer, minimum: 1}
+        rank: {type: integer, minimum: 1}
     DiTRewiringPreviewRequest:
       type: object
       additionalProperties: false

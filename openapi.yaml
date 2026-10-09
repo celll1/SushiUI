@@ -27191,8 +27191,10 @@ components:
             (Qwen 32 blocks: two stages, four deepest blocks; Flux2 5 double/20 single:
             full-resolution double stream and two stages with four deepest single blocks). With inherit an explicit
             spec asserts the required checkpoint topology instead of replacing it.
-            Schema-2 hybrid training requires blocks_to_swap=0; activation offload
-            is supported, but training Block Swap is not yet validated for this graph.
+            Schema-2 hybrid training Block Swap is supported for Anima full-frame
+            training without EMA, with gradient_checkpointing=true. Swapped Anima tail blocks are always checkpointed,
+            in addition to any configured native prefix. Ming/Qwen hybrid graphs
+            require blocks_to_swap=0; activation offload remains supported.
         dit_partition_training_enabled:
           type: boolean
           default: false

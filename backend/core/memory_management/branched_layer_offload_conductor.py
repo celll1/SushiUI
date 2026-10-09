@@ -10,6 +10,7 @@ from torch import nn
 
 from .layer_offload_strategy import LayerOffloadStrategy
 from .offload_transfer_engine import MutableLruTransferEngine
+from .parameter_update_fence import ParameterUpdateFence
 
 
 Branch = Hashable
@@ -74,6 +75,7 @@ class BranchedLayerOffloadConductor:
         self._managed_tensor_ids: set[int] = set()
         self._calls: Dict[int, list[tuple[tuple[Key, ...], bool]]] = defaultdict(list)
         self._recompute_calls: Dict[int, list[tuple[Key, ...]]] = defaultdict(list)
+        self._forward_calls: Dict[int, list[tuple[Key, ...]]] = defaultdict(list)
         self._backward_seen: set[Key] = set()
         self._optimizer_hooks_ready = False
         self._closed = False
@@ -81,6 +83,14 @@ class BranchedLayerOffloadConductor:
         self.optimizer_hook_handles: list[Any] = []
 
         self._initialize_bundles()
+        self._update_fences = {}
+        for key in self._trainable:
+            branch, idx = key
+            parameters = {}
+            for path, module in self.layers[idx].named_modules():
+                if self.classify_module(path, module) == branch:
+                    parameters.update({id(p): p for p in module.parameters(recurse=False) if p.requires_grad})
+            self._update_fences[key] = ParameterUpdateFence(parameters.values())
         self.keys = tuple(
             (branch, idx)
             for branch in self.branches
@@ -200,6 +210,8 @@ class BranchedLayerOffloadConductor:
     def _prefetch_neighbor(self, key: Key, *, backward: bool) -> None:
         if not self.enable_prefetch or self.ring_size < 2:
             return
+        if len(self.engine.active) >= self.ring_size:
+            return
         branch, layer_idx = key
         position = self.swappable_layer_indices.index(layer_idx)
         position += -1 if backward else 1
@@ -215,10 +227,11 @@ class BranchedLayerOffloadConductor:
         if key not in self._backward_seen:
             return False
         params = self._trainable[key]
-        if params and not all(parameter.grad is None for parameter in params):
+        if not self._update_fences[key].ready():
             return False
         self.engine.release(key, dirty=bool(params))
         self._backward_seen.discard(key)
+        self._update_fences[key].reset()
         return True
 
     def _try_release_ready(self) -> None:
@@ -254,22 +267,37 @@ class BranchedLayerOffloadConductor:
                     raise RuntimeError(f"branched block swap lost layer {idx} call state")
                 keys, backward = self._calls[idx].pop()
                 if backward:
-                    self._recompute_calls[idx].append(keys)
+                    if not all(key in self._backward_seen for key in keys):
+                        self._recompute_calls[idx].append(keys)
                 else:
+                    training_graph = any(isinstance(value, torch.Tensor) and value.requires_grad
+                                         for value in torch.utils._pytree.tree_leaves(output))
+                    if training_graph:
+                        self._forward_calls[idx].append(keys)
                     for key in keys:
+                        if training_graph:
+                            self._update_fences[key].capture_forward_nodes()
                         self.engine.release(key, dirty=False)
                 return output
 
             def backward_hook(module, grad_input, grad_output, idx=layer_idx):
-                del module, grad_input, grad_output
+                del module, grad_output
+                keys = self._forward_calls[idx].pop()
+                recomputed = bool(self._recompute_calls[idx])
                 if not self._recompute_calls[idx]:
-                    raise RuntimeError(
-                        "branched block swap requires non-reentrant gradient "
-                        f"checkpoint recomputation; layer {idx} reached backward without it"
-                    )
-                keys = self._recompute_calls[idx].pop()
+                    if any(gradient is not None for gradient in grad_input):
+                        raise RuntimeError(
+                            "branched block swap requires non-reentrant gradient "
+                            f"checkpoint recomputation; layer {idx} reached backward without it"
+                        )
+                    for key in keys:
+                        self._acquire(key)
+                elif keys != self._recompute_calls[idx].pop():
+                    raise RuntimeError("Branched backward call differs from its forward bundles")
                 self._backward_seen.update(keys)
                 for key in keys:
+                    if recomputed:
+                        self._update_fences[key].backward_complete()
                     self._release_if_ready(key)
 
             self.hook_handles.append(
@@ -284,8 +312,9 @@ class BranchedLayerOffloadConductor:
         if self._optimizer_hooks_ready:
             return
         for key in self.keys:
-            for parameter in self._trainable[key]:
+            for parameter in self._update_fences[key].parameters:
                 def update_observer(tensor, bundle_key=key):
+                    self._update_fences[bundle_key].observe_accumulation(tensor)
                     if tensor.grad is None:
                         self._release_if_ready(bundle_key)
 
@@ -320,7 +349,10 @@ class BranchedLayerOffloadConductor:
         self.engine.synchronize()
         self._calls.clear()
         self._recompute_calls.clear()
+        self._forward_calls.clear()
         self._backward_seen.clear()
+        for fence in self._update_fences.values():
+            fence.reset()
 
     def remove_hooks(self) -> None:
         for handle in (*self.hook_handles, *self.optimizer_hook_handles):

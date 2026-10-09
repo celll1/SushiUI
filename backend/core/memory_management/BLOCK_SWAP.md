@@ -42,6 +42,14 @@ The architecture setup refuses mutable swap without checkpointing. Optimizer
 setup separately refuses combinations that would update CPU parameters or retain
 all gradients.
 
+Mutable release tracks graph-task leaf participation and completed accumulation
+before accepting cleared gradients as optimizer completion. Leaf nodes are
+captured before device rebinding; unused leaves do not delay release. Frozen
+branch bases also wait for resident adapters. Prefetch is deferred while all slots
+remain active. Anima binds its internal checkpoint replay to weight reacquisition
+and checkpoints every swapped tail block even when a native prefix limit is set.
+Its partition path and EMA still require Block Swap disabled.
+
 Dense Full training on LTX and the staged H3 path leaves swappable blocks on CPU
 at initial load through `training/model_staging.py`; only resident blocks and
 non-block weights move to the training device before adapter construction.

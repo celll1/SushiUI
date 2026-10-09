@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 
 from core.models.ming_image_01.checkpointing import block_limit
+from api.param_defaults import TRAINING_DEFAULTS
 
 
 def configure(model, config):
@@ -11,6 +12,14 @@ def configure(model, config):
     if limit is not None:
         for index, block in enumerate(model.blocks):
             block.gradient_checkpoint_mode = modes[index] if index < limit else "none"
+    swapped = config.get("blocks_to_swap", TRAINING_DEFAULTS["blocks_to_swap"])
+    if swapped:
+        if type(swapped) is not int or not 0 < swapped < len(modes):
+            raise ValueError("Anima blocks_to_swap must be below block count")
+        for index in range(len(modes)-swapped, len(modes)):
+            if modes[index] == "none":
+                raise ValueError("Anima swapped blocks require gradient checkpointing")
+            model.blocks[index].gradient_checkpoint_mode = modes[index]
 
 
 @contextmanager

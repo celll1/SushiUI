@@ -1,7 +1,7 @@
 # Hybrid U-Net ssDiT foundation
 
 Status: experimental native Anima/Ming/Qwen 2.1 integration; CPU contracts and
-synthetic official-weight Anima backward verified. Quality acceptance is pending.
+actual Anima full-training/save/resume/generation verified. Quality acceptance is pending.
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
@@ -34,13 +34,11 @@ global activation dispatcher can cover the ordinary checkpoint path. Live skip
 outputs and residual bypasses still occupy their execution device; checkpointing
 does not remove those explicit graph references.
 
-Training Block Swap is currently refused for schema-2 hybrid graphs, including
-checkpoint-inherited graphs. An official-weight Anima resume with two swapped
-blocks failed during fused AdamW8bit backward: a parameter was on CPU while its
-gradient was on CUDA, after five parameter updates. The failed worker quarantined
-partial weights and preserved the previous consistent checkpoint. A residency
-schedule verified against the branched backward graph is required before this
-combination can be enabled; activation offload remains available.
+Training Block Swap is supported for Anima full-frame execution without EMA.
+Ming/Qwen hybrid training still requires zero swapped blocks. The earlier Anima
+failure after five fused updates was quarantined without overwriting consistent
+state. Its fix coordinates native checkpoint coverage, internal recomputation
+and leaf update completion, as detailed below. Activation offload remains available.
 
 Learned correction outputs start at zero. Initial boundary execution matches
 the legacy pool/interpolation, allowing a controlled starting point and an
@@ -281,11 +279,44 @@ Resume restored 641 optimizer entries with none fresh, and all 641 EMA entries.
 All 65 hybrid optimizer counters advanced to step 3. Loading the saved model
 through `/models/load` restored its schema-2 declaration and bundled swapped VAE;
 an eight-step, CFG-1 generation completed. These three updates verify lifecycle
-ownership, not image quality recovery. Training Block Swap failed as recorded
-above, and is now refused before a worker starts. Anima global summaries without
+ownership, not image quality recovery. The initial Training Block Swap probe failed;
+the later verification below covers its corrected path. Anima global summaries without
 partition training now return 422 before config is written, rather than 500.
 
 The temporary run, dataset, checkpoints and generated image were removed, and
 the prior Ming Layer model was restored. Evidence is tracked in
 `docs/audits/data/hybrid_anima_lifecycle_2026-10.json`; full probe logs remain
 under `local/verification/hybrid_anima_lifecycle/logs/`.
+
+## Mutable Block Swap integration
+
+The common sequential and branch-qualified conductors retain the original
+forward's leaf gradient nodes before weight device rebinding. They wait until
+every parameter participating in the current backward has accumulated its gradient
+and the fused/group optimizer has cleared it. A missing gradient alone is not an
+update-completion signal. Unused parameters are excluded by Torch's graph-task
+query, also used by its multi-gradient hook implementation; gradient tensors are
+not retained by this bookkeeping. Speculative prefetch waits while all slots are
+active. Frozen branch bases also wait for the resident adapters' updates.
+
+Anima's checkpoint lives inside each block and replays an internal function.
+It therefore explicitly reacquires mutable weights at that function's replay
+entry; module pre-hooks alone cannot cover it. Swapped tail blocks are always
+checkpointed, in addition to the configured native prefix. For example, prefix
+24 plus two swapped blocks checkpoints 26 of the 28 blocks. CPU/async checkpoint
+mode is preserved. Partition training and EMA with Anima Block Swap are refused
+at configuration time.
+
+GPU regressions compare exact resident/swapped SGD updates with differentiable
+and frozen inputs, external/internal non-reentrant checkpoints, and alternating
+full/frozen-base adapter branches. The real Anima probe uses BF16, AdamW8bit,
+512px, hybrid preset, Qwen 2.1 codec, two swapped blocks and two slots. Training
+completed two updates, VAE-only debug decode, save and periodic generation. Resume
+restored all 636 optimizer entries with none fresh; all counters reached step 3,
+including 65 hybrid and 40 swapped-tail entries. All 18 final spatial/skip
+projections became nonzero. This is functionality evidence, not quality recovery.
+An additional resume changed the execution policy to eight swapped blocks
+and two slots (28 native blocks checkpointed), reaching step 4 with all 636
+optimizer counters advanced, including 160 tail entries. Resume consumed the
+regular step-2 and step-3 checkpoints.
+Records are in `docs/audits/data/hybrid_anima_blockswap_2026-10.json`.

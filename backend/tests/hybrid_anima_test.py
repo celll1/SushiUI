@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 from copy import deepcopy
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest
@@ -103,3 +104,39 @@ def test_reinstall_does_not_replace_learned_parameters(native):
     assert all(left is right for left, right in zip(parameters, model.rewiring_modules.parameters()))
     restore_topology(model, None)
     assert not hasattr(model, "rewiring_modules")
+
+
+def test_native_partition_and_global_adapter_backward(native):
+    from core.models.anima.partition_training import training_plan, backward_regions
+    from core.models.anima.partition_global import install
+    model, graph = native
+    model._preprocess_text_embeds = lambda context, *args: context
+    install(model, dict(schema_version=1, algorithm="anima_partition_global", latent_channels=4,
+        hidden_dim=24, rank=6, summary_tokens=4, target_patch_size=2, coordinate_axes=["height", "width"]), dtype=torch.float32)
+    model.train().requires_grad_(True)
+    clean, noise = torch.randn(1, 4, 16, 24), torch.randn(1, 4, 16, 24)
+    sigma, text = torch.tensor([0.5]), torch.ones(1, 3, 12)
+    config = dict(dit_rewiring_spec=graph, dit_partition_training_enabled=True,
+        dit_partition_mode="fixed", dit_partition_fixed_count=2, dit_partition_halo_tokens=0,
+        dit_partition_global_adapter_enabled=True, dit_partition_gradient_checkpointing_blocks=3)
+    trainer = SimpleNamespace(transformer=model, config=config, device=torch.device("cpu"),
+        training_dtype=torch.float32, mixed_precision=False, reconstruction_loss_weight=0.0)
+    plan = training_plan(trainer, clean)
+    assert all(region.input.tokens == plan.full_tokens for region in plan.regions)
+    full_prediction = model(((1-sigma[0])*clean+sigma[0]*noise).unsqueeze(2), sigma, text,
+                            padding_mask=torch.zeros(1, 1, 16, 24)).squeeze(2)
+    full_loss = (full_prediction - (noise-clean)).square().mean()
+    full_loss.backward()
+    expected = {name: parameter.grad.clone() for name, parameter in model.named_parameters()
+                if parameter.grad is not None}
+    model.zero_grad()
+    losses = backward_regions(trainer, clean=clean, prompt_embeds=text,
+        anima_aux=dict(source_mask=torch.ones(1, 3), t5_input_ids=torch.ones(1, 3, dtype=torch.long),
+                       t5_attn_mask=torch.ones(1, 3, dtype=torch.bool)),
+        sigma=sigma, noise=noise, plan=plan, backward_scale=1.0)
+    assert abs(losses[0] - full_loss.item()) < 1e-6
+    for name, parameter in model.named_parameters():
+        if name in expected:
+            torch.testing.assert_close(parameter.grad, expected[name], rtol=1e-4, atol=1e-6)
+    assert model.rewiring_modules.local["exit"].expand.weight.grad.abs().sum() > 0
+    assert model.anima_partition_global_adapter.out.weight.grad.abs().sum() > 0

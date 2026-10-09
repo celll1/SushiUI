@@ -12,6 +12,9 @@ interface Props {
 export default function DiTRewiringGraph(props: Props) {
   return <div className="space-y-3">{props.spec.streams.map(stream => <div key={stream.name}>
     <p className="mb-1 text-gray-300">{stream.name} / {stream.block_count} blocks</p>
+    {props.plan.hybrid_convolution_halo?.[stream.name] && <p className="mb-1 text-gray-400">
+      Convolution context: {props.plan.hybrid_convolution_halo?.[stream.name]?.join(" × ")} base token cells (H × W)
+    </p>}
     <StreamGraph {...props} stream={stream} />
   </div>)}</div>;
 }

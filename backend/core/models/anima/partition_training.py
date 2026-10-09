@@ -59,13 +59,19 @@ def training_plan(trainer, clean):
     if count == 1:
         raise ValueError("Anima full-frame execution has no partition plan")
     value = lambda name: config_value(trainer.config, name)
+    model = getattr(trainer.transformer, "module", trainer.transformer)
+    topology = getattr(model, "_residual_unet_spec", None)
+    halo = value("halo_tokens")
+    if (topology or {}).get("method") == "hybrid_unet_ssdit":
+        from core.rewiring.hybrid_partition import resolved_partition_halo, spatial_codec_radius
+        codec_radius = spatial_codec_radius(getattr(model, "vae_latent_bridge", None), model.patch_spatial)
+        halo = resolved_partition_halo(topology, "main", halo, codec_radius=codec_radius)
     plan = AnimaPartitionAdapter().build_fixed_plan(
         clean.shape[-2] // 2, clean.shape[-1] // 2, count=count,
-        halo=value("halo_tokens"), seed=value("seed"),
+        halo=halo, seed=value("seed"),
         epoch=int(getattr(trainer, "_current_epoch", 0)),
         occurrence=int(getattr(trainer, "_current_batch_position", 0)),
         split_ratio_min=value("split_ratio_min"), split_ratio_max=value("split_ratio_max"))
-    model = getattr(trainer.transformer, "module", trainer.transformer)
     ah, aw = topology_alignment(getattr(model, "_residual_unet_spec", None))
     if plan.full_height % ah or plan.full_width % aw:
         raise ValueError("Anima partition canvas must match cumulative U-Net alignment")

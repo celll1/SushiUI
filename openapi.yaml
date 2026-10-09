@@ -27191,6 +27191,8 @@ components:
             (Qwen 32 blocks: two stages, four deepest blocks; Flux2 5 double/20 single:
             full-resolution double stream and two stages with four deepest single blocks). With inherit an explicit
             spec asserts the required checkpoint topology instead of replacing it.
+            Schema-2 hybrid training requires blocks_to_swap=0; activation offload
+            is supported, but training Block Swap is not yet validated for this graph.
         dit_partition_training_enabled:
           type: boolean
           default: false
@@ -27246,7 +27248,7 @@ components:
         dit_partition_global_adapter_enabled:
           type: boolean
           default: false
-          description: Enable the architecture adapter's trainable full-canvas summary path when supported. Anima currently requires full_finetune; its global weights are saved with the full checkpoint and used in generation.
+          description: Enable the architecture adapter's trainable full-canvas summary path when supported. Anima requires full_finetune, partition training and train_unet; invalid combinations return 422 before configuration is written. Its global weights are saved with the full checkpoint and used in generation.
         dit_partition_global_rank:
           type: integer
           minimum: 1

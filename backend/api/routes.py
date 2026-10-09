@@ -15782,12 +15782,16 @@ class TrainingRunCreateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _rewiring_training_method_valid(self):
+        from core.training.training_config import _detect_arch
+        architecture = _detect_arch(self.base_model_path)
+        if architecture == "anima":
+            from core.models.anima.partition_training import validate_training_options
+            validate_training_options(self.model_dump(), method=self.training_method)
         if self.dit_rewiring_mode == "configure" or self.dit_rewiring_spec is not None:
             if self.training_method not in {"lora", "full_finetune"}:
                 raise ValueError("Residual rewiring currently supports lora and full_finetune training")
             from core.rewiring.training import validate_training_features
-            from core.training.training_config import _detect_arch
-            validate_training_features(self.model_dump(), _detect_arch(self.base_model_path))
+            validate_training_features(self.model_dump(), architecture)
         return self
 
     dit_partition_training_enabled: bool = TRAINING_DEFAULTS["dit_partition_training_enabled"]

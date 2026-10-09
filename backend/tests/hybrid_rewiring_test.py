@@ -30,6 +30,15 @@ def declaration():
         dict(id="middle_skip", stream="main", source_after=1, destination_before=5, rank=3)])
 
 
+def test_hybrid_block_swap_rejected_before_partial_optimizer_updates():
+    from core.rewiring.training import validate_training_features
+    config = dict(training_method="full_finetune", dit_rewiring_spec=declaration(), blocks_to_swap=2)
+    with pytest.raises(ValueError, match="blocks_to_swap=0"):
+        validate_training_features(config, "anima")
+    config["blocks_to_swap"] = 0
+    validate_training_features(config, "anima")
+
+
 def test_metadata_roundtrip_and_tampering():
     spec = declaration()
     assert read_hybrid_metadata(hybrid_metadata(spec)) == spec

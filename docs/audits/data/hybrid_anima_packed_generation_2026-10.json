@@ -1,0 +1,270 @@
+{
+  "rating": "general",
+  "prompt_indices": [
+    28,
+    29
+  ],
+  "resolution": 512,
+  "steps": 28,
+  "cfg": 4,
+  "seed": 63,
+  "diT_updates": 0,
+  "initializer_updates": 3700,
+  "calibration_training_images": 28,
+  "codec_grid": [
+    32,
+    32
+  ],
+  "transformer_grid": [
+    16,
+    16
+  ],
+  "prototype": "packed64 native 2x2 with explicit input/output coefficient transfer",
+  "covariance": {
+    "boundary": {
+      "input_max_error": 1.7763568394002505e-14,
+      "output_max_error": 0.0,
+      "native_tokens": 96,
+      "target_tokens": 24,
+      "in_channels": 64,
+      "patch_size": 2,
+      "limits": [
+        "Linear boundaries only; no transformer, RoPE or noise-distribution acceptance.",
+        "Padding assumption restricted to image patches; no partition/nonconstant-mask claim."
+      ]
+    },
+    "noise_covariance": {
+      "unit_gain_trace_ratio": 0.24999999999999992,
+      "gain2_max_covariance_error": 1.7053025658242404e-13
+    }
+  },
+  "experiments": {
+    "cycle": {
+      "calibration_sha256": "bdb0c8fa9070af3d3edc110f3cd3f6dc276cf7ee808ac9f5581761fa1380dc31",
+      "initialization_sha256": "b04ca7ff52eee7ce7e1ba3da89e213d466d23082eb2692e0091abe6c34b02ee0",
+      "noise_center_rank_ratio": 0.0001537333128213406,
+      "samples": [
+        {
+          "arm": "packed_swap",
+          "index": 28,
+          "gain": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p28_packed_swap_g1.png",
+          "sha256": "00c5315672b345b4f52af81486b8fb59baf0f34f4e58f9a777b46fbaaf1219c3",
+          "denoise_seconds": 4.7810000001918525
+        },
+        {
+          "arm": "packed_swap",
+          "index": 29,
+          "gain": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p29_packed_swap_g1.png",
+          "sha256": "eae0d7ab10a41f979e151065035b0d15e87593f3c2920846abb0d549e0520898",
+          "denoise_seconds": 4.469000000040978
+        },
+        {
+          "arm": "packed_swap",
+          "index": 28,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p28_packed_swap_g2.png",
+          "sha256": "879712bf34a3aae52adeb5d5b1283bd1c8f6916cc94128b59c8378163ee5b26c",
+          "denoise_seconds": 4.452999999979511
+        },
+        {
+          "arm": "packed_swap",
+          "index": 29,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p29_packed_swap_g2.png",
+          "sha256": "1441ed5bcd8addbfef86a4b2b6810724d009433d50adde93e199c5bdb6f4ce39",
+          "denoise_seconds": 4.436999999918044
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 28,
+          "gain": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p28_packed_hybrid_g1.png",
+          "sha256": "0288fea8267b6870172ae3498919ce3681448ab382c9dee312ee8d4d72eef5b8",
+          "denoise_seconds": 5.562000000150874
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 29,
+          "gain": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p29_packed_hybrid_g1.png",
+          "sha256": "1a13f06b1abde8cc7c841f9b559cf91055f83768f49652cfbc0d2b2fa30d124e",
+          "denoise_seconds": 5.359000000171363
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 28,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p28_packed_hybrid_g2.png",
+          "sha256": "2952d6ba3da8b1dba7d80b1798dde2119b8d617b287cb9e1280cfb1802268462",
+          "denoise_seconds": 4.688000000081956
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 29,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_generation\\p29_packed_hybrid_g2.png",
+          "sha256": "3fc43b0cbb21e69f07f9a039c88df4386b9d02046f8aa5132166f078b69a6762",
+          "denoise_seconds": 5.219000000040978
+        }
+      ],
+      "limits": [
+        "Private packed IO/noise prototype, not production policy or artifact.",
+        "No new DiT training.",
+        "Native patch-average input covariance is 1/4; gain two restores native patch-noise covariance algebraically, not sampler quality."
+      ]
+    },
+    "pair": {
+      "calibration_sha256": "bdb0c8fa9070af3d3edc110f3cd3f6dc276cf7ee808ac9f5581761fa1380dc31",
+      "initialization_sha256": "b04ca7ff52eee7ce7e1ba3da89e213d466d23082eb2692e0091abe6c34b02ee0",
+      "noise_center_rank_ratio": 0.0001537333128213406,
+      "samples": [
+        {
+          "arm": "packed_swap",
+          "index": 28,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_pair_generation\\p28_packed_swap_g2.png",
+          "sha256": "67b90f186acfd820938fa58cb012da8bffe4e54c6ab5ee4593660f2dce164ebd",
+          "denoise_seconds": 4.812000000150874,
+          "latent_moments": {
+            "mean": 0.043079763650894165,
+            "std": 3.2918386459350586,
+            "min": -16.375,
+            "max": 14.8125
+          }
+        },
+        {
+          "arm": "packed_swap",
+          "index": 29,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_pair_generation\\p29_packed_swap_g2.png",
+          "sha256": "52004cb07cdf23788ad06f8f98b7b46a12d721f0e94ed0b6cf05a257c86c911e",
+          "denoise_seconds": 5.359000000171363,
+          "latent_moments": {
+            "mean": 0.07167521119117737,
+            "std": 3.3222055435180664,
+            "min": -16.375,
+            "max": 15.125
+          }
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 28,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_pair_generation\\p28_packed_hybrid_g2.png",
+          "sha256": "73e0228417ee7534232b783eef735db358dc7fac61e12bf8dfc1ebc3e1dedc0c",
+          "denoise_seconds": 5.672000000020489,
+          "latent_moments": {
+            "mean": 0.0994689092040062,
+            "std": 3.3404388427734375,
+            "min": -17.125,
+            "max": 15.75
+          }
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 29,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_pair_generation\\p29_packed_hybrid_g2.png",
+          "sha256": "52316761e3dda02213729e12328e09dbcb4fd55657d6274d25612889725a9e41",
+          "denoise_seconds": 5.077999999979511,
+          "latent_moments": {
+            "mean": 0.13419228792190552,
+            "std": 3.362915277481079,
+            "min": -16.0,
+            "max": 15.75
+          }
+        }
+      ],
+      "limits": [
+        "Private packed IO/noise prototype, not production policy or artifact.",
+        "No new DiT training.",
+        "Native patch-average input covariance is 1/4; gain two restores native patch-noise covariance algebraically, not sampler quality."
+      ]
+    },
+    "head_corrected": {
+      "calibration_sha256": "bdb0c8fa9070af3d3edc110f3cd3f6dc276cf7ee808ac9f5581761fa1380dc31",
+      "initialization_sha256": "b04ca7ff52eee7ce7e1ba3da89e213d466d23082eb2692e0091abe6c34b02ee0",
+      "noise_center_rank_ratio": 0.0001537333128213406,
+      "samples": [
+        {
+          "arm": "packed_swap",
+          "index": 28,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p28_packed_swap_g2.png",
+          "sha256": "c71724673cce145a99ce8479880276768b737710c604dc8e8930841ad6412340",
+          "denoise_seconds": 6.562999999849126,
+          "latent_moments": {
+            "mean": 0.017358267679810524,
+            "std": 0.9621530175209045,
+            "min": -4.40625,
+            "max": 5.0
+          }
+        },
+        {
+          "arm": "packed_swap",
+          "index": 29,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p29_packed_swap_g2.png",
+          "sha256": "3ebc134528ae81bb824da49de37dd087871706939da2c330708c728b3691ab39",
+          "denoise_seconds": 4.593000000109896,
+          "latent_moments": {
+            "mean": 0.041492313146591187,
+            "std": 0.9810482263565063,
+            "min": -4.03125,
+            "max": 4.5
+          }
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 28,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p28_packed_hybrid_g2.png",
+          "sha256": "b78cb19011a3c2d9f18c7394930cbcde3e2af96df433c31c5bc12a53e4fcd38a",
+          "denoise_seconds": 6.608999999938533,
+          "latent_moments": {
+            "mean": 0.04509032517671585,
+            "std": 0.9821937680244446,
+            "min": -5.0,
+            "max": 3.75
+          }
+        },
+        {
+          "arm": "packed_hybrid",
+          "index": 29,
+          "gain": 2.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_packed_head_generation\\p29_packed_hybrid_g2.png",
+          "sha256": "c434bc1ad9eee1204287ff7a7922ea995fc67ef5100005b3e744dfc17c0573d7",
+          "denoise_seconds": 5.686999999918044,
+          "latent_moments": {
+            "mean": 0.1055649146437645,
+            "std": 1.0914777517318726,
+            "min": -4.8125,
+            "max": 4.5
+          }
+        }
+      ],
+      "limits": [
+        "Private packed IO/noise prototype, not production policy or artifact.",
+        "No new DiT training.",
+        "Native patch-average input covariance is 1/4; gain two restores native patch-noise covariance algebraically, not sampler quality."
+      ]
+    }
+  },
+  "review": {
+    "cycle": "Inspected swap p29 gain1/2 and hybrid p28 gain2: near-solid purple, no figures.",
+    "pair": "Inspected swap p29 gain2: near-solid purple, no figure. Cycle refit alone does not explain collapse.",
+    "head_corrected": "Inspected all four gain2 outputs: purple collapse clears; single-person swap shows face/clothing fragments, hybrid shows exaggerated eyes; two-person composition fails. Strong striping/block artifacts persist.",
+    "decision": "Reject as generation/default initialization. Keep packed information and head-noise projection as experiments; further IO/field fitting is needed."
+  },
+  "tests": {
+    "command": "venv/Scripts/python.exe -m pytest backend/tests/anima_packed_io_test.py -q",
+    "passed": 3
+  },
+  "limits": [
+    "Only two general prompts, one seed, no new DiT fitting; no quality superiority claim.",
+    "Clean reconstruction improvement does not prove generation improvement.",
+    "No public noise-policy declaration or owner checkpoint changed."
+  ]
+}

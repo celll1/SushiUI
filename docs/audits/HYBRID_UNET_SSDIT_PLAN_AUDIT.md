@@ -153,6 +153,14 @@ individual records' limitations.
    checks including nonzero patch-constant padding, with one quarter the tokens.
    DiT/RoPE/noise-field and free-running generation remain unverified; no owner
    artifact, production schema or default changes. Verify those before adoption.
+   Real packed IO generation (`hybrid_anima_packed_generation_2026-10.json`)
+   tests two general prompts at 512px/28 steps/CFG4 with and without hybrid.
+   Original per-cell noise complements collapse to purple even without hybrid.
+   A head-aware average/repeat noise snapshot passes synthetic oracle/three CPU
+   regression checks and clears the purple collapse, but corrected four-image
+   outputs retain severe stripes/blocks and fail two-person structure. It is not
+   adopted. Packed IO/field initialization needs further fitting before public
+   publication or default changes; clean reconstruction gains are insufficient.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

@@ -1319,3 +1319,28 @@ The prototype is not installed into existing runs or checkpoints. Its next gate
 is an isolated DiT/noise-field comparison with explicit codec and IO state,
 followed by held general generation before any runtime/schema/default change.
 Evidence: `docs/audits/data/hybrid_codec_packed_probe_2026-10.json`.
+
+### Packed IO generation and head-noise check
+
+A real official Anima probe installs the packed IO coefficient transfer with the
+retained high16 structural candidate and native-paired/cycle codec output fits.
+It generates at 512px/28 steps/CFG4/seed63 for two general prompts, with and without
+hybrid topology. Original per-cell noise complements give near-solid purple
+outputs, including swap-only; the clean cycle fit is not the sole cause. Packed
+input averaging reduces native patch-feature noise covariance to one quarter;
+a gain of two restores its covariance algebraically (synthetic FP64 maximum
+error 1.71e-13). It does not by itself restore generated quality.
+
+The initial repeated output head predicts a 2x2 average/repeat noise projection,
+not independently whitened noise at every coarse cell. Correcting that snapshot
+reduces a zero-clean synthetic oracle's mean velocity error from 2.97335 to
+8.72e-16. `packed_head_noise` records this experimental boundary projection;
+three regression tests cover the IO orders, nonzero patch-constant padding,
+covariance, head/noise agreement and invalid geometry. The corrected native-paired
+four-image generation clears the purple collapse, but strong stripes/blocks
+remain, two-person composition fails and one-person faces are fragmentary or
+exaggerated. This does not meet the coarse initialization gate. No production
+noise contract/default is changed; the prototype is not published as a checkpoint.
+No new DiT fitting occurred. Further work must initialize IO/fields coherently
+before claiming a useful packed-codec candidate.
+Evidence: `docs/audits/data/hybrid_anima_packed_generation_2026-10.json`.

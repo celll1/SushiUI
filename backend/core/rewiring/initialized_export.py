@@ -1,4 +1,4 @@
-"""Publish initialized Anima without materializing its native tensor payload."""
+"""Publish fitted hybrid modules without materializing the native tensor payload."""
 from copy import deepcopy
 import hashlib
 import json
@@ -27,16 +27,36 @@ def validate_output_name(output_name):
 
 
 def export_initialized_anima(model, source, output_name, *, cancelled=None):
+    return export_initialized_transformer(model,source,output_name,architecture="anima",cancelled=cancelled)
+
+
+def export_initialized_transformer(model, source, output_name, *, architecture, cancelled=None):
     """Caller owns model exclusivity; source bytes and fitted modules are verified."""
     source = Path(source).resolve(strict=True)
     if not source.is_file() or source.suffix.lower() != ".safetensors":
-        raise ValueError("Initialized Anima export requires a standalone native safetensors source")
+        raise ValueError("Initialized export requires a standalone native safetensors source")
     validate_output_name(output_name)
     output = source.parent / output_name
     if output.exists() or output.is_symlink():
         raise FileExistsError("Initialized export never overwrites an existing file")
-    from core.models.anima.residual_unet import preflight_artifact, validate_topology_identity
-    topology, config, alignment = preflight_artifact(source, include_alignment=True)
+    if architecture == "anima":
+        from core.models.anima.residual_unet import preflight_artifact, validate_topology_identity
+        topology, config, alignment = preflight_artifact(source, include_alignment=True)
+        config_key, input_key = "transformer_config", "x_embedder.proj.1.weight"
+    elif architecture == "qwen_image_21":
+        from core.models.qwen_image_21.residual_unet import validate_topology_identity
+        with safe_open(str(source),framework="pt",device="cpu") as handle:
+            source_metadata = handle.metadata() or {}
+        if source_metadata.get("model_type") != architecture or source_metadata.get("component") != "transformer":
+            raise ValueError("Qwen initialized export requires a native transformer component")
+        config = json.loads(source_metadata.get("config") or "{}",object_pairs_hook=_unique_object)
+        if not isinstance(config,dict) or not config:
+            raise ValueError("Qwen initialization source requires transformer config metadata")
+        topology = read_checkpoint_metadata(source_metadata)
+        alignment = config.get("vae_alignment")
+        config_key, input_key = "config", "img_in.weight"
+    else:
+        raise ValueError("Initialized standalone export supports Anima and Qwen-Image 2.1")
     if topology is not None or alignment is not None:
         raise ValueError("Initialization export requires a native source without U-Net or VAE swap")
     spec = validate_topology_identity(getattr(model, "_residual_unet_spec", None), config)
@@ -73,15 +93,15 @@ def export_initialized_anima(model, source, output_name, *, cancelled=None):
                 keys = set(handle.keys())
             if read_checkpoint_metadata(metadata) is not None:
                 raise ValueError("Native source topology changed during initialization export")
-            tensor_prefix = "net." if "net.x_embedder.proj.1.weight" in keys else ""
-            if tensor_prefix+"x_embedder.proj.1.weight" not in keys:
-                raise ValueError("Initialization source contains no native Anima input projection")
+            tensor_prefix = "net." if architecture == "anima" and "net."+input_key in keys else ""
+            if tensor_prefix+input_key not in keys:
+                raise ValueError("Initialization source contains no native input projection")
             if any(key.startswith(tensor_prefix+"rewiring_modules.") for key in keys):
                 raise ValueError("Initialization source already contains learned hybrid modules")
             metadata = deepcopy(metadata)
             metadata.update(checkpoint_metadata(spec))
             metadata.update(initialization_metadata(record, spec))
-            metadata["transformer_config"] = json.dumps(config)
+            metadata[config_key] = json.dumps(config)
             header["__metadata__"] = metadata
             body_length = before.st_size-8-length
             offset = body_length

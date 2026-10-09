@@ -13,6 +13,48 @@ from core.rewiring.initialized_export import export_initialized_anima
 from core.rewiring.provenance import read_checkpoint_metadata as read_initialization
 
 
+def test_qwen_initialized_component_retains_payload_and_reloads(tmp_path):
+    from hybrid_qwen_test import model_and_spec
+    from qwen_partition_full_checkpoint_test import _forward
+    from core.models.qwen_image_21.artifact import artifact_metadata, load_transformer
+    from core.models.qwen_image_21.residual_unet import restore_topology
+    from core.rewiring.initialized_export import export_initialized_transformer
+    from core.rewiring.inspect import inspect_model
+    torch.manual_seed(97)
+    model,spec,_ = model_and_spec()
+    config = dict(model.config)
+    source = tmp_path/"native.safetensors"
+    native_state = {name:value.detach().clone().contiguous() for name,value in model.state_dict().items()}
+    metadata = artifact_metadata("transformer",config)
+    metadata["unrelated"] = "retained"
+    save_file(native_state,str(source),metadata=metadata)
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    restore_topology(model,spec)
+    example = FitExample((torch.randn(1,8,12,8),),{})
+    fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example])],
+        lambda module,args,kwargs:_forward(module,args[0]),
+        lambda parameters,lr:torch.optim.AdamW(parameters,lr=lr),
+        source_sha256=checksum,calibration_sha256="2"*64,sample_count=1,seed=97,clip_norm=1.)
+    result = export_initialized_transformer(model,source,"initialized.safetensors",architecture="qwen_image_21")
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == checksum
+    with safe_open(result["model_path"],framework="pt",device="cpu") as handle:
+        assert handle.metadata()["unrelated"] == "retained"
+        for name,value in native_state.items():
+            assert torch.equal(handle.get_tensor(name),value)
+    loaded,variant = load_transformer(result["model_path"],config,torch.float32)
+    assert variant == "bf16"
+    assert loaded._hybrid_initialization == result["initialization"]
+    assert loaded._residual_unet_spec == spec
+    assert all(torch.equal(value,loaded.state_dict()[name]) for name,value in model.state_dict().items())
+    inspected = inspect_model(result["model_path"])
+    assert inspected["initialization"] == result["initialization"]
+    assert inspected["topology"] == spec
+    model.eval()
+    with torch.no_grad():
+        torch.testing.assert_close(_forward(model,example.args[0]),_forward(loaded,example.args[0]),rtol=1e-5,atol=1e-6)
+    assert not list(tmp_path.glob(".sushi-hybrid-*"))
+
+
 def prepare(model, root, prefix="net."):
     from core.models.anima.residual_unet import native_config
     source = root/"native.safetensors"

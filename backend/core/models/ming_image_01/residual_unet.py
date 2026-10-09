@@ -39,16 +39,35 @@ def native_config(config):
 
 def validate_topology_identity(spec, config):
     resolved = native_config(config)
-    return validate_model_identity(spec, "ming_image_01",
+    spec = validate_model_identity(spec, "ming_image_01",
         [{"name": "main", "block_count": resolved["n_layers"]}], resolved)
+    if spec["method"] == "hybrid_unet_ssdit" and spec["stream_widths"] != {"main": resolved["dim"]}:
+        raise ValueError("Hybrid Ming stream width differs from native blocks")
+    return spec
 
 
 def restore_topology(model, spec):
     model = getattr(model, "transformer", model)
     if spec is None:
         model.__dict__.pop("_residual_unet_spec", None)
+        if hasattr(model, "rewiring_modules"):
+            del model.rewiring_modules
     else:
-        model._residual_unet_spec = validate_topology_identity(spec, model)
+        spec = validate_topology_identity(spec, model)
+        if spec["method"] == "hybrid_unet_ssdit":
+            from core.rewiring.hybrid_modules import HybridModules
+            existing = getattr(model, "rewiring_modules", None)
+            if existing is None:
+                reference = next(model.parameters())
+                with torch.device(reference.device):
+                    model.add_module("rewiring_modules", HybridModules(spec).to(dtype=reference.dtype))
+            elif existing.declaration["module_layout_sha256"] != spec["module_layout_sha256"]:
+                raise ValueError("Changing hybrid modules requires an explicit fresh model")
+            else:
+                existing.declaration = spec
+        elif hasattr(model, "rewiring_modules"):
+            del model.rewiring_modules
+        model._residual_unet_spec = spec
 
 
 def model_topology_metadata(model):
@@ -146,6 +165,13 @@ def run_rewired_ming(model, hidden, modulation, rotary, mask, image_positions,
         targets = value.shape[1] - prefix
         return torch.cat((output[:, targets:], output[:, :targets]), dim=1)
 
-    output = run_rewired_stream(transported, spec, "main", frames*h, w, prefix,
-        (rotary, mask), execute, coarse_context, grid_groups=frames)
+    if spec["method"] == "hybrid_unet_ssdit":
+        modules = getattr(model, "rewiring_modules", None)
+        if modules is None or modules.declaration != spec:
+            raise ValueError("Ming hybrid modules do not match the installed declaration")
+        output = modules.forward_stream(transported, "main", frames*h, w, prefix,
+            (rotary, mask), execute, coarse_context, grid_groups=frames)
+    else:
+        output = run_rewired_stream(transported, spec, "main", frames*h, w, prefix,
+            (rotary, mask), execute, coarse_context, grid_groups=frames)
     return torch.cat((output[:, prefix:], output[:, :prefix]), dim=1)

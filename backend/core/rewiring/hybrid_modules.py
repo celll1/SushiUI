@@ -58,20 +58,24 @@ class HybridModules(nn.Module):
         for item in self.declaration["skips"]:
             self.skips[item["id"]] = CompressedSkip(widths[item["stream"]], item["rank"])
 
-    def forward_stream(self, hidden, stream, height, width, prefix, context, execute_block, coarse_context):
+    def forward_stream(self, hidden, stream, height, width, prefix, context, execute_block, coarse_context, *, grid_groups=1):
         if hidden.shape[-1] != self.declaration["stream_widths"].get(stream):
             raise ValueError("Hybrid hidden width differs from declaration")
-        hybrid_preview(self.declaration, height, width, batch_size=hidden.shape[0], element_bytes=hidden.element_size())
-        execution = HybridExecution(self, stream)
+        if type(grid_groups) is not int or grid_groups < 1 or height % grid_groups:
+            raise ValueError("Hybrid grid groups must evenly divide token height")
+        hybrid_preview(self.declaration, height // grid_groups, width,
+                       batch_size=hidden.shape[0] * grid_groups, element_bytes=hidden.element_size())
+        execution = HybridExecution(self, stream, grid_groups)
         return run_rewired_stream(hidden, legacy_topology(self.declaration), stream, height, width, prefix,
-            context, execute_block, coarse_context, extensions=execution)
+            context, execute_block, coarse_context, grid_groups=grid_groups, extensions=execution)
 
 
 class HybridExecution:
     """Per-forward activation ownership; module state never retains a skip graph."""
-    def __init__(self, modules, stream):
+    def __init__(self, modules, stream, grid_groups=1):
         self.modules = modules
         self.stream = stream
+        self.grid_groups = grid_groups
         self.saved = {}
         self.boundaries = {item["region"]: item["id"] for item in modules.declaration["boundaries"]}
 
@@ -83,13 +87,15 @@ class HybridExecution:
         name = self.boundaries.get(region["id"])
         return update if name is None else update + self.modules.up[name](update).to(update)
 
-    @staticmethod
-    def grid(hidden, prefix, height, width):
-        return hidden[:, prefix:].transpose(1, 2).reshape(hidden.shape[0], hidden.shape[-1], height, width)
+    def grid(self, hidden, prefix, height, width):
+        batch, channels = hidden.shape[0], hidden.shape[-1]
+        grid = hidden[:, prefix:].transpose(1, 2).reshape(batch, channels, self.grid_groups, height // self.grid_groups, width)
+        return grid.permute(0, 2, 1, 3, 4).reshape(batch * self.grid_groups, channels, height // self.grid_groups, width)
 
-    @staticmethod
-    def merge(hidden, prefix, grid):
-        return torch.cat((hidden[:, :prefix], grid.flatten(2).transpose(1, 2).to(hidden)), dim=1)
+    def merge(self, hidden, prefix, grid):
+        grid = grid.reshape(hidden.shape[0], self.grid_groups, *grid.shape[1:])
+        tokens = grid.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
+        return torch.cat((hidden[:, :prefix], tokens.to(hidden)), dim=1)
 
     def before(self, index, hidden, prefix, height, width):
         items = [item for item in self.modules.declaration["skips"]

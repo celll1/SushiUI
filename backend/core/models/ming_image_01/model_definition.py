@@ -6,7 +6,7 @@ import inspect
 from typing import Any
 
 
-def create_transformer(config: dict[str, Any], *, device: str, dtype):
+def create_transformer(config: dict[str, Any], *, device: str, dtype, topology=None):
     import torch
     from .vendor.diffusion.transformer import DiffusionTransformer
 
@@ -14,6 +14,9 @@ def create_transformer(config: dict[str, Any], *, device: str, dtype):
     arguments = {key: value for key, value in config.items() if key in parameters and key != "self"}
     with torch.device(device):
         model = DiffusionTransformer(**arguments)
+        if topology is not None:
+            from .residual_unet import restore_topology
+            restore_topology(model, topology)
     return model.to(dtype=dtype)
 
 

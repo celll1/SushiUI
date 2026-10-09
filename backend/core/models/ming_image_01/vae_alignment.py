@@ -74,7 +74,7 @@ def resize_backbone(model, channels):
     from core.models.components.latent_io import resize_latent_io
     from core.models.components.wiring import MING_IMAGE_01_LATENT_IO
     from .residual_unet import native_config, restore_topology
-    from core.rewiring.spec import build_spec
+    from core.rewiring.spec import rebase_spec
     old = model.in_channels
     if old == channels:
         return
@@ -82,8 +82,7 @@ def resize_backbone(model, channels):
     resize_latent_io(model, MING_IMAGE_01_LATENT_IO, channels)
     model.in_channels = model.out_channels = channels
     if topology is not None:
-        restore_topology(model, build_spec("ming_image_01",
-            [{"name": "main", "block_count": len(model.layers)}], topology["regions"], native_config(model)))
+        restore_topology(model, rebase_spec(topology, native_config(model)))
     from .partition_global import GLOBAL_NAME, from_payload, resize_channels
     adapter = getattr(model, GLOBAL_NAME, None)
     payload = getattr(model, "_ming_partition_global_payload", None)

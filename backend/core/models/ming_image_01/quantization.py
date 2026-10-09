@@ -39,7 +39,7 @@ def _convrot_layers(artifact, component="transformer"):
     return layers
 
 
-def prepare_quantized_transformer(artifact, dtype):
+def prepare_quantized_transformer(artifact, dtype, *, topology=None):
     """Validate before loading other components; construct quantized slots on meta."""
     from .model_definition import create_transformer
 
@@ -48,11 +48,11 @@ def prepare_quantized_transformer(artifact, dtype):
         if name not in {"transformer", "mllm", "connector", "mlp"} and any(key.endswith((".weight_scale", ".comfy_quant")) or
                 (key.endswith(".weight") and h.dtype in _QUANTIZED) for key, h in component.items()):
             raise ValueError(f"Ming quantized {name} loading is not implemented")
-    if all(h.dtype in _FLOATS and not key.endswith((".weight_scale", ".comfy_quant"))
-           for key, h in headers.items()):
+    if (topology or {}).get("method") != "hybrid_unet_ssdit" and all(
+            h.dtype in _FLOATS and not key.endswith((".weight_scale", ".comfy_quant")) for key, h in headers.items()):
         return None
     convrot = _convrot_layers(artifact)
-    model = create_transformer(artifact.configs["transformer"], device="meta", dtype=dtype)
+    model = create_transformer(artifact.configs["transformer"], device="meta", dtype=dtype, topology=topology)
     return prepare_component_slots(model,headers,convrot,dtype)
 
 
@@ -130,6 +130,8 @@ def load_quantized_component(model, artifact, component, dtype):
     for path in files:
         state = load_file(str(path), device="cpu")
         for key, value in state.items():
+            if key.startswith("rewiring_modules.") and not torch.isfinite(value).all():
+                raise ValueError(f"Ming hybrid checkpoint contains nonfinite weights: {key}")
             if key.endswith(".weight_scale") and (not torch.isfinite(value).all() or (value <= 0).any()):
                 raise ValueError(f"Ming quantized Linear scale must be finite and positive: {key}")
             if key.endswith(".weight_scale") and isinstance(model.get_submodule(key[:-len(".weight_scale")]), ConvRotInt8Linear):

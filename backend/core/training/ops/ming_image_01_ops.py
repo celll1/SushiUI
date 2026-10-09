@@ -79,10 +79,8 @@ def load_components(trainer, *, resuming=False):
     configure_training_topology(components.transformer, trainer.config,
                                 resuming=resuming,
                                 pending_adapter_resume=bool(getattr(trainer, "_manages_own_resume", False)))
-    if (getattr(components.transformer, "_residual_unet_spec", None) or {}).get("method") == "hybrid_unet_ssdit":
-        from core.training.ops.training_method import is_full_finetune
-        if not is_full_finetune(trainer):
-            raise ValueError("Hybrid Ming currently requires full-parameter training")
+    from core.rewiring.training import validate_loaded_hybrid_training
+    validate_loaded_hybrid_training(trainer, components.transformer)
     groups, rates = resolve_ownership(trainer.config)
     trainer.ming_image_01_components = components
     trainer.ming_conditioner_trainable_groups, trainer.ming_conditioner_lrs = groups, rates

@@ -577,6 +577,8 @@ class BaseLoRAAdapter(ABC):
             output_path: Path to save checkpoint
         """
         metadata = self.checkpoint_metadata(lora_layers, step, epoch)
+        from core.rewiring.training_adapters import hybrid_payload_metadata
+        metadata.update(hybrid_payload_metadata(self.trainer, lora_layers))
         # The architecture's keys win a clash: they carry its own spelling of
         # model_type/lora_alpha, and the two shared blocks add only
         # sushi.adapter.* and sushi.base.*.

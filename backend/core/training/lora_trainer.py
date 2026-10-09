@@ -133,6 +133,12 @@ class LoRATrainer(BaseTrainer):
 
         self._create_adapter()
 
+        if resume_request and not getattr(self, "is_yue2", False):
+            checkpoint = resolve_lora_resume_checkpoint(self, resume_request)
+            if checkpoint is not None:
+                from core.rewiring.training_adapters import prepare_hybrid_resume
+                prepare_hybrid_resume(self, checkpoint)
+                self._resolved_resume_adapter_path = checkpoint
         self._apply_lora()
         if not getattr(self, "is_yue2", False):
             self._load_resume_adapter(resume_request)
@@ -202,7 +208,7 @@ class LoRATrainer(BaseTrainer):
             return
         if self._loaded_checkpoint_path:
             return
-        checkpoint = resolve_lora_resume_checkpoint(self, requested)
+        checkpoint = getattr(self, "_resolved_resume_adapter_path", None) or resolve_lora_resume_checkpoint(self, requested)
         if checkpoint is None:
             print(f"{self.log_prefix} Resume: no LoRA checkpoint found; starting fresh")
             return
@@ -249,6 +255,8 @@ class LoRATrainer(BaseTrainer):
         else:
             print(f"{self.log_prefix} Text Encoder LoRA skipped (train_text_encoder=False)")
 
+        from core.rewiring.training_adapters import register_hybrid_payload
+        register_hybrid_payload(self.adapter, self.lora_layers)
         print(f"{self.log_prefix} Total LoRA layers: {len(self.lora_layers)}")
 
     def setup_trainable_parameters(self) -> List[Dict]:
@@ -402,6 +410,8 @@ class LoRATrainer(BaseTrainer):
                 )
 
         checkpoint = load_file(checkpoint_path)
+        from core.rewiring.training_adapters import validate_hybrid_payload_resume
+        hybrid_record = validate_hybrid_payload_resume(self, self.lora_layers, metadata, checkpoint)
 
         if getattr(self, "is_qwen_image_21", False):
             global_name = "qwen_partition_global_adapter"
@@ -454,11 +464,14 @@ class LoRATrainer(BaseTrainer):
                         or any(type(v) is not type(expected[k]) for k,v in decoded.items()) or decoded!=expected):
                     raise ValueError("Ming global adapter checkpoint metadata conflicts with this run")
             expected_keys = {f"{name}.{tensor}" for name, layer in self.lora_layers.items()
-                             for tensor in (*layer.branch_tensors(), "alpha")}
+                             for tensor in layer.branch_tensors()}
+            expected_keys.update(f"{name}.alpha" for name, layer in self.lora_layers.items()
+                                 if getattr(layer, "CHECKPOINT_WRITES_ALPHA", True))
             if set(checkpoint) != expected_keys:
                 raise ValueError("Ming LoRA resume target scope does not match this run")
 
         prepared = []
+        from core.adapters.full_module import FullModulePayload
         for lora_name, lora_layer in self.lora_layers.items():
             targets = lora_layer.branch_tensors()
             slice_ = {}
@@ -467,6 +480,9 @@ class LoRATrainer(BaseTrainer):
                 if key not in checkpoint:
                     raise ValueError(f"LoRA checkpoint is missing required tensor {key!r}")
                 value = checkpoint[key]
+                if isinstance(lora_layer, FullModulePayload) and (
+                        not value.is_floating_point() or not torch.isfinite(value).all()):
+                    raise ValueError(f"Invalid resume structural tensor {key!r}")
                 if value.shape != target.shape:
                     raise ValueError(
                         f"LoRA checkpoint tensor {key!r} has shape "
@@ -480,6 +496,8 @@ class LoRATrainer(BaseTrainer):
                 try:
                     slice_[tensor_name] = value.to(
                         device=target.device, dtype=target.dtype)
+                    if isinstance(lora_layer, FullModulePayload) and not torch.isfinite(slice_[tensor_name]).all():
+                        raise ValueError(f"Resume structural tensor {key!r} overflows target dtype")
                 except (RuntimeError, TypeError, ValueError) as exc:
                     raise ValueError(
                         f"LoRA checkpoint tensor {key!r} cannot be prepared for "
@@ -511,5 +529,8 @@ class LoRATrainer(BaseTrainer):
         if configure_topology is not None:
             configure_topology(self.transformer, self.config, resuming=True,
                                resume_spec=resume_topology)
+        if "rewiring_modules" in self.lora_layers:
+            from core.rewiring.provenance import restore_record
+            restore_record(self.transformer, hybrid_record)
         print(f"{self.log_prefix} Loaded LoRA checkpoint from step {step}")
         return step

@@ -1,0 +1,43 @@
+{
+  "scope": "Hybrid structural full-weight payloads alongside native low-rank training branches",
+  "architectures": ["anima", "qwen_image_21", "ming_image_01"],
+  "algebra_capability_source": "backend/core/adapters/capability.py",
+  "tested_algebras": {"anima": ["lora", "loha", "lokr"], "qwen_image_21": ["lora"], "ming_image_01": ["lora"]},
+  "contract": {
+    "metadata": "sushi.rewiring.full_module=1",
+    "tensor_prefix": "rewiring_modules.",
+    "structural_parameters_registered_once": true,
+    "train_unet_controls_structural_gradients": true,
+    "native_base_parameters_frozen": true,
+    "complete_structural_save_required": true,
+    "structural_alpha_not_written": true,
+    "resume_restores_topology_before_injection": true,
+    "resolved_resume_file_pinned": true,
+    "exact_scope_and_finite_conversion_validated": true,
+    "live_parameter_identities_preserved": true,
+    "incompatible_base_topologies_refused": true,
+    "relora_and_controlnet_refused": true
+  },
+  "verification": {
+    "device": "CPU",
+    "compile_and_real_import": true,
+    "cuda_not_initialized": true,
+    "tests_passed": 116,
+    "tests_skipped": 8,
+    "skip_reason": "LoHa/LoKr are not enabled by the existing Qwen/Ming capability rows",
+    "test_files": ["hybrid_adapter_training_test.py", "hybrid_ming_lora_resume_test.py", "hybrid_rewiring_test.py", "adapter_full_module_test.py", "adapter_session_cheap_test.py", "dit_rewiring_training_test.py", "anima_lora_roundtrip_cheap_test.py", "ming_image_01_lora_trainer_test.py"],
+    "structural_weights_actually_updated": true,
+    "unique_optimizer_and_real_name_ownership": true,
+    "save_resume_generation_roundtrip": true,
+    "native_and_inherited_hybrid_resume": true,
+    "real_generation_loaders": true,
+    "nan_payload_refusal_leaves_all_weights_unchanged": true,
+    "api_to_yaml_preserves_hybrid_configuration": true,
+    "real_ming_trainer_profiles": ["generation_edit", "layer_decompose"],
+    "ming_mid_epoch_named_optimizer_resume": true,
+    "all_structural_optimizer_counters_after_resume": 2,
+    "ming_uninterrupted_vs_resumed_weight_tolerance": {"rtol": 0.00002, "atol": 0.000002}
+  },
+  "frontend": {"static_review": true, "owner_build_and_typecheck_pending": true},
+  "limitations": "CPU functionality acceptance. Official-weight GPU hybrid LoRA acceptance and the final initialized Anima compute/VRAM matrix remain separate work. No owner runs were edited."
+}

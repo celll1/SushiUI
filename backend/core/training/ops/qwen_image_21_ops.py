@@ -360,10 +360,8 @@ def load_components(trainer) -> None:
         trainer.transformer, trainer.config,
         resuming=is_resume and bool(components.get("checkpoint_path")),
         pending_adapter_resume=is_resume and not components.get("checkpoint_path"))
-    if (getattr(trainer.transformer, "_residual_unet_spec", None) or {}).get("method") == "hybrid_unet_ssdit":
-        from core.training.ops.training_method import is_full_finetune
-        if not is_full_finetune(trainer):
-            raise ValueError("Hybrid Qwen currently requires full-parameter training")
+    from core.rewiring.training import validate_loaded_hybrid_training
+    validate_loaded_hybrid_training(trainer, trainer.transformer)
     trainer.transformer_original = trainer.transformer
     trainer.vae = components["vae"].to(dtype=trainer.vae_dtype)
     trainer.text_encoder = components["text_encoder"]

@@ -755,10 +755,11 @@ Layer model stayed unchanged and CUDA was untouched. Temporary probe files were
 removed. This verifies artifact/API plumbing, not official-weight quality; see
 `docs/audits/data/hybrid_initialized_export_2026-10.json`.
 
-## Adapter artifact work in progress
+## Adapter artifacts
 
-Hybrid LoRA remains refused until its complete save/load/resume contract is
-wired. `core/adapters/full_module.py` now supplies the shared full-module tensor
+Hybrid LoRA is wired for Anima, Qwen and Ming. The existing adapter capability
+tables still decide the available algebras; Anima also supports LoHa/LoKr.
+`core/adapters/full_module.py` supplies the shared full-module tensor
 protocol for auxiliary convolution/skip weights, separate from low-rank algebra.
 It exports every parameter and persistent buffer, without a synthetic alpha;
 the trainer exporter respects this per-module declaration. Loading prepares all
@@ -770,10 +771,15 @@ The combined existing algebra suite reports 106 passed and one unrelated
 capability-census failure: its ordinary-LoRA test assumes every table row is
 enabled, but the unchanged Chimera row is explicitly empty.
 
-Remaining integration must register the resolved hybrid modules as one stable
-`rewiring_modules` payload, exclude their layers from low-rank target discovery,
-and carry the existing topology and initialization metadata. Resume must restore
-this payload before training, with exact named optimizer ownership. Generation
+The shared LoRA trainer registers the resolved hybrid modules as one stable
+`rewiring_modules` full-weight payload alongside the native low-rank branches.
+Only the structural module parameters are unfrozen, subject to `train_unet`,
+and registered once in the denoiser LR group; these layers are not low-rank targets.
+Save includes their entire tensor scope, topology and initialization metadata.
+Resume resolves the selected file before injection, restores its topology on a
+native base, and pins that file for weight loading. Incompatible existing base
+topologies are refused. Exact keys, layout, finite values and conversions are
+validated before loading, and live parameter identities remain stable. Generation
 now prepares full-module weights on CPU, validates exact layout and finite dtype
 conversion, then installs the payload and native low-rank branches transactionally
 for Anima, Qwen and Ming. `sushi.rewiring.full_module=1` declares the complete
@@ -786,9 +792,19 @@ restore exact outputs on unload/release/replacement, and exercise real safetenso
 files through all three generation loaders. A full-module payload supplies structural weights rather
 than a scalable low-rank delta; its initial contract requires one owner at
 strength one with no step-range modulation. Conflicting payload owners must be
-refused, not silently summed or overwritten. Training/resume and joint acceptance
-remain required before removing the training gate; generation support alone does
-not enable hybrid LoRA training.
+refused, not silently summed or overwritten. ReLoRA/ControlNet remain unsupported.
+
+CPU acceptance updates structural weights, checks frozen native weights, unique
+optimizer/name ownership, then saves, resumes from native and inherited hybrid
+bases, and reloads through each actual generation loader. NaN payloads leave all
+weights unchanged. Supported Anima algebras have the same round-trip gate.
+API-to-YAML serialization preserves the topology. The real shared Ming trainer
+runs both Design and Layer, resumes mid-epoch from a native package with only the
+adapter checkpoint naming the topology, and restores every structural optimizer
+counter to step two. Continued weights match uninterrupted training at
+2e-5/2e-6 tolerance. This is CPU functionality acceptance; official-weight GPU
+LoRA acceptance remains separate. UI wording is updated and statically reviewed;
+owner build/type checks remain pending.
 
 ## Mutable Block Swap integration
 

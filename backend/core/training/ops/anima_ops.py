@@ -77,10 +77,8 @@ def load_components(trainer) -> None:
     configure_training_topology(trainer.transformer, trainer.config,
         resuming=bool(resume_path and Path(trainer.model_path).resolve() == Path(resume_path).resolve()),
         pending_adapter_resume=bool(resume_path and getattr(trainer, "_manages_own_resume", False)))
-    if (getattr(trainer.transformer, "_residual_unet_spec", None) or {}).get("method") == "hybrid_unet_ssdit":
-        from core.training.ops.training_method import is_full_finetune
-        if not is_full_finetune(trainer):
-            raise ValueError("Hybrid Anima currently requires full-parameter training")
+    from core.rewiring.training import validate_loaded_hybrid_training
+    validate_loaded_hybrid_training(trainer, trainer.transformer)
     from core.models.anima.partition_global import configure_training as configure_global
     configure_global(trainer.transformer, trainer.config)
     from core.models.anima.partition_training import validate_training_options

@@ -116,6 +116,13 @@ individual records' limitations.
    Candidate compute is now measured; equal-total-budget and combined-codec
    quality acceptance remain separate work. No owner checkpoint or public
    initializer changed, and coarse-structure owner evaluation is pending.
+   The candidate combined probe
+   (`hybrid_anima_candidate_combined_quality_2026-10.json`) generated only
+   four new images and reused native/candidate/swap controls by hash. Its
+   reviewed CFG4 pair still has severe block texture and composition loss;
+   swap controls also degrade. High16 does not close combined initialization
+   acceptance. Keep native-codec candidate evaluation independent and separate
+   codec/IO initialization work from further structural-only fitting.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

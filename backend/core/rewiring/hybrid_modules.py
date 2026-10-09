@@ -46,6 +46,13 @@ class HybridModules(nn.Module):
         self.up = nn.ModuleDict()
         self.local = nn.ModuleDict()
         self.skips = nn.ModuleDict()
+        device = torch.empty(0).device
+        devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+        # Adding a topology must not advance the run's exposure RNG.
+        with torch.random.fork_rng(devices=devices):
+            self._build_modules()
+
+    def _build_modules(self):
         regions = {region["id"]: region for region in self.declaration["regions"]}
         widths = self.declaration["stream_widths"]
         for item in self.declaration["boundaries"]:

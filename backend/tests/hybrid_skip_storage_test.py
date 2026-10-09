@@ -113,3 +113,15 @@ def test_inference_does_not_offload_skips(device, storage):
         execution.after(0, torch.randn(1, 8*12, 8, device=device), 0, 8, 12)
     assert execution.saved
     assert all(value.device.type == device and not value.requires_grad for value in execution.saved.values())
+
+
+def test_cuda_graph_factory_preserves_cpu_and_cuda_rng():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA factory verification")
+    torch.manual_seed(719)
+    cpu_before, cuda_before = torch.get_rng_state(), torch.cuda.get_rng_state()
+    with torch.device("cuda"):
+        modules = HybridModules(declaration())
+    assert all(parameter.is_cuda for parameter in modules.parameters())
+    assert torch.equal(torch.get_rng_state(), cpu_before)
+    assert torch.equal(torch.cuda.get_rng_state(), cuda_before)

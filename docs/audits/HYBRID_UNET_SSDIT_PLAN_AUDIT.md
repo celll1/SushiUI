@@ -107,8 +107,15 @@ individual records' limitations.
    not the acceptance goal. The native p28 CFG1 image itself has split/collage
    composition, so earlier CFG1 failures cannot all be assigned to rewiring.
    Native p29 CFG1 remains coherent; compare prompt-specific controls.
-   Candidate compute/equal-total-budget and combined-codec acceptance remain
-   separate work, and no owner checkpoint or public initializer changed.
+   The subsequent candidate matrix
+   (`hybrid_anima_candidate_matrix_2026-10.json`) remeasured all four arms
+   at 1024px/batches 1/2/4 with five timed samples. High16 alone retains
+   1.43–1.54x speedup but no Full FT VRAM reduction; combined batch 4 gives
+   6.10x native and 1.42x swap-only speed with 41.7% lower allocated VRAM
+   than native. Batch 1/2 has no demonstrated combined advantage over swap.
+   Candidate compute is now measured; equal-total-budget and combined-codec
+   quality acceptance remain separate work. No owner checkpoint or public
+   initializer changed, and coarse-structure owner evaluation is pending.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

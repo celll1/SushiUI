@@ -71,6 +71,10 @@ from core.models.minimax_h3.hybrid_spec import (
 DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor": [2, 2],
     "temporal_down_factor": [2, 1]}
 
+DIT_HYBRID_DEFAULTS: Dict[str, Any] = {
+    "rank": 64, "kernel": 3, "refiner_interval": 4, "skip_interval": 2,
+}
+
 DIT_REWIRING_PRESETS: Dict[str, Any] = {
     "yue2": {
         "block_count": 28,

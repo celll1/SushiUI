@@ -300,6 +300,10 @@ def inspect_model(model_path):
         info["video_geometry"] = adapter.video_geometry(config)
     if architecture == "acestep":
         info["temporal_geometry"] = adapter.temporal_geometry(config)
+    if architecture in ("anima", "qwen_image_21"):
+        from .hybrid_spec import default_hybrid_spec
+        width = config["model_channels"] if architecture == "anima" else config["num_attention_heads"] * config["attention_head_dim"]
+        info["hybrid_default_spec"] = default_hybrid_spec(info["default_spec"] or initial, {"main": width})
     return info
 
 
@@ -360,10 +364,12 @@ def _inspect_ming(path):
     initial = build_spec("ming_image_01", streams, [dict(id="r0", stream="main", parent=None,
         start_block=edges, end_block=count-edges,
         down_factor=DIT_REWIRING_REGION_DEFAULTS["down_factor"], **OPERATORS)], config)
+    from .hybrid_spec import default_hybrid_spec
     return dict(architecture="ming_image_01", streams=streams, base_config_sha256=digest(config),
         block_layout_sha256=digest(streams), topology=topology,
         topology_sha256=None if topology is None else digest(topology),
         default_spec=adapter.default_topology(config), initial_spec=initial,
+        hybrid_default_spec=default_hybrid_spec(adapter.default_topology(config) or initial, {"main": config["dim"]}),
         latent_scale_factor=16, pixel_alignment=16, parameter_counts=parameter_counts("ming_image_01", config),
         ming_partition_global=None if artifact.global_summary is None else
             {**{key:artifact.global_summary[key] for key in ('metadata','parameters','storage_bytes')},'loaded_in_model':False})

@@ -170,6 +170,10 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
       </select>
       {configuring && <button type="button" disabled={!info?.default_spec} className="rounded bg-gray-700 px-3 py-2"
         onClick={() => onChange("configure", info?.default_spec ?? null)}>Model preset</button>}
+      {configuring && info?.hybrid_default_spec && <button type="button" disabled={pending}
+        className="rounded bg-gray-700 px-3 py-2" onClick={() => {
+          onValidated?.(null); onChange("configure", info.hybrid_default_spec ?? null);
+        }}>New hybrid U-Net preset</button>}
       {info && <span>{info.architecture}</span>}
       {streams.length > 0 && <label>Stream
         <select aria-label="DiT stream" value={stream?.name ?? ""} className="ml-2 rounded bg-gray-800 p-1"
@@ -187,6 +191,7 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
+    {current?.method === "hybrid_unet_ssdit" && <p className="text-gray-400">Experimental learned spatial convolutions and compressed skips. Requires full-parameter training; selecting this preset creates a new module layout and does not convert checkpoint weights.</p>}
     {info && <DiTParameterSummary counts={info.parameter_counts} plan={plan} spec={current} />}
     {current && <>
       {info?.video_geometry && <p className="my-2 text-gray-400">Spatial grids and skip connections apply independently to each video frame. Frame count and audio tokens stay at native resolution.</p>}

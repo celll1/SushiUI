@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import copy
 import json
 import math
@@ -163,15 +163,30 @@ class PartitionExecutor:
     """No transformer hooks or module-tree changes; release CUDA copies in close()."""
 
     def __init__(self, model, plan, payloads=(), *, step_sources=(), use_cache=True, cancelled=lambda: False):
-        self.model, self.plan = model, plan
+        self.model = model
         self.payloads = list(payloads)
         topology = getattr(model, "_residual_unet_spec", None)
         if topology is not None:
             from core.rewiring.spec import preview_plan
             if topology["method"] != "hybrid_unet_ssdit":
                 raise ValueError("Partition generation requires hybrid rather than residual U-Net topology")
+            from core.rewiring.hybrid_partition import resolved_partition_halo, spatial_codec_radius
+            from core.models.components.latent_adapter import topology_alignment
+            halo = resolved_partition_halo(topology, "main", 0,
+                codec_radius=spatial_codec_radius(getattr(model, "vae_latent_bridge", None), model.config.patch_size))
+            ah, aw = topology_alignment(topology)
+            preview_plan(topology, plan.height, plan.width)
+            inputs = []
+            for core, box in zip(plan.cores, plan.inputs, strict=True):
+                required = core.expanded(halo, plan.height, plan.width)
+                inputs.append(Bounds(min(box.top, required.top) // ah * ah,
+                    min(box.left, required.left) // aw * aw,
+                    min(plan.height, (max(box.bottom, required.bottom) + ah - 1) // ah * ah),
+                    min(plan.width, (max(box.right, required.right) + aw - 1) // aw * aw)))
+            plan = replace(plan, inputs=tuple(inputs))
             for box in plan.inputs:
                 preview_plan(topology, box.height, box.width)
+        self.plan = plan
         self.use_cache = bool(use_cache and model.config.causal_condition and topology is None)
         self.cancelled = cancelled
         self.modules = {}

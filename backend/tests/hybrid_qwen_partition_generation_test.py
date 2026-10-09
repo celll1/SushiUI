@@ -34,15 +34,53 @@ def test_real_hybrid_partition_global_matches_native_tile_execution():
     with torch.no_grad():
         actual = executor.predict(branch='cond', **args).reshape_as(grid)
         expected = torch.empty_like(grid)
-        for box in plan.inputs:
+        for core, box in zip(executor.plan.cores, executor.plan.inputs, strict=True):
             tile = _forward(model, grid, box, adapter(grid, box))[:, -box.tokens:].reshape(1, box.height, box.width, 8)
-            expected[:, box.top:box.bottom, box.left:box.right] = tile
+            expected[:, core.top:core.bottom, core.left:core.right] = tile[
+                :, core.top-box.top:core.bottom-box.top, core.left-box.left:core.right-box.left]
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
     assert not executor.caches
     executor.close()
     assert not executor.modules and not executor.payloads
-    invalid = resolve_partition_plan(dict(mode='manual', layout=strips(2), halo_tokens=2), 8, 16)
+    invalid = resolve_partition_plan(dict(mode='manual', layout=strips(2), halo_tokens=2), 8, 14)
     with pytest.raises(ValueError): PartitionExecutor(model, invalid)
+    assert all(box.width == 16 for box in executor.plan.inputs)
+
+
+def test_required_halo_expands_real_context_and_aligns_nested_grids():
+    from core.rewiring.hybrid_partition import resolved_partition_halo
+    model, spec, _ = model_and_spec()
+    restore_topology(model, spec)
+    plan = resolve_partition_plan(dict(mode='manual', layout=strips(3), halo_tokens=2), 32, 48)
+    executor = PartitionExecutor(model, plan)
+    halo = resolved_partition_halo(spec, 'main', 2)
+    for core, box in zip(executor.plan.cores, executor.plan.inputs, strict=True):
+        needed = core.expanded(halo, 32, 48)
+        assert box.top <= needed.top and box.left <= needed.left
+        assert box.bottom >= needed.bottom and box.right >= needed.right
+        assert all(value % 4 == 0 for value in (box.top, box.left, box.bottom, box.right))
+    assert executor.plan.cores == plan.cores
+    executor.close()
+
+
+def test_backend_auto_ceiling_accounts_for_required_halo(monkeypatch):
+    from api.error_handlers import ValidationError
+    model, spec, _ = model_and_spec()
+    restore_topology(model, spec)
+    owner = QwenImage21Mixin()
+    owner.qwen_image_21_components = {'transformer': model}
+    owner.cancel_requested = False
+    called = []
+    def pipe(**kwargs):
+        called.append(kwargs)
+        return SimpleNamespace(images=['image'])
+    monkeypatch.setattr(owner, '_qwen_image_21_pipe', lambda: pipe)
+    monkeypatch.setattr(owner, '_load_lora_qwen21', lambda _: 0)
+    monkeypatch.setattr(owner, '_unload_lora_qwen21', lambda: None)
+    params = dict(seed=4, width=256, height=128,
+                  qwen_image_21_partition=dict(mode='auto', max_target_tokens=32, halo_tokens=0))
+    with pytest.raises(ValidationError): owner._qwen_image_21_run(params)
+    assert not called
 
 
 @pytest.mark.parametrize('fail', [False, True])

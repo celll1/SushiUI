@@ -253,8 +253,12 @@ class QwenImage21Mixin:
                 try:
                     preview_plan(topology, height // vae_scale_factor, width // vae_scale_factor)
                     if plan is not None:
-                        for box in plan.inputs:
-                            preview_plan(topology, box.height, box.width)
+                        from core.inference.qwen_image_21_partition import normalize_partition_config
+                        from core.rewiring.hybrid_partition import resolved_partition_halo, spatial_codec_radius
+                        settings = normalize_partition_config(params.get("qwen_image_21_partition"))
+                        settings["halo_tokens"] = resolved_partition_halo(topology, "main", settings["halo_tokens"],
+                            codec_radius=spatial_codec_radius(getattr(model, "vae_latent_bridge", None), model.config.patch_size))
+                        plan = resolve_partition_plan(settings, height // vae_scale_factor, width // vae_scale_factor)
                 except ValueError as exc:
                     raise ValidationError(str(exc)) from exc
                 params["dit_rewiring_actual"] = {"spec": topology, "spec_sha256": digest(topology), "kv_cache": False}
@@ -277,6 +281,13 @@ class QwenImage21Mixin:
                     use_cache=topology is None and bool(params.get("qwen_image_21_kv_cache", True)),
                     cancelled=lambda: self.cancel_requested or pipe.interrupt,
                 )
+                plan = executor.plan
+                if topology is not None and plan.mode == "auto":
+                    from core.inference.qwen_image_21_partition import normalize_partition_config
+                    ceiling = normalize_partition_config(params.get("qwen_image_21_partition"))["max_target_tokens"]
+                    if any(box.tokens > ceiling for box in plan.inputs):
+                        from api.error_handlers import ValidationError
+                        raise ValidationError("Qwen hybrid halo/alignment exceeds the partition token ceiling; increase it or use a manual layout")
                 if not payloads:
                     self._qwen21_lora_warn(
                         "Qwen partitioned generation has no global adapter; cross-region attention is absent.",

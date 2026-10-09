@@ -1230,6 +1230,20 @@ and disk; logs/sample hashes remain. This is INT8-base functionality acceptance,
 not BF16-base or quality-recovery acceptance. Qwen GPU LoRA remains separate.
 Evidence: `docs/audits/data/hybrid_ming_lora_gpu_2026-10.json`.
 
+### Qwen INT8 LoRA GPU restoration
+
+The Qwen 2.1 INT8 ConvRot native-codec probe completes two rank-eight FP32-LoRA
+updates, periodic previews and latest-checkpoint continuation to step three.
+The saved complete payload matches all 72 structural factory tensors and shapes;
+all values are finite. All 328 named optimizer entries, including 72 structural
+entries, restore with zero fresh entries and counters three. Loading the saved
+LoRA onto the native package through the generation API succeeds at 512px/four
+steps without warnings (gallery 11627). The owner Ming Layer model is restored
+and the owned smoke run is removed from DB and disk after retaining evidence.
+This verifies INT8-base functionality, not unquantized BF16, teacher-initialized
+quality, VAE-swap or partition/global-summary GPU acceptance.
+Evidence: `docs/audits/data/hybrid_qwen_lora_gpu_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

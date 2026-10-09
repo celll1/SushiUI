@@ -1,0 +1,65 @@
+{
+  "architecture": "qwen_image_21",
+  "source": "M:\\model\\qwen21\\int8_convrot",
+  "base_quantization": "int8_convrot",
+  "method": "lora",
+  "resolution": 512,
+  "batch_size": 1,
+  "images": 32,
+  "rating": "general",
+  "rank": 8,
+  "alpha": 8,
+  "adapter_dtype": "fp32",
+  "first_updates": 2,
+  "resume_step": 2,
+  "final_step": 3,
+  "structural_tensors": 72,
+  "optimizer_entries": 328,
+  "structural_optimizer_entries": 72,
+  "optimizer_counters": 3,
+  "fresh_optimizer_entries": 0,
+  "checkpoint_sha256": "f93b4967e0adfd25de58760e2179f79483361625eea8ee2caa8a8294e2302191",
+  "generation": {
+    "success": true,
+    "steps": 4,
+    "cfg": 4,
+    "seed": 63,
+    "warnings": [],
+    "image_id": 11627
+  },
+  "resume_log_lines": [
+    "[LoRA Trainer] Resume: LoRA weights loaded from hybrid_qwen_lora_gpu_20261010_step_000002.safetensors",
+    "[LoRA Trainer] Loaded training state: epoch=0, batch_idx=2",
+    "[LoRA Trainer] Loaded training state: epoch=0, batch_idx=2, global_step=2",
+    "[LoRA Trainer] Named optimizer state load OK from hybrid_qwen_lora_gpu_20261010_step_000002_optimizer.pt: 328 tensor(s) restored, 0 start fresh",
+    "[LoRA Trainer] Metrics resume_seq = 1"
+  ],
+  "limits": [
+    "INT8 ConvRot base plus FP32 LoRA masters; not BF16-base or quality-recovery acceptance.",
+    "Fresh zero-correction hybrid payload; no teacher initialization or VAE swap."
+  ],
+  "samples": [
+    {
+      "filename": "step_000000_sample_0.png",
+      "sha256": "aa55a63092ebacaa034ee782402d20cec865548b644507d08f25d1d15902c77e"
+    },
+    {
+      "filename": "step_000001_sample_0.png",
+      "sha256": "0ca79e5b73ba07e77025243c717f4afeca8d1f90053461c6a0667127a3d8f078"
+    },
+    {
+      "filename": "step_000002_sample_0.png",
+      "sha256": "2c07fb88b9f727f974934cf43a9ec0a2a3a3a2e8bd89bc13d97db2e50db0f12a"
+    },
+    {
+      "filename": "step_000003_sample_0.png",
+      "sha256": "3ce036e7d95285b2a97c99d8edf0bb35cc69d87cd0f0442d0f83459187076a93"
+    }
+  ],
+  "cleanup": {
+    "run_db_deleted": true,
+    "run_disk_deleted": true,
+    "owner_model_restored": true,
+    "general_dataset_retained": true
+  }
+}

@@ -1019,6 +1019,25 @@ predict the native teacher on states reached by the student, rather than only
 native-teacher or data-noising trajectories.
 Evidence: `docs/audits/data/hybrid_anima_equal_time_2026-10.json`.
 
+## Student-state trajectory fitting probe
+
+Three further rounds each sampled eight student rollouts (28 steps, CFG4),
+captured 448 conditional/unconditional states and queried the frozen native DiT
+on those exact states. Each round then fitted only the 65 structural parameters
+for 100 updates at LR 3e-4, AdamW8bit SR, refreshing the student-state pool for
+the next round. Original DiT and caption-bridge parameter hashes matched exactly
+before and after. This general-caption-only probe opened no source image pixels.
+Collection took 209.595 seconds and fitting took 78.296 seconds, excluding encoding,
+hashing and final generation. Optimizer counters all reached 300.
+
+Four fixed-seed outputs were generated and the CFG4 pair was reviewed against
+the existing 3300-update controls. Figures still appear, but composition/body
+distortion persists and diffuse/fractured texture increases. Finite teacher-loss
+values do not establish improvement: this recipe is not accepted and is not
+added to the public initializer or its defaults. The next controlled experiment
+should vary high-resolution stage allocation before adding more fitting recipes.
+Evidence: `docs/audits/data/hybrid_anima_student_trajectory_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

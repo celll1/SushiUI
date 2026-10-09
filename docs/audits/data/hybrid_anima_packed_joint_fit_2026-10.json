@@ -137,7 +137,8 @@
     "Both arms start from identical saved IO200 and structural3700; source body stays fixed.",
     "Matched exposure comparison, not equal-total-compute or broad quality acceptance.",
     "Both use FP32 IO/bridge/structural storage with BF16 body/compute.",
-    "AdamW8bit states start fresh in both arms; this is an initialization comparison, not optimizer resume."
+    "AdamW8bit states start fresh in both arms; this is an initialization comparison, not optimizer resume.",
+    "Concurrent IRIS GPU generation process existed during this probe; recorded wall times are not an isolated performance comparison. Peak allocated is this worker CUDA allocation, not device total."
   ],
   "initial_io_sha256": "ca20d10b15e753ebc8492d92d603aebc23e32a424f2451d9bad29d52fec8bbe2",
   "initial_io_updates": 200,
@@ -3870,5 +3871,12 @@
     "io_only": "Both outputs retain strong block/stripe artifacts; two-person composition fails.",
     "io_hybrid": "p28 is smoother than IO-only but two-person composition still fails; p29 has smoother color regions but severe block texture and poor facial detail.",
     "decision": "Limited improvement, no consistent useful generation-quality acceptance; no default promotion."
+  },
+  "concurrent_gpu_evidence": {
+    "process_id": 32300,
+    "script": "tools/probe_iris_3b_gpu.py",
+    "creation_local": "2026-10-10 08:33:38",
+    "joint_probe_start_local": "2026-10-10 08:34:37",
+    "owned_worker_exited": true
   }
 }

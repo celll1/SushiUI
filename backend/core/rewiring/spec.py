@@ -139,6 +139,7 @@ def build_spec(architecture, streams, regions, base_config):
 
 def preview_plan(spec, token_height, token_width):
     spec = validate_spec(spec)
+    hybrid = spec if spec["method"] == "hybrid_unet_ssdit" else None
     if spec["method"] == "hybrid_unet_ssdit":
         from .hybrid_spec import legacy_topology
         spec = legacy_topology(spec)
@@ -163,7 +164,12 @@ def preview_plan(spec, token_height, token_width):
             level = levels[active[-1]["id"]] if active else dict(depth=0, height=h, width=w, tokens=h*w)
             blocks.append(dict(stream=stream["name"], index=index,
                                **{k: level[k] for k in ("depth", "height", "width", "tokens")}))
-    return dict(levels=list(levels.values()), skip_edges=edges, blocks=blocks)
+    result = dict(levels=list(levels.values()), skip_edges=edges, blocks=blocks)
+    if hybrid is not None:
+        from .hybrid_partition import convolution_halo
+        result["hybrid_convolution_halo"] = {stream["name"]: list(convolution_halo(hybrid, stream["name"]))
+                                              for stream in hybrid["streams"]}
+    return result
 
 
 def checkpoint_metadata(spec):

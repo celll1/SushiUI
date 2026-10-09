@@ -27,10 +27,6 @@ def validate_training_features(config, architecture=None):
     if hybrid:
         if config.get("training_method") not in (None, "full", "full_finetune"):
             raise ValueError("Hybrid U-Net currently requires full-parameter training")
-        for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",
-                    "dit_partition_global_adapter_enabled", "qwen_partition_global_adapter_enabled"):
-            if config.get(key):
-                raise ValueError("Hybrid partition/global training requires convolution halo integration")
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
         raise ValueError("Residual rewiring is incompatible with block_skip_rate")
     for key in ("dit_partition_training_enabled", "qwen_partition_training_enabled",

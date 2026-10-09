@@ -4040,7 +4040,10 @@ paths:
                 properties:
                   spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
                   spec_sha256: {type: string}
-                  plan: {type: object, additionalProperties: true}
+                  plan:
+                    type: object
+                    additionalProperties: true
+                    description: Resolution levels, blocks and skip edges. Hybrid plans also report hybrid_convolution_halo, mapping each stream to height/width context radii in base token cells; this excludes global attention equivalence.
         '422':
           description: Invalid topology, unsupported operator or indivisible grid
   /models/load:
@@ -12141,7 +12144,7 @@ components:
             schema_version: {enum: [2]}
             method: {enum: [hybrid_unet_ssdit]}
             architecture: {enum: [anima]}
-          description: Experimental fixed-width Anima hybrid. Full-parameter, full-frame execution initially; editor and partition integration remain under development.
+          description: Experimental fixed-width Anima hybrid for full-parameter training. Partition planning automatically includes convolution context; full-frame attention equivalence is not promised. Editor integration remains under development.
     HybridDiTBoundary:
       type: object
       additionalProperties: false

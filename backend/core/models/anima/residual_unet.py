@@ -57,8 +57,6 @@ def model_topology_metadata(model):
 def run_rewired_anima(model, hidden, embedding, text, attention, use_fp32,
                        rotary, adaln, fps, spec, *, partition_box=None):
     spec = validate_topology_identity(spec, model)
-    if spec["method"] == "hybrid_unet_ssdit" and partition_box is not None:
-        raise ValueError("Hybrid partition convolution halo support is not installed yet")
     if hidden.ndim != 5 or hidden.shape[1] != 1:
         raise ValueError("Anima rewiring requires a single 2D image frame")
     for name in ("_style_ctx", "_fbcache", "_tread_config", "_blockskip_config",

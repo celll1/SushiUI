@@ -49,15 +49,28 @@ weights load. Its native forward executes them and checkpoint loading rejects
 missing/unexpected or nonfinite hybrid parameters. Full-model state saving
 includes these modules. Topology reinstallation preserves parameter objects;
 codec IO rebasing preserves module declarations. OpenAPI and frontend types
-recognize v2. Explicit topology JSON can select it for Anima full-parameter,
-full-frame training. Frozen-base training and partition/global training are
-rejected until their artifact and convolution-halo contracts are implemented.
+recognize v2. Explicit topology JSON can select it for Anima full-parameter
+training, including partition/global-summary execution. Frozen-base training
+remains rejected until its artifact contract is implemented.
+
+`hybrid_partition.py` propagates conservative spatial dependency radii through
+pooling, interpolation, learned boundary kernels, local kernels and skip edges.
+The Anima planner takes the larger of configured and required context, rounds
+it to its partition planner's even unit, and aligns the expanded real input
+region to cumulative U-Net factors. Loss and stitched output use only the
+non-overlapping cores. Installed codec bridges add their serial convolution
+context, accounting for packing and parallel Gaussian complements. Preview
+responses report hybrid-only radii in base token cells; the planner adds codec
+context when the actual model is available.
+This bounds local-path padding effects; global attention can propagate boundary
+differences, so a finite halo does not prove whole-model equivalence with
+full-frame attention. Large halos can erase the memory/time benefit of splitting.
 
 The graph shows compressed learned skips with dashed yellow lines. Hybrid
 region editing is temporarily disabled to preserve dependent module settings;
 the complete hybrid editor and preset selection remain pending. No existing
 run or default preset is converted. Parameter census, GPU/native full-trainer
-optimizer/EMA/offload acceptance, partition halo, Ming/Qwen integration and
+optimizer/EMA/offload acceptance, Ming/Qwen integration and
 LoRA support still require implementation or verification.
 
 ## Verification
@@ -74,6 +87,15 @@ saved-weight restoration and optimizer-state restoration, compares outputs
 within FP32 tolerance, and rejects a checkpoint missing learned-module weights.
 Bitwise optimizer continuation is not promised across changed tensor layouts
 or attention execution kernels.
+
+`hybrid_partition_test.py` compares expanded partition cores with an independent
+full-grid execution of pointwise native-block surrogates and nonzero learned
+convolutions/skips, and checks actual planner context/coordinate bounds.
+The native Anima test compares core-weighted backward with full-frame backward
+when the required halo covers the full small test canvas, including the global
+adapter and hybrid module gradients. It uses supplied conditioning with a
+text-preprocessing stub; it does not verify the caption encoder. These CPU
+checks do not establish large-image partition quality or GPU memory savings.
 
 The training-versus-generation behavior observed in the previous Anima
 VAE-swap run still needs independent diagnosis. Good single-step debug

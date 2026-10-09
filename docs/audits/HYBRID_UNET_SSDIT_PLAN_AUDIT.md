@@ -30,6 +30,7 @@ Existing owner runs and their artifacts are not migrated implicitly.
 | Edit config round-trip and state/cancellation/error behavior | API-to-YAML adapter tests; editor/API types and initialization panel static review | Static/CPU evidence; no owner build result is invented |
 | Final native/hybrid × native/Qwen VAE matrix at 1024, batches 1/2/4 | `hybrid_anima_final_matrix_2026-10.json` | Completed with initialized structural weights, production bridge classes and explicit calibration provenance |
 | Forward/backward/update, allocated/reserved VRAM, RSS, preprocessing separation | Final matrix per-update records and guide | Compute measurements complete; end-to-end VAE/TE/IO throughput is explicitly excluded |
+| Equal initialization-plus-training compute comparison | `hybrid_anima_equal_total_2026-10.json` | Fresh native/legacy/high16 hybrid, each 240 CUDA-event seconds including hybrid teacher fitting; shared preprocessing/evaluation excluded |
 
 Paths beginning with `core/` are under `backend/`; tests are under
 `backend/tests/`; JSON evidence is under `docs/audits/data/`; UI components are
@@ -123,6 +124,18 @@ individual records' limitations.
    swap controls also degrade. High16 does not close combined initialization
    acceptance. Keep native-codec candidate evaluation independent and separate
    codec/IO initialization work from further structural-only fitting.
+   A fresh budget-controlled comparison
+   (`hybrid_anima_equal_total_2026-10.json`) subsequently completed at
+   240.456/240.479/240.453 CUDA-event seconds for native/legacy/hybrid.
+   Hybrid includes 297 fresh teacher updates plus 211 Full FT updates;
+   retained module weights were not applied. Native/legacy complete 480/459
+   Full FT updates, with all 211 common exposures exactly matched. Initialization
+   freezes native weights exactly. The inspected hybrid single-figure face/outline
+   improves after Full FT, but two-person artifacts remain and no consistent
+   advantage over legacy is proved. This closes the bounded equal-model-compute
+   comparison requirement, not broad quality/default acceptance. Shared input
+   preprocessing/transfers and evaluation are excluded, so it is not total
+   end-to-end GPU occupancy or the retained 3700-update recipe's comparison.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

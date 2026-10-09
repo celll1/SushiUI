@@ -1176,6 +1176,40 @@ remaining failure to one subsystem. Do not extend structural-only fitting to
 address codec loss without a separate codec/IO initialization intervention.
 Evidence: `docs/audits/data/hybrid_anima_candidate_combined_quality_2026-10.json`.
 
+### Equal initialization-plus-training compute budget
+
+A fresh 16/8/4 hybrid used no retained module weights. Its declaration alone
+was reused; new modules were seeded at installation. Native and legacy/high16
+each spent the full 240-second CUDA-event budget on Full FT. Hybrid spent
+120.055 seconds on 297 structural-only native-teacher updates (LR 1e-3), then
+120.398 seconds on 211 Full FT updates (LR 5e-6). Native parameters stayed
+exact during initialization and all 65 structural optimizer counters advanced.
+All arms used native codec, 512px batch 1, BF16, AdamW8bit SR, 24 native
+checkpoint blocks, the same 28 general training images and four held-out images.
+
+| Arm | Initializer updates | Full FT updates | Total compute seconds | Full FT peak allocated GiB |
+|---|---:|---:|---:|---:|
+| Native | 0 | 480 | 240.456 | 11.590 |
+| Legacy 16/8/4 | 0 | 459 | 240.479 | 11.578 |
+| Fresh hybrid 16/8/4 | 297 | 211 | 240.453 | 11.611 |
+
+All 211 common Full FT exposures match item/dropout/sigma; separate RNGs prevent
+optimizer stochastic rounding from changing inputs. Initializer peak was
+4.477 GiB. Total here counts teacher/model forward, backward and optimizer CUDA
+events, including cold updates; shared preprocessing, input transfers, hashing
+and evaluation are excluded. It is not total end-to-end GPU occupancy.
+
+The reviewed native CFG4 pair preserves clear figures. Legacy preserves the
+single figure but distorts the two-person composition. Fresh hybrid starts
+with coarse silhouettes, pale/glowing detail and facial distortion; subsequent
+Full FT improves the single face/outline, while two-person scene division,
+grid-like artifacts and lettering remain. This proves a bounded short-training
+improvement, not consistent superiority over legacy. It closes the budget-controlled
+comparison requirement at this scope without selecting a default. The retained
+3700-update candidate uses a different, longer recipe and is not substituted
+for this fresh experiment. No large Full checkpoint was written.
+Evidence: `docs/audits/data/hybrid_anima_equal_total_2026-10.json`.
+
 ## Mutable Block Swap integration
 
 The common sequential and branch-qualified conductors retain the original

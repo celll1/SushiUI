@@ -1,0 +1,167 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "retained_weights_loaded": false,
+  "seed": 718,
+  "selection_seed": 1134,
+  "noise_seed": 1234,
+  "steps": 300,
+  "learning_rate": 0.001,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "limits": [
+    "Skip width only changes; native codec, 16/8/4 blocks, 300 updates.",
+    "VAE posterior samples recreated using the identical seeded preprocessing pipeline; previous probe did not retain latent hashes.",
+    "The initial loss is checked against the reused baseline; per-update clean latent hash equality is not independently proved.",
+    "Separate IRIS GPU worker active: quality comparison only, not isolated timing ranking."
+  ],
+  "matched_exposures": 300,
+  "skip_rank": 256,
+  "baseline_report": "local/verification/hybrid_anima_source_span_fit/report.json",
+  "experiment": "Native-codec high16 fresh teacher fit: seven compressed skips, rank64 reused vs rank256 new",
+  "arms": [
+    {
+      "arm": "unit_grid",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_source_span_fit\\p28_unit_grid_cfg4.png",
+          "sha256": "2b8680150d3e67004f6c92eb600e45c50ae6f05210f7347c254652c0a7a078d8"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_source_span_fit\\p29_unit_grid_cfg4.png",
+          "sha256": "a48ea99eef4ab638a2d3cfdbc0325bf1e02375fe07eacc5036a79caec777133b"
+        }
+      ],
+      "initial_modules_sha256": "1d0c44c153e158a6dda5a5ada8c0a989ab02e488d10bcf7833b5dc12d5f998ca",
+      "body_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "optimizer_tensors": 65,
+      "optimizer_counters": [
+        300
+      ],
+      "cuda_seconds": 127.58035125732422,
+      "wall_seconds": 128.48399999993853,
+      "peak_allocated_gib": 4.475597381591797,
+      "body_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "final_modules_sha256": "07aee19a60367a1f4c2af2802d976477d5be870c4c7dd94f7986245e60727faf",
+      "update_count": 300,
+      "last50_mean_training_loss": 0.046184165738523006,
+      "first10_training_losses": [
+        0.02554324083030224,
+        0.06322856992483139,
+        0.05611281469464302,
+        0.029977884143590927,
+        0.3738197386264801,
+        0.13326169550418854,
+        0.12568186223506927,
+        0.021443698555231094,
+        0.07902175188064575,
+        0.05455433949828148
+      ],
+      "exposure_sha256": "b91e466f07a160b907f5c0f69256b27c3c96142844a68be5ce7456dd833bcbf2"
+    },
+    {
+      "arm": "skip256",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_fit\\p28_skip256_cfg4.png",
+          "sha256": "29e2f14a0fd3830ec49e1ea07ead6173e581fd8bb06b1872cfd995b0a0a73eba"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_fit\\p29_skip256_cfg4.png",
+          "sha256": "6b1858e9844a378f89b0bb856c137391e85f7740f160c635c0d403345d7dc0d3"
+        }
+      ],
+      "initial_modules_sha256": "730ef891cb49ca5fffa917554596486744074c966902f97b48b9b264d0f75141",
+      "body_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "structural_parameters": 10463232,
+      "optimizer_tensors": 65,
+      "optimizer_counters": [
+        300
+      ],
+      "cuda_seconds": 181.8316492919922,
+      "wall_seconds": 183.1720000000205,
+      "peak_allocated_gib": 4.500865936279297,
+      "body_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "final_modules_sha256": "a918719ae15de68ca2cb6bbdd629f3c33558275220d3de02a89c87b738f1a7e5",
+      "update_count": 300,
+      "last50_mean_training_loss": 0.08177263375371695,
+      "first10_training_losses": [
+        0.02554324083030224,
+        0.14908234775066376,
+        0.10421016812324524,
+        0.1018347442150116,
+        0.7194505333900452,
+        0.1418953239917755,
+        0.18172842264175415,
+        0.03217580169439316,
+        0.21482360363006592,
+        0.08486861735582352
+      ],
+      "exposure_sha256": "b91e466f07a160b907f5c0f69256b27c3c96142844a68be5ce7456dd833bcbf2"
+    }
+  ],
+  "baseline_structural_parameters": 4958208,
+  "added_parameters": 5505024,
+  "initialization_checks": [
+    "Unchanged down/up/refiner tensors exactly copied at native BF16 precision.",
+    "First64 capture rows copy baseline; all restore weights remain zero.",
+    "Same frozen native body; first exposure loss exactly equals rank64 baseline.",
+    "All300 item/null/sigma/noise records match; VAE posterior equality is not independently established for every exposure."
+  ],
+  "failed_attempt": "FP32 reference vs BF16 installed tensor assertion failed before any fitting; corrected to native BF16 and reran after verifying terminal process and empty owned output directory.",
+  "observations": {
+    "skip256_p28": "Blue block/fragment scene; two-person composition lost.",
+    "skip256_p29": "Vertical fragmented figure and severe blocks; face fails.",
+    "rank64_controls": "Reused hash-verified general controls retain two separate figures and single-girl outline, with details still defective."
+  },
+  "decision": "Do not adopt rank256 at unchanged LR0.001. Wider skip increases training error and visual collapse in this bounded test; capacity benefit under retuned LR is unproved.",
+  "next_hypothesis": "Only lower skip learning rate (e.g. rank64/rank256 scaling); keep local/boundary LR and matched data fixed to separate capacity from early update amplitude."
+}

@@ -1442,3 +1442,28 @@ combined-codec quality gate remain unresolved. No owner artifact, public policy
 or runtime default changes. Images and private module weights remain local;
 tracked evidence contains hashes, metadata and observations only.
 Evidence: `docs/audits/data/hybrid_anima_source_span_fit_2026-10.json`.
+
+## Wider compressed-skip control
+
+Seven skip ranks increase from64 to256 while the native-codec 16/8/4 layout,
+boundary/local branches and 300 teacher-fit exposures stay fixed. Unchanged
+module weights are copied at native BF16 precision; each capture retains its
+original64 rows and all restore projections start at zero. The existing rank64
+control is reused by hash. Item/null/sigma/noise records match all300 updates,
+the frozen native body matches exactly, and the first exposure loss is exactly
+equal. Posterior samples are recreated by the same seeded preprocessing code;
+the earlier control did not retain per-image latent hashes, so their equality
+is not independently proved for every exposure. Encoded inputs are now retained
+locally for subsequent controlled comparisons.
+
+At unchanged AdamW8bit/SR LR0.001, all65 optimizer entries reach300 with finite
+gradients. Structural parameters increase from4,958,208 to10,463,232; own peak
+allocation rises from4.476 to4.501GiB. Last50 training loss increases from0.04618
+to0.08177 and both new held CFG4 images lose coherent faces/composition with
+strong blocks and fragments. This rejects rank256 at the unchanged fitting LR,
+not its capacity under other optimization conditions. Error increases immediately
+after the initially identical prediction, so test a lower skip-only LR before
+concluding that compressed-skip capacity cannot help. A separate IRIS GPU worker
+is active; wall times do not establish isolated throughput ranking. No runtime
+default or owner artifact changes. Evidence contains no images or tensor payloads:
+`docs/audits/data/hybrid_anima_wide_skip_fit_2026-10.json`.

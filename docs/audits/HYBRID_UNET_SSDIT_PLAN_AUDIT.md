@@ -195,6 +195,15 @@ individual records' limitations.
    source-span32 as the default in this bounded test; neither unit-grid's quality
    gate nor combined-codec acceptance is closed. Longer fits/other geometries
    remain untested, and existing owner artifacts/defaults are unchanged.
+   A seven-skip rank64-to256 control
+   (`hybrid_anima_wide_skip_fit_2026-10.json`) preserves other BF16 initial weights,
+   matches all300 exposure/noise records and has an exactly equal initial loss.
+   The native body is unchanged; all65 optimizer entries reach300. At unchanged
+   LR0.001 the two new held outputs collapse, while own peak allocation rises
+   only0.025GiB. Initial error grows after the first update; a skip-only LR control
+   is the next concrete hypothesis. This rejects the tested recipe, not wider-skip
+   capacity generally. Previous per-image VAE posterior hashes are unavailable,
+   and concurrent GPU work prevents isolated speed ranking. Quality remains open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

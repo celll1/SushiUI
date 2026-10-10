@@ -12,7 +12,7 @@ interface Props {
 export default function DiTRewiringGraph(props: Props) {
   return <div className="space-y-3">
     {props.spec.method === "hybrid_unet_ssdit" && <p className="text-gray-400">
-      Solid curves: residual bypass. Yellow dashed curves: learned compressed skips. Pink squares: learned spatial convolutions.
+      Solid curves: residual bypass. Yellow dashed curves: learned compressed skips. Pink squares: learned spatial convolutions. Orange diamonds: full-rank feature fusion.
     </p>}
     {props.spec.streams.map(stream => <div key={stream.name}>
     <p className="mb-1 text-gray-300">{stream.name} / {stream.block_count} blocks</p>
@@ -20,6 +20,9 @@ export default function DiTRewiringGraph(props: Props) {
       Convolution context: {props.plan.hybrid_convolution_halo?.[stream.name]?.join(" × ")} base token cells (H × W)
     </p>}
     <StreamGraph {...props} stream={stream} />
+    {props.plan.feature_fusion_workspace?.filter(item => item.stream === stream.name).map(item => <p key={item.id} className="text-gray-400">
+      {item.region}: full-rank fusion of fine / coarse input / coarse output. Temporary forward tensors: {(item.elements * 2 / 2 ** 20).toFixed(2)} MiB BF16 per image grid and batch item; excludes autograd and kernel workspace.
+    </p>)}
     {props.plan.hybrid_activation_layout && <ActivationSummary layout={props.plan.hybrid_activation_layout} stream={stream.name} />}
   </div>)}</div>;
 }
@@ -133,7 +136,10 @@ function StreamGraph({ spec, plan, selected, onSelect, onBoundaryChange, stream 
       return <g key={`conv-${item.id}`}>{([region.start_block, region.end_block]).map((index, side) =>
         <rect key={side} x={x(index) - 4} y={y(level.depth - 0.5) - 4} width={8} height={8} fill="#fb7185">
           <title>{`${item.id}: learned ${side === 0 ? "down" : "up"} ${item.kernel}×${item.kernel} convolution; rank ${item.rank}`}</title>
-        </rect>)}</g>;
+        </rect>)}{item.fusion === "full_rank" && <path
+          d={`M ${x(region.end_block)} ${y(level.depth - 1) + 5} l 6 6 l -6 6 l -6 -6 Z`} fill="#fb923c">
+          <title>{`${item.id}: full-rank 1×1 fusion of fine and coarse input/output features; ${3 * (spec.stream_widths[stream.name] ** 2)} added parameters`}</title>
+        </path>}</g>;
     })}
   </svg>;
 }

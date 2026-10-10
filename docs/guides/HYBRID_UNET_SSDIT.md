@@ -1911,3 +1911,45 @@ payload lineage, optimizer continuation, partition/codec parity or broad quality
 P5/P6 remain open; public wiring and final U-Net±codec performance verification
 are still required. No owner run or learning rate is changed.
 Evidence: `docs/audits/data/hybrid_anima_boundary_features_stability_2026-10.json`.
+
+### Declarative full-rank boundary fusion
+
+Hybrid schema v2 boundaries now accept `fusion: "full_rank"` in addition to
+`"none"`. Omission uses the central `DIT_HYBRID_DEFAULTS.boundary_fusion`
+(`none`); old declarations and hashes are preserved. Full-rank fusion adds a
+zero-output, bias-free 1x1 convolution over the saved fine grid, bilinearly
+resized coarse input, and actual coarse output. Its residual correction is
+added at the boundary exit. It adds `3 * width²` parameters per boundary; it
+does not narrow the native stream or replace its blocks.
+
+The factory registers these weights as `rewiring_modules.features.<id>.weight`.
+The declaration and layout hash own the operator, so normal generation,
+training and checkpoint restoration reconstruct it without experimental hooks.
+Nested regions, image-layer grid groups, module checkpointing and activation
+offload use the shared execution path. Private research checkpoints are not
+automatically migrated or given fabricated initializer provenance.
+
+The training editor offers inherited/none/full-rank selection with the existing
+validate/apply workflow. The graph marks fusion exits and displays logical BF16
+temporary forward storage: two resized fields, a three-field concatenation and
+an output (`6 * fine_tokens * width` elements per image grid and batch item).
+This excludes autograd and kernel workspace; it is not a measured VRAM peak.
+API types, OpenAPI, server counts and parameter-distribution display include the
+new operator. Frontend review is static; owner build and UI acceptance remain.
+
+CPU integration passes 213 cases with 16 intentionally unsupported adapter
+algebra combinations skipped. Coverage includes Anima, Ming Design/Layer and
+Qwen forward/backward, strict weight restoration and bounded optimizer
+continuation. These checks establish wiring, not convergence or the final
+U-Net/codec performance matrix. Existing defaults and owner runs are unchanged.
+
+A real Anima BF16 probe explicitly migrates the retained lower-rate research
+copy into this declaration (755 tensor values match), updates all634 Full FT
+tensors twice, and saves through `AnimaFullParameterAdapter.write_checkpoint`.
+The native loader rebuilds the public topology from the saved file. The shared
+named optimizer restorer restores634 states with zero fresh tensors; one further
+supervised update advances every counter from2 to3. A held general CFG4 image
+retains a coherent person, hands and food. This exercises normal full-model
+export/load and shared optimizer remapping, not a complete train_runner,
+dataset-order or UI resume. Evidence:
+`docs/audits/data/hybrid_anima_public_feature_fusion_2026-10.json`.

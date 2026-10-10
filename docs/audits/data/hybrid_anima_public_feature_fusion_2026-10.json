@@ -1,0 +1,211 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "exact_migrated_tensors": 755,
+  "updates": [
+    {
+      "index": 2,
+      "loss": 0.1725185513496399,
+      "norm": 2.53125,
+      "states": 634,
+      "counters": [
+        3
+      ]
+    }
+  ],
+  "limits": [
+    "Explicit migration of a private research copy; owner runs untouched.",
+    "Shared named optimizer restorer, not complete train_runner/dataset resume.",
+    "Three updates do not establish convergence or quality."
+  ],
+  "declaration": {
+    "schema_version": 2,
+    "method": "hybrid_unet_ssdit",
+    "architecture": "anima",
+    "streams": [
+      {
+        "name": "main",
+        "block_count": 28
+      }
+    ],
+    "regions": [
+      {
+        "id": "r0",
+        "stream": "main",
+        "parent": null,
+        "start_block": 8,
+        "end_block": 20,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      },
+      {
+        "id": "r1",
+        "stream": "main",
+        "parent": "r0",
+        "start_block": 12,
+        "end_block": 16,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      }
+    ],
+    "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+    "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+    "stream_widths": {
+      "main": 2048
+    },
+    "boundaries": [
+      {
+        "id": "downup_r0",
+        "region": "r0",
+        "rank": 64,
+        "kernel": 3,
+        "fusion": "full_rank"
+      },
+      {
+        "id": "downup_r1",
+        "region": "r1",
+        "rank": 64,
+        "kernel": 3,
+        "fusion": "full_rank"
+      }
+    ],
+    "refiners": [
+      {
+        "id": "local_main_0",
+        "stream": "main",
+        "after_block": 0,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_12",
+        "stream": "main",
+        "after_block": 12,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_16",
+        "stream": "main",
+        "after_block": 16,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_20",
+        "stream": "main",
+        "after_block": 20,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_24",
+        "stream": "main",
+        "after_block": 24,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_4",
+        "stream": "main",
+        "after_block": 4,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_8",
+        "stream": "main",
+        "after_block": 8,
+        "rank": 64,
+        "kernel": 3
+      }
+    ],
+    "skips": [
+      {
+        "id": "skip_main_0_27",
+        "stream": "main",
+        "source_after": 0,
+        "destination_before": 27,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_10_17",
+        "stream": "main",
+        "source_after": 10,
+        "destination_before": 17,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_12_15",
+        "stream": "main",
+        "source_after": 12,
+        "destination_before": 15,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_2_25",
+        "stream": "main",
+        "source_after": 2,
+        "destination_before": 25,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_4_23",
+        "stream": "main",
+        "source_after": 4,
+        "destination_before": 23,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_6_21",
+        "stream": "main",
+        "source_after": 6,
+        "destination_before": 21,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_8_19",
+        "stream": "main",
+        "source_after": 8,
+        "destination_before": 19,
+        "rank": 256,
+        "storage": "gpu"
+      }
+    ],
+    "module_layout_sha256": "b63e1ea4f181dd5521e1bd444bdd985e12488bf5a509b49b2139c84ced8ca920"
+  },
+  "pre_save_counters": [
+    2
+  ],
+  "checkpoint_bytes": 4253490214,
+  "restored_optimizer_tensors": 634,
+  "sample": {
+    "sha256": "44fa673043499570ea28dd8db33f2f31fda12a950000283d8f053c9df2257d69",
+    "index": 31
+  }
+}

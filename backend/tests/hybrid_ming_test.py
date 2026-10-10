@@ -13,9 +13,10 @@ from core.models.ming_image_01.residual_unet import restore_topology
 from core.rewiring.hybrid_spec import build_hybrid_spec
 
 
-def hybrid_for(model):
+def hybrid_for(model, fusion=False):
     return build_hybrid_spec(spec_for(model), stream_widths={"main": model.dim}, boundaries=[
-        dict(id="outer", region="r0", rank=6, kernel=3), dict(id="inner", region="r1", rank=6, kernel=3)],
+        dict(id="outer", region="r0", rank=6, kernel=3, **({"fusion":"full_rank"} if fusion else {})),
+        dict(id="inner", region="r1", rank=6, kernel=3, **({"fusion":"full_rank"} if fusion else {}))],
         refiners=[dict(id="entry", stream="main", after_block=0, rank=6, kernel=3),
                   dict(id="exit", stream="main", after_block=5, rank=6, kernel=3)],
         skips=[dict(id="outer_skip", stream="main", source_after=0, destination_before=5, rank=6),
@@ -23,7 +24,8 @@ def hybrid_for(model):
 
 
 @pytest.mark.parametrize("padding", ["zero_masked", "learned"])
-def test_native_hybrid_matches_baseline_then_trains_every_branch(padding):
+@pytest.mark.parametrize("fusion", [False, True])
+def test_native_hybrid_matches_baseline_then_trains_every_branch(padding, fusion):
     torch.manual_seed(112)
     model = create_transformer(config(padding), device="cpu", dtype=torch.float32)
     # Native learned pads are checkpoint-loaded, not constructor-initialized.
@@ -33,7 +35,7 @@ def test_native_hybrid_matches_baseline_then_trains_every_branch(padding):
             model.cap_pad_token.normal_(0, .02)
     restore_topology(model, spec_for(model))
     baseline = deepcopy(model)
-    restore_topology(model, hybrid_for(model))
+    restore_topology(model, hybrid_for(model, fusion))
     frames = 3 if padding == "learned" else 1
     images = [torch.randn(16, frames, 16, 24) for _ in range(2)]
     queries = [torch.randn(5, 8) for _ in range(2)]
@@ -87,7 +89,8 @@ def test_live_convolutions_do_not_mix_adjacent_layer_grids():
 
 @pytest.mark.parametrize("profile", ["generation_edit", "layer_decompose"])
 @pytest.mark.parametrize("quantized", [False, True])
-def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_path, profile, quantized):
+@pytest.mark.parametrize("fusion", [False, True])
+def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_path, profile, quantized, fusion):
     torch.manual_seed(812)
     from core.models.ming_image_01.loader import load_components
     from core.models.ming_image_01.checkpoint import save_bundle
@@ -96,7 +99,7 @@ def test_real_bundle_loader_restores_hybrid_weights_and_optimizer_ownership(tmp_
     source.mkdir()
     write_tiny_package(source, profile=profile)
     components = load_components(source, dtype=torch.float32, conditioner_attention="eager")
-    restore_topology(components.transformer, hybrid_for(components.transformer))
+    restore_topology(components.transformer, hybrid_for(components.transformer, fusion))
     from hybrid_provenance_test import record
     initialization = record()
     initialization["origin_spec"] = deepcopy(components.transformer._residual_unet_spec)

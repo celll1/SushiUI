@@ -3,7 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .hybrid_spec import validate_hybrid_spec, legacy_topology, hybrid_preview, skip_storage
+from .hybrid_spec import validate_hybrid_spec, legacy_topology, hybrid_preview, skip_storage, boundary_fusion
 from .runtime import run_rewired_stream
 
 
@@ -38,6 +38,24 @@ class CompressedSkip(nn.Module):
         return self.restore(value.to(self.restore.weight.dtype))
 
 
+class FullFeatureFusion(nn.Module):
+    def __init__(self, width):
+        super().__init__()
+        if type(width) is not int or width < 1:
+            raise ValueError('Feature fusion requires a positive channel width')
+        self.weight = nn.Parameter(torch.zeros(width, 3*width, 1, 1))
+
+    def forward(self, saved, low_in, low_out):
+        if (saved.ndim != 4 or low_in.ndim != 4 or low_out.shape != low_in.shape
+                or saved.shape[:2] != low_in.shape[:2] or saved.shape[1] != self.weight.shape[0]
+                or saved.device != low_in.device or low_out.device != saved.device
+                or not all(low_in.shape) or any(a < b for a,b in zip(saved.shape[-2:],low_in.shape[-2:]))):
+            raise ValueError('Feature fusion requires matching fine/coarse channel grids')
+        fields = [saved, F.interpolate(low_in, size=saved.shape[-2:], mode='bilinear', align_corners=False),
+                  F.interpolate(low_out, size=saved.shape[-2:], mode='bilinear', align_corners=False)]
+        return F.conv2d(torch.cat(fields,dim=1).to(self.weight.dtype), self.weight)
+
+
 class HybridModules(nn.Module):
     def __init__(self, declaration):
         super().__init__()
@@ -46,6 +64,7 @@ class HybridModules(nn.Module):
         self.up = nn.ModuleDict()
         self.local = nn.ModuleDict()
         self.skips = nn.ModuleDict()
+        self.features = nn.ModuleDict()
         device = torch.empty(0).device
         devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
         # Adding a topology must not advance the run's exposure RNG.
@@ -59,6 +78,8 @@ class HybridModules(nn.Module):
             width = widths[regions[item["region"]]["stream"]]
             self.down[item["id"]] = LocalCorrection(width, item["rank"], item["kernel"], stride=2, normalize=True)
             self.up[item["id"]] = LocalCorrection(width, item["rank"], item["kernel"], stride=1, normalize=False)
+            if boundary_fusion(item) == "full_rank":
+                self.features[item["id"]] = FullFeatureFusion(width)
         for item in self.declaration["refiners"]:
             self.local[item["id"]] = LocalCorrection(widths[item["stream"]], item["rank"], item["kernel"],
                                                        stride=1, normalize=True)
@@ -126,14 +147,22 @@ class HybridExecution:
             return checkpoint(prefix_forward, cpu_input, use_reentrant=False)
         self.replay = replay
 
-    def call(self, function, value):
+    def call(self, function, *values):
         if not self.checkpoint_modules or not torch.is_grad_enabled():
-            return function(value)
+            return function(*values)
         from torch.utils.checkpoint import checkpoint
         if self.checkpoint_offload:
-            with torch.autograd.graph.save_on_cpu(pin_memory=value.is_cuda):
-                return checkpoint(function, value, use_reentrant=False)
-        return checkpoint(function, value, use_reentrant=False)
+            with torch.autograd.graph.save_on_cpu(pin_memory=any(value.is_cuda for value in values)):
+                return checkpoint(function, *values, use_reentrant=False)
+        return checkpoint(function, *values, use_reentrant=False)
+
+    def boundary_features(self, region, saved, low_in, low_out, update, height, width):
+        name = self.boundaries.get(region["id"])
+        if name not in self.modules.features:
+            return None
+        h,w = height//region["down_factor"][0],width//region["down_factor"][1]
+        return self.call(self.modules.features[name], self.grid(saved,0,height,width),
+            self.grid(low_in,0,h,w), self.grid(low_out,0,h,w))
 
     def down(self, region, grid, pooled):
         name = self.boundaries.get(region["id"])

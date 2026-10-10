@@ -15,8 +15,8 @@ from core.rewiring.spec import OPERATORS, build_spec, read_checkpoint_metadata
 from core.rewiring.hybrid_spec import build_hybrid_spec
 
 
-@pytest.fixture
-def native():
+@pytest.fixture(params=[False, True])
+def native(request):
     with patch.object(torch.cuda, "get_device_capability", return_value=(8, 9)), \
             patch.object(torch.cuda, "_lazy_init"), patch.object(torch._C, "_cuda_init"):
         from core.models.anima.anima_models import Anima
@@ -33,7 +33,8 @@ def native():
             dict(id="outer", stream="main", parent=None, start_block=1, end_block=6,
                  down_factor=[2, 2], **OPERATORS)], native_config(model))
         graph = build_hybrid_spec(base, stream_widths={"main": 24}, boundaries=[
-            dict(id="outer_boundary", region="outer", rank=6, kernel=3)], refiners=[
+            dict(id="outer_boundary", region="outer", rank=6, kernel=3,
+                 **({"fusion":"full_rank"} if request.param else {}))], refiners=[
             dict(id="entry", stream="main", after_block=0, rank=6, kernel=3),
             dict(id="exit", stream="main", after_block=6, rank=6, kernel=3)], skips=[
             dict(id="outer_skip", stream="main", source_after=0, destination_before=6, rank=6)])

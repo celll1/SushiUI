@@ -4,29 +4,13 @@ from threading import Lock
 
 import torch
 from torch import nn
-from torch.nn import functional as F
-
-from core.rewiring.hybrid_modules import HybridModules, HybridExecution
+from core.rewiring.hybrid_modules import HybridModules, HybridExecution, FullFeatureFusion
 
 _probe_lock = Lock()
+_public_hook = HybridExecution.boundary_features
 
 
-class FeatureFusion(nn.Module):
-    def __init__(self, width):
-        super().__init__()
-        if type(width) is not int or width < 1:
-            raise ValueError('Feature fusion requires a positive channel width')
-        self.weight = nn.Parameter(torch.zeros(width, 3*width, 1, 1))
-
-    def forward(self, saved, low_in, low_out):
-        if (saved.ndim != 4 or low_in.ndim != 4 or low_out.shape != low_in.shape
-                or saved.shape[:2] != low_in.shape[:2] or saved.shape[1] != self.weight.shape[0]
-                or saved.device != low_in.device or low_out.device != saved.device
-                or not all(low_in.shape) or any(a < b for a,b in zip(saved.shape[-2:],low_in.shape[-2:]))):
-            raise ValueError('Feature fusion requires matching fine/coarse channel grids')
-        fields = [saved, F.interpolate(low_in, size=saved.shape[-2:], mode='bilinear', align_corners=False),
-                  F.interpolate(low_out, size=saved.shape[-2:], mode='bilinear', align_corners=False)]
-        return F.conv2d(torch.cat(fields,dim=1).to(self.weight.dtype), self.weight)
+FeatureFusion = FullFeatureFusion
 
 
 def build_fusions(modules):
@@ -47,7 +31,8 @@ def boundary_features_probe(modules, fusions):
     items = modules.declaration['boundaries']
     if (set(fusions) != {item['id'] for item in items}
             or hasattr(modules,'_boundary_features_probe')
-            or getattr(HybridExecution,'boundary_features',None) is not None):
+            or modules.features
+            or getattr(HybridExecution,'boundary_features',None) not in (None,_public_hook)):
         raise ValueError('Feature fusion requires exclusive hook ownership')
     for item in items:
         width = modules.declaration['stream_widths'][regions[item['region']]['stream']]
@@ -61,7 +46,7 @@ def boundary_features_probe(modules, fusions):
 
     def fusion(execution,region,saved,low_in,low_out,update,height,width):
         if execution.modules is not modules:
-            return None
+            return original(execution,region,saved,low_in,low_out,update,height,width) if original is not None else None
         name = execution.boundaries.get(region['id'])
         if name is None:
             return None

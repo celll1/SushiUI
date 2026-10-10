@@ -525,3 +525,16 @@ matches all755 full-body tensors and preserves an additional held food/person
 composition. This bounded candidate does not establish public optimizer resume,
 codec/partition parity, equal-time general quality or final performance. See
 `hybrid_anima_boundary_features_stability_2026-10.json`. Defaults remain unchanged.
+
+Full-rank boundary fusion is now an explicit optional schema-v2 operator with
+factory-owned weights, public export/loader reconstruction, editor selection,
+graph markers, parameter counts and logical forward-workspace estimates. CPU
+integration:213 passed,16 unsupported adapter algebra combinations skipped.
+Real Anima Full FT:755 research tensor values explicitly migrated,634 tensors
+updated twice, ordinary adapter checkpoint saved and reloaded,634 named optimizer
+states restored with zero fresh entries, then all counters advanced to3. A held
+general composition remains coherent. This closes the operator's bounded
+save/load/remapping check, not full process resume, broad quality, combined codec
+acceptance, stage-width redesign or the final1024px B1/B2/B4 performance matrix.
+Frontend checks are static; owner build/UI acceptance remains. Evidence:
+`hybrid_anima_public_feature_fusion_2026-10.json`.

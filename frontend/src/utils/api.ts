@@ -9922,12 +9922,13 @@ export interface ResidualDiTRewiringSpec {
 export interface HybridDiTRewiringSpec extends Omit<ResidualDiTRewiringSpec, "schema_version" | "method"> {
   schema_version: 2; method: "hybrid_unet_ssdit";
   stream_widths: Record<string, number>; module_layout_sha256: string;
-  boundaries: { id: string; region: string; rank: number; kernel: 3 | 5 }[];
+  boundaries: { id: string; region: string; rank: number; kernel: 3 | 5; fusion?: "none" | "full_rank" }[];
   refiners: { id: string; stream: string; after_block: number; rank: number; kernel: 3 | 5 }[];
   skips: { id: string; stream: string; source_after: number; destination_before: number; rank: number; storage?: "gpu" | "cpu" | "recompute" }[];
 }
 export type DiTRewiringSpec = ResidualDiTRewiringSpec | HybridDiTRewiringSpec;
 export interface DiTRewiringPlan {
+  feature_fusion_workspace?: { id: string; region: string; stream: string; elements: number }[];
   hybrid_activation_layout?: {
     basis: "per_image_grid_per_batch_item";
     entries: { id: string; kind: "bypass" | "low_input" | "compressed_skip" | "encoder_replay_input"; stream: string;
@@ -10027,7 +10028,7 @@ export interface DiTRewiringModelInfo {
   video_geometry?: DiTRewiringVideoGeometry;
 }
 export const getDiTRewiringSchema = async (): Promise<{
-  hybrid_defaults: { rank: number; kernel: 3 | 5; refiner_interval: number; skip_interval: number; skip_storage: "gpu" | "cpu" | "recompute" };
+  hybrid_defaults: { rank: number; kernel: 3 | 5; refiner_interval: number; skip_interval: number; skip_storage: "gpu" | "cpu" | "recompute"; boundary_fusion: "none" | "full_rank" };
   presets: Record<string, unknown>; runtime_architectures: string[];
   initialization_defaults: HybridInitializationSettings & {
     phases: HybridInitializationRecord["phases"]; spec: null; item_ids: null;

@@ -289,6 +289,19 @@ individual records' limitations.
    keep varying these losses without new evidence. Next inspect restored-stage
    intermediate features and evaluate normalized feature alignment during
    structural initialization. Full FT and combined-codec quality gates stay open.
+   The same-body feature diagnostic
+   (`hybrid_anima_feature_diagnostic_2026-10.json`) covers12 no-training cases:
+   two general cached training inputs, three sigmas and conditional/null paths.
+   Native-body hashes remain exact across native/zero/fitted319 execution.
+   Across28 blocks, teacher coarse grids are average pooled for like-size metrics.
+   Mean relative feature error at block11 improves7.526→0.425 and at27 improves
+   0.03097→0.01136, but restored full-grid block20 remains0.39293→0.39640.
+   This suggests testing intermediate alignment, not a proved generation cause.
+   The experimental image-grid alignment helper passes six GPU-free CPU tests
+   for pooling, identity, scale normalization, student-only gradients and refusals.
+   Next compare matched200-update field-only versus field+0.1 normalized feature
+   alignment at16/20/27, starting from the same319 state with a frozen body.
+   Held generation and subsequent Full FT remain required before public adoption.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

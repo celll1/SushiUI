@@ -1,0 +1,128 @@
+{
+  "rating": "general",
+  "mode": "matched_structural_feature_continuation",
+  "updates_per_arm": 200,
+  "resolution": 512,
+  "vae_swap": false,
+  "skip_rank": 256,
+  "feature_blocks": [
+    16,
+    20,
+    27
+  ],
+  "init_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "arms": [
+    {
+      "arm": "field_only",
+      "feature_weight": 0.0,
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg1.png",
+          "sha256": "669caeaeaf6f8cc35213ac2253ce83319a2bd8386ee95403b19e0376c3d24a10"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg4.png",
+          "sha256": "685cf32f067196ada35f07bae1ad574cefe9d50b51aa59217995c2e72363d381"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg1.png",
+          "sha256": "1c0bfa027d61b6f3217c6392bbaf2668f224183cbb76d031283ac3645cd045b9"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg4.png",
+          "sha256": "b045d164086a828ea0ffd2a27380b3018400cb159f1297e24d0a894305ccd632"
+        }
+      ],
+      "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_before_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "optimizer_entries": 65,
+      "optimizer_counters": [
+        200
+      ],
+      "peak_allocated_gib": 4.524318218231201,
+      "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_file_sha256": "2532e2fb055d10cce0526dc6487f5b867557a1dcee5a41c0c7606d74b461c942",
+      "statistics": {
+        "first_field_loss": 0.03990925848484039,
+        "first_feature_loss": 0.4567539691925049,
+        "last50_mean_field_loss": 0.029491450693458317,
+        "last50_mean_feature_loss": 0.46979680001735685,
+        "cuda_seconds": 64.26416247558593
+      }
+    },
+    {
+      "arm": "feature",
+      "feature_weight": 0.1,
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_feature_cfg1.png",
+          "sha256": "dc9ba9abbeea7e33e764e7a23843c62420a17bb2228aafa0e38d81716b060c16"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_feature_cfg4.png",
+          "sha256": "b1f66c334289d12ea18bd585b8aab8d13accd810ca30bacbbdfed535e246ab40"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_feature_cfg1.png",
+          "sha256": "2166eb91ef9191d2a48aa05386d618937e6bfed5be6b6071ae80f1a295a9a392"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_feature_cfg4.png",
+          "sha256": "849e9dc2bd4b03043c13ba6a0c6d922619d3d13fdae1f581e803be54e4c03041"
+        }
+      ],
+      "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_before_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "optimizer_entries": 65,
+      "optimizer_counters": [
+        200
+      ],
+      "peak_allocated_gib": 4.5273823738098145,
+      "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_file_sha256": "e31e0dfb608331bc4de73a4edb7ffd0f1aa95ad871408455dca8ba878b48346c",
+      "statistics": {
+        "first_field_loss": 0.03990925848484039,
+        "first_feature_loss": 0.4567539691925049,
+        "last50_mean_field_loss": 0.02919309563934803,
+        "last50_mean_feature_loss": 0.3126786115765572,
+        "cuda_seconds": 69.35279876708984
+      }
+    }
+  ],
+  "limits": [
+    "Two arms start from the same saved319-update initialization and exact encoded inputs.",
+    "Field-only vs field plus0.1 mean normalized feature MSE; native body remains frozen.",
+    "Same200 updates and input/noise/RNG boundary; not equal-total-time or Full FT acceptance.",
+    "Teacher coarse grids are average pooled; feature error alone does not prove generation quality."
+  ],
+  "matched_exposures": 200,
+  "feature_tap": "Native DiT block output before any post-block local refiner; includes pre-block skip restoration. Blocks16 and20 have subsequent local refiners, so these are not complete stage outputs.",
+  "observations": {
+    "field_only_cfg4": "Two heads survive in p28 but one body is obscured/distorted; p29 girl outline survives with chalk-like colors and facial/hand defects.",
+    "feature_cfg4": "p28 collapses to strong horizontal stripes with only a partial body; p29 retains a girl but has dense line/noise artifacts and distorted limbs.",
+    "cfg1": "Both arms have overlapping/fragmented structures; feature arm introduces stronger line artifacts."
+  },
+  "decision": "Reject this0.1 pre-refiner feature-loss recipe. Mean feature error falls but held generation worsens. All65 counters reach200 and native bodies remain identical; no public initialization lineage or Full FT quality acceptance follows.",
+  "next_action": "Inspect complete post-local-refinement stage outputs for original319 and both continuation states before changing decoder fusion. If post-stage mismatch remains, evaluate compressed concat fusion from plan3.3 rather than extending output-loss tuning."
+}

@@ -302,6 +302,21 @@ individual records' limitations.
    Next compare matched200-update field-only versus field+0.1 normalized feature
    alignment at16/20/27, starting from the same319 state with a frozen body.
    Held generation and subsequent Full FT remain required before public adoption.
+   The matched continuation (`hybrid_anima_feature_fit_2026-10.json`) completes
+   200 identical item/null/sigma/noise exposures from equal319 state/RNG hashes.
+   Both frozen native bodies remain exact; all65 optimizer counters reach200.
+   Field-only versus field+0.1 feature loss yields final50 mean feature errors
+   0.46980/0.31268 and field errors0.02949/0.02919. Eight held general outputs
+   show feature fitting worsening horizontal stripes and figure coherence;
+   field-only retains two heads but has body/face defects. Reject this recipe.
+   Compute64.264/69.353 CUDA seconds and allocation4.524/4.527GiB describe the
+   equal-update continuation, not quality acceptance or an isolated speed gain.
+   These taps observe native block outputs before post-block local refinement.
+   In particular16/20 do not represent the complete stage output. The preceding
+   diagnostic has the same scope; do not infer a complete decoder mismatch from
+   those tap errors. Inspect post-refiner stages before changing fusion. If that
+   mismatch remains, test plan3.3's compressed concat fusion rather than more
+   output-loss tuning. Private continuation weights have no public fit lineage.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

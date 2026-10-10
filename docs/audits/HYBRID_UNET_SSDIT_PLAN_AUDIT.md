@@ -569,3 +569,10 @@ multi-grid initializer work alongside codec/IO adaptation, not a claim that
 codec error alone explains every failure. No defaults changed; multi-grid public
 recipe, combined Full FT and broad quality are still pending. Evidence:
 `hybrid_anima_public_feature_fusion_multigrid_2026-10.json`.
+
+Multi-grid implementation has started with shared resolution validation,
+deterministic cycling, shape-independent timestep RNG and optional strict
+provenance fields. CPU verification reports40 passing tests, including legacy
+recipe/hash preservation and initialization ownership. This does not close
+public initializer wiring: all three preparation owners, API/UI and GPU
+acceptance remain pending. The existing single-grid runtime is unchanged.

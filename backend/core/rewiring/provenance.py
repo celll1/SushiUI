@@ -5,6 +5,7 @@ import re
 
 from .hybrid_spec import validate_hybrid_spec
 from .spec import MAX_JSON_BYTES, canonical_json, digest, _unique_object
+from .resolution_schedule import RESOLUTION_SAMPLING, initialization_resolutions
 
 META_RECORD = "sushi.hybrid.initialization"
 META_HASH = "sushi.hybrid.initialization_sha256"
@@ -14,6 +15,7 @@ _KEYS = {"schema_version", "method", "source_sha256", "origin_spec",
 RECIPE_FIELDS = {"sample_count", "holdout_count", "resolution", "seed", "caption_type", "teacher_steps",
                  "teacher_cfg", "conditioning_dropout", "clip_norm", "optimizer", "stochastic_rounding",
                  "weight_decay", "attention_backend"}
+RESOLUTION_RECIPE_FIELDS = {"additional_resolutions", "resolution_sampling"}
 
 
 def validate_record(value, current_spec):
@@ -69,9 +71,17 @@ def validate_record(value, current_spec):
         recipe = value["recipe"]
         if (not isinstance(recipe, dict) or set(recipe) != {"schema_version", "settings"}
                 or type(recipe["schema_version"]) is not int or recipe["schema_version"] != 1
-                or not isinstance(recipe["settings"], dict) or set(recipe["settings"]) != RECIPE_FIELDS):
+                or not isinstance(recipe["settings"], dict)
+                or not RECIPE_FIELDS <= set(recipe["settings"])
+                or set(recipe["settings"]) - RECIPE_FIELDS - RESOLUTION_RECIPE_FIELDS):
             raise ValueError("Invalid hybrid initialization recipe")
         settings = recipe["settings"]
+        resolution_fields = set(settings) & RESOLUTION_RECIPE_FIELDS
+        if resolution_fields:
+            if (resolution_fields != RESOLUTION_RECIPE_FIELDS
+                    or settings["resolution_sampling"] != RESOLUTION_SAMPLING
+                    or len(initialization_resolutions(settings)) < 2):
+                raise ValueError("Invalid initialization resolution curriculum")
         for key, low, high in (("sample_count",1,64),("holdout_count",0,63),("resolution",64,1024),
                                ("seed",0,2**31-1),("teacher_steps",1,100)):
             if type(settings[key]) is not int or not low <= settings[key] <= high:

@@ -505,3 +505,13 @@ convolutions, audio/video and Lens GPU quality work remain conditional or
 outside this initial plan. They do not replace the unfinished quality gate.
 Existing defaults remain unchanged until quality acceptance; loss, CPU tests
 or a speedup alone cannot close the goal.
+
+A private full-rank1×1 boundary correction now mixes saved fine features and
+actual coarse input/output, with an optional runtime hook and zero initial output.
+Thirteen new CPU cases plus32 runtime/hybrid cases pass; all67 real teacher-fit
+weights reload exactly in a fresh private CPU context. Two general CFG4 images
+retain coarse figures after200 teacher updates, but matched222 supervised Full
+FT updates degrade the two-person composition and face/body. All634 optimizer
+counters reach222 and native weights change; no public/default acceptance is
+claimed. See `hybrid_anima_boundary_features_2026-10.json`. Full FT stability,
+public lineage, combined codec and final matrix are still required.

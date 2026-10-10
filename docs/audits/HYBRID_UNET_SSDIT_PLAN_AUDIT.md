@@ -331,6 +331,20 @@ individual records' limitations.
    and rank1 skip information. It is not installed by the public topology factory
    or given artifact lineage/default acceptance. Next verify integration and
    matched GPU fitting before public API/UI and payload wiring.
+   Exclusive private concat integration now passes11 CPU cases for resident/
+   CPU/recomputed skips, normal/CPU checkpointing, zero equivalence, gradients,
+   dtype alignment and failure cleanup. The first GPU attempt failed before any
+   update because new corrections stayed on CPU; context device/dtype alignment
+   is fixed and the retry completes200 updates (`hybrid_anima_concat_fit_2026-10.json`).
+   All100 optimizer counters reach200, all35 new tensor gradients are nonzero,
+   native-body hashes remain exact, and200 exposures/RNG boundaries plus first
+   field loss match the reused field-only control. Seven corrections add7,829,248
+   parameters. At new-branch LR0.00025, four held general outputs have worse
+   magenta color/face/figure defects; reject this recipe. Final50 mean field error
+   0.03514 versus0.02949 does not establish benefit. Whole-probe compute73.312s/
+   allocation4.549GiB is not isolated overhead: the control retains zero-weight
+   feature taps. Test new-branch LR0.000025 with old-group rates held fixed before
+   judging the structure. Public topology/payload/default acceptance stays open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

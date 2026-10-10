@@ -1,0 +1,173 @@
+{
+  "rating": "general",
+  "mode": "private_concat_structural_continuation",
+  "updates": 200,
+  "resolution": 512,
+  "vae_swap": false,
+  "init_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "base_module_before_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+  "correction_parameters": 7829248,
+  "reused_control": {
+    "arm": "field_only",
+    "feature_weight": 0.0,
+    "samples": [
+      {
+        "index": 28,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg1.png",
+        "sha256": "669caeaeaf6f8cc35213ac2253ce83319a2bd8386ee95403b19e0376c3d24a10"
+      },
+      {
+        "index": 28,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg4.png",
+        "sha256": "685cf32f067196ada35f07bae1ad574cefe9d50b51aa59217995c2e72363d381"
+      },
+      {
+        "index": 29,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg1.png",
+        "sha256": "1c0bfa027d61b6f3217c6392bbaf2668f224183cbb76d031283ac3645cd045b9"
+      },
+      {
+        "index": 29,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg4.png",
+        "sha256": "b045d164086a828ea0ffd2a27380b3018400cb159f1297e24d0a894305ccd632"
+      }
+    ],
+    "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "module_before_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+    "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+    "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+    "optimizer_entries": 65,
+    "optimizer_counters": [
+      200
+    ],
+    "peak_allocated_gib": 4.524318218231201,
+    "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "module_file_sha256": "2532e2fb055d10cce0526dc6487f5b867557a1dcee5a41c0c7606d74b461c942",
+    "statistics": {
+      "first_field_loss": 0.03990925848484039,
+      "last50_mean_field_loss": 0.029491450693458317,
+      "cuda_seconds": 64.26416247558593
+    }
+  },
+  "samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p28_concat_cfg1.png",
+      "sha256": "9a701c889e8d6c8d63f0bb16ece0fd3c25ce2125a99c33d8e4df001c12e5a09a"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p28_concat_cfg4.png",
+      "sha256": "39d88b5a60be091362672078358da77414acf44e0978e6de8aefbc7939ebe369"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p29_concat_cfg1.png",
+      "sha256": "2eab9615d44c9b8b83cd6d6a4ca94d6ff635017352eb650bf3dbe15d601f5c05"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p29_concat_cfg4.png",
+      "sha256": "5a8066e6dc93237a3ae47b1b5c9f453016c231f891c824675d42bb70b79e3950"
+    }
+  ],
+  "limits": [
+    "Additional zero-output compressed concat corrections; public topology declaration remains unchanged and must not export these weights.",
+    "Existing field-only continuation reused by hashes; same initialization, encoded exposures and initial RNG boundary.",
+    "Additional optimizer parameters change SR draw consumption; no bitwise old-weight trajectory equality is claimed.",
+    "Equal200 updates, not equal-total-compute; Full FT/combined codec/default quality acceptance remain separate."
+  ],
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "group_rates": [
+    0.001,
+    0.00025,
+    0.00025
+  ],
+  "group_counts": [
+    51,
+    14,
+    35
+  ],
+  "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+  "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+  "first_output_gradient_norms": {
+    "skip_main_0_27": 0.02211499586701393,
+    "skip_main_10_17": 0.11436863243579865,
+    "skip_main_12_15": 0.12214870005846024,
+    "skip_main_2_25": 0.05433391407132149,
+    "skip_main_4_23": 0.0963311716914177,
+    "skip_main_6_21": 0.1164933368563652,
+    "skip_main_8_19": 0.13373057544231415
+  },
+  "optimizer_entries": 100,
+  "optimizer_counters": [
+    200
+  ],
+  "final_correction_gradient_norms": {
+    "skip_main_0_27.current_norm.weight": 0.00036787439603358507,
+    "skip_main_0_27.current_norm.bias": 0.00023560419504065067,
+    "skip_main_0_27.skip_norm.weight": 7.423954957630485E-05,
+    "skip_main_0_27.mix.weight": 0.014066211879253387,
+    "skip_main_0_27.output.weight": 0.030269410461187363,
+    "skip_main_10_17.current_norm.weight": 0.0006516606663353741,
+    "skip_main_10_17.current_norm.bias": 0.0008445437415502965,
+    "skip_main_10_17.skip_norm.weight": 9.688023419585079E-05,
+    "skip_main_10_17.mix.weight": 0.027988921850919724,
+    "skip_main_10_17.output.weight": 0.030918477103114128,
+    "skip_main_12_15.current_norm.weight": 0.001340870512649417,
+    "skip_main_12_15.current_norm.bias": 0.001254549715667963,
+    "skip_main_12_15.skip_norm.weight": 0.00015496784180868417,
+    "skip_main_12_15.mix.weight": 0.03370208293199539,
+    "skip_main_12_15.output.weight": 0.034724313765764236,
+    "skip_main_2_25.current_norm.weight": 0.0002017916995100677,
+    "skip_main_2_25.current_norm.bias": 0.00045402368414215744,
+    "skip_main_2_25.skip_norm.weight": 4.712403824669309E-05,
+    "skip_main_2_25.mix.weight": 0.027132276445627213,
+    "skip_main_2_25.output.weight": 0.01798326149582863,
+    "skip_main_4_23.current_norm.weight": 0.002969175111502409,
+    "skip_main_4_23.current_norm.bias": 0.0016330888029187918,
+    "skip_main_4_23.skip_norm.weight": 0.00012235596659593284,
+    "skip_main_4_23.mix.weight": 0.046370044350624084,
+    "skip_main_4_23.output.weight": 0.029522284865379333,
+    "skip_main_6_21.current_norm.weight": 0.0011548850452527404,
+    "skip_main_6_21.current_norm.bias": 0.0009624281083233654,
+    "skip_main_6_21.skip_norm.weight": 9.423629671800882E-05,
+    "skip_main_6_21.mix.weight": 0.03261589631438255,
+    "skip_main_6_21.output.weight": 0.030957946553826332,
+    "skip_main_8_19.current_norm.weight": 0.0009566224762238562,
+    "skip_main_8_19.current_norm.bias": 0.0010660347761586308,
+    "skip_main_8_19.skip_norm.weight": 0.00010983877291437238,
+    "skip_main_8_19.mix.weight": 0.034215863794088364,
+    "skip_main_8_19.output.weight": 0.02919885516166687
+  },
+  "peak_allocated_gib": 4.548617839813232,
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "private_module_sha256": "3e779ba25dfe0199df1c8de072c61b272de7aa35d098b1766882f4ece56ffca0",
+  "matched_exposures": 200,
+  "statistics": {
+    "first_field_loss": 0.03990925848484039,
+    "last50_mean_field_loss": 0.035136554967612026,
+    "cuda_seconds": 73.31205194091797
+  },
+  "observations": {
+    "p28_cfg4": "Two partial foreground figures and additional background fragments; strong dark/magenta color shift and malformed/missing heads.",
+    "p29_cfg4": "Girl outline remains but face collapses to a large single eye and mouth-like box; strong magenta color shift.",
+    "cfg1": "Fragmented/overlapping figures and anatomy, with scene elements mixed into the single-girl output."
+  },
+  "decision": "Reject this concat-correction rate as a default-quality recipe. First field loss and200 exposures/RNG boundaries match the control; source body remains exact and all100 optimizer counters reach200. New branch functionality is established, quality benefit is not.",
+  "next_action": "Compare a tenfold lower LR on the35 new concat tensors only, keeping old51/14 tensor-group rates, initialization and exact exposures fixed, before judging this structure or public wiring.",
+  "verification": {
+    "cpu_integration_cases": 11,
+    "gpu_first_attempt": "Failed before any optimizer update because new corrections remained on CPU. Context now aligns device/dtype with native modules; empty owned folder removed and retry completed.",
+    "limitations": "Control retains zero-weight feature taps; timing and peak memory are whole-probe measurements, not isolated concat overhead or production Full FT acceptance."
+  }
+}

@@ -1,0 +1,2326 @@
+{
+  "rating": "general",
+  "indices": [
+    0,
+    28
+  ],
+  "updates": 0,
+  "resolution": 512,
+  "cfg": 4.0,
+  "steps": 28,
+  "seed": 63,
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "init_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "cases": [
+    {
+      "index": 0,
+      "route": "native",
+      "rows": [
+        {
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.10232968628406525,
+              "relative_mse": 0.07677038758993149
+            },
+            {
+              "null": true,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.35977649688720703,
+          "guided_relative_mse": 0.17709633708000183
+        },
+        {
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.07536017894744873,
+              "relative_mse": 0.05509456247091293
+            },
+            {
+              "null": true,
+              "field_mse": 0.062081433832645416,
+              "relative_mse": 0.046782515943050385
+            }
+          ],
+          "latent_rms": 0.9836169481277466,
+          "latent_route_mse": 5.3535899496637285E-05,
+          "guided_mse": 0.1871252804994583,
+          "guided_relative_mse": 0.1151130422949791
+        },
+        {
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.028419584035873413,
+              "relative_mse": 0.020072685554623604
+            },
+            {
+              "null": true,
+              "field_mse": 0.016786349937319756,
+              "relative_mse": 0.011900284327566624
+            }
+          ],
+          "latent_rms": 0.971656322479248,
+          "latent_route_mse": 0.00014719500904902816,
+          "guided_mse": 0.15611165761947632,
+          "guided_relative_mse": 0.10067345201969147
+        },
+        {
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014468787238001823,
+              "relative_mse": 0.010079900734126568
+            },
+            {
+              "null": true,
+              "field_mse": 0.0096241794526577,
+              "relative_mse": 0.0066893273033201694
+            }
+          ],
+          "latent_rms": 0.9591898918151855,
+          "latent_route_mse": 0.0002921365085057914,
+          "guided_mse": 0.11108581721782684,
+          "guided_relative_mse": 0.07175207138061523
+        },
+        {
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013287488371133804,
+              "relative_mse": 0.009199132211506367
+            },
+            {
+              "null": true,
+              "field_mse": 0.005900123156607151,
+              "relative_mse": 0.00410718098282814
+            }
+          ],
+          "latent_rms": 0.946150541305542,
+          "latent_route_mse": 0.0005236690631136298,
+          "guided_mse": 0.14365708827972412,
+          "guided_relative_mse": 0.08635609596967697
+        },
+        {
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01693691499531269,
+              "relative_mse": 0.011643968522548676
+            },
+            {
+              "null": true,
+              "field_mse": 0.008691097609698772,
+              "relative_mse": 0.006023564841598272
+            }
+          ],
+          "latent_rms": 0.9325935244560242,
+          "latent_route_mse": 0.0008732619462534785,
+          "guided_mse": 0.1932399570941925,
+          "guided_relative_mse": 0.11538560688495636
+        },
+        {
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01717040315270424,
+              "relative_mse": 0.011735484935343266
+            },
+            {
+              "null": true,
+              "field_mse": 0.020141666755080223,
+              "relative_mse": 0.013943989761173725
+            }
+          ],
+          "latent_rms": 0.9185304045677185,
+          "latent_route_mse": 0.00138601113576442,
+          "guided_mse": 0.22514662146568298,
+          "guided_relative_mse": 0.13817456364631653
+        },
+        {
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.016698699444532394,
+              "relative_mse": 0.011329133063554764
+            },
+            {
+              "null": true,
+              "field_mse": 0.026971502229571342,
+              "relative_mse": 0.018311016261577606
+            }
+          ],
+          "latent_rms": 0.9037971496582031,
+          "latent_route_mse": 0.0020424569956958294,
+          "guided_mse": 0.17175789177417755,
+          "guided_relative_mse": 0.11186055094003677
+        },
+        {
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.017168298363685608,
+              "relative_mse": 0.01157231256365776
+            },
+            {
+              "null": true,
+              "field_mse": 0.027547702193260193,
+              "relative_mse": 0.018543655052781105
+            }
+          ],
+          "latent_rms": 0.888367772102356,
+          "latent_route_mse": 0.0027638361789286137,
+          "guided_mse": 0.19052788615226746,
+          "guided_relative_mse": 0.12382239103317261
+        },
+        {
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.018320880830287933,
+              "relative_mse": 0.012329242192208767
+            },
+            {
+              "null": true,
+              "field_mse": 0.023535193875432014,
+              "relative_mse": 0.015788346529006958
+            }
+          ],
+          "latent_rms": 0.8721821308135986,
+          "latent_route_mse": 0.0036633391864597797,
+          "guided_mse": 0.1428825855255127,
+          "guided_relative_mse": 0.09297526627779007
+        },
+        {
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01986289769411087,
+              "relative_mse": 0.013255068100988865
+            },
+            {
+              "null": true,
+              "field_mse": 0.024495882913470268,
+              "relative_mse": 0.01638292893767357
+            }
+          ],
+          "latent_rms": 0.85542893409729,
+          "latent_route_mse": 0.0047643654979765415,
+          "guided_mse": 0.14066782593727112,
+          "guided_relative_mse": 0.08983767777681351
+        },
+        {
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.020816069096326828,
+              "relative_mse": 0.013788076117634773
+            },
+            {
+              "null": true,
+              "field_mse": 0.028816090896725655,
+              "relative_mse": 0.01914602890610695
+            }
+          ],
+          "latent_rms": 0.8379188776016235,
+          "latent_route_mse": 0.006227510049939156,
+          "guided_mse": 0.15374475717544556,
+          "guided_relative_mse": 0.09760986268520355
+        },
+        {
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02118602581322193,
+              "relative_mse": 0.01402187254279852
+            },
+            {
+              "null": true,
+              "field_mse": 0.02983851544559002,
+              "relative_mse": 0.019794490188360214
+            }
+          ],
+          "latent_rms": 0.8196962475776672,
+          "latent_route_mse": 0.00806485116481781,
+          "guided_mse": 0.1432664394378662,
+          "guided_relative_mse": 0.09239082038402557
+        },
+        {
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.020111244171857834,
+              "relative_mse": 0.01323147863149643
+            },
+            {
+              "null": true,
+              "field_mse": 0.02839585766196251,
+              "relative_mse": 0.018713397905230522
+            }
+          ],
+          "latent_rms": 0.8008615970611572,
+          "latent_route_mse": 0.010310210287570953,
+          "guided_mse": 0.13103385269641876,
+          "guided_relative_mse": 0.0847214087843895
+        },
+        {
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.020283401012420654,
+              "relative_mse": 0.013248677365481853
+            },
+            {
+              "null": true,
+              "field_mse": 0.02714386396110058,
+              "relative_mse": 0.017751095816493034
+            }
+          ],
+          "latent_rms": 0.7814347147941589,
+          "latent_route_mse": 0.013110386207699776,
+          "guided_mse": 0.11428696662187576,
+          "guided_relative_mse": 0.07357531040906906
+        },
+        {
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.021813509985804558,
+              "relative_mse": 0.014187480323016644
+            },
+            {
+              "null": true,
+              "field_mse": 0.024946819990873337,
+              "relative_mse": 0.01624227687716484
+            }
+          ],
+          "latent_rms": 0.7613916993141174,
+          "latent_route_mse": 0.016654878854751587,
+          "guided_mse": 0.1154262125492096,
+          "guided_relative_mse": 0.074039988219738
+        },
+        {
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02386915683746338,
+              "relative_mse": 0.015538704581558704
+            },
+            {
+              "null": true,
+              "field_mse": 0.024915095418691635,
+              "relative_mse": 0.0162212997674942
+            }
+          ],
+          "latent_rms": 0.7409505248069763,
+          "latent_route_mse": 0.021099533885717392,
+          "guided_mse": 0.11609729379415512,
+          "guided_relative_mse": 0.07487337291240692
+        },
+        {
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02436027303338051,
+              "relative_mse": 0.015869222581386566
+            },
+            {
+              "null": true,
+              "field_mse": 0.02598131075501442,
+              "relative_mse": 0.01693367026746273
+            }
+          ],
+          "latent_rms": 0.7204470038414001,
+          "latent_route_mse": 0.02660510316491127,
+          "guided_mse": 0.09695729613304138,
+          "guided_relative_mse": 0.06261327117681503
+        },
+        {
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02551853284239769,
+              "relative_mse": 0.0165677722543478
+            },
+            {
+              "null": true,
+              "field_mse": 0.02818485163152218,
+              "relative_mse": 0.018316464498639107
+            }
+          ],
+          "latent_rms": 0.7002206444740295,
+          "latent_route_mse": 0.03332832455635071,
+          "guided_mse": 0.08766709268093109,
+          "guided_relative_mse": 0.05631439387798309
+        },
+        {
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.026042241603136063,
+              "relative_mse": 0.016840284690260887
+            },
+            {
+              "null": true,
+              "field_mse": 0.028328051790595055,
+              "relative_mse": 0.01833975315093994
+            }
+          ],
+          "latent_rms": 0.6806355714797974,
+          "latent_route_mse": 0.041683703660964966,
+          "guided_mse": 0.08878596127033234,
+          "guided_relative_mse": 0.056843191385269165
+        },
+        {
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02557678148150444,
+              "relative_mse": 0.016643427312374115
+            },
+            {
+              "null": true,
+              "field_mse": 0.02832316793501377,
+              "relative_mse": 0.018447551876306534
+            }
+          ],
+          "latent_rms": 0.6625015139579773,
+          "latent_route_mse": 0.05226539820432663,
+          "guided_mse": 0.08587432652711868,
+          "guided_relative_mse": 0.05542754381895065
+        },
+        {
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.025027673691511154,
+              "relative_mse": 0.01624491810798645
+            },
+            {
+              "null": true,
+              "field_mse": 0.02681538835167885,
+              "relative_mse": 0.01741861365735531
+            }
+          ],
+          "latent_rms": 0.6470862627029419,
+          "latent_route_mse": 0.06550890952348709,
+          "guided_mse": 0.07638496905565262,
+          "guided_relative_mse": 0.04917990416288376
+        },
+        {
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.026556115597486496,
+              "relative_mse": 0.017370006069540977
+            },
+            {
+              "null": true,
+              "field_mse": 0.0274791419506073,
+              "relative_mse": 0.017982501536607742
+            }
+          ],
+          "latent_rms": 0.635712206363678,
+          "latent_route_mse": 0.08203351497650146,
+          "guided_mse": 0.06198491156101227,
+          "guided_relative_mse": 0.040229927748441696
+        },
+        {
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02900451421737671,
+              "relative_mse": 0.018990665674209595
+            },
+            {
+              "null": true,
+              "field_mse": 0.030100198462605476,
+              "relative_mse": 0.019716273993253708
+            }
+          ],
+          "latent_rms": 0.6305306553840637,
+          "latent_route_mse": 0.10304495692253113,
+          "guided_mse": 0.058152638375759125,
+          "guided_relative_mse": 0.03779534995555878
+        },
+        {
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.03397102653980255,
+              "relative_mse": 0.02245723269879818
+            },
+            {
+              "null": true,
+              "field_mse": 0.036569975316524506,
+              "relative_mse": 0.024175724014639854
+            }
+          ],
+          "latent_rms": 0.6339682936668396,
+          "latent_route_mse": 0.12946248054504395,
+          "guided_mse": 0.06838350743055344,
+          "guided_relative_mse": 0.044905196875333786
+        },
+        {
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.04307740926742554,
+              "relative_mse": 0.02878091298043728
+            },
+            {
+              "null": true,
+              "field_mse": 0.04468435421586037,
+              "relative_mse": 0.029851222410798073
+            }
+          ],
+          "latent_rms": 0.6495165824890137,
+          "latent_route_mse": 0.16318276524543762,
+          "guided_mse": 0.07808557152748108,
+          "guided_relative_mse": 0.05169210210442543
+        },
+        {
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.05421987175941467,
+              "relative_mse": 0.03686089813709259
+            },
+            {
+              "null": true,
+              "field_mse": 0.05596405267715454,
+              "relative_mse": 0.03801717236638069
+            }
+          ],
+          "latent_rms": 0.6812390685081482,
+          "latent_route_mse": 0.20755033195018768,
+          "guided_mse": 0.08570874482393265,
+          "guided_relative_mse": 0.05770450830459595
+        },
+        {
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.06722521781921387,
+              "relative_mse": 0.04851876199245453
+            },
+            {
+              "null": true,
+              "field_mse": 0.0688692182302475,
+              "relative_mse": 0.049709469079971313
+            }
+          ],
+          "latent_rms": 0.7327738404273987,
+          "latent_route_mse": 0.2662442624568939,
+          "guided_mse": 0.0989329069852829,
+          "guided_relative_mse": 0.07040572166442871
+        }
+      ]
+    },
+    {
+      "index": 0,
+      "route": "student",
+      "rows": [
+        {
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.10232968628406525,
+              "relative_mse": 0.07677038758993149
+            },
+            {
+              "null": true,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.35977649688720703,
+          "guided_relative_mse": 0.17709633708000183
+        },
+        {
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.05329103767871857,
+              "relative_mse": 0.041025493294000626
+            },
+            {
+              "null": true,
+              "field_mse": 0.020423535257577896,
+              "relative_mse": 0.017155205830931664
+            }
+          ],
+          "latent_rms": 0.9837364554405212,
+          "latent_route_mse": 5.3535899496637285E-05,
+          "guided_mse": 0.3169809579849243,
+          "guided_relative_mse": 0.16544534265995026
+        },
+        {
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01151032093912363,
+              "relative_mse": 0.009212320670485497
+            },
+            {
+              "null": true,
+              "field_mse": 0.007435075007379055,
+              "relative_mse": 0.00622836546972394
+            }
+          ],
+          "latent_rms": 0.9718107581138611,
+          "latent_route_mse": 0.00014719500904902816,
+          "guided_mse": 0.1619783639907837,
+          "guided_relative_mse": 0.10237110406160355
+        },
+        {
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.006821047980338335,
+              "relative_mse": 0.005592058878391981
+            },
+            {
+              "null": true,
+              "field_mse": 0.01487075723707676,
+              "relative_mse": 0.012554737739264965
+            }
+          ],
+          "latent_rms": 0.9593225121498108,
+          "latent_route_mse": 0.0002921365085057914,
+          "guided_mse": 0.12831160426139832,
+          "guided_relative_mse": 0.08682407438755035
+        },
+        {
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013296057470142841,
+              "relative_mse": 0.011134599335491657
+            },
+            {
+              "null": true,
+              "field_mse": 0.02261505089700222,
+              "relative_mse": 0.019496120512485504
+            }
+          ],
+          "latent_rms": 0.9461717009544373,
+          "latent_route_mse": 0.0005236690631136298,
+          "guided_mse": 0.10672507435083389,
+          "guided_relative_mse": 0.07128028571605682
+        },
+        {
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.015669019892811775,
+              "relative_mse": 0.013037923723459244
+            },
+            {
+              "null": true,
+              "field_mse": 0.0241776704788208,
+              "relative_mse": 0.020722970366477966
+            }
+          ],
+          "latent_rms": 0.9323959946632385,
+          "latent_route_mse": 0.0008732619462534785,
+          "guided_mse": 0.10528045892715454,
+          "guided_relative_mse": 0.07146216928958893
+        },
+        {
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.015329994261264801,
+              "relative_mse": 0.012697795405983925
+            },
+            {
+              "null": true,
+              "field_mse": 0.021121351048350334,
+              "relative_mse": 0.017799636349081993
+            }
+          ],
+          "latent_rms": 0.918015718460083,
+          "latent_route_mse": 0.00138601113576442,
+          "guided_mse": 0.09508707374334335,
+          "guided_relative_mse": 0.06974668800830841
+        },
+        {
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.015181771479547024,
+              "relative_mse": 0.012532999739050865
+            },
+            {
+              "null": true,
+              "field_mse": 0.017906416207551956,
+              "relative_mse": 0.015045546926558018
+            }
+          ],
+          "latent_rms": 0.9028732776641846,
+          "latent_route_mse": 0.0020424569956958294,
+          "guided_mse": 0.1147972047328949,
+          "guided_relative_mse": 0.08287718147039413
+        },
+        {
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014352225698530674,
+              "relative_mse": 0.011848418973386288
+            },
+            {
+              "null": true,
+              "field_mse": 0.015287784859538078,
+              "relative_mse": 0.012872422114014626
+            }
+          ],
+          "latent_rms": 0.8869626522064209,
+          "latent_route_mse": 0.0027638361789286137,
+          "guided_mse": 0.12201517820358276,
+          "guided_relative_mse": 0.08668077737092972
+        },
+        {
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.012732679024338722,
+              "relative_mse": 0.010482892394065857
+            },
+            {
+              "null": true,
+              "field_mse": 0.014160302467644215,
+              "relative_mse": 0.01186682190746069
+            }
+          ],
+          "latent_rms": 0.8700574636459351,
+          "latent_route_mse": 0.0036633391864597797,
+          "guided_mse": 0.09708287566900253,
+          "guided_relative_mse": 0.07087372243404388
+        },
+        {
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.011574780568480492,
+              "relative_mse": 0.009478896856307983
+            },
+            {
+              "null": true,
+              "field_mse": 0.01367521658539772,
+              "relative_mse": 0.011326865293085575
+            }
+          ],
+          "latent_rms": 0.8523777723312378,
+          "latent_route_mse": 0.0047643654979765415,
+          "guided_mse": 0.08373755216598511,
+          "guided_relative_mse": 0.06317918002605438
+        },
+        {
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01109088584780693,
+              "relative_mse": 0.009046575985848904
+            },
+            {
+              "null": true,
+              "field_mse": 0.015705566853284836,
+              "relative_mse": 0.012910092249512672
+            }
+          ],
+          "latent_rms": 0.8337611556053162,
+          "latent_route_mse": 0.006227510049939156,
+          "guided_mse": 0.09079805016517639,
+          "guided_relative_mse": 0.06974194943904877
+        },
+        {
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.011087864637374878,
+              "relative_mse": 0.009039763361215591
+            },
+            {
+              "null": true,
+              "field_mse": 0.015538031235337257,
+              "relative_mse": 0.012732814997434616
+            }
+          ],
+          "latent_rms": 0.8141294717788696,
+          "latent_route_mse": 0.00806485116481781,
+          "guided_mse": 0.07973574101924896,
+          "guided_relative_mse": 0.06229725107550621
+        },
+        {
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.010831684805452824,
+              "relative_mse": 0.008793243207037449
+            },
+            {
+              "null": true,
+              "field_mse": 0.013782662339508533,
+              "relative_mse": 0.011228790506720543
+            }
+          ],
+          "latent_rms": 0.7934032082557678,
+          "latent_route_mse": 0.010310210287570953,
+          "guided_mse": 0.06786096841096878,
+          "guided_relative_mse": 0.05339888855814934
+        },
+        {
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01112411916255951,
+              "relative_mse": 0.009001712314784527
+            },
+            {
+              "null": true,
+              "field_mse": 0.013330008834600449,
+              "relative_mse": 0.010817253962159157
+            }
+          ],
+          "latent_rms": 0.7715851664543152,
+          "latent_route_mse": 0.013110386207699776,
+          "guided_mse": 0.0696403831243515,
+          "guided_relative_mse": 0.054824501276016235
+        },
+        {
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01101632509380579,
+              "relative_mse": 0.008911165408790112
+            },
+            {
+              "null": true,
+              "field_mse": 0.013649357482790947,
+              "relative_mse": 0.01107181329280138
+            }
+          ],
+          "latent_rms": 0.7486276030540466,
+          "latent_route_mse": 0.016654878854751587,
+          "guided_mse": 0.07013271003961563,
+          "guided_relative_mse": 0.055196814239025116
+        },
+        {
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.011127189733088017,
+              "relative_mse": 0.009013970382511616
+            },
+            {
+              "null": true,
+              "field_mse": 0.01316528394818306,
+              "relative_mse": 0.010689196176826954
+            }
+          ],
+          "latent_rms": 0.7245323657989502,
+          "latent_route_mse": 0.021099533885717392,
+          "guided_mse": 0.07659301906824112,
+          "guided_relative_mse": 0.06034409999847412
+        },
+        {
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.011212200857698917,
+              "relative_mse": 0.009100725874304771
+            },
+            {
+              "null": true,
+              "field_mse": 0.012948356568813324,
+              "relative_mse": 0.010521694086492062
+            }
+          ],
+          "latent_rms": 0.6995285153388977,
+          "latent_route_mse": 0.02660510316491127,
+          "guided_mse": 0.08265972882509232,
+          "guided_relative_mse": 0.06476856768131256
+        },
+        {
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01279150228947401,
+              "relative_mse": 0.010359476320445538
+            },
+            {
+              "null": true,
+              "field_mse": 0.014250529929995537,
+              "relative_mse": 0.011570730246603489
+            }
+          ],
+          "latent_rms": 0.6736940741539001,
+          "latent_route_mse": 0.03332832455635071,
+          "guided_mse": 0.06686439365148544,
+          "guided_relative_mse": 0.05266952887177467
+        },
+        {
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01401189249008894,
+              "relative_mse": 0.011329160071909428
+            },
+            {
+              "null": true,
+              "field_mse": 0.015989109873771667,
+              "relative_mse": 0.012952588498592377
+            }
+          ],
+          "latent_rms": 0.6469077467918396,
+          "latent_route_mse": 0.041683703660964966,
+          "guided_mse": 0.0700228214263916,
+          "guided_relative_mse": 0.05534770339727402
+        },
+        {
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013925139792263508,
+              "relative_mse": 0.011340593919157982
+            },
+            {
+              "null": true,
+              "field_mse": 0.01730448752641678,
+              "relative_mse": 0.014104542322456837
+            }
+          ],
+          "latent_rms": 0.61939537525177,
+          "latent_route_mse": 0.05226539820432663,
+          "guided_mse": 0.07789481431245804,
+          "guided_relative_mse": 0.06238066777586937
+        },
+        {
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014241385273635387,
+              "relative_mse": 0.01157908421009779
+            },
+            {
+              "null": true,
+              "field_mse": 0.01760050468146801,
+              "relative_mse": 0.014331154525279999
+            }
+          ],
+          "latent_rms": 0.5922018885612488,
+          "latent_route_mse": 0.06550890952348709,
+          "guided_mse": 0.06739731132984161,
+          "guided_relative_mse": 0.05393850803375244
+        },
+        {
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.015457285568118095,
+              "relative_mse": 0.012666425667703152
+            },
+            {
+              "null": true,
+              "field_mse": 0.01895551010966301,
+              "relative_mse": 0.015564151108264923
+            }
+          ],
+          "latent_rms": 0.5663116574287415,
+          "latent_route_mse": 0.08203351497650146,
+          "guided_mse": 0.061119627207517624,
+          "guided_relative_mse": 0.04935568943619728
+        },
+        {
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01761266216635704,
+              "relative_mse": 0.014445011503994465
+            },
+            {
+              "null": true,
+              "field_mse": 0.019181665033102036,
+              "relative_mse": 0.01576441153883934
+            }
+          ],
+          "latent_rms": 0.5436378717422485,
+          "latent_route_mse": 0.10304495692253113,
+          "guided_mse": 0.05159418284893036,
+          "guided_relative_mse": 0.04168839007616043
+        },
+        {
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.018595172092318535,
+              "relative_mse": 0.01542910560965538
+            },
+            {
+              "null": true,
+              "field_mse": 0.019350681453943253,
+              "relative_mse": 0.016074853017926216
+            }
+          ],
+          "latent_rms": 0.5264537334442139,
+          "latent_route_mse": 0.12946248054504395,
+          "guided_mse": 0.04471324011683464,
+          "guided_relative_mse": 0.03672890365123749
+        },
+        {
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.019494879990816116,
+              "relative_mse": 0.01648135297000408
+            },
+            {
+              "null": true,
+              "field_mse": 0.02006165310740471,
+              "relative_mse": 0.01697016879916191
+            }
+          ],
+          "latent_rms": 0.5184271335601807,
+          "latent_route_mse": 0.16318276524543762,
+          "guided_mse": 0.04196401685476303,
+          "guided_relative_mse": 0.035205017775297165
+        },
+        {
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.023442484438419342,
+              "relative_mse": 0.020513946190476418
+            },
+            {
+              "null": true,
+              "field_mse": 0.024039376527071,
+              "relative_mse": 0.02102142758667469
+            }
+          ],
+          "latent_rms": 0.5245132446289062,
+          "latent_route_mse": 0.20755033195018768,
+          "guided_mse": 0.04676957055926323,
+          "guided_relative_mse": 0.04075871780514717
+        },
+        {
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.03454522043466568,
+              "relative_mse": 0.03315805271267891
+            },
+            {
+              "null": true,
+              "field_mse": 0.03739744424819946,
+              "relative_mse": 0.035879142582416534
+            }
+          ],
+          "latent_rms": 0.5503459572792053,
+          "latent_route_mse": 0.2662442624568939,
+          "guided_mse": 0.07686817646026611,
+          "guided_relative_mse": 0.07326211780309677
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "route": "native",
+      "rows": [
+        {
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.05490083247423172,
+              "relative_mse": 0.048134107142686844
+            },
+            {
+              "null": true,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.10571373254060745,
+          "guided_relative_mse": 0.09521130472421646
+        },
+        {
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01685797981917858,
+              "relative_mse": 0.015605645254254341
+            },
+            {
+              "null": true,
+              "field_mse": 0.012102391570806503,
+              "relative_mse": 0.010889960452914238
+            }
+          ],
+          "latent_rms": 0.9835342764854431,
+          "latent_route_mse": 1.954546314664185E-05,
+          "guided_mse": 0.0836145430803299,
+          "guided_relative_mse": 0.0753374844789505
+        },
+        {
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.016942963004112244,
+              "relative_mse": 0.016007183119654655
+            },
+            {
+              "null": true,
+              "field_mse": 0.0416974276304245,
+              "relative_mse": 0.03905487060546875
+            }
+          ],
+          "latent_rms": 0.971418559551239,
+          "latent_route_mse": 6.587081588804722E-05,
+          "guided_mse": 0.0846107080578804,
+          "guided_relative_mse": 0.07454288750886917
+        },
+        {
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.018832918256521225,
+              "relative_mse": 0.017897628247737885
+            },
+            {
+              "null": true,
+              "field_mse": 0.04865873605012894,
+              "relative_mse": 0.046295419335365295
+            }
+          ],
+          "latent_rms": 0.9587122797966003,
+          "latent_route_mse": 0.00012401488493196666,
+          "guided_mse": 0.06498740613460541,
+          "guided_relative_mse": 0.05806786194443703
+        },
+        {
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.016592202708125114,
+              "relative_mse": 0.015694240108132362
+            },
+            {
+              "null": true,
+              "field_mse": 0.0378384031355381,
+              "relative_mse": 0.036040954291820526
+            }
+          ],
+          "latent_rms": 0.9453635215759277,
+          "latent_route_mse": 0.000199894915567711,
+          "guided_mse": 0.059896986931562424,
+          "guided_relative_mse": 0.05311378091573715
+        },
+        {
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014082041569054127,
+              "relative_mse": 0.013260834850370884
+            },
+            {
+              "null": true,
+              "field_mse": 0.02629796415567398,
+              "relative_mse": 0.025005638599395752
+            }
+          ],
+          "latent_rms": 0.9313927292823792,
+          "latent_route_mse": 0.00029675784753635526,
+          "guided_mse": 0.07128259539604187,
+          "guided_relative_mse": 0.06172844022512436
+        },
+        {
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.012373775243759155,
+              "relative_mse": 0.011559069156646729
+            },
+            {
+              "null": true,
+              "field_mse": 0.016897737979888916,
+              "relative_mse": 0.015939194709062576
+            }
+          ],
+          "latent_rms": 0.9167758226394653,
+          "latent_route_mse": 0.00042910882621072233,
+          "guided_mse": 0.09290209412574768,
+          "guided_relative_mse": 0.07916457951068878
+        },
+        {
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014271918684244156,
+              "relative_mse": 0.013170448131859303
+            },
+            {
+              "null": true,
+              "field_mse": 0.015379735268652439,
+              "relative_mse": 0.01424532849341631
+            }
+          ],
+          "latent_rms": 0.9013707637786865,
+          "latent_route_mse": 0.0006063636392354965,
+          "guided_mse": 0.11519277095794678,
+          "guided_relative_mse": 0.09763608127832413
+        },
+        {
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01546594500541687,
+              "relative_mse": 0.014113273471593857
+            },
+            {
+              "null": true,
+              "field_mse": 0.017315197736024857,
+              "relative_mse": 0.015789085999131203
+            }
+          ],
+          "latent_rms": 0.8850963115692139,
+          "latent_route_mse": 0.0008290172554552555,
+          "guided_mse": 0.13122421503067017,
+          "guided_relative_mse": 0.10862859338521957
+        },
+        {
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.016432728618383408,
+              "relative_mse": 0.014956368133425713
+            },
+            {
+              "null": true,
+              "field_mse": 0.01824510097503662,
+              "relative_mse": 0.016648663207888603
+            }
+          ],
+          "latent_rms": 0.8678464889526367,
+          "latent_route_mse": 0.0011498036328703165,
+          "guided_mse": 0.15411166846752167,
+          "guided_relative_mse": 0.12649473547935486
+        },
+        {
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01589732989668846,
+              "relative_mse": 0.014301566407084465
+            },
+            {
+              "null": true,
+              "field_mse": 0.023248758167028427,
+              "relative_mse": 0.02094675973057747
+            }
+          ],
+          "latent_rms": 0.8498007655143738,
+          "latent_route_mse": 0.0016077348263934255,
+          "guided_mse": 0.11851389706134796,
+          "guided_relative_mse": 0.1008843258023262
+        },
+        {
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014578892849385738,
+              "relative_mse": 0.012976446188986301
+            },
+            {
+              "null": true,
+              "field_mse": 0.02267453446984291,
+              "relative_mse": 0.020236369222402573
+            }
+          ],
+          "latent_rms": 0.830597460269928,
+          "latent_route_mse": 0.0021385480649769306,
+          "guided_mse": 0.09558732062578201,
+          "guided_relative_mse": 0.08169053494930267
+        },
+        {
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.012936263345181942,
+              "relative_mse": 0.011490996927022934
+            },
+            {
+              "null": true,
+              "field_mse": 0.018633604049682617,
+              "relative_mse": 0.016575368121266365
+            }
+          ],
+          "latent_rms": 0.8102837204933167,
+          "latent_route_mse": 0.0027994001284241676,
+          "guided_mse": 0.0976594090461731,
+          "guided_relative_mse": 0.0841093584895134
+        },
+        {
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.01314975693821907,
+              "relative_mse": 0.011610512621700764
+            },
+            {
+              "null": true,
+              "field_mse": 0.018313106149435043,
+              "relative_mse": 0.016189400106668472
+            }
+          ],
+          "latent_rms": 0.7887857556343079,
+          "latent_route_mse": 0.0036082989536225796,
+          "guided_mse": 0.09553636610507965,
+          "guided_relative_mse": 0.08185864984989166
+        },
+        {
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013880297541618347,
+              "relative_mse": 0.01214225310832262
+            },
+            {
+              "null": true,
+              "field_mse": 0.017465539276599884,
+              "relative_mse": 0.015332776121795177
+            }
+          ],
+          "latent_rms": 0.7660685777664185,
+          "latent_route_mse": 0.004638321232050657,
+          "guided_mse": 0.10062699019908905,
+          "guided_relative_mse": 0.08505351096391678
+        },
+        {
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.014788944274187088,
+              "relative_mse": 0.012890051119029522
+            },
+            {
+              "null": true,
+              "field_mse": 0.017856329679489136,
+              "relative_mse": 0.015606116503477097
+            }
+          ],
+          "latent_rms": 0.7419359087944031,
+          "latent_route_mse": 0.005960462614893913,
+          "guided_mse": 0.10083402693271637,
+          "guided_relative_mse": 0.08532493561506271
+        },
+        {
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.017209554091095924,
+              "relative_mse": 0.014974940568208694
+            },
+            {
+              "null": true,
+              "field_mse": 0.017706576734781265,
+              "relative_mse": 0.015456567518413067
+            }
+          ],
+          "latent_rms": 0.7163774967193604,
+          "latent_route_mse": 0.007659800350666046,
+          "guided_mse": 0.10061468929052353,
+          "guided_relative_mse": 0.08496686071157455
+        },
+        {
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.017183370888233185,
+              "relative_mse": 0.014925424009561539
+            },
+            {
+              "null": true,
+              "field_mse": 0.017994500696659088,
+              "relative_mse": 0.015681413933634758
+            }
+          ],
+          "latent_rms": 0.6894943118095398,
+          "latent_route_mse": 0.009861172176897526,
+          "guided_mse": 0.1054447814822197,
+          "guided_relative_mse": 0.08904698491096497
+        },
+        {
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.016844436526298523,
+              "relative_mse": 0.014560516923666
+            },
+            {
+              "null": true,
+              "field_mse": 0.01760716736316681,
+              "relative_mse": 0.015273044817149639
+            }
+          ],
+          "latent_rms": 0.6613839864730835,
+          "latent_route_mse": 0.012630647979676723,
+          "guided_mse": 0.07500654458999634,
+          "guided_relative_mse": 0.06308291852474213
+        },
+        {
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.017404809594154358,
+              "relative_mse": 0.014942261390388012
+            },
+            {
+              "null": true,
+              "field_mse": 0.016898062080144882,
+              "relative_mse": 0.014577804133296013
+            }
+          ],
+          "latent_rms": 0.6318248510360718,
+          "latent_route_mse": 0.016136284917593002,
+          "guided_mse": 0.06852410733699799,
+          "guided_relative_mse": 0.05706622079014778
+        },
+        {
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.017799563705921173,
+              "relative_mse": 0.015344084240496159
+            },
+            {
+              "null": true,
+              "field_mse": 0.018008138984441757,
+              "relative_mse": 0.015563733875751495
+            }
+          ],
+          "latent_rms": 0.6009259819984436,
+          "latent_route_mse": 0.020486094057559967,
+          "guided_mse": 0.05752231925725937,
+          "guided_relative_mse": 0.048629581928253174
+        },
+        {
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.018682410940527916,
+              "relative_mse": 0.016011567786335945
+            },
+            {
+              "null": true,
+              "field_mse": 0.018781378865242004,
+              "relative_mse": 0.016134658828377724
+            }
+          ],
+          "latent_rms": 0.5694782137870789,
+          "latent_route_mse": 0.02604122832417488,
+          "guided_mse": 0.0540776252746582,
+          "guided_relative_mse": 0.045607175678014755
+        },
+        {
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.020616769790649414,
+              "relative_mse": 0.017795763909816742
+            },
+            {
+              "null": true,
+              "field_mse": 0.01946655474603176,
+              "relative_mse": 0.01682872511446476
+            }
+          ],
+          "latent_rms": 0.5380608439445496,
+          "latent_route_mse": 0.0331081748008728,
+          "guided_mse": 0.07221364974975586,
+          "guided_relative_mse": 0.06147360801696777
+        },
+        {
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.021717548370361328,
+              "relative_mse": 0.018721425905823708
+            },
+            {
+              "null": true,
+              "field_mse": 0.021000675857067108,
+              "relative_mse": 0.01811925508081913
+            }
+          ],
+          "latent_rms": 0.5082436800003052,
+          "latent_route_mse": 0.04221081733703613,
+          "guided_mse": 0.05222100764513016,
+          "guided_relative_mse": 0.044539812952280045
+        },
+        {
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.024352995678782463,
+              "relative_mse": 0.02117122896015644
+            },
+            {
+              "null": true,
+              "field_mse": 0.02321496605873108,
+              "relative_mse": 0.02019558474421501
+            }
+          ],
+          "latent_rms": 0.4823014438152313,
+          "latent_route_mse": 0.05401244014501572,
+          "guided_mse": 0.06094244867563248,
+          "guided_relative_mse": 0.052510667592287064
+        },
+        {
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.025817200541496277,
+              "relative_mse": 0.02272041141986847
+            },
+            {
+              "null": true,
+              "field_mse": 0.026108764111995697,
+              "relative_mse": 0.02298770099878311
+            }
+          ],
+          "latent_rms": 0.46384820342063904,
+          "latent_route_mse": 0.0693574771285057,
+          "guided_mse": 0.04786710813641548,
+          "guided_relative_mse": 0.041799165308475494
+        },
+        {
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02965456061065197,
+              "relative_mse": 0.026762068271636963
+            },
+            {
+              "null": true,
+              "field_mse": 0.03064117766916752,
+              "relative_mse": 0.0276635754853487
+            }
+          ],
+          "latent_rms": 0.45827996730804443,
+          "latent_route_mse": 0.08967629075050354,
+          "guided_mse": 0.04663500189781189,
+          "guided_relative_mse": 0.04178288206458092
+        },
+        {
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.04128061234951019,
+              "relative_mse": 0.04080720245838165
+            },
+            {
+              "null": true,
+              "field_mse": 0.04306422919034958,
+              "relative_mse": 0.0425189845263958
+            }
+          ],
+          "latent_rms": 0.472249299287796,
+          "latent_route_mse": 0.11655864119529724,
+          "guided_mse": 0.06514693796634674,
+          "guided_relative_mse": 0.06408000737428665
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "route": "student",
+      "rows": [
+        {
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.05490083247423172,
+              "relative_mse": 0.048134107142686844
+            },
+            {
+              "null": true,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.10571373254060745,
+          "guided_relative_mse": 0.09521130472421646
+        },
+        {
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013278327882289886,
+              "relative_mse": 0.012418994680047035
+            },
+            {
+              "null": true,
+              "field_mse": 0.008213883265852928,
+              "relative_mse": 0.007501930929720402
+            }
+          ],
+          "latent_rms": 0.9836341738700867,
+          "latent_route_mse": 1.954546314664185E-05,
+          "guided_mse": 0.11238597333431244,
+          "guided_relative_mse": 0.10020700842142105
+        },
+        {
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.022274790331721306,
+              "relative_mse": 0.021355239674448967
+            },
+            {
+              "null": true,
+              "field_mse": 0.05359209328889847,
+              "relative_mse": 0.05047884210944176
+            }
+          ],
+          "latent_rms": 0.9715606570243835,
+          "latent_route_mse": 6.587081588804722E-05,
+          "guided_mse": 0.06969644874334335,
+          "guided_relative_mse": 0.0630171149969101
+        },
+        {
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.023821569979190826,
+              "relative_mse": 0.02298843301832676
+            },
+            {
+              "null": true,
+              "field_mse": 0.05419723689556122,
+              "relative_mse": 0.051818691194057465
+            }
+          ],
+          "latent_rms": 0.9589247107505798,
+          "latent_route_mse": 0.00012401488493196666,
+          "guided_mse": 0.04568762704730034,
+          "guided_relative_mse": 0.042666081339120865
+        },
+        {
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.017689570784568787,
+              "relative_mse": 0.017056234180927277
+            },
+            {
+              "null": true,
+              "field_mse": 0.0358818881213665,
+              "relative_mse": 0.034500304609537125
+            }
+          ],
+          "latent_rms": 0.9456642270088196,
+          "latent_route_mse": 0.000199894915567711,
+          "guided_mse": 0.036317914724349976,
+          "guided_relative_mse": 0.03410830721259117
+        },
+        {
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013424127362668514,
+              "relative_mse": 0.012996654026210308
+            },
+            {
+              "null": true,
+              "field_mse": 0.025393588468432426,
+              "relative_mse": 0.024617811664938927
+            }
+          ],
+          "latent_rms": 0.9317001700401306,
+          "latent_route_mse": 0.00029675784753635526,
+          "guided_mse": 0.03209187835454941,
+          "guided_relative_mse": 0.029997341334819794
+        },
+        {
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.009762074798345566,
+              "relative_mse": 0.009447190910577774
+            },
+            {
+              "null": true,
+              "field_mse": 0.01791435107588768,
+              "relative_mse": 0.017385350540280342
+            }
+          ],
+          "latent_rms": 0.9170527458190918,
+          "latent_route_mse": 0.00042910882621072233,
+          "guided_mse": 0.03649270161986351,
+          "guided_relative_mse": 0.03393973782658577
+        },
+        {
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.008498124778270721,
+              "relative_mse": 0.0082115288823843
+            },
+            {
+              "null": true,
+              "field_mse": 0.01360006257891655,
+              "relative_mse": 0.01317808497697115
+            }
+          ],
+          "latent_rms": 0.9015048146247864,
+          "latent_route_mse": 0.0006063636392354965,
+          "guided_mse": 0.050213634967803955,
+          "guided_relative_mse": 0.0462653785943985
+        },
+        {
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.0076186456717550755,
+              "relative_mse": 0.007350546307861805
+            },
+            {
+              "null": true,
+              "field_mse": 0.01081069465726614,
+              "relative_mse": 0.01045239344239235
+            }
+          ],
+          "latent_rms": 0.8850560784339905,
+          "latent_route_mse": 0.0008290172554552555,
+          "guided_mse": 0.05883526802062988,
+          "guided_relative_mse": 0.0539056621491909
+        },
+        {
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.007367207668721676,
+              "relative_mse": 0.007146505173295736
+            },
+            {
+              "null": true,
+              "field_mse": 0.009359726682305336,
+              "relative_mse": 0.00910178106278181
+            }
+          ],
+          "latent_rms": 0.8675714731216431,
+          "latent_route_mse": 0.0011498036328703165,
+          "guided_mse": 0.06812959909439087,
+          "guided_relative_mse": 0.06192447617650032
+        },
+        {
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.00755054596811533,
+              "relative_mse": 0.007305823732167482
+            },
+            {
+              "null": true,
+              "field_mse": 0.008354751393198967,
+              "relative_mse": 0.008109036833047867
+            }
+          ],
+          "latent_rms": 0.8491459488868713,
+          "latent_route_mse": 0.0016077348263934255,
+          "guided_mse": 0.08067239075899124,
+          "guided_relative_mse": 0.07227439433336258
+        },
+        {
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.007011616602540016,
+              "relative_mse": 0.006762343924492598
+            },
+            {
+              "null": true,
+              "field_mse": 0.0073137348517775536,
+              "relative_mse": 0.007072643376886845
+            }
+          ],
+          "latent_rms": 0.8294641375541687,
+          "latent_route_mse": 0.0021385480649769306,
+          "guided_mse": 0.0759926587343216,
+          "guided_relative_mse": 0.06809867173433304
+        },
+        {
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.007017152383923531,
+              "relative_mse": 0.006799894385039806
+            },
+            {
+              "null": true,
+              "field_mse": 0.006295809522271156,
+              "relative_mse": 0.006129169370979071
+            }
+          ],
+          "latent_rms": 0.80851811170578,
+          "latent_route_mse": 0.0027994001284241676,
+          "guided_mse": 0.07592153549194336,
+          "guided_relative_mse": 0.06777224689722061
+        },
+        {
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.006540696136653423,
+              "relative_mse": 0.006332866847515106
+            },
+            {
+              "null": true,
+              "field_mse": 0.005173778161406517,
+              "relative_mse": 0.005032589193433523
+            }
+          ],
+          "latent_rms": 0.7862439751625061,
+          "latent_route_mse": 0.0036082989536225796,
+          "guided_mse": 0.07021958380937576,
+          "guided_relative_mse": 0.06299271434545517
+        },
+        {
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.00611103093251586,
+              "relative_mse": 0.005883915349841118
+            },
+            {
+              "null": true,
+              "field_mse": 0.004041972104460001,
+              "relative_mse": 0.003910023719072342
+            }
+          ],
+          "latent_rms": 0.7624921798706055,
+          "latent_route_mse": 0.004638321232050657,
+          "guided_mse": 0.059201084077358246,
+          "guided_relative_mse": 0.05366537347435951
+        },
+        {
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.006321347784250975,
+              "relative_mse": 0.006089159287512302
+            },
+            {
+              "null": true,
+              "field_mse": 0.004931773990392685,
+              "relative_mse": 0.0047667622566223145
+            }
+          ],
+          "latent_rms": 0.7369381189346313,
+          "latent_route_mse": 0.005960462614893913,
+          "guided_mse": 0.05884671211242676,
+          "guided_relative_mse": 0.05406040698289871
+        },
+        {
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.005873304791748524,
+              "relative_mse": 0.005680332891643047
+            },
+            {
+              "null": true,
+              "field_mse": 0.005127647425979376,
+              "relative_mse": 0.004976747557520866
+            }
+          ],
+          "latent_rms": 0.709587574005127,
+          "latent_route_mse": 0.007659800350666046,
+          "guided_mse": 0.049996763467788696,
+          "guided_relative_mse": 0.046253930777311325
+        },
+        {
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.00596604123711586,
+              "relative_mse": 0.005794578697532415
+            },
+            {
+              "null": true,
+              "field_mse": 0.005059937946498394,
+              "relative_mse": 0.004930088296532631
+            }
+          ],
+          "latent_rms": 0.6803290843963623,
+          "latent_route_mse": 0.009861172176897526,
+          "guided_mse": 0.047799598425626755,
+          "guided_relative_mse": 0.044798534363508224
+        },
+        {
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.005362133961170912,
+              "relative_mse": 0.0052129365503787994
+            },
+            {
+              "null": true,
+              "field_mse": 0.0052715991623699665,
+              "relative_mse": 0.005116479005664587
+            }
+          ],
+          "latent_rms": 0.6492583155632019,
+          "latent_route_mse": 0.012630647979676723,
+          "guided_mse": 0.04203423485159874,
+          "guided_relative_mse": 0.040337465703487396
+        },
+        {
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.004793062806129456,
+              "relative_mse": 0.004639049526304007
+            },
+            {
+              "null": true,
+              "field_mse": 0.005549096968024969,
+              "relative_mse": 0.005364416632801294
+            }
+          ],
+          "latent_rms": 0.6164149641990662,
+          "latent_route_mse": 0.016136284917593002,
+          "guided_mse": 0.035939909517765045,
+          "guided_relative_mse": 0.0342850461602211
+        },
+        {
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.005824791267514229,
+              "relative_mse": 0.0056925262324512005
+            },
+            {
+              "null": true,
+              "field_mse": 0.006357681471854448,
+              "relative_mse": 0.006204694509506226
+            }
+          ],
+          "latent_rms": 0.5809267163276672,
+          "latent_route_mse": 0.020486094057559967,
+          "guided_mse": 0.03878571838140488,
+          "guided_relative_mse": 0.03755432367324829
+        },
+        {
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.006082532927393913,
+              "relative_mse": 0.0059293583035469055
+            },
+            {
+              "null": true,
+              "field_mse": 0.005945548415184021,
+              "relative_mse": 0.005790443625301123
+            }
+          ],
+          "latent_rms": 0.5426771640777588,
+          "latent_route_mse": 0.02604122832417488,
+          "guided_mse": 0.03142084926366806,
+          "guided_relative_mse": 0.03031868487596512
+        },
+        {
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.006675610318779945,
+              "relative_mse": 0.00657698605209589
+            },
+            {
+              "null": true,
+              "field_mse": 0.006573177874088287,
+              "relative_mse": 0.006470974069088697
+            }
+          ],
+          "latent_rms": 0.5029935836791992,
+          "latent_route_mse": 0.0331081748008728,
+          "guided_mse": 0.02801842801272869,
+          "guided_relative_mse": 0.027389392256736755
+        },
+        {
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.008027586154639721,
+              "relative_mse": 0.007943924516439438
+            },
+            {
+              "null": true,
+              "field_mse": 0.007599188480526209,
+              "relative_mse": 0.007525254040956497
+            }
+          ],
+          "latent_rms": 0.4619389772415161,
+          "latent_route_mse": 0.04221081733703613,
+          "guided_mse": 0.03121304325759411,
+          "guided_relative_mse": 0.030478423461318016
+        },
+        {
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.008516820147633553,
+              "relative_mse": 0.008572815917432308
+            },
+            {
+              "null": true,
+              "field_mse": 0.008343634195625782,
+              "relative_mse": 0.008403097279369831
+            }
+          ],
+          "latent_rms": 0.4210965931415558,
+          "latent_route_mse": 0.05401244014501572,
+          "guided_mse": 0.026566939428448677,
+          "guided_relative_mse": 0.026504650712013245
+        },
+        {
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.009655075147747993,
+              "relative_mse": 0.009960749186575413
+            },
+            {
+              "null": true,
+              "field_mse": 0.009461553767323494,
+              "relative_mse": 0.009769332595169544
+            }
+          ],
+          "latent_rms": 0.3834587335586548,
+          "latent_route_mse": 0.0693574771285057,
+          "guided_mse": 0.025619130581617355,
+          "guided_relative_mse": 0.026226168498396873
+        },
+        {
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.013435844331979752,
+              "relative_mse": 0.014602011069655418
+            },
+            {
+              "null": true,
+              "field_mse": 0.011924784630537033,
+              "relative_mse": 0.012965369038283825
+            }
+          ],
+          "latent_rms": 0.35437196493148804,
+          "latent_route_mse": 0.08967629075050354,
+          "guided_mse": 0.04308203607797623,
+          "guided_relative_mse": 0.04654396325349808
+        },
+        {
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "field_mse": 0.02226155996322632,
+              "relative_mse": 0.028568292036652565
+            },
+            {
+              "null": true,
+              "field_mse": 0.021856429055333138,
+              "relative_mse": 0.028103090822696686
+            }
+          ],
+          "latent_rms": 0.34464144706726074,
+          "latent_route_mse": 0.11655864119529724,
+          "guided_mse": 0.04626595228910446,
+          "guided_relative_mse": 0.05864441767334938
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Same frozen body; one fit prompt and one held prompt, not a broad quality gate.",
+    "Cross-evaluate both routes at each route-owned latent; no corrective optimization.",
+    "Teacher/student distribution differences alone do not establish causality."
+  ],
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "statistics": [
+    {
+      "index": 0,
+      "route": "native",
+      "mean_guided_mse": 0.1315268770392452,
+      "mean_guided_relative_mse": 0.08226317606334176,
+      "last7_guided_mse": 0.0753761785370963,
+      "last_observed_latent_rms": 0.7327738404273987,
+      "last_observed_latent_route_mse": 0.2662442624568939
+    },
+    {
+      "index": 0,
+      "route": "student",
+      "mean_guided_mse": 0.10122862844062704,
+      "mean_guided_relative_mse": 0.07034800640706505,
+      "last7_guided_mse": 0.055775160768202374,
+      "last_observed_latent_rms": 0.5503459572792053,
+      "last_observed_latent_route_mse": 0.2662442624568939
+    },
+    {
+      "index": 28,
+      "route": "native",
+      "mean_guided_mse": 0.08494681971413749,
+      "mean_guided_relative_mse": 0.07297974824905396,
+      "last7_guided_mse": 0.057014825620821545,
+      "last_observed_latent_rms": 0.472249299287796,
+      "last_observed_latent_route_mse": 0.11655864119529724
+    },
+    {
+      "index": 28,
+      "route": "student",
+      "mean_guided_mse": 0.05297004810667464,
+      "mean_guided_relative_mse": 0.049622900784015656,
+      "last7_guided_mse": 0.033169482701591084,
+      "last_observed_latent_rms": 0.34464144706726074,
+      "last_observed_latent_route_mse": 0.11655864119529724
+    }
+  ],
+  "decision": "These two prompts do not support increased native/student velocity mismatch on student-owned trajectories: both absolute and relative guided errors are lower there. This does not establish universal distribution coverage. Student late latent RMS is lower, requiring same-input amplitude/direction analysis before another fitting recipe."
+}

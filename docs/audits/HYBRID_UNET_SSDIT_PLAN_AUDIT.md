@@ -345,6 +345,35 @@ individual records' limitations.
    allocation4.549GiB is not isolated overhead: the control retains zero-weight
    feature taps. Test new-branch LR0.000025 with old-group rates held fixed before
    judging the structure. Public topology/payload/default acceptance stays open.
+   The tenfold lower new-branch rate also completes200 exactly matched exposures
+   (`hybrid_anima_concat_lr_control_2026-10.json`): all100 counters reach200,
+   all35 new gradients are positive and the native body remains exact. Final50
+   field error improves to0.02812, but both CFG1/4 held prompts retain strong
+   blue-magenta coloration and fragmented faces/figures. Reject this recipe too;
+   do not infer that every concat design fails. Whole-probe79.653s/4.549GiB is
+   not isolated overhead or Full FT evidence. Before more rate/loss variations,
+   measure velocity mismatch on native and student-owned free-running trajectories.
+   Current public trajectory initialization captures native teacher paths only;
+   input-distribution mismatch is a hypothesis, not an established cause.
+   The bounded rollout diagnostic (`hybrid_anima_rollout_diagnostic_2026-10.json`)
+   now cross-evaluates native/fitted319 on each route-owned CFG4 trajectory for
+   one fit and one held general prompt,28 steps and identical seed63/start noise.
+   No weights change; native hashes match. Mean guided error is lower on student
+   inputs (0.10123/0.05297) than native inputs (0.13153/0.08495), including relative
+   error and the last7 steps. This does not support the proposed error-growth
+   hypothesis for these prompts. Student last-observed latent RMS is0.55035/
+   0.34464 versus native0.73277/0.47225; these are pre-final-update states, not
+   decoded quality or a proved cause. Separate same-input velocity amplitude and
+   direction before adding on-policy fitting. Full quality/default gates remain open.
+   Cached-trajectory velocity geometry (`hybrid_anima_velocity_geometry_2026-10.json`)
+   reproduces every prior guided error and latent metric exactly without new
+   generation or updates. Global student/native velocity norm ratios average
+   0.973–0.990; projection gains0.940–0.962. Orthogonal error explains0.04760–
+   0.07564 of total relative error0.04962–0.08226; scalar parallel error is only
+   0.00202–0.00773. The projection decomposition is checked numerically.
+   Thus smaller generated latent RMS does not establish a simple velocity-scale
+   defect. Do not add a global output multiplier on this evidence. The responsible
+   topology operation and a quality-preserving replacement remain unproved.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

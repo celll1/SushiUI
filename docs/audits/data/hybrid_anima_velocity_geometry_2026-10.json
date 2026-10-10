@@ -1,0 +1,3701 @@
+{
+  "rating": "general",
+  "indices": [
+    0,
+    28
+  ],
+  "updates": 0,
+  "resolution": 512,
+  "cfg": 4.0,
+  "steps": 28,
+  "seed": 63,
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "init_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "cases": [
+    {
+      "index": 0,
+      "route": "native",
+      "rows": [
+        {
+          "norm_ratio": 0.8146637082099915,
+          "cosine": 0.9123890995979309,
+          "projection_gain": 0.7432903051376343,
+          "orthogonal_relative_energy": 0.11119643598794937,
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.927664577960968,
+              "cosine": 0.9614418745040894,
+              "projection_gain": 0.891895592212677,
+              "orthogonal_relative_energy": 0.0650838315486908,
+              "field_mse": 0.10232968628406525,
+              "relative_mse": 0.07677038758993149
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9672644734382629,
+              "cosine": 0.9738696813583374,
+              "projection_gain": 0.9419894814491272,
+              "orthogonal_relative_energy": 0.04825649410486221,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.35977649688720703,
+          "guided_relative_mse": 0.17709633708000183
+        },
+        {
+          "norm_ratio": 0.8848181962966919,
+          "cosine": 0.9424480199813843,
+          "projection_gain": 0.8338950872421265,
+          "orthogonal_relative_energy": 0.08752218633890152,
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.930195689201355,
+              "cosine": 0.9730046987533569,
+              "projection_gain": 0.9050847887992859,
+              "orthogonal_relative_energy": 0.04608564451336861,
+              "field_mse": 0.07536017894744873,
+              "relative_mse": 0.05509456247091293
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9455910921096802,
+              "cosine": 0.9768280982971191,
+              "projection_gain": 0.9236800074577332,
+              "orthogonal_relative_energy": 0.040957774966955185,
+              "field_mse": 0.062081433832645416,
+              "relative_mse": 0.046782515943050385
+            }
+          ],
+          "latent_rms": 0.9836169481277466,
+          "latent_route_mse": 5.3535899496637285e-05,
+          "guided_mse": 0.1871252804994583,
+          "guided_relative_mse": 0.1151130422949791
+        },
+        {
+          "norm_ratio": 0.8887684941291809,
+          "cosine": 0.9503238797187805,
+          "projection_gain": 0.8446179628372192,
+          "orthogonal_relative_energy": 0.07652989029884338,
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9526802897453308,
+              "cosine": 0.9906403422355652,
+              "projection_gain": 0.9437635540962219,
+              "orthogonal_relative_energy": 0.01691015064716339,
+              "field_mse": 0.028419584035873413,
+              "relative_mse": 0.020072685554623604
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9777336716651917,
+              "cosine": 0.9941678643226624,
+              "projection_gain": 0.9720314145088196,
+              "orthogonal_relative_energy": 0.011118042282760143,
+              "field_mse": 0.016786349937319756,
+              "relative_mse": 0.011900284327566624
+            }
+          ],
+          "latent_rms": 0.971656322479248,
+          "latent_route_mse": 0.00014719500904902816,
+          "guided_mse": 0.15611165761947632,
+          "guided_relative_mse": 0.10067345201969147
+        },
+        {
+          "norm_ratio": 0.9127722978591919,
+          "cosine": 0.9648635387420654,
+          "projection_gain": 0.8807007074356079,
+          "orthogonal_relative_energy": 0.05751971900463104,
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9680643677711487,
+              "cosine": 0.9953206777572632,
+              "projection_gain": 0.963534414768219,
+              "orthogonal_relative_energy": 0.00875015463680029,
+              "field_mse": 0.014468787238001823,
+              "relative_mse": 0.010079900734126568
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9889515042304993,
+              "cosine": 0.9966797232627869,
+              "projection_gain": 0.985667884349823,
+              "orthogonal_relative_energy": 0.006483916193246841,
+              "field_mse": 0.0096241794526577,
+              "relative_mse": 0.0066893273033201694
+            }
+          ],
+          "latent_rms": 0.9591898918151855,
+          "latent_route_mse": 0.0002921365085057914,
+          "guided_mse": 0.11108581721782684,
+          "guided_relative_mse": 0.07175207138061523
+        },
+        {
+          "norm_ratio": 0.9224905967712402,
+          "cosine": 0.956450343132019,
+          "projection_gain": 0.882316529750824,
+          "orthogonal_relative_energy": 0.07250668108463287,
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9879682064056396,
+              "cosine": 0.9954177141189575,
+              "projection_gain": 0.9834411144256592,
+              "orthogonal_relative_energy": 0.008924930356442928,
+              "field_mse": 0.013287488371133804,
+              "relative_mse": 0.009199132211506367
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0081921815872192,
+              "cosine": 0.99799644947052,
+              "projection_gain": 1.0061721801757812,
+              "orthogonal_relative_energy": 0.004069085698574781,
+              "field_mse": 0.005900123156607151,
+              "relative_mse": 0.00410718098282814
+            }
+          ],
+          "latent_rms": 0.946150541305542,
+          "latent_route_mse": 0.0005236690631136298,
+          "guided_mse": 0.14365708827972412,
+          "guided_relative_mse": 0.08635609596967697
+        },
+        {
+          "norm_ratio": 0.9481573104858398,
+          "cosine": 0.9405699968338013,
+          "projection_gain": 0.8918083310127258,
+          "orthogonal_relative_energy": 0.10368017852306366,
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9930506348609924,
+              "cosine": 0.9941616058349609,
+              "projection_gain": 0.9872527718544006,
+              "orthogonal_relative_energy": 0.011481476947665215,
+              "field_mse": 0.01693691499531269,
+              "relative_mse": 0.011643968522548676
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0135895013809204,
+              "cosine": 0.997119665145874,
+              "projection_gain": 1.0106700658798218,
+              "orthogonal_relative_energy": 0.005909714847803116,
+              "field_mse": 0.008691097609698772,
+              "relative_mse": 0.006023564841598272
+            }
+          ],
+          "latent_rms": 0.9325935244560242,
+          "latent_route_mse": 0.0008732619462534785,
+          "guided_mse": 0.1932399570941925,
+          "guided_relative_mse": 0.11538560688495636
+        },
+        {
+          "norm_ratio": 0.9839133620262146,
+          "cosine": 0.929914653301239,
+          "projection_gain": 0.9149554967880249,
+          "orthogonal_relative_energy": 0.13094200193881989,
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9938879013061523,
+              "cosine": 0.9941149353981018,
+              "projection_gain": 0.9880387783050537,
+              "orthogonal_relative_energy": 0.011592415161430836,
+              "field_mse": 0.01717040315270424,
+              "relative_mse": 0.011735484935343266
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0076605081558228,
+              "cosine": 0.9931101202964783,
+              "projection_gain": 1.0007178783416748,
+              "orthogonal_relative_energy": 0.013943474739789963,
+              "field_mse": 0.020141666755080223,
+              "relative_mse": 0.013943989761173725
+            }
+          ],
+          "latent_rms": 0.9185304045677185,
+          "latent_route_mse": 0.00138601113576442,
+          "guided_mse": 0.22514662146568298,
+          "guided_relative_mse": 0.13817456364631653
+        },
+        {
+          "norm_ratio": 1.0265612602233887,
+          "cosine": 0.9458605051040649,
+          "projection_gain": 0.9709837436676025,
+          "orthogonal_relative_energy": 0.111018605530262,
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9962282180786133,
+              "cosine": 0.9943212270736694,
+              "projection_gain": 0.9905707836151123,
+              "orthogonal_relative_energy": 0.011240224353969097,
+              "field_mse": 0.016698699444532394,
+              "relative_mse": 0.011329133063554764
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9981030225753784,
+              "cosine": 0.9908289313316345,
+              "projection_gain": 0.9889493584632874,
+              "orthogonal_relative_energy": 0.018188897520303726,
+              "field_mse": 0.026971502229571342,
+              "relative_mse": 0.018311016261577606
+            }
+          ],
+          "latent_rms": 0.9037971496582031,
+          "latent_route_mse": 0.0020424569956958294,
+          "guided_mse": 0.17175789177417755,
+          "guided_relative_mse": 0.11186055094003677
+        },
+        {
+          "norm_ratio": 1.0190585851669312,
+          "cosine": 0.9394248723983765,
+          "projection_gain": 0.9573289155960083,
+          "orthogonal_relative_energy": 0.12200156599283218,
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9944957494735718,
+              "cosine": 0.9941970705986023,
+              "projection_gain": 0.9887247681617737,
+              "orthogonal_relative_energy": 0.0114451814442873,
+              "field_mse": 0.017168298363685608,
+              "relative_mse": 0.01157231256365776
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9950417280197144,
+              "cosine": 0.9906943440437317,
+              "projection_gain": 0.9857822060585022,
+              "orthogonal_relative_energy": 0.018341509625315666,
+              "field_mse": 0.027547702193260193,
+              "relative_mse": 0.018543655052781105
+            }
+          ],
+          "latent_rms": 0.888367772102356,
+          "latent_route_mse": 0.0027638361789286137,
+          "guided_mse": 0.19052788615226746,
+          "guided_relative_mse": 0.12382239103317261
+        },
+        {
+          "norm_ratio": 0.9985221028327942,
+          "cosine": 0.9534447193145752,
+          "projection_gain": 0.9520355463027954,
+          "orthogonal_relative_energy": 0.09067468345165253,
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9946290254592896,
+              "cosine": 0.993816614151001,
+              "projection_gain": 0.9884788393974304,
+              "orthogonal_relative_energy": 0.012196505442261696,
+              "field_mse": 0.018320880830287933,
+              "relative_mse": 0.012329242192208767
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9960794448852539,
+              "cosine": 0.9920825362205505,
+              "projection_gain": 0.9881930351257324,
+              "orthogonal_relative_energy": 0.015648940578103065,
+              "field_mse": 0.023535193875432014,
+              "relative_mse": 0.015788346529006958
+            }
+          ],
+          "latent_rms": 0.8721821308135986,
+          "latent_route_mse": 0.0036633391864597797,
+          "guided_mse": 0.1428825855255127,
+          "guided_relative_mse": 0.09297526627779007
+        },
+        {
+          "norm_ratio": 0.9981313347816467,
+          "cosine": 0.954998791217804,
+          "projection_gain": 0.953214168548584,
+          "orthogonal_relative_energy": 0.08764877170324326,
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9942944645881653,
+              "cosine": 0.9933507442474365,
+              "projection_gain": 0.9876832365989685,
+              "orthogonal_relative_energy": 0.013103367760777473,
+              "field_mse": 0.01986289769411087,
+              "relative_mse": 0.013255068100988865
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9974512457847595,
+              "cosine": 0.9917909502983093,
+              "projection_gain": 0.989263117313385,
+              "orthogonal_relative_energy": 0.016267646104097366,
+              "field_mse": 0.024495882913470268,
+              "relative_mse": 0.01638292893767357
+            }
+          ],
+          "latent_rms": 0.85542893409729,
+          "latent_route_mse": 0.0047643654979765415,
+          "guided_mse": 0.14066782593727112,
+          "guided_relative_mse": 0.08983767777681351
+        },
+        {
+          "norm_ratio": 1.009386420249939,
+          "cosine": 0.9516926407814026,
+          "projection_gain": 0.9606257081031799,
+          "orthogonal_relative_energy": 0.09605951607227325,
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.99381422996521,
+              "cosine": 0.9930822849273682,
+              "projection_gain": 0.9869393110275269,
+              "orthogonal_relative_energy": 0.013617493212223053,
+              "field_mse": 0.020816069096326828,
+              "relative_mse": 0.013788076117634773
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9955995678901672,
+              "cosine": 0.9903944134712219,
+              "projection_gain": 0.9860363006591797,
+              "orthogonal_relative_energy": 0.018951041623950005,
+              "field_mse": 0.028816090896725655,
+              "relative_mse": 0.01914602890610695
+            }
+          ],
+          "latent_rms": 0.8379188776016235,
+          "latent_route_mse": 0.006227510049939156,
+          "guided_mse": 0.15374475717544556,
+          "guided_relative_mse": 0.09760986268520355
+        },
+        {
+          "norm_ratio": 1.018625020980835,
+          "cosine": 0.9548195004463196,
+          "projection_gain": 0.9726030826568604,
+          "orthogonal_relative_energy": 0.09164021164178848,
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.993931770324707,
+              "cosine": 0.9929648041725159,
+              "projection_gain": 0.9869391918182373,
+              "orthogonal_relative_energy": 0.013851288706064224,
+              "field_mse": 0.02118602581322193,
+              "relative_mse": 0.01402187254279852
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.995736300945282,
+              "cosine": 0.990069568157196,
+              "projection_gain": 0.9858481287956238,
+              "orthogonal_relative_energy": 0.019594214856624603,
+              "field_mse": 0.02983851544559002,
+              "relative_mse": 0.019794490188360214
+            }
+          ],
+          "latent_rms": 0.8196962475776672,
+          "latent_route_mse": 0.00806485116481781,
+          "guided_mse": 0.1432664394378662,
+          "guided_relative_mse": 0.09239082038402557
+        },
+        {
+          "norm_ratio": 1.0178481340408325,
+          "cosine": 0.9585385918617249,
+          "projection_gain": 0.9756467938423157,
+          "orthogonal_relative_energy": 0.08412831276655197,
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9939715266227722,
+              "cosine": 0.9933624863624573,
+              "projection_gain": 0.9873740077018738,
+              "orthogonal_relative_energy": 0.013072061352431774,
+              "field_mse": 0.020111244171857834,
+              "relative_mse": 0.01323147863149643
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9970385432243347,
+              "cosine": 0.9906198978424072,
+              "projection_gain": 0.987686276435852,
+              "orthogonal_relative_energy": 0.018561769276857376,
+              "field_mse": 0.02839585766196251,
+              "relative_mse": 0.018713397905230522
+            }
+          ],
+          "latent_rms": 0.8008615970611572,
+          "latent_route_mse": 0.010310210287570953,
+          "guided_mse": 0.13103385269641876,
+          "guided_relative_mse": 0.0847214087843895
+        },
+        {
+          "norm_ratio": 1.012008786201477,
+          "cosine": 0.9637202024459839,
+          "projection_gain": 0.9752932190895081,
+          "orthogonal_relative_energy": 0.07296489179134369,
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9937653541564941,
+              "cosine": 0.9933536052703857,
+              "projection_gain": 0.9871603846549988,
+              "orthogonal_relative_energy": 0.013083823956549168,
+              "field_mse": 0.020283401012420654,
+              "relative_mse": 0.013248677365481853
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9965865015983582,
+              "cosine": 0.9910998940467834,
+              "projection_gain": 0.987716794013977,
+              "orthogonal_relative_energy": 0.017600219696760178,
+              "field_mse": 0.02714386396110058,
+              "relative_mse": 0.017751095816493034
+            }
+          ],
+          "latent_rms": 0.7814347147941589,
+          "latent_route_mse": 0.013110386207699776,
+          "guided_mse": 0.11428696662187576,
+          "guided_relative_mse": 0.07357531040906906
+        },
+        {
+          "norm_ratio": 1.0062068700790405,
+          "cosine": 0.9632275104522705,
+          "projection_gain": 0.9692060947418213,
+          "orthogonal_relative_energy": 0.07309173047542572,
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9941474199295044,
+              "cosine": 0.992881715297699,
+              "projection_gain": 0.9870707988739014,
+              "orthogonal_relative_energy": 0.014020315371453762,
+              "field_mse": 0.021813509985804558,
+              "relative_mse": 0.014187480323016644
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9978786706924438,
+              "cosine": 0.9918639063835144,
+              "projection_gain": 0.9897598028182983,
+              "orthogonal_relative_energy": 0.016137415543198586,
+              "field_mse": 0.024946819990873337,
+              "relative_mse": 0.01624227687716484
+            }
+          ],
+          "latent_rms": 0.7613916993141174,
+          "latent_route_mse": 0.016654878854751587,
+          "guided_mse": 0.1154262125492096,
+          "guided_relative_mse": 0.074039988219738
+        },
+        {
+          "norm_ratio": 1.0040740966796875,
+          "cosine": 0.962723433971405,
+          "projection_gain": 0.9666457772254944,
+          "orthogonal_relative_energy": 0.07376087456941605,
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9944984316825867,
+              "cosine": 0.9922028183937073,
+              "projection_gain": 0.9867441654205322,
+              "orthogonal_relative_energy": 0.015362990088760853,
+              "field_mse": 0.02386915683746338,
+              "relative_mse": 0.015538704581558704
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9987618327140808,
+              "cosine": 0.9918800592422485,
+              "projection_gain": 0.9906519055366516,
+              "orthogonal_relative_energy": 0.01613391377031803,
+              "field_mse": 0.024915095418691635,
+              "relative_mse": 0.0162212997674942
+            }
+          ],
+          "latent_rms": 0.7409505248069763,
+          "latent_route_mse": 0.021099533885717392,
+          "guided_mse": 0.11609729379415512,
+          "guided_relative_mse": 0.07487337291240692
+        },
+        {
+          "norm_ratio": 1.003183126449585,
+          "cosine": 0.9687978029251099,
+          "projection_gain": 0.9718815088272095,
+          "orthogonal_relative_energy": 0.06182262301445007,
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9961752891540527,
+              "cosine": 0.9920421838760376,
+              "projection_gain": 0.9882479310035706,
+              "orthogonal_relative_energy": 0.015731114894151688,
+              "field_mse": 0.02436027303338051,
+              "relative_mse": 0.015869222581386566
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9998142719268799,
+              "cosine": 0.9915317296981812,
+              "projection_gain": 0.9913474917411804,
+              "orthogonal_relative_energy": 0.016858801245689392,
+              "field_mse": 0.02598131075501442,
+              "relative_mse": 0.01693367026746273
+            }
+          ],
+          "latent_rms": 0.7204470038414001,
+          "latent_route_mse": 0.02660510316491127,
+          "guided_mse": 0.09695729613304138,
+          "guided_relative_mse": 0.06261327117681503
+        },
+        {
+          "norm_ratio": 1.0056439638137817,
+          "cosine": 0.9720166325569153,
+          "projection_gain": 0.9775026440620422,
+          "orthogonal_relative_energy": 0.05580826476216316,
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.99714595079422,
+              "cosine": 0.9916965365409851,
+              "projection_gain": 0.9888662695884705,
+              "orthogonal_relative_energy": 0.016443809494376183,
+              "field_mse": 0.02551853284239769,
+              "relative_mse": 0.0165677722543478
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9992365837097168,
+              "cosine": 0.9908350706100464,
+              "projection_gain": 0.9900786876678467,
+              "orthogonal_relative_energy": 0.018218033015727997,
+              "field_mse": 0.02818485163152218,
+              "relative_mse": 0.018316464498639107
+            }
+          ],
+          "latent_rms": 0.7002206444740295,
+          "latent_route_mse": 0.03332832455635071,
+          "guided_mse": 0.08766709268093109,
+          "guided_relative_mse": 0.05631439387798309
+        },
+        {
+          "norm_ratio": 1.0000228881835938,
+          "cosine": 0.9715790748596191,
+          "projection_gain": 0.9716013073921204,
+          "orthogonal_relative_energy": 0.05603671073913574,
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9945838451385498,
+              "cosine": 0.9915487170219421,
+              "projection_gain": 0.9861783981323242,
+              "orthogonal_relative_energy": 0.016649246215820312,
+              "field_mse": 0.026042241603136063,
+              "relative_mse": 0.016840284690260887
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9979013800621033,
+              "cosine": 0.990813136100769,
+              "projection_gain": 0.98873370885849,
+              "orthogonal_relative_energy": 0.018212823197245598,
+              "field_mse": 0.028328051790595055,
+              "relative_mse": 0.01833975315093994
+            }
+          ],
+          "latent_rms": 0.6806355714797974,
+          "latent_route_mse": 0.041683703660964966,
+          "guided_mse": 0.08878596127033234,
+          "guided_relative_mse": 0.056843191385269165
+        },
+        {
+          "norm_ratio": 1.0153272151947021,
+          "cosine": 0.9728202819824219,
+          "projection_gain": 0.987730860710144,
+          "orthogonal_relative_energy": 0.0552770160138607,
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9960915446281433,
+              "cosine": 0.9916532635688782,
+              "projection_gain": 0.9877774715423584,
+              "orthogonal_relative_energy": 0.016494041308760643,
+              "field_mse": 0.02557678148150444,
+              "relative_mse": 0.016643427312374115
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9951786398887634,
+              "cosine": 0.9907432198524475,
+              "projection_gain": 0.9859665036201477,
+              "orthogonal_relative_energy": 0.018250614404678345,
+              "field_mse": 0.02832316793501377,
+              "relative_mse": 0.018447551876306534
+            }
+          ],
+          "latent_rms": 0.6625015139579773,
+          "latent_route_mse": 0.05226539820432663,
+          "guided_mse": 0.08587432652711868,
+          "guided_relative_mse": 0.05542754381895065
+        },
+        {
+          "norm_ratio": 1.010638952255249,
+          "cosine": 0.9757249355316162,
+          "projection_gain": 0.9861056804656982,
+          "orthogonal_relative_energy": 0.04898685961961746,
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9963937997817993,
+              "cosine": 0.9918546676635742,
+              "projection_gain": 0.988277792930603,
+              "orthogonal_relative_energy": 0.016107510775327682,
+              "field_mse": 0.025027673691511154,
+              "relative_mse": 0.01624491810798645
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9958092570304871,
+              "cosine": 0.9912629127502441,
+              "projection_gain": 0.9871087670326233,
+              "orthogonal_relative_energy": 0.017252430319786072,
+              "field_mse": 0.02681538835167885,
+              "relative_mse": 0.01741861365735531
+            }
+          ],
+          "latent_rms": 0.6470862627029419,
+          "latent_route_mse": 0.06550890952348709,
+          "guided_mse": 0.07638496905565262,
+          "guided_relative_mse": 0.04917990416288376
+        },
+        {
+          "norm_ratio": 1.000569224357605,
+          "cosine": 0.979896605014801,
+          "projection_gain": 0.9804543852806091,
+          "orthogonal_relative_energy": 0.039847902953624725,
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9968870878219604,
+              "cosine": 0.9912928342819214,
+              "projection_gain": 0.9882070422172546,
+              "orthogonal_relative_energy": 0.017230931669473648,
+              "field_mse": 0.026556115597486496,
+              "relative_mse": 0.017370006069540977
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9978231191635132,
+              "cosine": 0.9909915328025818,
+              "projection_gain": 0.9888343214988708,
+              "orthogonal_relative_energy": 0.017857829108834267,
+              "field_mse": 0.0274791419506073,
+              "relative_mse": 0.017982501536607742
+            }
+          ],
+          "latent_rms": 0.635712206363678,
+          "latent_route_mse": 0.08203351497650146,
+          "guided_mse": 0.06198491156101227,
+          "guided_relative_mse": 0.040229927748441696
+        },
+        {
+          "norm_ratio": 0.9993308782577515,
+          "cosine": 0.9810898900032043,
+          "projection_gain": 0.980433464050293,
+          "orthogonal_relative_energy": 0.037412501871585846,
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9968276619911194,
+              "cosine": 0.9904795289039612,
+              "projection_gain": 0.9873373508453369,
+              "orthogonal_relative_energy": 0.018830323591828346,
+              "field_mse": 0.02900451421737671,
+              "relative_mse": 0.018990665674209595
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9976030588150024,
+              "cosine": 0.9901211261749268,
+              "projection_gain": 0.9877477884292603,
+              "orthogonal_relative_energy": 0.019566157832741737,
+              "field_mse": 0.030100198462605476,
+              "relative_mse": 0.019716273993253708
+            }
+          ],
+          "latent_rms": 0.6305306553840637,
+          "latent_route_mse": 0.10304495692253113,
+          "guided_mse": 0.058152638375759125,
+          "guided_relative_mse": 0.03779534995555878
+        },
+        {
+          "norm_ratio": 1.0044440031051636,
+          "cosine": 0.9776566028594971,
+          "projection_gain": 0.9820013642311096,
+          "orthogonal_relative_energy": 0.04458124190568924,
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9974804520606995,
+              "cosine": 0.988746166229248,
+              "projection_gain": 0.9862549304962158,
+              "orthogonal_relative_energy": 0.02226831205189228,
+              "field_mse": 0.03397102653980255,
+              "relative_mse": 0.02245723269879818
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9976484775543213,
+              "cosine": 0.9878864288330078,
+              "projection_gain": 0.9855633974075317,
+              "orthogonal_relative_energy": 0.023967307060956955,
+              "field_mse": 0.036569975316524506,
+              "relative_mse": 0.024175724014639854
+            }
+          ],
+          "latent_rms": 0.6339682936668396,
+          "latent_route_mse": 0.12946248054504395,
+          "guided_mse": 0.06838350743055344,
+          "guided_relative_mse": 0.044905196875333786
+        },
+        {
+          "norm_ratio": 0.9986718893051147,
+          "cosine": 0.9741204977035522,
+          "projection_gain": 0.9728267192840576,
+          "orthogonal_relative_energy": 0.05095371976494789,
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9957364797592163,
+              "cosine": 0.9855570197105408,
+              "projection_gain": 0.9813550710678101,
+              "orthogonal_relative_energy": 0.028433281928300858,
+              "field_mse": 0.04307740926742554,
+              "relative_mse": 0.02878091298043728
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9960933923721313,
+              "cosine": 0.9850234985351562,
+              "projection_gain": 0.981175422668457,
+              "orthogonal_relative_energy": 0.02949685789644718,
+              "field_mse": 0.04468435421586037,
+              "relative_mse": 0.029851222410798073
+            }
+          ],
+          "latent_rms": 0.6495165824890137,
+          "latent_route_mse": 0.16318276524543762,
+          "guided_mse": 0.07808557152748108,
+          "guided_relative_mse": 0.05169210210442543
+        },
+        {
+          "norm_ratio": 0.9934470057487488,
+          "cosine": 0.970978856086731,
+          "projection_gain": 0.9646161198616028,
+          "orthogonal_relative_energy": 0.05645250156521797,
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9929224252700806,
+              "cosine": 0.9814633131027222,
+              "projection_gain": 0.9745169878005981,
+              "orthogonal_relative_energy": 0.0362115204334259,
+              "field_mse": 0.05421987175941467,
+              "relative_mse": 0.03686089813709259
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9930031299591064,
+              "cosine": 0.9808820486068726,
+              "projection_gain": 0.974018931388855,
+              "orthogonal_relative_energy": 0.03734216094017029,
+              "field_mse": 0.05596405267715454,
+              "relative_mse": 0.03801717236638069
+            }
+          ],
+          "latent_rms": 0.6812390685081482,
+          "latent_route_mse": 0.20755033195018768,
+          "guided_mse": 0.08570874482393265,
+          "guided_relative_mse": 0.05770450830459595
+        },
+        {
+          "norm_ratio": 0.9837910532951355,
+          "cosine": 0.964350700378418,
+          "projection_gain": 0.9487196207046509,
+          "orthogonal_relative_energy": 0.06777603924274445,
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9868564605712891,
+              "cosine": 0.9755050539970398,
+              "projection_gain": 0.9626834988594055,
+              "orthogonal_relative_energy": 0.04712624475359917,
+              "field_mse": 0.06722521781921387,
+              "relative_mse": 0.04851876199245453
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9879086017608643,
+              "cosine": 0.9749152064323425,
+              "projection_gain": 0.963127076625824,
+              "orthogonal_relative_energy": 0.04834984242916107,
+              "field_mse": 0.0688692182302475,
+              "relative_mse": 0.049709469079971313
+            }
+          ],
+          "latent_rms": 0.7327738404273987,
+          "latent_route_mse": 0.2662442624568939,
+          "guided_mse": 0.0989329069852829,
+          "guided_relative_mse": 0.07040572166442871
+        }
+      ]
+    },
+    {
+      "index": 0,
+      "route": "student",
+      "rows": [
+        {
+          "norm_ratio": 0.8146637082099915,
+          "cosine": 0.9123890995979309,
+          "projection_gain": 0.7432903051376343,
+          "orthogonal_relative_energy": 0.11119643598794937,
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.927664577960968,
+              "cosine": 0.9614418745040894,
+              "projection_gain": 0.891895592212677,
+              "orthogonal_relative_energy": 0.0650838315486908,
+              "field_mse": 0.10232968628406525,
+              "relative_mse": 0.07677038758993149
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9672644734382629,
+              "cosine": 0.9738696813583374,
+              "projection_gain": 0.9419894814491272,
+              "orthogonal_relative_energy": 0.04825649410486221,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.35977649688720703,
+          "guided_relative_mse": 0.17709633708000183
+        },
+        {
+          "norm_ratio": 0.8215147256851196,
+          "cosine": 0.9186939001083374,
+          "projection_gain": 0.7547206282615662,
+          "orthogonal_relative_energy": 0.10528334230184555,
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9502817988395691,
+              "cosine": 0.9797146916389465,
+              "projection_gain": 0.93100506067276,
+              "orthogonal_relative_energy": 0.03626519441604614,
+              "field_mse": 0.05329103767871857,
+              "relative_mse": 0.041025493294000626
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9911907315254211,
+              "cosine": 0.9913854002952576,
+              "projection_gain": 0.9826520681381226,
+              "orthogonal_relative_energy": 0.01685425080358982,
+              "field_mse": 0.020423535257577896,
+              "relative_mse": 0.017155205830931664
+            }
+          ],
+          "latent_rms": 0.9837364554405212,
+          "latent_route_mse": 5.3535899496637285e-05,
+          "guided_mse": 0.3169809579849243,
+          "guided_relative_mse": 0.16544534265995026
+        },
+        {
+          "norm_ratio": 0.893787682056427,
+          "cosine": 0.9490427374839783,
+          "projection_gain": 0.8482427000999451,
+          "orthogonal_relative_energy": 0.07934080809354782,
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.989052414894104,
+              "cosine": 0.9954034090042114,
+              "projection_gain": 0.9845061898231506,
+              "orthogonal_relative_energy": 0.008972262032330036,
+              "field_mse": 0.01151032093912363,
+              "relative_mse": 0.009212320670485497
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0235627889633179,
+              "cosine": 0.9972288012504578,
+              "projection_gain": 1.0207263231277466,
+              "orthogonal_relative_energy": 0.005798789672553539,
+              "field_mse": 0.007435075007379055,
+              "relative_mse": 0.00622836546972394
+            }
+          ],
+          "latent_rms": 0.9718107581138611,
+          "latent_route_mse": 0.00014719500904902816,
+          "guided_mse": 0.1619783639907837,
+          "guided_relative_mse": 0.10237110406160355
+        },
+        {
+          "norm_ratio": 0.9236222505569458,
+          "cosine": 0.9561560153961182,
+          "projection_gain": 0.883126974105835,
+          "orthogonal_relative_energy": 0.07316476106643677,
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0113023519515991,
+              "cosine": 0.9972983598709106,
+              "projection_gain": 1.0085701942443848,
+              "orthogonal_relative_energy": 0.005518611054867506,
+              "field_mse": 0.006821047980338335,
+              "relative_mse": 0.005592058878391981
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.046338438987732,
+              "cosine": 0.995026707649231,
+              "projection_gain": 1.0411347150802612,
+              "orthogonal_relative_energy": 0.010862675495445728,
+              "field_mse": 0.01487075723707676,
+              "relative_mse": 0.012554737739264965
+            }
+          ],
+          "latent_rms": 0.9593225121498108,
+          "latent_route_mse": 0.0002921365085057914,
+          "guided_mse": 0.12831160426139832,
+          "guided_relative_mse": 0.08682407438755035
+        },
+        {
+          "norm_ratio": 0.9347721338272095,
+          "cosine": 0.9641488194465637,
+          "projection_gain": 0.9012594223022461,
+          "orthogonal_relative_energy": 0.06153055652976036,
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0246630907058716,
+              "cosine": 0.9948635101318359,
+              "projection_gain": 1.0194000005722046,
+              "orthogonal_relative_energy": 0.010758240707218647,
+              "field_mse": 0.013296057470142841,
+              "relative_mse": 0.011134599335491657
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0549811124801636,
+              "cosine": 0.9921926856040955,
+              "projection_gain": 1.0467445850372314,
+              "orthogonal_relative_energy": 0.017311066389083862,
+              "field_mse": 0.02261505089700222,
+              "relative_mse": 0.019496120512485504
+            }
+          ],
+          "latent_rms": 0.9461717009544373,
+          "latent_route_mse": 0.0005236690631136298,
+          "guided_mse": 0.10672507435083389,
+          "guided_relative_mse": 0.07128028571605682
+        },
+        {
+          "norm_ratio": 0.9620382189750671,
+          "cosine": 0.9636080265045166,
+          "projection_gain": 0.9270278215408325,
+          "orthogonal_relative_energy": 0.06613721698522568,
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.021662950515747,
+              "cosine": 0.9938490390777588,
+              "projection_gain": 1.0153785943984985,
+              "orthogonal_relative_energy": 0.012801422737538815,
+              "field_mse": 0.015669019892811775,
+              "relative_mse": 0.013037923723459244
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0480554103851318,
+              "cosine": 0.9912154078483582,
+              "projection_gain": 1.038848638534546,
+              "orthogonal_relative_energy": 0.019213762134313583,
+              "field_mse": 0.0241776704788208,
+              "relative_mse": 0.020722970366477966
+            }
+          ],
+          "latent_rms": 0.9323959946632385,
+          "latent_route_mse": 0.0008732619462534785,
+          "guided_mse": 0.10528045892715454,
+          "guided_relative_mse": 0.07146216928958893
+        },
+        {
+          "norm_ratio": 0.957528829574585,
+          "cosine": 0.9645217061042786,
+          "projection_gain": 0.9235574007034302,
+          "orthogonal_relative_energy": 0.06390320509672165,
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0160460472106934,
+              "cosine": 0.9938780665397644,
+              "projection_gain": 1.0098259449005127,
+              "orthogonal_relative_energy": 0.012601247057318687,
+              "field_mse": 0.015329994261264801,
+              "relative_mse": 0.012697795405983925
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0378576517105103,
+              "cosine": 0.9921153783798218,
+              "projection_gain": 1.0296746492385864,
+              "orthogonal_relative_energy": 0.01691906340420246,
+              "field_mse": 0.021121351048350334,
+              "relative_mse": 0.017799636349081993
+            }
+          ],
+          "latent_rms": 0.918015718460083,
+          "latent_route_mse": 0.00138601113576442,
+          "guided_mse": 0.09508707374334335,
+          "guided_relative_mse": 0.06974668800830841
+        },
+        {
+          "norm_ratio": 0.959961473941803,
+          "cosine": 0.9576679468154907,
+          "projection_gain": 0.9193243384361267,
+          "orthogonal_relative_energy": 0.07636862248182297,
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0133572816848755,
+              "cosine": 0.993904173374176,
+              "projection_gain": 1.0071799755096436,
+              "orthogonal_relative_energy": 0.0124814473092556,
+              "field_mse": 0.015181771479547024,
+              "relative_mse": 0.012532999739050865
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0330346822738647,
+              "cosine": 0.9932461380958557,
+              "projection_gain": 1.0260576009750366,
+              "orthogonal_relative_energy": 0.014366550371050835,
+              "field_mse": 0.017906416207551956,
+              "relative_mse": 0.015045546926558018
+            }
+          ],
+          "latent_rms": 0.9028732776641846,
+          "latent_route_mse": 0.0020424569956958294,
+          "guided_mse": 0.1147972047328949,
+          "guided_relative_mse": 0.08287718147039413
+        },
+        {
+          "norm_ratio": 0.9533587098121643,
+          "cosine": 0.9556800723075867,
+          "projection_gain": 0.9111059904098511,
+          "orthogonal_relative_energy": 0.07877863198518753,
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0102835893630981,
+              "cosine": 0.9941884875297546,
+              "projection_gain": 1.004412293434143,
+              "orthogonal_relative_energy": 0.011828950606286526,
+              "field_mse": 0.014352225698530674,
+              "relative_mse": 0.011848418973386288
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0263749361038208,
+              "cosine": 0.9940680861473083,
+              "projection_gain": 1.0202865600585938,
+              "orthogonal_relative_energy": 0.012460881844162941,
+              "field_mse": 0.015287784859538078,
+              "relative_mse": 0.012872422114014626
+            }
+          ],
+          "latent_rms": 0.8869626522064209,
+          "latent_route_mse": 0.0027638361789286137,
+          "guided_mse": 0.12201517820358276,
+          "guided_relative_mse": 0.08668077737092972
+        },
+        {
+          "norm_ratio": 0.9593505859375,
+          "cosine": 0.9639227986335754,
+          "projection_gain": 0.9247398972511292,
+          "orthogonal_relative_energy": 0.06520963460206985,
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.007867455482483,
+              "cosine": 0.9948301911354065,
+              "projection_gain": 1.0026570558547974,
+              "orthogonal_relative_energy": 0.010475832968950272,
+              "field_mse": 0.012732679024338722,
+              "relative_mse": 0.010482892394065857
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.021804928779602,
+              "cosine": 0.9944258332252502,
+              "projection_gain": 1.0161093473434448,
+              "orthogonal_relative_energy": 0.011607314459979534,
+              "field_mse": 0.014160302467644215,
+              "relative_mse": 0.01186682190746069
+            }
+          ],
+          "latent_rms": 0.8700574636459351,
+          "latent_route_mse": 0.0036633391864597797,
+          "guided_mse": 0.09708287566900253,
+          "guided_relative_mse": 0.07087372243404388
+        },
+        {
+          "norm_ratio": 0.9801996946334839,
+          "cosine": 0.9679723978042603,
+          "projection_gain": 0.9488062262535095,
+          "orthogonal_relative_energy": 0.060558367520570755,
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0061570405960083,
+              "cosine": 0.9953084588050842,
+              "projection_gain": 1.0014365911483765,
+              "orthogonal_relative_energy": 0.009476833045482635,
+              "field_mse": 0.011574780568480492,
+              "relative_mse": 0.009478896856307983
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.014787197113037,
+              "cosine": 0.9945269227027893,
+              "projection_gain": 1.0092331171035767,
+              "orthogonal_relative_energy": 0.011241615749895573,
+              "field_mse": 0.01367521658539772,
+              "relative_mse": 0.011326865293085575
+            }
+          ],
+          "latent_rms": 0.8523777723312378,
+          "latent_route_mse": 0.0047643654979765415,
+          "guided_mse": 0.08373755216598511,
+          "guided_relative_mse": 0.06317918002605438
+        },
+        {
+          "norm_ratio": 0.9910449385643005,
+          "cosine": 0.96485435962677,
+          "projection_gain": 0.9562140703201294,
+          "orthogonal_relative_energy": 0.06782473623752594,
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0042210817337036,
+              "cosine": 0.9955046772956848,
+              "projection_gain": 0.9997068047523499,
+              "orthogonal_relative_energy": 0.009046489372849464,
+              "field_mse": 0.01109088584780693,
+              "relative_mse": 0.009046575985848904
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.010604977607727,
+              "cosine": 0.9936683177947998,
+              "projection_gain": 1.0042062997817993,
+              "orthogonal_relative_energy": 0.012892398983240128,
+              "field_mse": 0.015705566853284836,
+              "relative_mse": 0.012910092249512672
+            }
+          ],
+          "latent_rms": 0.8337611556053162,
+          "latent_route_mse": 0.006227510049939156,
+          "guided_mse": 0.09079805016517639,
+          "guided_relative_mse": 0.06974194943904877
+        },
+        {
+          "norm_ratio": 0.9974299073219299,
+          "cosine": 0.9687743782997131,
+          "projection_gain": 0.9662845730781555,
+          "orthogonal_relative_energy": 0.06116052716970444,
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0030969381332397,
+              "cosine": 0.9954988360404968,
+              "projection_gain": 0.9985818266868591,
+              "orthogonal_relative_energy": 0.009037751704454422,
+              "field_mse": 0.011087864637374878,
+              "relative_mse": 0.009039763361215591
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0080761909484863,
+              "cosine": 0.9937170147895813,
+              "projection_gain": 1.0017424821853638,
+              "orthogonal_relative_energy": 0.012729779817163944,
+              "field_mse": 0.015538031235337257,
+              "relative_mse": 0.012732814997434616
+            }
+          ],
+          "latent_rms": 0.8141294717788696,
+          "latent_route_mse": 0.00806485116481781,
+          "guided_mse": 0.07973574101924896,
+          "guided_relative_mse": 0.06229725107550621
+        },
+        {
+          "norm_ratio": 0.9984447360038757,
+          "cosine": 0.973260223865509,
+          "projection_gain": 0.971746563911438,
+          "orthogonal_relative_energy": 0.05260062217712402,
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0014660358428955,
+              "cosine": 0.9956108927726746,
+              "projection_gain": 0.9970705509185791,
+              "orthogonal_relative_energy": 0.008784662000834942,
+              "field_mse": 0.010831684805452824,
+              "relative_mse": 0.008793243207037449
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0054826736450195,
+              "cosine": 0.9944311380386353,
+              "projection_gain": 0.999883234500885,
+              "orthogonal_relative_energy": 0.011228777468204498,
+              "field_mse": 0.013782662339508533,
+              "relative_mse": 0.011228790506720543
+            }
+          ],
+          "latent_rms": 0.7934032082557678,
+          "latent_route_mse": 0.010310210287570953,
+          "guided_mse": 0.06786096841096878,
+          "guided_relative_mse": 0.05339888855814934
+        },
+        {
+          "norm_ratio": 1.0005192756652832,
+          "cosine": 0.9726020693778992,
+          "projection_gain": 0.9731072187423706,
+          "orthogonal_relative_energy": 0.054101280868053436,
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0011498928070068,
+              "cosine": 0.9955050945281982,
+              "projection_gain": 0.9966497421264648,
+              "orthogonal_relative_energy": 0.008990488015115261,
+              "field_mse": 0.01112411916255951,
+              "relative_mse": 0.009001712314784527
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0042532682418823,
+              "cosine": 0.9946233630180359,
+              "projection_gain": 0.9988537430763245,
+              "orthogonal_relative_energy": 0.010815940797328949,
+              "field_mse": 0.013330008834600449,
+              "relative_mse": 0.010817253962159157
+            }
+          ],
+          "latent_rms": 0.7715851664543152,
+          "latent_route_mse": 0.013110386207699776,
+          "guided_mse": 0.0696403831243515,
+          "guided_relative_mse": 0.054824501276016235
+        },
+        {
+          "norm_ratio": 1.000944972038269,
+          "cosine": 0.9724280834197998,
+          "projection_gain": 0.973347008228302,
+          "orthogonal_relative_energy": 0.054486438632011414,
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.001230239868164,
+              "cosine": 0.9955506324768066,
+              "projection_gain": 0.9967753887176514,
+              "orthogonal_relative_energy": 0.00890076719224453,
+              "field_mse": 0.01101632509380579,
+              "relative_mse": 0.008911165408790112
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.00455904006958,
+              "cosine": 0.994499683380127,
+              "projection_gain": 0.9990336298942566,
+              "orthogonal_relative_energy": 0.011070878244936466,
+              "field_mse": 0.013649357482790947,
+              "relative_mse": 0.01107181329280138
+            }
+          ],
+          "latent_rms": 0.7486276030540466,
+          "latent_route_mse": 0.016654878854751587,
+          "guided_mse": 0.07013271003961563,
+          "guided_relative_mse": 0.055196814239025116
+        },
+        {
+          "norm_ratio": 1.0008397102355957,
+          "cosine": 0.9698536992073059,
+          "projection_gain": 0.9706680774688721,
+          "orthogonal_relative_energy": 0.05948373302817345,
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.000996470451355,
+              "cosine": 0.9954980611801147,
+              "projection_gain": 0.9964900612831116,
+              "orthogonal_relative_energy": 0.009001651778817177,
+              "field_mse": 0.011127189733088017,
+              "relative_mse": 0.009013970382511616
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0037814378738403,
+              "cosine": 0.9946826696395874,
+              "projection_gain": 0.9984440207481384,
+              "orthogonal_relative_energy": 0.010686775669455528,
+              "field_mse": 0.01316528394818306,
+              "relative_mse": 0.010689196176826954
+            }
+          ],
+          "latent_rms": 0.7245323657989502,
+          "latent_route_mse": 0.021099533885717392,
+          "guided_mse": 0.07659301906824112,
+          "guided_relative_mse": 0.06034409999847412
+        },
+        {
+          "norm_ratio": 0.993553102016449,
+          "cosine": 0.9674264788627625,
+          "projection_gain": 0.9611895680427551,
+          "orthogonal_relative_energy": 0.06326232850551605,
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0005619525909424,
+              "cosine": 0.9954524040222168,
+              "projection_gain": 0.9960118532180786,
+              "orthogonal_relative_energy": 0.009084820747375488,
+              "field_mse": 0.011212200857698917,
+              "relative_mse": 0.009100725874304771
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0028281211853027,
+              "cosine": 0.9947580099105835,
+              "projection_gain": 0.9975713491439819,
+              "orthogonal_relative_energy": 0.010515796020627022,
+              "field_mse": 0.012948356568813324,
+              "relative_mse": 0.010521694086492062
+            }
+          ],
+          "latent_rms": 0.6995285153388977,
+          "latent_route_mse": 0.02660510316491127,
+          "guided_mse": 0.08265972882509232,
+          "guided_relative_mse": 0.06476856768131256
+        },
+        {
+          "norm_ratio": 0.9950165152549744,
+          "cosine": 0.9735458493232727,
+          "projection_gain": 0.9686942100524902,
+          "orthogonal_relative_energy": 0.05168947950005531,
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9993276000022888,
+              "cosine": 0.9948171377182007,
+              "projection_gain": 0.9941481351852417,
+              "orthogonal_relative_energy": 0.010325231589376926,
+              "field_mse": 0.01279150228947401,
+              "relative_mse": 0.010359476320445538
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.001978874206543,
+              "cosine": 0.9942280054092407,
+              "projection_gain": 0.996195375919342,
+              "orthogonal_relative_energy": 0.01155625656247139,
+              "field_mse": 0.014250529929995537,
+              "relative_mse": 0.011570730246603489
+            }
+          ],
+          "latent_rms": 0.6736940741539001,
+          "latent_route_mse": 0.03332832455635071,
+          "guided_mse": 0.06686439365148544,
+          "guided_relative_mse": 0.05266952887177467
+        },
+        {
+          "norm_ratio": 1.0042093992233276,
+          "cosine": 0.9724510908126831,
+          "projection_gain": 0.9765445590019226,
+          "orthogonal_relative_energy": 0.054797541350126266,
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9996897578239441,
+              "cosine": 0.9943336844444275,
+              "projection_gain": 0.9940251708030701,
+              "orthogonal_relative_energy": 0.011293462477624416,
+              "field_mse": 0.01401189249008894,
+              "relative_mse": 0.011329160071909428
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0007593631744385,
+              "cosine": 0.9935289025306702,
+              "projection_gain": 0.9942834377288818,
+              "orthogonal_relative_energy": 0.01291990838944912,
+              "field_mse": 0.015989109873771667,
+              "relative_mse": 0.012952588498592377
+            }
+          ],
+          "latent_rms": 0.6469077467918396,
+          "latent_route_mse": 0.041683703660964966,
+          "guided_mse": 0.0700228214263916,
+          "guided_relative_mse": 0.05534770339727402
+        },
+        {
+          "norm_ratio": 1.0145021677017212,
+          "cosine": 0.9693591594696045,
+          "projection_gain": 0.9834169745445251,
+          "orthogonal_relative_energy": 0.06210567057132721,
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0007998943328857,
+              "cosine": 0.9943344593048096,
+              "projection_gain": 0.9951298832893372,
+              "orthogonal_relative_energy": 0.011316876858472824,
+              "field_mse": 0.013925139792263508,
+              "relative_mse": 0.011340593919157982
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0009970664978027,
+              "cosine": 0.9929552674293518,
+              "projection_gain": 0.9939453601837158,
+              "orthogonal_relative_energy": 0.014067883603274822,
+              "field_mse": 0.01730448752641678,
+              "relative_mse": 0.014104542322456837
+            }
+          ],
+          "latent_rms": 0.61939537525177,
+          "latent_route_mse": 0.05226539820432663,
+          "guided_mse": 0.07789481431245804,
+          "guided_relative_mse": 0.06238066777586937
+        },
+        {
+          "norm_ratio": 1.015634536743164,
+          "cosine": 0.9735662937164307,
+          "projection_gain": 0.9887875318527222,
+          "orthogonal_relative_energy": 0.05381278693675995,
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0017714500427246,
+              "cosine": 0.9942224025726318,
+              "projection_gain": 0.9959836602210999,
+              "orthogonal_relative_energy": 0.011562952771782875,
+              "field_mse": 0.014241385273635387,
+              "relative_mse": 0.01157908421009779
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0018339157104492,
+              "cosine": 0.9928492903709412,
+              "projection_gain": 0.9946700930595398,
+              "orthogonal_relative_energy": 0.014302745461463928,
+              "field_mse": 0.01760050468146801,
+              "relative_mse": 0.014331154525279999
+            }
+          ],
+          "latent_rms": 0.5922018885612488,
+          "latent_route_mse": 0.06550890952348709,
+          "guided_mse": 0.06739731132984161,
+          "guided_relative_mse": 0.05393850803375244
+        },
+        {
+          "norm_ratio": 1.0162235498428345,
+          "cosine": 0.9758455753326416,
+          "projection_gain": 0.9916771650314331,
+          "orthogonal_relative_energy": 0.04928642138838768,
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0026512145996094,
+              "cosine": 0.993687093257904,
+              "projection_gain": 0.9963215589523315,
+              "orthogonal_relative_energy": 0.012652893550693989,
+              "field_mse": 0.015457285568118095,
+              "relative_mse": 0.012666425667703152
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0029666423797607,
+              "cosine": 0.9922453761100769,
+              "projection_gain": 0.9951889514923096,
+              "orthogonal_relative_energy": 0.01554100401699543,
+              "field_mse": 0.01895551010966301,
+              "relative_mse": 0.015564151108264923
+            }
+          ],
+          "latent_rms": 0.5663116574287415,
+          "latent_route_mse": 0.08203351497650146,
+          "guided_mse": 0.061119627207517624,
+          "guided_relative_mse": 0.04935568943619728
+        },
+        {
+          "norm_ratio": 1.0056427717208862,
+          "cosine": 0.9792885184288025,
+          "projection_gain": 0.984814465045929,
+          "orthogonal_relative_energy": 0.04145779088139534,
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0031838417053223,
+              "cosine": 0.992805540561676,
+              "projection_gain": 0.9959664940834045,
+              "orthogonal_relative_energy": 0.014428741298615932,
+              "field_mse": 0.01761266216635704,
+              "relative_mse": 0.014445011503994465
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0047454833984375,
+              "cosine": 0.9921662211418152,
+              "projection_gain": 0.9968745112419128,
+              "orthogonal_relative_energy": 0.015754641965031624,
+              "field_mse": 0.019181665033102036,
+              "relative_mse": 0.01576441153883934
+            }
+          ],
+          "latent_rms": 0.5436378717422485,
+          "latent_route_mse": 0.10304495692253113,
+          "guided_mse": 0.05159418284893036,
+          "guided_relative_mse": 0.04168839007616043
+        },
+        {
+          "norm_ratio": 1.0063987970352173,
+          "cosine": 0.9817726612091064,
+          "projection_gain": 0.9880548119544983,
+          "orthogonal_relative_energy": 0.0365862138569355,
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0051275491714478,
+              "cosine": 0.9923378825187683,
+              "projection_gain": 0.9974260926246643,
+              "orthogonal_relative_energy": 0.01542248297482729,
+              "field_mse": 0.018595172092318535,
+              "relative_mse": 0.01542910560965538
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0064845085144043,
+              "cosine": 0.9920352697372437,
+              "projection_gain": 0.9984681010246277,
+              "orthogonal_relative_energy": 0.016072504222393036,
+              "field_mse": 0.019350681453943253,
+              "relative_mse": 0.016074853017926216
+            }
+          ],
+          "latent_rms": 0.5264537334442139,
+          "latent_route_mse": 0.12946248054504395,
+          "guided_mse": 0.04471324011683464,
+          "guided_relative_mse": 0.03672890365123749
+        },
+        {
+          "norm_ratio": 1.0108662843704224,
+          "cosine": 0.9826450943946838,
+          "projection_gain": 0.9933228492736816,
+          "orthogonal_relative_energy": 0.03516043722629547,
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0082175731658936,
+              "cosine": 0.9918599128723145,
+              "projection_gain": 1.0000107288360596,
+              "orthogonal_relative_energy": 0.01648135297000408,
+              "field_mse": 0.019494879990816116,
+              "relative_mse": 0.01648135297000408
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0088422298431396,
+              "cosine": 0.9916280508041382,
+              "projection_gain": 1.0003962516784668,
+              "orthogonal_relative_energy": 0.016970010474324226,
+              "field_mse": 0.02006165310740471,
+              "relative_mse": 0.01697016879916191
+            }
+          ],
+          "latent_rms": 0.5184271335601807,
+          "latent_route_mse": 0.16318276524543762,
+          "guided_mse": 0.04196401685476303,
+          "guided_relative_mse": 0.035205017775297165
+        },
+        {
+          "norm_ratio": 1.0197679996490479,
+          "cosine": 0.9802073240280151,
+          "projection_gain": 0.9995840191841125,
+          "orthogonal_relative_energy": 0.04075854644179344,
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.013274073600769,
+              "cosine": 0.9899642467498779,
+              "projection_gain": 1.0031051635742188,
+              "orthogonal_relative_energy": 0.020504305139183998,
+              "field_mse": 0.023442484438419342,
+              "relative_mse": 0.020513946190476418
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0127860307693481,
+              "cosine": 0.9897027015686035,
+              "projection_gain": 1.0023571252822876,
+              "orthogonal_relative_energy": 0.021015871316194534,
+              "field_mse": 0.024039376527071,
+              "relative_mse": 0.02102142758667469
+            }
+          ],
+          "latent_rms": 0.5245132446289062,
+          "latent_route_mse": 0.20755033195018768,
+          "guided_mse": 0.04676957055926323,
+          "guided_relative_mse": 0.04075871780514717
+        },
+        {
+          "norm_ratio": 1.0249577760696411,
+          "cosine": 0.9645648002624512,
+          "projection_gain": 0.9886382222175598,
+          "orthogonal_relative_energy": 0.07313302159309387,
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.011012077331543,
+              "cosine": 0.9836616516113281,
+              "projection_gain": 0.9944937825202942,
+              "orthogonal_relative_energy": 0.03312772884964943,
+              "field_mse": 0.03454522043466568,
+              "relative_mse": 0.03315805271267891
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0116454362869263,
+              "cosine": 0.9823340177536011,
+              "projection_gain": 0.9937736988067627,
+              "orthogonal_relative_energy": 0.03584037721157074,
+              "field_mse": 0.03739744424819946,
+              "relative_mse": 0.035879142582416534
+            }
+          ],
+          "latent_rms": 0.5503459572792053,
+          "latent_route_mse": 0.2662442624568939,
+          "guided_mse": 0.07686817646026611,
+          "guided_relative_mse": 0.07326211780309677
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "route": "native",
+      "rows": [
+        {
+          "norm_ratio": 0.9693273901939392,
+          "cosine": 0.9513731598854065,
+          "projection_gain": 0.9221920967102051,
+          "orthogonal_relative_energy": 0.08915724605321884,
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9790211319923401,
+              "cosine": 0.9756419062614441,
+              "projection_gain": 0.9551740884780884,
+              "orthogonal_relative_energy": 0.04612474516034126,
+              "field_mse": 0.05490083247423172,
+              "relative_mse": 0.048134107142686844
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9672644734382629,
+              "cosine": 0.9738696813583374,
+              "projection_gain": 0.9419894814491272,
+              "orthogonal_relative_energy": 0.04825649410486221,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.10571373254060745,
+          "guided_relative_mse": 0.09521130472421646
+        },
+        {
+          "norm_ratio": 0.9787493944168091,
+          "cosine": 0.9617441296577454,
+          "projection_gain": 0.9413065314292908,
+          "orthogonal_relative_energy": 0.07189254462718964,
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.008660912513733,
+              "cosine": 0.992301344871521,
+              "projection_gain": 1.000895619392395,
+              "orthogonal_relative_energy": 0.015604843385517597,
+              "field_mse": 0.01685797981917858,
+              "relative_mse": 0.015605645254254341
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0196443796157837,
+              "cosine": 0.9948492050170898,
+              "projection_gain": 1.014392375946045,
+              "orthogonal_relative_energy": 0.010682817548513412,
+              "field_mse": 0.012102391570806503,
+              "relative_mse": 0.010889960452914238
+            }
+          ],
+          "latent_rms": 0.9835342764854431,
+          "latent_route_mse": 1.954546314664185e-05,
+          "guided_mse": 0.0836145430803299,
+          "guided_relative_mse": 0.0753374844789505
+        },
+        {
+          "norm_ratio": 0.9776521921157837,
+          "cosine": 0.9621320366859436,
+          "projection_gain": 0.9406304359436035,
+          "orthogonal_relative_energy": 0.07101813703775406,
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0266363620758057,
+              "cosine": 0.9925495982170105,
+              "projection_gain": 1.0189876556396484,
+              "orthogonal_relative_energy": 0.01564665697515011,
+              "field_mse": 0.016942963004112244,
+              "relative_mse": 0.016007183119654655
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0561996698379517,
+              "cosine": 0.9830067753791809,
+              "projection_gain": 1.0382513999938965,
+              "orthogonal_relative_energy": 0.03759170323610306,
+              "field_mse": 0.0416974276304245,
+              "relative_mse": 0.03905487060546875
+            }
+          ],
+          "latent_rms": 0.971418559551239,
+          "latent_route_mse": 6.587081588804722e-05,
+          "guided_mse": 0.0846107080578804,
+          "guided_relative_mse": 0.07454288750886917
+        },
+        {
+          "norm_ratio": 0.9809467792510986,
+          "cosine": 0.9705872535705566,
+          "projection_gain": 0.9520944356918335,
+          "orthogonal_relative_energy": 0.05577291175723076,
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0295265913009644,
+              "cosine": 0.9917314052581787,
+              "projection_gain": 1.0210137367248535,
+              "orthogonal_relative_energy": 0.01745605282485485,
+              "field_mse": 0.018832918256521225,
+              "relative_mse": 0.017897628247737885
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0628966093063354,
+              "cosine": 0.9800829887390137,
+              "projection_gain": 1.04172682762146,
+              "orthogonal_relative_energy": 0.04455428197979927,
+              "field_mse": 0.04865873605012894,
+              "relative_mse": 0.046295419335365295
+            }
+          ],
+          "latent_rms": 0.9587122797966003,
+          "latent_route_mse": 0.00012401488493196666,
+          "guided_mse": 0.06498740613460541,
+          "guided_relative_mse": 0.05806786194443703
+        },
+        {
+          "norm_ratio": 0.9823172092437744,
+          "cosine": 0.9731242060661316,
+          "projection_gain": 0.9559166431427002,
+          "orthogonal_relative_energy": 0.05117044225335121,
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0252259969711304,
+              "cosine": 0.9926562905311584,
+              "projection_gain": 1.0176970958709717,
+              "orthogonal_relative_energy": 0.015381054021418095,
+              "field_mse": 0.016592202708125114,
+              "relative_mse": 0.015694240108132362
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0503851175308228,
+              "cosine": 0.9840523600578308,
+              "projection_gain": 1.0336339473724365,
+              "orthogonal_relative_energy": 0.03490971028804779,
+              "field_mse": 0.0378384031355381,
+              "relative_mse": 0.036040954291820526
+            }
+          ],
+          "latent_rms": 0.9453635215759277,
+          "latent_route_mse": 0.000199894915567711,
+          "guided_mse": 0.059896986931562424,
+          "guided_relative_mse": 0.05311378091573715
+        },
+        {
+          "norm_ratio": 0.9736478924751282,
+          "cosine": 0.9686570763587952,
+          "projection_gain": 0.9431309700012207,
+          "orthogonal_relative_energy": 0.05849434435367584,
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0201823711395264,
+              "cosine": 0.993700385093689,
+              "projection_gain": 1.0137555599212646,
+              "orthogonal_relative_energy": 0.013071618974208832,
+              "field_mse": 0.014082041569054127,
+              "relative_mse": 0.013260834850370884
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.039343237876892,
+              "cosine": 0.9887151122093201,
+              "projection_gain": 1.0276142358779907,
+              "orthogonal_relative_energy": 0.024243086576461792,
+              "field_mse": 0.02629796415567398,
+              "relative_mse": 0.025005638599395752
+            }
+          ],
+          "latent_rms": 0.9313927292823792,
+          "latent_route_mse": 0.00029675784753635526,
+          "guided_mse": 0.07128259539604187,
+          "guided_relative_mse": 0.06172844022512436
+        },
+        {
+          "norm_ratio": 0.9617836475372314,
+          "cosine": 0.9596041440963745,
+          "projection_gain": 0.9229316115379333,
+          "orthogonal_relative_energy": 0.07322505116462708,
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0126726627349854,
+              "cosine": 0.9943720102310181,
+              "projection_gain": 1.006973385810852,
+              "orthogonal_relative_energy": 0.011510439217090607,
+              "field_mse": 0.012373775243759155,
+              "relative_mse": 0.011559069156646729
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.028305172920227,
+              "cosine": 0.992639422416687,
+              "projection_gain": 1.0207362174987793,
+              "orthogonal_relative_energy": 0.015509209595620632,
+              "field_mse": 0.016897737979888916,
+              "relative_mse": 0.015939194709062576
+            }
+          ],
+          "latent_rms": 0.9167758226394653,
+          "latent_route_mse": 0.00042910882621072233,
+          "guided_mse": 0.09290209412574768,
+          "guided_relative_mse": 0.07916457951068878
+        },
+        {
+          "norm_ratio": 0.9530980587005615,
+          "cosine": 0.949933648109436,
+          "projection_gain": 0.9053798913955688,
+          "orthogonal_relative_energy": 0.08868313580751419,
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0056426525115967,
+              "cosine": 0.9934676885604858,
+              "projection_gain": 0.9990735054016113,
+              "orthogonal_relative_energy": 0.013169590383768082,
+              "field_mse": 0.014271918684244156,
+              "relative_mse": 0.013170448131859303
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0184077024459839,
+              "cosine": 0.9931724071502686,
+              "projection_gain": 1.011454463005066,
+              "orthogonal_relative_energy": 0.014114120975136757,
+              "field_mse": 0.015379735268652439,
+              "relative_mse": 0.01424532849341631
+            }
+          ],
+          "latent_rms": 0.9013707637786865,
+          "latent_route_mse": 0.0006063636392354965,
+          "guided_mse": 0.11519277095794678,
+          "guided_relative_mse": 0.09763608127832413
+        },
+        {
+          "norm_ratio": 0.9506731629371643,
+          "cosine": 0.9441472291946411,
+          "projection_gain": 0.8975754380226135,
+          "orthogonal_relative_energy": 0.09813781082630157,
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0000946521759033,
+              "cosine": 0.9929441213607788,
+              "projection_gain": 0.9930381178855896,
+              "orthogonal_relative_energy": 0.014064804650843143,
+              "field_mse": 0.01546594500541687,
+              "relative_mse": 0.014113273471593857
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0077848434448242,
+              "cosine": 0.9921965599060059,
+              "projection_gain": 0.999920666217804,
+              "orthogonal_relative_energy": 0.015789080411195755,
+              "field_mse": 0.017315197736024857,
+              "relative_mse": 0.015789085999131203
+            }
+          ],
+          "latent_rms": 0.8850963115692139,
+          "latent_route_mse": 0.0008290172554552555,
+          "guided_mse": 0.13122421503067017,
+          "guided_relative_mse": 0.10862859338521957
+        },
+        {
+          "norm_ratio": 0.9659154415130615,
+          "cosine": 0.9351223111152649,
+          "projection_gain": 0.9032490849494934,
+          "orthogonal_relative_energy": 0.1171339750289917,
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9995077848434448,
+              "cosine": 0.9925183057785034,
+              "projection_gain": 0.9920297861099243,
+              "orthogonal_relative_energy": 0.014892843551933765,
+              "field_mse": 0.016432728618383408,
+              "relative_mse": 0.014956368133425713
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0053699016571045,
+              "cosine": 0.9917344450950623,
+              "projection_gain": 0.9970599412918091,
+              "orthogonal_relative_energy": 0.016640018671751022,
+              "field_mse": 0.01824510097503662,
+              "relative_mse": 0.016648663207888603
+            }
+          ],
+          "latent_rms": 0.8678464889526367,
+          "latent_route_mse": 0.0011498036328703165,
+          "guided_mse": 0.15411166846752167,
+          "guided_relative_mse": 0.12649473547935486
+        },
+        {
+          "norm_ratio": 1.0016878843307495,
+          "cosine": 0.9496442675590515,
+          "projection_gain": 0.9512471556663513,
+          "orthogonal_relative_energy": 0.09850748628377914,
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9984202980995178,
+              "cosine": 0.9928390979766846,
+              "projection_gain": 0.9912707209587097,
+              "orthogonal_relative_energy": 0.014225366525352001,
+              "field_mse": 0.01589732989668846,
+              "relative_mse": 0.014301566407084465
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0011236667633057,
+              "cosine": 0.9895390868186951,
+              "projection_gain": 0.9906509518623352,
+              "orthogonal_relative_energy": 0.020859355106949806,
+              "field_mse": 0.023248758167028427,
+              "relative_mse": 0.02094675973057747
+            }
+          ],
+          "latent_rms": 0.8498007655143738,
+          "latent_route_mse": 0.0016077348263934255,
+          "guided_mse": 0.11851389706134796,
+          "guided_relative_mse": 0.1008843258023262
+        },
+        {
+          "norm_ratio": 1.0106804370880127,
+          "cosine": 0.9596428275108337,
+          "projection_gain": 0.9698922038078308,
+          "orthogonal_relative_energy": 0.08078406006097794,
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9968152046203613,
+              "cosine": 0.9934961795806885,
+              "projection_gain": 0.9903321266174316,
+              "orthogonal_relative_energy": 0.012882977724075317,
+              "field_mse": 0.014578892849385738,
+              "relative_mse": 0.012976446188986301
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9988424181938171,
+              "cosine": 0.9898707270622253,
+              "projection_gain": 0.9887248873710632,
+              "orthogonal_relative_energy": 0.02010924369096756,
+              "field_mse": 0.02267453446984291,
+              "relative_mse": 0.020236369222402573
+            }
+          ],
+          "latent_rms": 0.830597460269928,
+          "latent_route_mse": 0.0021385480649769306,
+          "guided_mse": 0.09558732062578201,
+          "guided_relative_mse": 0.08169053494930267
+        },
+        {
+          "norm_ratio": 1.0222668647766113,
+          "cosine": 0.9591038227081299,
+          "projection_gain": 0.980459988117218,
+          "orthogonal_relative_energy": 0.08372754603624344,
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9990728497505188,
+              "cosine": 0.9942496418952942,
+              "projection_gain": 0.993327796459198,
+              "orthogonal_relative_energy": 0.011446477845311165,
+              "field_mse": 0.012936263345181942,
+              "relative_mse": 0.011490996927022934
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9986432194709778,
+              "cosine": 0.9917020201683044,
+              "projection_gain": 0.9903564453125,
+              "orthogonal_relative_energy": 0.016482369974255562,
+              "field_mse": 0.018633604049682617,
+              "relative_mse": 0.016575368121266365
+            }
+          ],
+          "latent_rms": 0.8102837204933167,
+          "latent_route_mse": 0.0027994001284241676,
+          "guided_mse": 0.0976594090461731,
+          "guided_relative_mse": 0.0841093584895134
+        },
+        {
+          "norm_ratio": 1.014078140258789,
+          "cosine": 0.9597365260124207,
+          "projection_gain": 0.9732478857040405,
+          "orthogonal_relative_energy": 0.08114298433065414,
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9973581433296204,
+              "cosine": 0.9941828846931458,
+              "projection_gain": 0.9915564060211182,
+              "orthogonal_relative_energy": 0.0115392180159688,
+              "field_mse": 0.01314975693821907,
+              "relative_mse": 0.011610512621700764
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9977349638938904,
+              "cosine": 0.9918895363807678,
+              "projection_gain": 0.989642858505249,
+              "orthogonal_relative_energy": 0.01608213037252426,
+              "field_mse": 0.018313106149435043,
+              "relative_mse": 0.016189400106668472
+            }
+          ],
+          "latent_rms": 0.7887857556343079,
+          "latent_route_mse": 0.0036082989536225796,
+          "guided_mse": 0.09553636610507965,
+          "guided_relative_mse": 0.08185864984989166
+        },
+        {
+          "norm_ratio": 1.0158934593200684,
+          "cosine": 0.9582628607749939,
+          "projection_gain": 0.9734928607940674,
+          "orthogonal_relative_energy": 0.08435088396072388,
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9967596530914307,
+              "cosine": 0.9939143657684326,
+              "projection_gain": 0.9906937479972839,
+              "orthogonal_relative_energy": 0.012055646628141403,
+              "field_mse": 0.013880297541618347,
+              "relative_mse": 0.01214225310832262
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9971486330032349,
+              "cosine": 0.9923157691955566,
+              "projection_gain": 0.9894863367080688,
+              "orthogonal_relative_energy": 0.015222239308059216,
+              "field_mse": 0.017465539276599884,
+              "relative_mse": 0.015332776121795177
+            }
+          ],
+          "latent_rms": 0.7660685777664185,
+          "latent_route_mse": 0.004638321232050657,
+          "guided_mse": 0.10062699019908905,
+          "guided_relative_mse": 0.08505351096391678
+        },
+        {
+          "norm_ratio": 1.0174899101257324,
+          "cosine": 0.9582211971282959,
+          "projection_gain": 0.9749804139137268,
+          "orthogonal_relative_energy": 0.08469895273447037,
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9969742894172668,
+              "cosine": 0.9935400485992432,
+              "projection_gain": 0.9905339479446411,
+              "orthogonal_relative_energy": 0.012800442986190319,
+              "field_mse": 0.014788944274187088,
+              "relative_mse": 0.012890051119029522
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9965068697929382,
+              "cosine": 0.9921756386756897,
+              "projection_gain": 0.9887099266052246,
+              "orthogonal_relative_energy": 0.015478651970624924,
+              "field_mse": 0.017856329679489136,
+              "relative_mse": 0.015606116503477097
+            }
+          ],
+          "latent_rms": 0.7419359087944031,
+          "latent_route_mse": 0.005960462614893913,
+          "guided_mse": 0.10083402693271637,
+          "guided_relative_mse": 0.08532493561506271
+        },
+        {
+          "norm_ratio": 1.0081195831298828,
+          "cosine": 0.9578915238380432,
+          "projection_gain": 0.9656691551208496,
+          "orthogonal_relative_energy": 0.08378824591636658,
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9962134957313538,
+              "cosine": 0.9924913644790649,
+              "projection_gain": 0.9887332320213318,
+              "orthogonal_relative_energy": 0.01484800036996603,
+              "field_mse": 0.017209554091095924,
+              "relative_mse": 0.014974940568208694
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9973505735397339,
+              "cosine": 0.9922547340393066,
+              "projection_gain": 0.9896258115768433,
+              "orthogonal_relative_energy": 0.015348942019045353,
+              "field_mse": 0.017706576734781265,
+              "relative_mse": 0.015456567518413067
+            }
+          ],
+          "latent_rms": 0.7163774967193604,
+          "latent_route_mse": 0.007659800350666046,
+          "guided_mse": 0.10061468929052353,
+          "guided_relative_mse": 0.08496686071157455
+        },
+        {
+          "norm_ratio": 1.0054770708084106,
+          "cosine": 0.9557340145111084,
+          "projection_gain": 0.960968554019928,
+          "orthogonal_relative_energy": 0.08752351999282837,
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9947933554649353,
+              "cosine": 0.9925118684768677,
+              "projection_gain": 0.9873442053794861,
+              "orthogonal_relative_energy": 0.014765252359211445,
+              "field_mse": 0.017183370888233185,
+              "relative_mse": 0.014925424009561539
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9972831606864929,
+              "cosine": 0.992141604423523,
+              "projection_gain": 0.9894461631774902,
+              "orthogonal_relative_energy": 0.015570033341646194,
+              "field_mse": 0.017994500696659088,
+              "relative_mse": 0.015681413933634758
+            }
+          ],
+          "latent_rms": 0.6894943118095398,
+          "latent_route_mse": 0.009861172176897526,
+          "guided_mse": 0.1054447814822197,
+          "guided_relative_mse": 0.08904698491096497
+        },
+        {
+          "norm_ratio": 0.9974827170372009,
+          "cosine": 0.9683821797370911,
+          "projection_gain": 0.9659444689750671,
+          "orthogonal_relative_energy": 0.061923135071992874,
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9959044456481934,
+              "cosine": 0.9926982522010803,
+              "projection_gain": 0.9886326193809509,
+              "orthogonal_relative_energy": 0.014431297779083252,
+              "field_mse": 0.016844436526298523,
+              "relative_mse": 0.014560516923666
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9983749985694885,
+              "cosine": 0.9923523664474487,
+              "projection_gain": 0.9907397627830505,
+              "orthogonal_relative_energy": 0.01518729142844677,
+              "field_mse": 0.01760716736316681,
+              "relative_mse": 0.015273044817149639
+            }
+          ],
+          "latent_rms": 0.6613839864730835,
+          "latent_route_mse": 0.012630647979676723,
+          "guided_mse": 0.07500654458999634,
+          "guided_relative_mse": 0.06308291852474213
+        },
+        {
+          "norm_ratio": 0.9896132349967957,
+          "cosine": 0.9712219834327698,
+          "projection_gain": 0.9611340761184692,
+          "orthogonal_relative_energy": 0.055555664002895355,
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9951191544532776,
+              "cosine": 0.9925042390823364,
+              "projection_gain": 0.9876600503921509,
+              "orthogonal_relative_energy": 0.014789983630180359,
+              "field_mse": 0.017404809594154358,
+              "relative_mse": 0.014942261390388012
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9989175200462341,
+              "cosine": 0.9927036762237549,
+              "projection_gain": 0.9916291832923889,
+              "orthogonal_relative_energy": 0.014507734216749668,
+              "field_mse": 0.016898062080144882,
+              "relative_mse": 0.014577804133296013
+            }
+          ],
+          "latent_rms": 0.6318248510360718,
+          "latent_route_mse": 0.016136284917593002,
+          "guided_mse": 0.06852410733699799,
+          "guided_relative_mse": 0.05706622079014778
+        },
+        {
+          "norm_ratio": 0.9949800372123718,
+          "cosine": 0.9755752086639404,
+          "projection_gain": 0.9706778526306152,
+          "orthogonal_relative_energy": 0.04776979237794876,
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9962310791015625,
+              "cosine": 0.9923060536384583,
+              "projection_gain": 0.9885661602020264,
+              "orthogonal_relative_energy": 0.015213352628052235,
+              "field_mse": 0.017799563705921173,
+              "relative_mse": 0.015344084240496159
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9988226294517517,
+              "cosine": 0.9922097325325012,
+              "projection_gain": 0.9910415410995483,
+              "orthogonal_relative_energy": 0.015483478084206581,
+              "field_mse": 0.018008138984441757,
+              "relative_mse": 0.015563733875751495
+            }
+          ],
+          "latent_rms": 0.6009259819984436,
+          "latent_route_mse": 0.020486094057559967,
+          "guided_mse": 0.05752231925725937,
+          "guided_relative_mse": 0.048629581928253174
+        },
+        {
+          "norm_ratio": 0.9978118538856506,
+          "cosine": 0.9771488308906555,
+          "projection_gain": 0.9750106334686279,
+          "orthogonal_relative_energy": 0.044982701539993286,
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.996353268623352,
+              "cosine": 0.9919715523719788,
+              "projection_gain": 0.9883540868759155,
+              "orthogonal_relative_energy": 0.01587594300508499,
+              "field_mse": 0.018682410940527916,
+              "relative_mse": 0.016011567786335945
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9982672929763794,
+              "cosine": 0.9919201731681824,
+              "projection_gain": 0.9902015328407288,
+              "orthogonal_relative_energy": 0.016038650646805763,
+              "field_mse": 0.018781378865242004,
+              "relative_mse": 0.016134658828377724
+            }
+          ],
+          "latent_rms": 0.5694782137870789,
+          "latent_route_mse": 0.02604122832417488,
+          "guided_mse": 0.0540776252746582,
+          "guided_relative_mse": 0.045607175678014755
+        },
+        {
+          "norm_ratio": 0.995265007019043,
+          "cosine": 0.9691281914710999,
+          "projection_gain": 0.9645394086837769,
+          "orthogonal_relative_energy": 0.06021614745259285,
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9940762519836426,
+              "cosine": 0.9910668134689331,
+              "projection_gain": 0.9851958751678467,
+              "orthogonal_relative_energy": 0.01757660135626793,
+              "field_mse": 0.020616769790649414,
+              "relative_mse": 0.017795763909816742
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9976330995559692,
+              "cosine": 0.9915684461593628,
+              "projection_gain": 0.9892215132713318,
+              "orthogonal_relative_energy": 0.016712551936507225,
+              "field_mse": 0.01946655474603176,
+              "relative_mse": 0.01682872511446476
+            }
+          ],
+          "latent_rms": 0.5380608439445496,
+          "latent_route_mse": 0.0331081748008728,
+          "guided_mse": 0.07221364974975586,
+          "guided_relative_mse": 0.06147360801696777
+        },
+        {
+          "norm_ratio": 0.9932801723480225,
+          "cosine": 0.9776021242141724,
+          "projection_gain": 0.9710327386856079,
+          "orthogonal_relative_energy": 0.04370071366429329,
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9941880702972412,
+              "cosine": 0.9906015396118164,
+              "projection_gain": 0.9848442673683167,
+              "orthogonal_relative_energy": 0.018491733819246292,
+              "field_mse": 0.021717548370361328,
+              "relative_mse": 0.018721425905823708
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9961167573928833,
+              "cosine": 0.9909126162528992,
+              "projection_gain": 0.9870646595954895,
+              "orthogonal_relative_energy": 0.017951933667063713,
+              "field_mse": 0.021000675857067108,
+              "relative_mse": 0.01811925508081913
+            }
+          ],
+          "latent_rms": 0.5082436800003052,
+          "latent_route_mse": 0.04221081733703613,
+          "guided_mse": 0.05222100764513016,
+          "guided_relative_mse": 0.044539812952280045
+        },
+        {
+          "norm_ratio": 0.9925987720489502,
+          "cosine": 0.9735764265060425,
+          "projection_gain": 0.9663708209991455,
+          "orthogonal_relative_energy": 0.051379747688770294,
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9926010370254517,
+              "cosine": 0.9893630146980286,
+              "projection_gain": 0.9820427298545837,
+              "orthogonal_relative_energy": 0.020848769694566727,
+              "field_mse": 0.024352995678782463,
+              "relative_mse": 0.02117122896015644
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9952494502067566,
+              "cosine": 0.9898653030395508,
+              "projection_gain": 0.9851629734039307,
+              "orthogonal_relative_energy": 0.019975446164608,
+              "field_mse": 0.02321496605873108,
+              "relative_mse": 0.02019558474421501
+            }
+          ],
+          "latent_rms": 0.4823014438152313,
+          "latent_route_mse": 0.05401244014501572,
+          "guided_mse": 0.06094244867563248,
+          "guided_relative_mse": 0.052510667592287064
+        },
+        {
+          "norm_ratio": 0.9957089424133301,
+          "cosine": 0.9790197014808655,
+          "projection_gain": 0.9748185873031616,
+          "orthogonal_relative_energy": 0.0411650612950325,
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9924813508987427,
+              "cosine": 0.9885820746421814,
+              "projection_gain": 0.9811493158340454,
+              "orthogonal_relative_energy": 0.022365067154169083,
+              "field_mse": 0.025817200541496277,
+              "relative_mse": 0.02272041141986847
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9928188920021057,
+              "cosine": 0.9884490370750427,
+              "projection_gain": 0.9813508987426758,
+              "orthogonal_relative_energy": 0.022639909759163857,
+              "field_mse": 0.026108764111995697,
+              "relative_mse": 0.02298770099878311
+            }
+          ],
+          "latent_rms": 0.46384820342063904,
+          "latent_route_mse": 0.0693574771285057,
+          "guided_mse": 0.04786710813641548,
+          "guided_relative_mse": 0.041799165308475494
+        },
+        {
+          "norm_ratio": 0.9908076524734497,
+          "cosine": 0.9789573550224304,
+          "projection_gain": 0.9699584245681763,
+          "orthogonal_relative_energy": 0.04088038206100464,
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9875006079673767,
+              "cosine": 0.9865286946296692,
+              "projection_gain": 0.9741977453231812,
+              "orthogonal_relative_energy": 0.02609631046652794,
+              "field_mse": 0.02965456061065197,
+              "relative_mse": 0.026762068271636963
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9875955581665039,
+              "cosine": 0.9860724210739136,
+              "projection_gain": 0.9738407731056213,
+              "orthogonal_relative_energy": 0.026979267597198486,
+              "field_mse": 0.03064117766916752,
+              "relative_mse": 0.0276635754853487
+            }
+          ],
+          "latent_rms": 0.45827996730804443,
+          "latent_route_mse": 0.08967629075050354,
+          "guided_mse": 0.04663500189781189,
+          "guided_relative_mse": 0.04178288206458092
+        },
+        {
+          "norm_ratio": 0.9867357015609741,
+          "cosine": 0.9676185250282288,
+          "projection_gain": 0.9547837376594543,
+          "orthogonal_relative_energy": 0.06203548610210419,
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9752141833305359,
+              "cosine": 0.9793928265571594,
+              "projection_gain": 0.9551178216934204,
+              "orthogonal_relative_energy": 0.03879278525710106,
+              "field_mse": 0.04128061234951019,
+              "relative_mse": 0.04080720245838165
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9736776947975159,
+              "cosine": 0.9785215854644775,
+              "projection_gain": 0.952764630317688,
+              "orthogonal_relative_energy": 0.0402878075838089,
+              "field_mse": 0.04306422919034958,
+              "relative_mse": 0.0425189845263958
+            }
+          ],
+          "latent_rms": 0.472249299287796,
+          "latent_route_mse": 0.11655864119529724,
+          "guided_mse": 0.06514693796634674,
+          "guided_relative_mse": 0.06408000737428665
+        }
+      ]
+    },
+    {
+      "index": 28,
+      "route": "student",
+      "rows": [
+        {
+          "norm_ratio": 0.9693273901939392,
+          "cosine": 0.9513731598854065,
+          "projection_gain": 0.9221920967102051,
+          "orthogonal_relative_energy": 0.08915724605321884,
+          "step": 0,
+          "sigma": 1.0,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9790211319923401,
+              "cosine": 0.9756419062614441,
+              "projection_gain": 0.9551740884780884,
+              "orthogonal_relative_energy": 0.04612474516034126,
+              "field_mse": 0.05490083247423172,
+              "relative_mse": 0.048134107142686844
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9672644734382629,
+              "cosine": 0.9738696813583374,
+              "projection_gain": 0.9419894814491272,
+              "orthogonal_relative_energy": 0.04825649410486221,
+              "field_mse": 0.06230868026614189,
+              "relative_mse": 0.05162172019481659
+            }
+          ],
+          "latent_rms": 0.9950944781303406,
+          "latent_route_mse": 0.0,
+          "guided_mse": 0.10571373254060745,
+          "guided_relative_mse": 0.09521130472421646
+        },
+        {
+          "norm_ratio": 0.9792560935020447,
+          "cosine": 0.9490548968315125,
+          "projection_gain": 0.9293677806854248,
+          "orthogonal_relative_energy": 0.09521809965372086,
+          "step": 1,
+          "sigma": 0.98828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0134754180908203,
+              "cosine": 0.9939626455307007,
+              "projection_gain": 1.0073567628860474,
+              "orthogonal_relative_energy": 0.01236487366259098,
+              "field_mse": 0.013278327882289886,
+              "relative_mse": 0.012418994680047035
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0258784294128418,
+              "cosine": 0.9966700673103333,
+              "projection_gain": 1.0224623680114746,
+              "orthogonal_relative_energy": 0.006997379940003157,
+              "field_mse": 0.008213883265852928,
+              "relative_mse": 0.007501930929720402
+            }
+          ],
+          "latent_rms": 0.9836341738700867,
+          "latent_route_mse": 1.954546314664185e-05,
+          "guided_mse": 0.11238597333431244,
+          "guided_relative_mse": 0.10020700842142105
+        },
+        {
+          "norm_ratio": 0.9862135052680969,
+          "cosine": 0.9681473970413208,
+          "projection_gain": 0.9547999501228333,
+          "orthogonal_relative_energy": 0.06097407639026642,
+          "step": 2,
+          "sigma": 0.9765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0289974212646484,
+              "cosine": 0.9900318384170532,
+              "projection_gain": 1.018740177154541,
+              "orthogonal_relative_energy": 0.021004049107432365,
+              "field_mse": 0.022274790331721306,
+              "relative_mse": 0.021355239674448967
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0481818914413452,
+              "cosine": 0.9770282506942749,
+              "projection_gain": 1.0241034030914307,
+              "orthogonal_relative_energy": 0.04989787936210632,
+              "field_mse": 0.05359209328889847,
+              "relative_mse": 0.05047884210944176
+            }
+          ],
+          "latent_rms": 0.9715606570243835,
+          "latent_route_mse": 6.587081588804722e-05,
+          "guided_mse": 0.06969644874334335,
+          "guided_relative_mse": 0.0630171149969101
+        },
+        {
+          "norm_ratio": 0.99226975440979,
+          "cosine": 0.9785309433937073,
+          "projection_gain": 0.9709666967391968,
+          "orthogonal_relative_energy": 0.041823145002126694,
+          "step": 3,
+          "sigma": 0.96484375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0232704877853394,
+              "cosine": 0.9890317916870117,
+              "projection_gain": 1.0120470523834229,
+              "orthogonal_relative_energy": 0.02284330315887928,
+              "field_mse": 0.023821569979190826,
+              "relative_mse": 0.02298843301832676
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0436962842941284,
+              "cosine": 0.9760901927947998,
+              "projection_gain": 1.0187416076660156,
+              "orthogonal_relative_energy": 0.051467444747686386,
+              "field_mse": 0.05419723689556122,
+              "relative_mse": 0.051818691194057465
+            }
+          ],
+          "latent_rms": 0.9589247107505798,
+          "latent_route_mse": 0.00012401488493196666,
+          "guided_mse": 0.04568762704730034,
+          "guided_relative_mse": 0.042666081339120865
+        },
+        {
+          "norm_ratio": 0.9948704242706299,
+          "cosine": 0.9828712344169617,
+          "projection_gain": 0.9778295755386353,
+          "orthogonal_relative_energy": 0.033616773784160614,
+          "step": 4,
+          "sigma": 0.94921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0168914794921875,
+              "cosine": 0.991753876209259,
+              "projection_gain": 1.0085060596466064,
+              "orthogonal_relative_energy": 0.01698388159275055,
+              "field_mse": 0.017689570784568787,
+              "relative_mse": 0.017056234180927277
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0310689210891724,
+              "cosine": 0.9837378263473511,
+              "projection_gain": 1.0143015384674072,
+              "orthogonal_relative_energy": 0.03429577127099037,
+              "field_mse": 0.0358818881213665,
+              "relative_mse": 0.034500304609537125
+            }
+          ],
+          "latent_rms": 0.9456642270088196,
+          "latent_route_mse": 0.000199894915567711,
+          "guided_mse": 0.036317914724349976,
+          "guided_relative_mse": 0.03410830721259117
+        },
+        {
+          "norm_ratio": 0.9868279099464417,
+          "cosine": 0.9848889708518982,
+          "projection_gain": 0.9719159007072449,
+          "orthogonal_relative_energy": 0.029208622872829437,
+          "step": 5,
+          "sigma": 0.9375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0128424167633057,
+              "cosine": 0.9936655163764954,
+              "projection_gain": 1.0064266920089722,
+              "orthogonal_relative_energy": 0.012955354526638985,
+              "field_mse": 0.013424127362668514,
+              "relative_mse": 0.012996654026210308
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0248427391052246,
+              "cosine": 0.9882906079292297,
+              "projection_gain": 1.0128424167633057,
+              "orthogonal_relative_energy": 0.024452880024909973,
+              "field_mse": 0.025393588468432426,
+              "relative_mse": 0.024617811664938927
+            }
+          ],
+          "latent_rms": 0.9317001700401306,
+          "latent_route_mse": 0.00029675784753635526,
+          "guided_mse": 0.03209187835454941,
+          "guided_relative_mse": 0.029997341334819794
+        },
+        {
+          "norm_ratio": 0.9822300672531128,
+          "cosine": 0.9828838109970093,
+          "projection_gain": 0.9654179811477661,
+          "orthogonal_relative_energy": 0.03274383023381233,
+          "step": 6,
+          "sigma": 0.921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0087692737579346,
+              "cosine": 0.9953555464744568,
+              "projection_gain": 1.0040841102600098,
+              "orthogonal_relative_energy": 0.009430511854588985,
+              "field_mse": 0.009762074798345566,
+              "relative_mse": 0.009447190910577774
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.018937110900879,
+              "cosine": 0.9916447997093201,
+              "projection_gain": 1.0104236602783203,
+              "orthogonal_relative_energy": 0.017276696860790253,
+              "field_mse": 0.01791435107588768,
+              "relative_mse": 0.017385350540280342
+            }
+          ],
+          "latent_rms": 0.9170527458190918,
+          "latent_route_mse": 0.00042910882621072233,
+          "guided_mse": 0.03649270161986351,
+          "guided_relative_mse": 0.03393973782658577
+        },
+        {
+          "norm_ratio": 0.9735523462295532,
+          "cosine": 0.9765981435775757,
+          "projection_gain": 0.9507694244384766,
+          "orthogonal_relative_energy": 0.043841730803251266,
+          "step": 7,
+          "sigma": 0.90625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.005429744720459,
+              "cosine": 0.9959310293197632,
+              "projection_gain": 1.0013387203216553,
+              "orthogonal_relative_energy": 0.008209736086428165,
+              "field_mse": 0.008498124778270721,
+              "relative_mse": 0.0082115288823843
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0147833824157715,
+              "cosine": 0.9936147332191467,
+              "projection_gain": 1.0083037614822388,
+              "orthogonal_relative_energy": 0.013109134510159492,
+              "field_mse": 0.01360006257891655,
+              "relative_mse": 0.01317808497697115
+            }
+          ],
+          "latent_rms": 0.9015048146247864,
+          "latent_route_mse": 0.0006063636392354965,
+          "guided_mse": 0.050213634967803955,
+          "guided_relative_mse": 0.0462653785943985
+        },
+        {
+          "norm_ratio": 0.9691002368927002,
+          "cosine": 0.972680389881134,
+          "projection_gain": 0.9426248073577881,
+          "orthogonal_relative_energy": 0.05061374977231026,
+          "step": 8,
+          "sigma": 0.88671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0035715103149414,
+              "cosine": 0.9963440895080566,
+              "projection_gain": 0.999902606010437,
+              "orthogonal_relative_energy": 0.007350537460297346,
+              "field_mse": 0.0076186456717550755,
+              "relative_mse": 0.007350546307861805
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0115351676940918,
+              "cosine": 0.9948992133140564,
+              "projection_gain": 1.0063755512237549,
+              "orthogonal_relative_energy": 0.010411746799945831,
+              "field_mse": 0.01081069465726614,
+              "relative_mse": 0.01045239344239235
+            }
+          ],
+          "latent_rms": 0.8850560784339905,
+          "latent_route_mse": 0.0008290172554552555,
+          "guided_mse": 0.05883526802062988,
+          "guided_relative_mse": 0.0539056621491909
+        },
+        {
+          "norm_ratio": 0.961159348487854,
+          "cosine": 0.9685713052749634,
+          "projection_gain": 0.9309514164924622,
+          "orthogonal_relative_energy": 0.057156752794981,
+          "step": 9,
+          "sigma": 0.87109375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0021356344223022,
+              "cosine": 0.9964367151260376,
+              "projection_gain": 0.9985647201538086,
+              "orthogonal_relative_energy": 0.0071444446220994,
+              "field_mse": 0.007367207668721676,
+              "relative_mse": 0.007146505173295736
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0093218088150024,
+              "cosine": 0.9955341815948486,
+              "projection_gain": 1.0048142671585083,
+              "orthogonal_relative_energy": 0.00907860416918993,
+              "field_mse": 0.009359726682305336,
+              "relative_mse": 0.00910178106278181
+            }
+          ],
+          "latent_rms": 0.8675714731216431,
+          "latent_route_mse": 0.0011498036328703165,
+          "guided_mse": 0.06812959909439087,
+          "guided_relative_mse": 0.06192447617650032
+        },
+        {
+          "norm_ratio": 0.9565075039863586,
+          "cosine": 0.9632084965705872,
+          "projection_gain": 0.9213161468505859,
+          "orthogonal_relative_energy": 0.06608323007822037,
+          "step": 10,
+          "sigma": 0.8515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0008691549301147,
+              "cosine": 0.9963506460189819,
+              "projection_gain": 0.9972167015075684,
+              "orthogonal_relative_energy": 0.0072980765253305435,
+              "field_mse": 0.00755054596811533,
+              "relative_mse": 0.007305823732167482
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0071345567703247,
+              "cosine": 0.9959995150566101,
+              "projection_gain": 1.0031055212020874,
+              "orthogonal_relative_energy": 0.008099395781755447,
+              "field_mse": 0.008354751393198967,
+              "relative_mse": 0.008109036833047867
+            }
+          ],
+          "latent_rms": 0.8491459488868713,
+          "latent_route_mse": 0.0016077348263934255,
+          "guided_mse": 0.08067239075899124,
+          "guided_relative_mse": 0.07227439433336258
+        },
+        {
+          "norm_ratio": 0.96136873960495,
+          "cosine": 0.965358555316925,
+          "projection_gain": 0.9280654788017273,
+          "orthogonal_relative_energy": 0.0629241093993187,
+          "step": 11,
+          "sigma": 0.828125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0005743503570557,
+              "cosine": 0.9966208934783936,
+              "projection_gain": 0.9971933364868164,
+              "orthogonal_relative_energy": 0.006754465866833925,
+              "field_mse": 0.007011616602540016,
+              "relative_mse": 0.006762343924492598
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.005195140838623,
+              "cosine": 0.9964953660964966,
+              "projection_gain": 1.001672387123108,
+              "orthogonal_relative_energy": 0.007069846615195274,
+              "field_mse": 0.0073137348517775536,
+              "relative_mse": 0.007072643376886845
+            }
+          ],
+          "latent_rms": 0.8294641375541687,
+          "latent_route_mse": 0.0021385480649769306,
+          "guided_mse": 0.0759926587343216,
+          "guided_relative_mse": 0.06809867173433304
+        },
+        {
+          "norm_ratio": 0.9604693055152893,
+          "cosine": 0.9655327796936035,
+          "projection_gain": 0.9273645281791687,
+          "orthogonal_relative_energy": 0.062496330589056015,
+          "step": 12,
+          "sigma": 0.80859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9992583990097046,
+              "cosine": 0.9965977668762207,
+              "projection_gain": 0.9958586692810059,
+              "orthogonal_relative_energy": 0.00678274454548955,
+              "field_mse": 0.007017152383923531,
+              "relative_mse": 0.006799894385039806
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0033745765686035,
+              "cosine": 0.9969514608383179,
+              "projection_gain": 1.00031578540802,
+              "orthogonal_relative_energy": 0.006129070185124874,
+              "field_mse": 0.006295809522271156,
+              "relative_mse": 0.006129169370979071
+            }
+          ],
+          "latent_rms": 0.80851811170578,
+          "latent_route_mse": 0.0027994001284241676,
+          "guided_mse": 0.07592153549194336,
+          "guided_relative_mse": 0.06777224689722061
+        },
+        {
+          "norm_ratio": 0.9666154980659485,
+          "cosine": 0.96799236536026,
+          "projection_gain": 0.9356763362884521,
+          "orthogonal_relative_energy": 0.05885517969727516,
+          "step": 13,
+          "sigma": 0.78515625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.99896639585495,
+              "cosine": 0.9968308210372925,
+              "projection_gain": 0.9958004951477051,
+              "orthogonal_relative_energy": 0.0063152308575809,
+              "field_mse": 0.006540696136653423,
+              "relative_mse": 0.006332866847515106
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0020679235458374,
+              "cosine": 0.9974911212921143,
+              "projection_gain": 0.9995537996292114,
+              "orthogonal_relative_energy": 0.0050323898904025555,
+              "field_mse": 0.005173778161406517,
+              "relative_mse": 0.005032589193433523
+            }
+          ],
+          "latent_rms": 0.7862439751625061,
+          "latent_route_mse": 0.0036082989536225796,
+          "guided_mse": 0.07021958380937576,
+          "guided_relative_mse": 0.06299271434545517
+        },
+        {
+          "norm_ratio": 0.9789597988128662,
+          "cosine": 0.9728167057037354,
+          "projection_gain": 0.9523484706878662,
+          "orthogonal_relative_energy": 0.051394712179899216,
+          "step": 14,
+          "sigma": 0.7578125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9995156526565552,
+              "cosine": 0.9970566630363464,
+              "projection_gain": 0.9965737462043762,
+              "orthogonal_relative_energy": 0.005872176960110664,
+              "field_mse": 0.00611103093251586,
+              "relative_mse": 0.005883915349841118
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0015913248062134,
+              "cosine": 0.9980493783950806,
+              "projection_gain": 0.9996376633644104,
+              "orthogonal_relative_energy": 0.003909892402589321,
+              "field_mse": 0.004041972104460001,
+              "relative_mse": 0.003910023719072342
+            }
+          ],
+          "latent_rms": 0.7624921798706055,
+          "latent_route_mse": 0.004638321232050657,
+          "guided_mse": 0.059201084077358246,
+          "guided_relative_mse": 0.05366537347435951
+        },
+        {
+          "norm_ratio": 0.991083025932312,
+          "cosine": 0.9727665781974792,
+          "projection_gain": 0.9640925526618958,
+          "orthogonal_relative_energy": 0.05277106538414955,
+          "step": 15,
+          "sigma": 0.73046875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0008957386016846,
+              "cosine": 0.9969586730003357,
+              "projection_gain": 0.9978516101837158,
+              "orthogonal_relative_energy": 0.006084544118493795,
+              "field_mse": 0.006321347784250975,
+              "relative_mse": 0.006089159287512302
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0012651681900024,
+              "cosine": 0.9976204633712769,
+              "projection_gain": 0.9988825917243958,
+              "orthogonal_relative_energy": 0.004765513353049755,
+              "field_mse": 0.004931773990392685,
+              "relative_mse": 0.0047667622566223145
+            }
+          ],
+          "latent_rms": 0.7369381189346313,
+          "latent_route_mse": 0.005960462614893913,
+          "guided_mse": 0.05884671211242676,
+          "guided_relative_mse": 0.05406040698289871
+        },
+        {
+          "norm_ratio": 0.9871475696563721,
+          "cosine": 0.9766555428504944,
+          "projection_gain": 0.9641032218933105,
+          "orthogonal_relative_energy": 0.04496534541249275,
+          "step": 16,
+          "sigma": 0.703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0001389980316162,
+              "cosine": 0.9971602559089661,
+              "projection_gain": 0.9972988367080688,
+              "orthogonal_relative_energy": 0.00567303691059351,
+              "field_mse": 0.005873304791748524,
+              "relative_mse": 0.005680332891643047
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0023972988128662,
+              "cosine": 0.9975204467773438,
+              "projection_gain": 0.9999118447303772,
+              "orthogonal_relative_energy": 0.004976739175617695,
+              "field_mse": 0.005127647425979376,
+              "relative_mse": 0.004976747557520866
+            }
+          ],
+          "latent_rms": 0.709587574005127,
+          "latent_route_mse": 0.007659800350666046,
+          "guided_mse": 0.049996763467788696,
+          "guided_relative_mse": 0.046253930777311325
+        },
+        {
+          "norm_ratio": 0.9926338791847229,
+          "cosine": 0.9774619936943054,
+          "projection_gain": 0.9702618718147278,
+          "orthogonal_relative_energy": 0.04391417279839516,
+          "step": 17,
+          "sigma": 0.671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0006211996078491,
+              "cosine": 0.9971046447753906,
+              "projection_gain": 0.9977240562438965,
+              "orthogonal_relative_energy": 0.005789399612694979,
+              "field_mse": 0.00596604123711586,
+              "relative_mse": 0.005794578697532415
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.002614140510559,
+              "cosine": 0.9975448250770569,
+              "projection_gain": 1.0001524686813354,
+              "orthogonal_relative_energy": 0.004930065479129553,
+              "field_mse": 0.005059937946498394,
+              "relative_mse": 0.004930088296532631
+            }
+          ],
+          "latent_rms": 0.6803290843963623,
+          "latent_route_mse": 0.009861172176897526,
+          "guided_mse": 0.047799598425626755,
+          "guided_relative_mse": 0.044798534363508224
+        },
+        {
+          "norm_ratio": 1.0050888061523438,
+          "cosine": 0.9799462556838989,
+          "projection_gain": 0.9849329590797424,
+          "orthogonal_relative_energy": 0.040110453963279724,
+          "step": 18,
+          "sigma": 0.63671875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0014854669570923,
+              "cosine": 0.9973984956741333,
+              "projection_gain": 0.99888014793396,
+              "orthogonal_relative_energy": 0.005211682990193367,
+              "field_mse": 0.005362133961170912,
+              "relative_mse": 0.0052129365503787994
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0011546611785889,
+              "cosine": 0.9974453449249268,
+              "projection_gain": 0.9985971450805664,
+              "orthogonal_relative_energy": 0.005114510655403137,
+              "field_mse": 0.0052715991623699665,
+              "relative_mse": 0.005116479005664587
+            }
+          ],
+          "latent_rms": 0.6492583155632019,
+          "latent_route_mse": 0.012630647979676723,
+          "guided_mse": 0.04203423485159874,
+          "guided_relative_mse": 0.040337465703487396
+        },
+        {
+          "norm_ratio": 1.0021467208862305,
+          "cosine": 0.9828965663909912,
+          "projection_gain": 0.98500657081604,
+          "orthogonal_relative_energy": 0.03406023234128952,
+          "step": 19,
+          "sigma": 0.59765625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0014344453811646,
+              "cosine": 0.997684895992279,
+              "projection_gain": 0.999116063117981,
+              "orthogonal_relative_energy": 0.004638268146663904,
+              "field_mse": 0.004793062806129456,
+              "relative_mse": 0.004639049526304007
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0012296438217163,
+              "cosine": 0.9973218441009521,
+              "projection_gain": 0.9985482096672058,
+              "orthogonal_relative_energy": 0.0053623090498149395,
+              "field_mse": 0.005549096968024969,
+              "relative_mse": 0.005364416632801294
+            }
+          ],
+          "latent_rms": 0.6164149641990662,
+          "latent_route_mse": 0.016136284917593002,
+          "guided_mse": 0.035939909517765045,
+          "guided_relative_mse": 0.0342850461602211
+        },
+        {
+          "norm_ratio": 1.0128141641616821,
+          "cosine": 0.9815414547920227,
+          "projection_gain": 0.9941191077232361,
+          "orthogonal_relative_energy": 0.03751973807811737,
+          "step": 20,
+          "sigma": 0.55859375,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.002333402633667,
+              "cosine": 0.9971631169319153,
+              "projection_gain": 0.9994898438453674,
+              "orthogonal_relative_energy": 0.005692266393452883,
+              "field_mse": 0.005824791267514229,
+              "relative_mse": 0.0056925262324512005
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.000694751739502,
+              "cosine": 0.9969000220298767,
+              "projection_gain": 0.9975926876068115,
+              "orthogonal_relative_energy": 0.006198899820446968,
+              "field_mse": 0.006357681471854448,
+              "relative_mse": 0.006204694509506226
+            }
+          ],
+          "latent_rms": 0.5809267163276672,
+          "latent_route_mse": 0.020486094057559967,
+          "guided_mse": 0.03878571838140488,
+          "guided_relative_mse": 0.03755432367324829
+        },
+        {
+          "norm_ratio": 1.0056583881378174,
+          "cosine": 0.9849420189857483,
+          "projection_gain": 0.9905152916908264,
+          "orthogonal_relative_energy": 0.03022872284054756,
+          "step": 21,
+          "sigma": 0.51171875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0023444890975952,
+              "cosine": 0.9970450401306152,
+              "projection_gain": 0.9993826150894165,
+              "orthogonal_relative_energy": 0.005928977392613888,
+              "field_mse": 0.006082532927393913,
+              "relative_mse": 0.0059293583035469055
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.000885248184204,
+              "cosine": 0.9971076250076294,
+              "projection_gain": 0.9979903101921082,
+              "orthogonal_relative_energy": 0.005786404944956303,
+              "field_mse": 0.005945548415184021,
+              "relative_mse": 0.005790443625301123
+            }
+          ],
+          "latent_rms": 0.5426771640777588,
+          "latent_route_mse": 0.02604122832417488,
+          "guided_mse": 0.03142084926366806,
+          "guided_relative_mse": 0.03031868487596512
+        },
+        {
+          "norm_ratio": 1.0053949356079102,
+          "cosine": 0.9863932728767395,
+          "projection_gain": 0.9917147159576416,
+          "orthogonal_relative_energy": 0.027320750057697296,
+          "step": 22,
+          "sigma": 0.462890625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.002240538597107,
+              "cosine": 0.9967215061187744,
+              "projection_gain": 0.998954713344574,
+              "orthogonal_relative_energy": 0.006575893610715866,
+              "field_mse": 0.006675610318779945,
+              "relative_mse": 0.00657698605209589
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.001263976097107,
+              "cosine": 0.9967693090438843,
+              "projection_gain": 0.9980292320251465,
+              "orthogonal_relative_energy": 0.006467090453952551,
+              "field_mse": 0.006573177874088287,
+              "relative_mse": 0.006470974069088697
+            }
+          ],
+          "latent_rms": 0.5029935836791992,
+          "latent_route_mse": 0.0331081748008728,
+          "guided_mse": 0.02801842801272869,
+          "guided_relative_mse": 0.027389392256736755
+        },
+        {
+          "norm_ratio": 1.0019948482513428,
+          "cosine": 0.9847931265830994,
+          "projection_gain": 0.9867576956748962,
+          "orthogonal_relative_energy": 0.030303064733743668,
+          "step": 23,
+          "sigma": 0.40625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0017417669296265,
+              "cosine": 0.9960363507270813,
+              "projection_gain": 0.9977712631225586,
+              "orthogonal_relative_energy": 0.007938957773149014,
+              "field_mse": 0.008027586154639721,
+              "relative_mse": 0.007943924516439438
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0017685890197754,
+              "cosine": 0.9962456822395325,
+              "projection_gain": 0.9980076551437378,
+              "orthogonal_relative_energy": 0.007521284278482199,
+              "field_mse": 0.007599188480526209,
+              "relative_mse": 0.007525254040956497
+            }
+          ],
+          "latent_rms": 0.4619389772415161,
+          "latent_route_mse": 0.04221081733703613,
+          "guided_mse": 0.03121304325759411,
+          "guided_relative_mse": 0.030478423461318016
+        },
+        {
+          "norm_ratio": 1.0042665004730225,
+          "cosine": 0.9868130683898926,
+          "projection_gain": 0.9910233020782471,
+          "orthogonal_relative_energy": 0.026424070820212364,
+          "step": 24,
+          "sigma": 0.345703125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 1.0014359951019287,
+              "cosine": 0.9957206845283508,
+              "projection_gain": 0.9971506595611572,
+              "orthogonal_relative_energy": 0.00856469850987196,
+              "field_mse": 0.008516820147633553,
+              "relative_mse": 0.008572815917432308
+            },
+            {
+              "null": true,
+              "norm_ratio": 1.0011391639709473,
+              "cosine": 0.995803952217102,
+              "projection_gain": 0.9969383478164673,
+              "orthogonal_relative_energy": 0.008393723517656326,
+              "field_mse": 0.008343634195625782,
+              "relative_mse": 0.008403097279369831
+            }
+          ],
+          "latent_rms": 0.4210965931415558,
+          "latent_route_mse": 0.05401244014501572,
+          "guided_mse": 0.026566939428448677,
+          "guided_relative_mse": 0.026504650712013245
+        },
+        {
+          "norm_ratio": 1.0034579038619995,
+          "cosine": 0.9869381785392761,
+          "projection_gain": 0.9903509020805359,
+          "orthogonal_relative_energy": 0.026133060455322266,
+          "step": 25,
+          "sigma": 0.275390625,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9990847110748291,
+              "cosine": 0.995015561580658,
+              "projection_gain": 0.9941048622131348,
+              "orthogonal_relative_energy": 0.009925995022058487,
+              "field_mse": 0.009655075147747993,
+              "relative_mse": 0.009960749186575413
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9985328912734985,
+              "cosine": 0.9951092600822449,
+              "projection_gain": 0.9936493039131165,
+              "orthogonal_relative_energy": 0.009729001671075821,
+              "field_mse": 0.009461553767323494,
+              "relative_mse": 0.009769332595169544
+            }
+          ],
+          "latent_rms": 0.3834587335586548,
+          "latent_route_mse": 0.0693574771285057,
+          "guided_mse": 0.025619130581617355,
+          "guided_relative_mse": 0.026226168498396873
+        },
+        {
+          "norm_ratio": 0.9976513385772705,
+          "cosine": 0.9766760468482971,
+          "projection_gain": 0.9743821620941162,
+          "orthogonal_relative_energy": 0.04588768631219864,
+          "step": 26,
+          "sigma": 0.1953125,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9914631843566895,
+              "cosine": 0.9926729202270508,
+              "projection_gain": 0.9841986298561096,
+              "orthogonal_relative_energy": 0.014352328144013882,
+              "field_mse": 0.013435844331979752,
+              "relative_mse": 0.014602011069655418
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9925452470779419,
+              "cosine": 0.9934966564178467,
+              "projection_gain": 0.986090362071991,
+              "orthogonal_relative_energy": 0.012771889567375183,
+              "field_mse": 0.011924784630537033,
+              "relative_mse": 0.012965369038283825
+            }
+          ],
+          "latent_rms": 0.35437196493148804,
+          "latent_route_mse": 0.08967629075050354,
+          "guided_mse": 0.04308203607797623,
+          "guided_relative_mse": 0.04654396325349808
+        },
+        {
+          "norm_ratio": 0.989781379699707,
+          "cosine": 0.9704278111457825,
+          "projection_gain": 0.9605113863945007,
+          "orthogonal_relative_energy": 0.0570850595831871,
+          "step": 27,
+          "sigma": 0.1044921875,
+          "branches": [
+            {
+              "null": false,
+              "norm_ratio": 0.9735870957374573,
+              "cosine": 0.9856866598129272,
+              "projection_gain": 0.95965176820755,
+              "orthogonal_relative_energy": 0.02694031223654747,
+              "field_mse": 0.02226155996322632,
+              "relative_mse": 0.028568292036652565
+            },
+            {
+              "null": true,
+              "norm_ratio": 0.9711361527442932,
+              "cosine": 0.9859598278999329,
+              "projection_gain": 0.9575011730194092,
+              "orthogonal_relative_energy": 0.026296937838196754,
+              "field_mse": 0.021856429055333138,
+              "relative_mse": 0.028103090822696686
+            }
+          ],
+          "latent_rms": 0.34464144706726074,
+          "latent_route_mse": 0.11655864119529724,
+          "guided_mse": 0.04626595228910446,
+          "guided_relative_mse": 0.05864441767334938
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "Same frozen body; one fit prompt and one held prompt, not a broad quality gate.",
+    "Reuse exact captured trajectories by file hashes; no generation, encoding or updates. Geometry is global, not per-token.",
+    "Teacher/student distribution differences alone do not establish causality."
+  ],
+  "cache_files": [
+    {
+      "index": 0,
+      "route": "native",
+      "sha256": "dd0f1381f57c63ed33a258034cccc4148425a4d008ceca44e69ef544e4fcf414"
+    },
+    {
+      "index": 0,
+      "route": "student",
+      "sha256": "3a7ce7bd36254c9277f8c88f7b5ae5085b8bbcdadecc610c5ca2cf16b19b5235"
+    },
+    {
+      "index": 28,
+      "route": "native",
+      "sha256": "bc861f4eb732f323d5b299615e58d9886b3e8774c22353b0ad04804d732d1c73"
+    },
+    {
+      "index": 28,
+      "route": "student",
+      "sha256": "7d0270da1bcf4fc97aed69e94675b66d6e27d668113de515889f3b6b446be72f"
+    }
+  ],
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "statistics": [
+    {
+      "index": 0,
+      "route": "native",
+      "norm_ratio": 0.981467027749334,
+      "cosine": 0.9590872206858226,
+      "projection_gain": 0.9417514694588525,
+      "orthogonal_relative_energy": 0.07563720137945243,
+      "guided_relative_mse": 0.08226317606334176,
+      "scalar_parallel_error": 0.006625972958692954,
+      "last7_projection_gain": 0.9735939076968602
+    },
+    {
+      "index": 0,
+      "route": "student",
+      "norm_ratio": 0.9734569447381156,
+      "cosine": 0.964866042137146,
+      "projection_gain": 0.9400461997304644,
+      "orthogonal_relative_energy": 0.06261354139340776,
+      "guided_relative_mse": 0.07034800640706505,
+      "scalar_parallel_error": 0.007734459457874162,
+      "last7_projection_gain": 0.9906970092228481
+    },
+    {
+      "index": 28,
+      "route": "native",
+      "norm_ratio": 0.9901460217578071,
+      "cosine": 0.9633175986153739,
+      "projection_gain": 0.9538798608950206,
+      "orthogonal_relative_energy": 0.07031493248151881,
+      "guided_relative_mse": 0.07297974824905396,
+      "scalar_parallel_error": 0.0026648143379682005,
+      "last7_projection_gain": 0.96807347876685
+    },
+    {
+      "index": 28,
+      "route": "student",
+      "norm_ratio": 0.9863516922507968,
+      "cosine": 0.974955752491951,
+      "projection_gain": 0.961763511810984,
+      "orthogonal_relative_energy": 0.04760110757446715,
+      "guided_relative_mse": 0.049622900784015656,
+      "scalar_parallel_error": 0.0020217922402993188,
+      "last7_projection_gain": 0.9836079222815377
+    }
+  ],
+  "decision": "Velocity norm is near native (mean0.973\u20130.990); orthogonal relative error dominates over scalar projection-gain error on these inputs. Simple global output scaling is not supported as the next repair. This does not identify which topology operation causes the error.",
+  "verification": "All prior guided errors/latent metrics are exactly reproduced from captured trajectory files; native/init/encoded hashes match. No new generation, encoding or updates. Scalar/orthogonal decomposition uses student = gain*native + residual; total relative MSE = (gain-1)^2 + residual energy/native energy."
+}

@@ -1,0 +1,180 @@
+{
+  "rating": "general",
+  "updates": 0,
+  "resolution": 512,
+  "steps": 28,
+  "seed": 63,
+  "vae_swap": false,
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "weights_sha256": "dde327598e3b4650885fef576d14f46edf97226450477d2e6d50d623144d3f19",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "reused_active_samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fit\\p28_boundary_detail_cfg1.png",
+      "sha256": "16d28919de3f1a0af5ad153afe5f3c0d0d3441d4b23f30cbddcc23b621110e7b"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fit\\p28_boundary_detail_cfg4.png",
+      "sha256": "f136b16f1be85c36716fdb0830bfb4094f646bbb21af7465204911b1e18e1899"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fit\\p29_boundary_detail_cfg1.png",
+      "sha256": "cf0e0bd15f042a14a8e5983f8fe1db80f9b5344403efcbdd605c8272cd5ce7f6"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fit\\p29_boundary_detail_cfg4.png",
+      "sha256": "7479699398a2e7abab80e688122fcffad5fd14b37205ef49c4a05a7c1b8ad283"
+    }
+  ],
+  "samples": [
+    {
+      "arm": "inference_off",
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p28_inference_off_cfg1.png",
+      "sha256": "5151f0d89cd108f20f8c68c234aeb0ad253f7641fcdcb0d7d19640e6587b26ee",
+      "latent_sha256": "8244011f97258e4716e6255eb1080e39664d814115895e286ddf62644253311b"
+    },
+    {
+      "arm": "inference_off",
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p28_inference_off_cfg4.png",
+      "sha256": "d15cd329bbe4278d21f366d3e48a1e2f81e5340ad748acf9e48ee01ab4d1b10b",
+      "latent_sha256": "491bbf198d5501b97f42e0506cec31442c53197803d5cac21942cf78679327cb"
+    },
+    {
+      "arm": "inference_off",
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p29_inference_off_cfg1.png",
+      "sha256": "9b3831929123023b6ee5eb1b58b8e747d2edae6631e9e45de501d4217a448746",
+      "latent_sha256": "95782e71ced6e1bafe839af0fa79a71bf96753be4e75f370c41c19a8e6245670"
+    },
+    {
+      "arm": "inference_off",
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p29_inference_off_cfg4.png",
+      "sha256": "04de1b9f581f0be726caa3c8b2ebf38945c98a716872c1075a0e5dba423b9ad5",
+      "latent_sha256": "2f54af466b0c40ee1923922e92a05bb9f586d3d67e0c251dfccb044cf46c4b1d"
+    },
+    {
+      "arm": "native",
+      "index": 30,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p30_native_cfg1.png",
+      "sha256": "6833c1d181e5f2fe37d7ca96c2ac5aed33117b65db4761ca3805aeefcf9c6ebc",
+      "latent_sha256": "4451fef383676f13867e57c2adfb21e39e23a2a18e2e111a52e5db3d36ab8984"
+    },
+    {
+      "arm": "native",
+      "index": 30,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p30_native_cfg4.png",
+      "sha256": "db9bbd12a9d495ba9b43d8c4f62c3fe2f7e7ca744eb64862957e6eea22016806",
+      "latent_sha256": "081e1bf7f234c50a40b4a4ea4364f8d6a514cb5818a0413c046493a017729c76"
+    },
+    {
+      "arm": "native",
+      "index": 31,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p31_native_cfg1.png",
+      "sha256": "afeaaab52b1ce67a61e9820528a1180a2ea38df58dfeeda3447ac37c51255604",
+      "latent_sha256": "dafc7d1cbef2e640aa1d1af24de3f8e99803c496fc3fd1a955a7f48960421b4b"
+    },
+    {
+      "arm": "native",
+      "index": 31,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p31_native_cfg4.png",
+      "sha256": "08b92294502484267c4f004575aadca79c460b745cacaa4cd8a659ca1949cb80",
+      "latent_sha256": "bec20bd8432b0a6b04a310d40eb9ca492623d3438051d304fe6033ef5aae4c1f"
+    },
+    {
+      "arm": "active",
+      "index": 30,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p30_active_cfg1.png",
+      "sha256": "5f701693302b5e48b9a28a6f94daf67026a6059698b94f0642e29507dac6f744",
+      "latent_sha256": "5245fbcf3f123f431c6eaba758eeb35b908fbdc79b4aaf3e122bd593b2c115c9"
+    },
+    {
+      "arm": "active",
+      "index": 30,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p30_active_cfg4.png",
+      "sha256": "d8bcc5fa8b7f9cde642a3159200a7c42a2fcd705d2205679ea43ebd4ec1e28e5",
+      "latent_sha256": "11e6f0dff954c28c5373d48fbc3267181a43801c8a1ddfb8f3e66a41f2376ea0"
+    },
+    {
+      "arm": "active",
+      "index": 31,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p31_active_cfg1.png",
+      "sha256": "30962e31c716a318516daa66eebf718f32eca70527f4f913a1967341ed1afe45",
+      "latent_sha256": "4ac7b3d0bc0b8e565a0f8e1665f5b40385981141b9883e29cb11d7339bc30435"
+    },
+    {
+      "arm": "active",
+      "index": 31,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_holdout\\p31_active_cfg4.png",
+      "sha256": "e2bf8884f9b8f85168e20f75bf6bb278dd4865d3cf0ca3b0ce856c5ee50c03d4",
+      "latent_sha256": "bc8b0a97125b93940f13fb7be5d0405c10bcb7e5f1f63cb9ffdc4b63d6cd6eb1"
+    }
+  ],
+  "limits": [
+    "Same fitted65 structural weights in active-vs-inference-off ablation; no SR or optimization.",
+    "Native vs active on two previously unused held prompts; same frozen native body/noise/conditioning.",
+    "Four held prompts at one seed do not establish general/default/Full FT or combined-codec acceptance."
+  ],
+  "base_structural_before_sha256": "23ad0a76e41851259b98c02de805d6f0ec9268ca5bbaa52fe4db3c07c970317d",
+  "base_structural_after_sha256": "23ad0a76e41851259b98c02de805d6f0ec9268ca5bbaa52fe4db3c07c970317d",
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "ablation_pixel_metrics": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "mean_absolute_255": 1.2917060852050781,
+      "max_absolute_255": 64.0,
+      "unequal_channel_fraction": 0.6043701171875
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "mean_absolute_255": 3.3382174968719482,
+      "max_absolute_255": 156.0,
+      "unequal_channel_fraction": 0.8172162373860677
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "mean_absolute_255": 0.8265469670295715,
+      "max_absolute_255": 57.0,
+      "unequal_channel_fraction": 0.47859827677408856
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "mean_absolute_255": 2.0467045307159424,
+      "max_absolute_255": 111.0,
+      "unequal_channel_fraction": 0.6656481424967448
+    }
+  ],
+  "observations": {
+    "ablation_cfg4": "With the same fitted65 base structural tensors, setting learned gains to zero retains both inspected coarse compositions/faces; PNGs differ but no clear visual degradation.",
+    "additional_cfg4_p30": "Character head/body/legs remain, but surrounding hands disappear and clothing/face/pose simplify relative to native.",
+    "additional_cfg4_p31": "Eating-burger character is recognizable; mouth/burger contact, hands and line quality degrade, with unwanted color in the monochrome scene.",
+    "cfg1": "Native30/31 also contain overlapping/dragon-like scene fragments; active hybrid adds distortions. Do not attribute all fragmentation to conversion."
+  },
+  "decision": "Retain bounded coarse-structure initialization candidate, not a proved inference-gain benefit. The fitted structural trajectory is part of the observed difference from the zero-rate fit. Proceed to matched Full FT before adoption; four prompts at one seed are not general quality acceptance."
+}

@@ -418,8 +418,25 @@ individual records' limitations.
    candidate, not a default or proved general/Full FT improvement. Old65-tensor
    control has different SR ownership; use the matched67-tensor arm for comparison.
    Whole-probe63.021/79.140s and4.509GiB are not isolated boundary overhead.
-   Next verify additional held prompts and matched Full FT before public factory,
-   payload/UI/default wiring or a revised four-condition performance matrix.
+   Additional held prompts retain some CFG4 shapes but lose hands, pose and
+   mouth/burger contact. Turning gains off only at inference preserves the two
+   original coarse compositions: direct inference-gain benefit is not proved.
+   The matched222-update Full FT comparison then regresses both candidates;
+   two-person scenes become strips/figure fragments and the active burger sample
+   loses its object/hands. All634 optimizer counters reach222, native bodies
+   change and item/null/sigma/noise records match. Last50 losses0.16975/0.16996
+   are not quality recovery. Own11.641/11.645GiB and103.571/102.011s are bounded
+   probe costs, not a new matrix. Reject this Full FT recipe as a default.
+   Holdout/Full FT evidence lives in the two corresponding boundary_detail JSON
+   records. The matched native-only control completes the same222 exposures,
+   native LR and starting RNG with567 optimizer counters reaching222. CFG4
+   retains two figures, external hands and a burger at the mouth, though text
+   contamination remains and CFG1 still fragments. Thus the exposure recipe
+   alone does not explain converted-model failures. Different parameter sets
+   alter clipping/SR; the precise cause is not established. See
+   `hybrid_anima_native_matched_fullft_2026-10.json`. Inspect update allocation
+   and stage information next; public factory/payload/UI/default promotion and
+   revised four-condition matrix remain open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

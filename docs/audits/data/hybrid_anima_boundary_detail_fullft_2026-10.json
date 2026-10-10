@@ -1,0 +1,156 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "updates_per_arm": 222,
+  "mode": "matched_boundary_detail_fullft",
+  "native_learning_rate": 5e-06,
+  "structural_learning_rate": 5e-05,
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "arms": [
+    {
+      "arm": "active",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p28_active_cfg1.png",
+          "sha256": "9e2045253f38dbd514d0766b58a20607c3d153d37cc3d14ed5823dd239d27140"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p28_active_cfg4.png",
+          "sha256": "28f13567c89ba406df670d408a597b8b6cfc44c56b8de4f03649eeba0d97f08c"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p29_active_cfg1.png",
+          "sha256": "9a0707e67b9b38bfd4c7070ff90b7ec5286cd071aec906c83319549571173878"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p29_active_cfg4.png",
+          "sha256": "c83e4689beebfeab5a22dac93cbab0d11dd83bcb1bcd1e979ef8e9f7bf6a4953"
+        },
+        {
+          "index": 30,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p30_active_cfg4.png",
+          "sha256": "1996cdbb8921098c0b93149135bad894526d0508a9e09c031a248988d95e28b1"
+        },
+        {
+          "index": 31,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p31_active_cfg4.png",
+          "sha256": "70ebf6357c1b2d728ae8b7d71b33067cf003d0a143a3ee3c46a29bfd2a9a762e"
+        }
+      ],
+      "init_sha256": "dde327598e3b4650885fef576d14f46edf97226450477d2e6d50d623144d3f19",
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "group_counts": [
+        567,
+        65,
+        2
+      ],
+      "group_rates": [
+        5e-06,
+        5e-05,
+        5e-05
+      ],
+      "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "optimizer_entries": 634,
+      "optimizer_counters": [
+        222
+      ],
+      "peak_allocated_gib": 11.64136028289795,
+      "native_after_sha256": "3d62ba129d920d0dbed20806fc75e305e6287265ae1c085f36d8cafda15885a4",
+      "private_fullft_bytes": 4203396215,
+      "last50_loss_mean": 0.1697515307366848,
+      "cuda_update_seconds": 103.57140362548829
+    },
+    {
+      "arm": "zero_rate",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p28_zero_rate_cfg1.png",
+          "sha256": "370a863f2073397e6cc7278d46c627f1fb435399556995def3fba588fc135c10"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p28_zero_rate_cfg4.png",
+          "sha256": "529fe929e60342b401a94b3ce6fb5b91b7b697e396e328b3a2b8dbf0e70cf522"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p29_zero_rate_cfg1.png",
+          "sha256": "4314daa728cf23652671f9e09830de257c9f1a6271ba9704952b2f87cdb9b7c7"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p29_zero_rate_cfg4.png",
+          "sha256": "082a0225d2cbfbcfee82080a63049387424671dbfde22c6173b7e884758e912b"
+        },
+        {
+          "index": 30,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p30_zero_rate_cfg4.png",
+          "sha256": "29c74265ca3cd825e9a70085b176c5d215986640462177d9bf959baee8889a74"
+        },
+        {
+          "index": 31,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_detail_fullft\\p31_zero_rate_cfg4.png",
+          "sha256": "f48f272d82f25720828d71f336ec0a41833ea1da604784ff1283138dc16fc290"
+        }
+      ],
+      "init_sha256": "d9e6d7df802d5f89609ced83b3b3143dadc9f94e9e6b41cc674e74b72a24b3b1",
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "group_counts": [
+        567,
+        65,
+        2
+      ],
+      "group_rates": [
+        5e-06,
+        5e-05,
+        0.0
+      ],
+      "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "optimizer_entries": 634,
+      "optimizer_counters": [
+        222
+      ],
+      "peak_allocated_gib": 11.645267486572266,
+      "native_after_sha256": "642c5070e99e74660e5d6490a351c5d75869741a7f20892ac50f8aa3d09d37c7",
+      "last50_loss_mean": 0.16996437087655067,
+      "cuda_update_seconds": 102.01098184204102
+    }
+  ],
+  "limits": [
+    "Two arms start from their respective matched200-update active/zero-rate teacher fits; native bodies identical, structural states differ.",
+    "Same634 optimizer tensors, start RNG,222 supervised item/dropout/noise/sigma exposures; zero-rate gains stay exactly zero.",
+    "Teacher initialization and supervised Full FT are separate; no teacher loss during Full FT.",
+    "Equal updates, not equal-total-time or general quality; backward may be nondeterministic.",
+    "Private boundary gains have no public topology/payload lineage. Only active Full FT body is retained locally."
+  ],
+  "matched_exposures": 222,
+  "observations": {
+    "active_cfg4_p28": "Large black horizontal spurious-text strip; upper figure fragments but missing/deformed lower bodies. Regresses from initialized two-person composition.",
+    "active_cfg4_p29": "Recognizable girl face with large warped head, narrowed body and simplified/deformed limbs.",
+    "active_cfg4_p30": "Recognizable head/body/legs but external hands disappear; pose/crop, hands and clothing are distorted.",
+    "active_cfg4_p31": "Face outline remains but flat pupils, O-mouth and loss of burger/holding hands.",
+    "zero_rate_cfg4": "Two-person scene also fails; p29 has duplicated hair/anatomy defects, p30 loses surrounding hands, p31 has floating burger and missing hands.",
+    "cfg1_both": "Collage/scene fragments, elongated or disconnected figures and malformed face/anatomy. Some shapes survive but no stable recovery."
+  },
+  "decision": "Reject this222-update Full FT recipe as quality acceptance/default. Coarse initialization improvement did not persist; not a proof that every boundary fusion or longer training fails. Verify matched native-only supervised control before attributing the failure to conversion."
+}

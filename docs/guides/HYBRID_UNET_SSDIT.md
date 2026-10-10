@@ -1611,3 +1611,57 @@ owner run#174. Next test a separate, higher correction-module Full FT LR with
 native-body rate/init/data held fixed, and capture boundary RNG state for later
 comparisons. Existing owner runs and defaults remain unchanged. Evidence:
 `docs/audits/data/hybrid_anima_trained_routing_2026-10.json`.
+
+### Boundary-detail holdout and supervised Full FT control
+
+The private boundary-gain candidate now has four held general prompts at512px,
+seed63 and28 sampling steps. On the two additional CFG4 prompts, a kneeling
+character and an eating-burger character remain recognizable, but surrounding
+hands, mouth/burger contact, pose and monochrome line quality degrade relative
+to native. Native CFG1 also fragments on these prompts; conversion is not the
+only source of that behavior. With the same fitted65 structural tensors,
+turning gains off only at inference preserves the original two CFG4 coarse
+compositions. Pixel differences are nonzero (mean absolute0.83–3.34/255 over
+the four ablations), but are not a perceptual quality score. Thus the earlier
+active-versus-zero-rate fitting result does not establish a direct inference
+gain benefit: the fitted structural trajectory also differs.
+
+Both matched candidates subsequently complete222 supervised Full FT updates
+without teacher loss. They use identical original native-body hashes, starting
+CPU/CUDA RNG, cached inputs and item/null/sigma/noise records. Each optimizer
+contains567 native,65 existing structural and2 gain tensors; native LR5e-6,
+structural LR5e-5 and gain LR5e-5 or0. All634 counters reach222 and native bodies
+change. Last50 losses0.16975/0.16996 and whole-update103.571/102.011s do not prove
+quality. Own peaks11.641/11.645GiB are512px probe measurements, not a replacement
+for the1024px four-condition matrix.
+
+After Full FT both arms fail the two-person composition with horizontal strips,
+spurious lettering and incomplete figures. Single faces remain recognizable
+but anatomy degrades; the active eating-burger sample loses the burger/hands.
+CFG1 still fragments. Reject this recipe as a default or quality acceptance;
+do not infer that every boundary fusion or longer training is impossible.
+A matched native-only supervised control distinguishes this exposure recipe
+from conversion below. The active private body is retained locally without
+optimizer state; it has no public gain/payload lineage and proves no resume
+contract. No owner run, checkpoint or runtime default changes.
+
+Evidence: `docs/audits/data/hybrid_anima_boundary_detail_holdout_2026-10.json`
+and `docs/audits/data/hybrid_anima_boundary_detail_fullft_2026-10.json`.
+
+The native-only control completes the same222 cached exposures, native LR5e-6,
+BF16 AdamW8bit/SR, starting RNG and24 checkpoint blocks. Its567 optimizer
+counters reach222 and native-body hashes change. Parameter-set differences
+change clipping and SR ownership; this is not bitwise update parity. Last50
+loss0.15437,96.247s whole-update compute and11.586GiB own peak are bounded
+probe facts, not quality metrics or a new matrix.
+
+Its CFG4 outputs retain two back-facing figures, external hands touching a
+kneeling character's head, and a burger held at the mouth. The pointing girl
+also has more complete face/body/limbs. Unwanted text/panel layout persists in
+the two-person scene; CFG1 still fragments there. This is not broad native
+quality acceptance, but disproves an explanation based solely on the exposure
+recipe for the hybrid's missing figures/hands/objects. Conversion/optimization
+interactions still require improvement before a default is selected. Next
+inspect update allocation and retained stage information rather than promoting
+the boundary gain from its initialization samples or repeating loss-only fits.
+Evidence: `docs/audits/data/hybrid_anima_native_matched_fullft_2026-10.json`.

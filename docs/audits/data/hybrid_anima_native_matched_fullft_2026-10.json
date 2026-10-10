@@ -1,0 +1,71 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "topology": null,
+  "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_matched_fullft\\p28_native_cfg1.png",
+      "sha256": "706a872c2ff03bfe789d8fc592724e129390e30bb730276d256e739e6c2468ad"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_matched_fullft\\p28_native_cfg4.png",
+      "sha256": "a3074e62f123924f3d83f5fe87e8716a379ac4637bea547c97cfbeec10b5686d"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_matched_fullft\\p29_native_cfg1.png",
+      "sha256": "6ef761299776368aa2a3aa467c1849be13d1791c972ccab13c680e1b74236463"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_matched_fullft\\p29_native_cfg4.png",
+      "sha256": "197e1fa04da78caec3fdccae902cf62e2f964343470335f2f9bc221672ca66d8"
+    },
+    {
+      "index": 30,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_matched_fullft\\p30_native_cfg4.png",
+      "sha256": "0b0b33f7d5dccf2153b33427ee7937cca0ec49c387b7485d0d40f2646c49b89a"
+    },
+    {
+      "index": 31,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_matched_fullft\\p31_native_cfg4.png",
+      "sha256": "9ee9ddf207f45c0188c2a605038cd8135fbede6b7b1a01731c2ce6a6b7066e6e"
+    }
+  ],
+  "native_learning_rate": 5e-06,
+  "limits": [
+    "Same222 exposure/noise/sigma sequence and native learning rate as hybrid arms.",
+    "Only567 optimizer tensors; SR ownership and gradient clipping set differ. Not bitwise update parity.",
+    "No owner runs, checkpoints or API model are changed; no optimizer/payload saved."
+  ],
+  "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+  "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+  "optimizer_entries": 567,
+  "optimizer_counters": [
+    222
+  ],
+  "peak_allocated_gib": 11.586238861083984,
+  "native_after_sha256": "c4f8eccac6775cc115cc41d3cf0b006087cafbae03eac8b334f53ec899fc5b87",
+  "matched_exposures": 222,
+  "last50_loss_mean": 0.15437496960163116,
+  "cuda_update_seconds": 96.24700579833984,
+  "observations": {
+    "cfg4_p28": "Two coherent back-facing figures remain, with unwanted large text/panel layout. Much more complete figures than both hybrid Full FT arms.",
+    "cfg4_p29": "Coherent girl face, pointing arm, body, bag and skirt; more complete anatomy than hybrid.",
+    "cfg4_p30": "Kneeling character with both external hands touching head retained; hybrid loses those hands.",
+    "cfg4_p31": "Girl biting burger with holding hands retained; hybrid loses object/contact/hands or floats burger.",
+    "cfg1": "P28 still has collage/fragmented panels and lettering; p29 has recognizable face/body with line/anatomy defects. Not general quality acceptance."
+  },
+  "decision": "This matched native training recipe retains more CFG4 composition/detail than both converted Full FT arms. Conversion/optimization interactions remain an actionable problem; the exposure recipe alone does not explain loss of objects/figures. Different parameter sets change clipping/SR; exact causal attribution is not established. No preset promotion."
+}

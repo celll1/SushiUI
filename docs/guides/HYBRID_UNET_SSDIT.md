@@ -42,6 +42,12 @@ The requirement/evidence audit and remaining owner evaluation are recorded in
    topology and declared codec. Confirm the graph, native/shared versus added
    parameter counts and calibration metadata correspond to that artifact.
 
+Edit config refreshes the model index, including checkpoints added outside the
+UI. Windows path spelling differences do not hide architecture controls, and
+the current selection remains visible through architecture filters. An absent
+model retains its saved path with an explicit index warning. Selecting a newly
+initialized artifact also refreshes the index before changing the config.
+
 The native-moment codec fitting comparison described later is experimental and
 is not a calibration option in these controls. Current matched training probes
 show prompt-dependent tendencies; their results do not guarantee the standard

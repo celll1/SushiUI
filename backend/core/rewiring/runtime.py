@@ -39,6 +39,13 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
             update = F.interpolate(delta, size=(height // grid_groups, width), mode="bilinear", align_corners=False)
             if extensions is not None:
                 update = extensions.up(entry["region"], update)
+                phase_up = getattr(extensions, "up_from_coarse", None)
+                if phase_up is not None:
+                    correction = phase_up(entry["region"], delta, update)
+                    if correction is not None:
+                        if correction.shape != update.shape:
+                            raise ValueError("Coarse up correction changed the restored grid layout")
+                        update = update + correction.to(update)
                 fusion = getattr(extensions, "boundary_fusion", None)
                 if fusion is not None:
                     correction = fusion(entry["region"], saved, low_in, update, height, width)

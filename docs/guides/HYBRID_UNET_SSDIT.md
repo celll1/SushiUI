@@ -1727,3 +1727,35 @@ The next architecture question is the information layout at down/up and fusion,
 rather than promoting rank512 from its field loss. Owner artifacts and presets
 remain unchanged. Evidence:
 `docs/audits/data/hybrid_anima_boundary_capacity_fit_2026-10.json`.
+
+### Spatial-phase boundary control
+
+A private branch separates the2×2 positions before channel projection. Down
+uses per-token LayerNorm, pixel-unshuffle, rank64 mixing and a zero-output
+projection. Up receives the original coarse delta, projects to four output
+phases and pixel-shuffles, after existing fine-grid up correction. The pack
+itself retains position order; the subsequent bottleneck remains lossy. This
+is not an invertible boundary or a quality guarantee. Default execution has
+no coarse-up callback and is unchanged.
+
+Fourteen new CPU cases verify independent phase-layout oracles, zero identity,
+staged gradients, nested/grouped grids with three checkpoint and three skip
+policies, other-root isolation, cleanup/transfer failure and shape rejection.
+Together with32 existing runtime/hybrid cases,46 tests pass. Context ownership
+is temporary and root-specific; its weights have no public topology lineage.
+
+The Anima candidate adds2,629,632 weights in12 tensors to the same fitted319
+initialization. Original51/14 tensor groups keep LR0.001/0.00025; new phase
+tensors use0.00025. All77 counters reach200, new output projections receive
+initial gradients and all phase parameters receive final gradients. The native
+body hash is exact. Same200 cached item/null/sigma/noise records, starting RNG
+and first field loss match the field-only control; extra tensors change SR
+draw ownership. Last50 field error0.02833 versus0.02949 does not prove quality.
+Whole-update66.861s and4.519GiB own peak are initialization probe costs only.
+
+Held CFG4 has missing heads/figures, large cyan bands, spurious lettering and
+deformed or absent facial detail; CFG1 retains collage fragments. Reject this
+recipe as a default. Explicit rank64 private-context restoration reproduces
+all77 saved tensors on CPU, but this is not public payload/optimizer/resume,
+Full FT or combined-codec acceptance. No owner config/default is changed.
+Evidence: `docs/audits/data/hybrid_anima_phase_boundary_fit_2026-10.json`.

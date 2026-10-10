@@ -1,0 +1,162 @@
+{
+  "rating": "general",
+  "mode": "private_phase_boundary_control",
+  "updates": 200,
+  "resolution": 512,
+  "vae_swap": false,
+  "init_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "base_module_before_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+  "correction_parameters": 2629632,
+  "reused_control": {
+    "arm": "field_only",
+    "feature_weight": 0.0,
+    "samples": [
+      {
+        "index": 28,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg1.png",
+        "sha256": "669caeaeaf6f8cc35213ac2253ce83319a2bd8386ee95403b19e0376c3d24a10"
+      },
+      {
+        "index": 28,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg4.png",
+        "sha256": "685cf32f067196ada35f07bae1ad574cefe9d50b51aa59217995c2e72363d381"
+      },
+      {
+        "index": 29,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg1.png",
+        "sha256": "1c0bfa027d61b6f3217c6392bbaf2668f224183cbb76d031283ac3645cd045b9"
+      },
+      {
+        "index": 29,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg4.png",
+        "sha256": "b045d164086a828ea0ffd2a27380b3018400cb159f1297e24d0a894305ccd632"
+      }
+    ],
+    "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "module_before_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+    "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+    "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+    "optimizer_entries": 65,
+    "optimizer_counters": [
+      200
+    ],
+    "peak_allocated_gib": 4.524318218231201,
+    "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "module_file_sha256": "2532e2fb055d10cce0526dc6487f5b867557a1dcee5a41c0c7606d74b461c942"
+  },
+  "samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_phase_boundary_fit\\p28_phase_boundary_cfg1.png",
+      "sha256": "bc98fc5e38d9fe55c42ae5b19052e32dfc1daf151c6dcefde78021bacdab731d"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_phase_boundary_fit\\p28_phase_boundary_cfg4.png",
+      "sha256": "940eb559e72fc5c6285162c258358d324736731fda6b481c0ee52b9816a08240"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_phase_boundary_fit\\p29_phase_boundary_cfg1.png",
+      "sha256": "02389aa6aba194ce72f0c9fc5d48ed56b354c84a1d78b89e9b874cf1c6f351df"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_phase_boundary_fit\\p29_phase_boundary_cfg4.png",
+      "sha256": "851dbb521ea9d246f758493ab072299864d7f8dc0bd5ba35aa8c7082969a14df"
+    }
+  ],
+  "limits": [
+    "Zero-output rank64 phase-packed down and phase-expanded up branches; temporary state has no public declaration. Up receives original coarse delta after existing fine-grid up correction.",
+    "Existing field-only continuation reused by hashes; same initialization, encoded exposures and initial RNG boundary.",
+    "Additional optimizer parameters change SR draw consumption; no bitwise old-weight trajectory equality is claimed.",
+    "Equal200 updates, not equal-total-compute; Full FT/combined codec/default quality acceptance remain separate.",
+    "New12 phase tensors LR0.00025; original51/14 groups stay0.001/0.00025. Down preserves phase coordinates before projection; up expands original coarse delta to four spatial phases."
+  ],
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "group_rates": [
+    0.001,
+    0.00025,
+    0.00025
+  ],
+  "group_counts": [
+    51,
+    14,
+    12
+  ],
+  "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+  "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+  "first_output_gradient_norms": {
+    "down.downup_r0": 0.0004095195617992431,
+    "down.downup_r1": 0.00036817032378166914,
+    "up.downup_r0": 0.036350373178720474,
+    "up.downup_r1": 0.041793640702962875
+  },
+  "optimizer_entries": 77,
+  "optimizer_counters": [
+    200
+  ],
+  "final_correction_gradient_norms": {
+    "down.downup_r0.norm.weight": 2.755237255769316e-05,
+    "down.downup_r0.norm.bias": 1.555306516820565e-05,
+    "down.downup_r0.reduce.weight": 0.0020142148714512587,
+    "down.downup_r0.expand.weight": 0.0009031337685883045,
+    "down.downup_r1.norm.weight": 2.463544888087199e-06,
+    "down.downup_r1.norm.bias": 4.623921086022165e-06,
+    "down.downup_r1.reduce.weight": 0.0003846613399218768,
+    "down.downup_r1.expand.weight": 0.0006199811468832195,
+    "up.downup_r0.reduce.weight": 0.004073282238095999,
+    "up.downup_r0.expand.weight": 0.000979020376689732,
+    "up.downup_r1.reduce.weight": 0.0048440624959766865,
+    "up.downup_r1.expand.weight": 0.0011166180483996868
+  },
+  "peak_allocated_gib": 4.518962860107422,
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "private_module_sha256": "521b97f5e1e005767213aa3a7828f9835d81aa0be9ee003d70af3419106bc680",
+  "matched_exposures": 200,
+  "previous_concat_samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p28_concat_cfg1.png",
+      "sha256": "9a701c889e8d6c8d63f0bb16ece0fd3c25ce2125a99c33d8e4df001c12e5a09a"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p28_concat_cfg4.png",
+      "sha256": "39d88b5a60be091362672078358da77414acf44e0978e6de8aefbc7939ebe369"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p29_concat_cfg1.png",
+      "sha256": "2eab9615d44c9b8b83cd6d6a4ca94d6ff635017352eb650bf3dbe15d601f5c05"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_concat_fit\\p29_concat_cfg4.png",
+      "sha256": "5a8066e6dc93237a3ae47b1b5c9f453016c231f891c824675d42bb70b79e3950"
+    }
+  ],
+  "private_explicit_context_restore": "77 tensors exact under explicitly configured rank64 phase context; public declaration does not describe these added weights.",
+  "last50_field_mean": 0.02833119441755116,
+  "cuda_update_seconds": 66.86089123535156,
+  "control_last50_field_mean": 0.029491450693458317,
+  "observations": {
+    "p28_cfg4": "One narrow back-facing body with missing head/person, large cyan horizontal bands and spurious lettering; two-person structure not retained.",
+    "p29_cfg4": "One girl silhouette with absent/deformed facial details, bent/changed pose and washed cyan colors; no stable face recovery.",
+    "cfg1": "Scene/collage mixing, repeated limb/hair fragments and malformed head/body on both prompts."
+  },
+  "decision": "Reject this200-update rank64 phase-branch recipe as default/quality acceptance. Spatial phase operation, gradients and explicit private-state restoration work; neither general quality nor public payload/Full FT/combined-codec acceptance is proved. Different extra optimizer tensors change SR draw ownership."
+}

@@ -452,8 +452,16 @@ individual records' limitations.
    remain broken with color/band defects. Reject this recipe; neither all
    capacity layouts nor longer fitting are ruled out. Record:
    `hybrid_anima_boundary_capacity_fit_2026-10.json`. Down/up/fusion information
-   layout remains the next question; public default promotion and final matrix
-   remain open.
+   A private spatial-phase down/up branch now separates2×2 positions before
+   mixing and expands original coarse delta into four output phases. Fourteen
+   new cases plus32 existing runtime/hybrid cases pass. Same200 inputs/RNG and
+   first field loss match;77 counters reach200 and the native body stays exact.
+   Explicit private-context restoration reproduces77 tensors. It adds2,629,632
+   weights, but CFG4 still loses figures/faces and develops cyan bands/lettering.
+   Last50 field error0.02833 versus0.02949 is not quality recovery. Reject this
+   recipe; pack order is retained but its channel bottleneck remains lossy.
+   See `hybrid_anima_phase_boundary_fit_2026-10.json`. Public default promotion,
+   practical Full FT/combined-codec acceptance and final matrix remain open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

@@ -27,6 +27,14 @@ trainable tensors had finite gradients at the500-update boundary; recorded
 compute was359.771 seconds with11.793 GiB peak allocated. VAE/TE encoding,
 input preparation and sample evaluation are excluded from that timing.
 
+The first arm subsequently completed1000 updates
+(`hybrid_anima_codec_fullft_first_arm_2026-10.json`). p28 large areas improve
+further from500 to1000; p31 has stronger clipping and fine fragmentation than
+at500 despite retained face/hand/food structure. The trend is prompt-dependent,
+not monotonic. All638 optimizer entries reach1000, body weights change and the
+frozen caption bridge remains exact. Recorded training compute is718.947
+seconds, peak allocated11.793 GiB. The matched native-moment arm is pending.
+
 | Requirement | Current evidence | Assessment |
 |---|---|---|
 | Fixed native width; learned down/up, local residual processing, multiple compressed skips | `core/rewiring/hybrid_spec.py`, `hybrid_modules.py`; `hybrid_rewiring_test.py`, native Anima/Ming/Qwen tests | Implemented; isotropic 2x boundaries, native widths retained |
@@ -74,7 +82,8 @@ individual records' limitations.
   remain excluded from its compute scope.
 - P5 combined-codec training tendencies are being evaluated. The500-update
   independent-spatial observation is positive for two selected held prompts;
-  its1000-update point and matched native-moment comparator are pending.
+  its1000-update point shows continued improvement for p28 but stronger clipping
+  for p31. The matched native-moment comparator is pending.
   Neither artifact removal within this budget nor exact native reproduction
   is required. Broader or long-training quality is not established.
 - P0 does not establish the exact cause of the owner's old #174 degradation.

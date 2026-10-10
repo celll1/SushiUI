@@ -494,7 +494,12 @@ into omitted output channels. Block weights shrink69.207M→24.118M/8.389M with
 bridges, but initial synthetic source-relative errors0.702/0.730 require fitting.
 Outer stream width stays2048; this is not a variable-width stage graph or public
 artifact lineage. See `hybrid_anima_projected_block_2026-10.json`. Private stage
-teacher/student alignment, generation, restore and public wiring remain open.
+ownership and experimental weight restoration now have ten CPU cases; together
+with projection cases26 pass. A real twelve-block width1024 teacher fit reaches
+all329 optimizer counters200 with unchanged native fingerprints and explicit
+payload reload. Two general held generations remain fragmented/banded; this
+recipe is rejected. See `hybrid_anima_projected_stage_2026-10.json`. Alignment
+quality, Full FT, public lineage and optimizer resume remain open.
 One-block timings are not the required final U-Net±codec matrix. Heavy
 convolutions, audio/video and Lens GPU quality work remain conditional or
 outside this initial plan. They do not replace the unfinished quality gate.

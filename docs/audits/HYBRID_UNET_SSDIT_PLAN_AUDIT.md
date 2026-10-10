@@ -1,8 +1,11 @@
 # Hybrid U-Net ssDiT plan audit
 
 Reviewed 2026-10-10 against `local/strategy/SDXL_LIKE_UNET_SSDIT_PLAN.md`.
-This is a completion audit, not a declaration of completion. The implementation
-and compute matrix are substantial; P5 quality acceptance remains incomplete.
+The planned fixed-width implementation, bounded functional verification,
+requested compute matrix and training-trend assessment are complete within the
+owner's revised scope. This does not establish production image quality or
+consistent superiority over the legacy U-Net. Owner interactive/build review
+and long-training quality remain unverified.
 Existing owner runs and their artifacts are not migrated implicitly.
 
 ## Implemented contracts and evidence
@@ -13,8 +16,10 @@ improvement tendencies, not disappearance of clipping/grid artifacts within a
 short probe. Historical unsuccessful quality probes describe their finite
 budgets; they do not prove inability to recover through long training. Functional,
 numerical and compute acceptance is separate from final appearance quality.
-The active1000-update comparison retains500/1000 generation checkpoints to
-evaluate this trend against existing initial samples.
+The completed1000-update comparison retains500/1000 generation checkpoints to
+evaluate this trend against existing initial samples. The interim observations
+below describe earlier checkpoints; the terminal result supersedes their
+then-pending actions.
 
 Interim evidence (`hybrid_anima_codec_fullft_interim_2026-10.json`): the
 independent-spatial arm completed500 Full FT updates after its retained200 IO
@@ -89,7 +94,7 @@ Paths beginning with `core/` are under `backend/`; tests are under
 under `frontend/src/components/training/`. These entries do not replace the
 individual records' limitations.
 
-## Remaining acceptance work
+## Scope closure and remaining owner evaluation
 
 ### Current status (2026-10-10)
 
@@ -107,7 +112,7 @@ individual records' limitations.
   that an older candidate still needs its matrix describe that experiment's
   historical state, not absence of the current matrix. Encoding/IO/partition
   remain excluded from its compute scope.
-- P5 combined-codec training tendencies are being evaluated. The500-update
+- P5 combined-codec training tendencies have been evaluated. The500-update
   independent-spatial observation is positive for two selected held prompts;
   its1000-update point shows continued improvement for p28 but stronger clipping
   for p31. The native-moment comparator has similar positive500-update
@@ -120,6 +125,20 @@ individual records' limitations.
 - P6 variable-width student work is conditional. Negative private prototypes
   are not a requirement to ship a narrower public graph or a reason to expand
   this stage indefinitely.
+
+| Phase | Closure within the approved scope | Remaining limitation |
+|---|---|---|
+| P0 | Train/sample, routing, conditioning and codec causes were separated; required fixes and regressions are recorded | The exact cause of the old owner's #174 degradation is not proven |
+| P1-P3 | Strict v2 contracts, learned spatial branches, local processing, multiple skips, storage policies and partition ownership are implemented and verified | Unsupported geometry/residency combinations are refused; convolution halo does not restore omitted global attention |
+| P4 | Anima/Ming/Qwen API, training/generation/artifact restoration and UI static contracts are wired | Owner UI/build confirmation; official Ming/Qwen BF16 Full FT GPU coverage is not claimed |
+| P5 | Matched-budget and matched-update comparisons, before/intermediate/after images,1024px B1/B2/B4 matrix and an opt-in measured preset are recorded | Improvement is prompt-dependent and non-monotonic; no universal quality advantage or long-training recovery is established |
+| P6 | Conditional narrower-student investigation is recorded without public promotion | No demonstrated benefit requiring a public variable-width implementation |
+
+No further GPU run is required to close this bounded implementation stage.
+Continued quality work should use owner-approved longer training and held
+samples, rather than treating residual clipping/grid artifacts alone as a reason
+for another short probe. Historical statements below are experiment-local
+records, not an outstanding-work list.
 
 ### Historical experiments and their individual limitations
 

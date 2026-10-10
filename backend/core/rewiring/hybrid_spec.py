@@ -29,6 +29,11 @@ def skip_storage(item):
     return item.get("storage", DIT_HYBRID_DEFAULTS["skip_storage"])
 
 
+def boundary_fusion(item):
+    from api.param_defaults import DIT_HYBRID_DEFAULTS
+    return item.get("fusion", DIT_HYBRID_DEFAULTS["boundary_fusion"])
+
+
 def validate_hybrid_spec(value):
     if isinstance(value, str):
         if len(value.encode()) > MAX_JSON_BYTES:
@@ -67,7 +72,10 @@ def validate_hybrid_spec(value):
             raise ValueError("Hybrid module lists must contain at most 128 entries")
     boundary_regions = set()
     for item in result["boundaries"]:
-        check(item, ("id", "region", "rank", "kernel"))
+        keys = ("id", "region", "rank", "kernel")
+        check(item, (*keys, "fusion") if isinstance(item, dict) and "fusion" in item else keys)
+        if boundary_fusion(item) not in ("none", "full_rank"):
+            raise ValueError("Hybrid boundary fusion must be none or full_rank")
         if not isinstance(item["region"], str) or item["region"] not in regions or item["region"] in boundary_regions:
             raise ValueError("Hybrid boundary must own a unique existing region")
         region = regions[item["region"]]
@@ -165,6 +173,8 @@ def hybrid_parameter_counts(value):
     for item in value["boundaries"]:
         width = widths[regions[item["region"]]["stream"]]
         count = 2 * width + 2 * item["kernel"]**2 * width + 4 * width * item["rank"]
+        if boundary_fusion(item) == "full_rank":
+            count += 3 * width**2
         modules.append(dict(id=item["id"], kind="boundary", count=count))
     for item in value["refiners"]:
         width = widths[item["stream"]]
@@ -199,7 +209,19 @@ def hybrid_preview(value, height, width, *, batch_size, element_bytes):
     blocks = {(block["stream"], block["index"]): block for block in preview["blocks"]}
     preview["learned_skip_edges"] = [dict(item, stored_bytes=(0 if skip_storage(item) == "recompute" else batch_size * item["rank"] * element_bytes *
         blocks[item["stream"], item["source_after"]]["tokens"])) for item in value["skips"]]
+    preview["feature_fusion_workspace"] = feature_fusion_workspace(value, preview, height, width)
     return preview
+
+
+def feature_fusion_workspace(value, preview, height, width):
+    regions = {region["id"]:region for region in value["regions"]}
+    levels = {level["id"]:level for level in preview["levels"]}
+    return [dict(id=item["id"], region=item["region"],
+        stream=regions[item["region"]]["stream"],
+        elements=6 * (levels[regions[item["region"]]["parent"]]["tokens"]
+            if regions[item["region"]]["parent"] else height*width) *
+            value["stream_widths"][regions[item["region"]]["stream"]])
+        for item in value["boundaries"] if boundary_fusion(item) == "full_rank"]
 
 
 def activation_layout(value, preview, height, width):

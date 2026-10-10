@@ -73,7 +73,7 @@ DIT_REWIRING_REGION_DEFAULTS: Dict[str, Any] = {"edge_blocks": 1, "down_factor":
 
 DIT_HYBRID_DEFAULTS: Dict[str, Any] = {
     "rank": 64, "kernel": 3, "refiner_interval": 4, "skip_interval": 2,
-    "skip_storage": "gpu",
+    "skip_storage": "gpu", "boundary_fusion": "none",
 }
 
 DIT_HYBRID_INITIALIZATION_PHASE_DEFAULTS: Dict[str, Any] = {

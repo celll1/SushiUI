@@ -83,6 +83,7 @@ def test_zero_identity_source_rng_isolation_cleanup_and_reload():
     assert torch.equal(rng,torch.get_rng_state())
     value=torch.randn(1,3+8*12,8,dtype=torch.float64)
     expected=run(modules,value,'none')
+    original_hook=HybridExecution.boundary_features
     with pytest.raises(RuntimeError,match='sentinel'):
         with boundary_features_probe(modules,fusions):
             torch.testing.assert_close(run(modules,value,'cpu'),expected,rtol=0,atol=0)
@@ -90,7 +91,7 @@ def test_zero_identity_source_rng_isolation_cleanup_and_reload():
             with pytest.raises(ValueError):
                 with boundary_features_probe(modules,fusions):pass
             raise RuntimeError('sentinel')
-    assert not hasattr(HybridExecution,'boundary_features') and not hasattr(modules,'_boundary_features_probe')
+    assert HybridExecution.boundary_features is original_hook and not hasattr(modules,'_boundary_features_probe')
     with torch.no_grad():
         for module in fusions.values():module.weight.normal_(std=.1)
     restored=build_fusions(modules);restored.load_state_dict(fusions.state_dict(),strict=True)
@@ -102,12 +103,13 @@ def test_layout_refusal_transfer_failure_and_existing_hook(monkeypatch):
     with pytest.raises(ValueError):module(torch.ones(1,2,4,4),torch.ones(1,3,2,2),torch.ones(1,3,2,2))
     modules=HybridModules(declaration());fusions=build_fusions(modules)
     transfer=fusions.to
+    original_hook=HybridExecution.boundary_features
     def fail(*args,**kwargs):raise RuntimeError('transfer sentinel')
     with monkeypatch.context() as patch:
         patch.setattr(fusions,'to',fail)
         with pytest.raises(RuntimeError,match='transfer sentinel'):
             with boundary_features_probe(modules,fusions):pass
-    assert not hasattr(HybridExecution,'boundary_features')
+    assert HybridExecution.boundary_features is original_hook
     fusions.to=transfer
     with monkeypatch.context() as patch:
         patch.setattr(HybridExecution,'boundary_features',None,raising=False)

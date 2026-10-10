@@ -3905,13 +3905,14 @@ paths:
                     additionalProperties: true
                   hybrid_defaults:
                     type: object
-                    required: [rank, kernel, refiner_interval, skip_interval, skip_storage]
+                    required: [rank, kernel, refiner_interval, skip_interval, skip_storage, boundary_fusion]
                     properties:
                       rank: {type: integer, minimum: 1}
                       kernel: {type: integer, enum: [3, 5]}
                       refiner_interval: {type: integer, minimum: 1}
                       skip_interval: {type: integer, minimum: 1}
                       skip_storage: {type: string, enum: [gpu, cpu, recompute]}
+                      boundary_fusion: {type: string, enum: [none, full_rank]}
                   runtime_architectures:
                     type: array
                     description: Implemented backend architectures; topology and workflow compatibility are validated per request
@@ -4160,6 +4161,17 @@ paths:
                     description: Resolution levels, blocks and skip edges. Hybrid plans report hybrid_parameter_counts, hybrid_convolution_halo and hybrid_activation_layout. Activation layout counts logical retained bypass, low-input and compressed-skip elements per image grid and batch item, with capture/release block phases and per-stream peak. Multiply by element bytes, batch and layer grids; this excludes autograd, aliased storage, prefix, temporaries, weights and optimizer and is not measured peak VRAM. Halo excludes global attention equivalence.
                     properties:
                       hybrid_activation_layout: {$ref: '#/components/schemas/HybridDiTActivationLayout'}
+                      feature_fusion_workspace:
+                        type: array
+                        description: Logical temporary forward elements for two interpolated fields, three-field concatenation and output, per image grid and batch item; excludes autograd, aliases, kernel workspace and existing retained inputs. Not measured peak VRAM.
+                        items:
+                          type: object
+                          required: [id, region, stream, elements]
+                          properties:
+                            id: {type: string}
+                            region: {type: string}
+                            stream: {type: string}
+                            elements: {type: integer, minimum: 1}
         '422':
           description: Invalid topology, unsupported operator or indivisible grid
   /models/load:
@@ -12439,6 +12451,11 @@ components:
         region: {type: string}
         rank: {type: integer, minimum: 1}
         kernel: {type: integer, enum: [3, 5]}
+        fusion:
+          type: string
+          enum: [none, full_rank]
+          example: full_rank
+          description: Optional full-rank 1x1 fusion of saved fine and actual coarse input/output features. Absence uses the schema boundary_fusion default and is preserved in existing lineage; selection changes module identity and adds 3D² parameters.
     HybridDiTRefiner:
       type: object
       additionalProperties: false

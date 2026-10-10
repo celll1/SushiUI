@@ -167,9 +167,10 @@ def preview_plan(spec, token_height, token_width):
     result = dict(levels=list(levels.values()), skip_edges=edges, blocks=blocks)
     if hybrid is not None:
         from .hybrid_partition import convolution_halo
-        from .hybrid_spec import hybrid_parameter_counts, activation_layout
+        from .hybrid_spec import hybrid_parameter_counts, activation_layout, feature_fusion_workspace
         result["hybrid_parameter_counts"] = hybrid_parameter_counts(hybrid)
         result["hybrid_activation_layout"] = activation_layout(hybrid, result, h, w)
+        result["feature_fusion_workspace"] = feature_fusion_workspace(hybrid, result, h, w)
         result["hybrid_convolution_halo"] = {stream["name"]: list(convolution_halo(hybrid, stream["name"]))
                                               for stream in hybrid["streams"]}
     return result

@@ -133,6 +133,19 @@ export default function HybridDiTModuleEditor({ spec, onApply, onEditingChange }
         return <div key={item.id} className="flex flex-wrap items-center gap-3"><span>{item.id} / {item.region}</span>
           <NumberField label={`${item.id} rank`} value={item.rank} min={1} max={draft.stream_widths[region?.stream ?? ""] ?? 1} onChange={rank => update({ rank })} />
           {kernel(`${item.id} kernel`, item.kernel, kernel => update({ kernel }))}
+          <label>{item.id} feature fusion<select aria-label={`${item.id} feature fusion`}
+            value={item.fusion ?? ""} className="ml-2 rounded bg-gray-800 p-1"
+            onChange={event => {
+              const fusion = event.target.value;
+              if (fusion === "none" || fusion === "full_rank") update({ fusion });
+              else change({ ...draft, boundaries: draft.boundaries.map(value => {
+                if (value.id !== item.id) return value;
+                const rest = { ...value }; delete rest.fusion; return rest;
+              }) });
+            }}>
+            <option value="">Inherited schema default{defaults ? ` (${defaults.boundary_fusion})` : ""}</option>
+            <option value="none">None</option><option value="full_rank">Full-rank 1×1 features</option>
+          </select></label>
         </div>;
       })}
       <h5 className="font-medium">Local spatial refiners</h5>

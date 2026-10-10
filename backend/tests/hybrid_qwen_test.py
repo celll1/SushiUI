@@ -16,7 +16,7 @@ from core.rewiring.hybrid_spec import build_hybrid_spec
 from core.training.adapters.qwen_image_21_adapter import QwenImage21FullParameterAdapter
 
 
-def model_and_spec():
+def model_and_spec(fusion=False):
     model = QwenImage21Transformer2DModel(in_channels=8, out_channels=8, num_layers=6,
         attention_head_dim=16, num_attention_heads=2, context_in_dim=32, mlp_ratio=2,
         axes_dims_rope=(4, 6, 6))
@@ -25,7 +25,8 @@ def model_and_spec():
         dict(id="inner", stream="main", parent="outer", start_block=2, end_block=4, down_factor=[2, 2], **OPERATORS)],
         native_config(dict(model.config)))
     spec = build_hybrid_spec(base, stream_widths={"main": 32}, boundaries=[
-        dict(id="outer", region="outer", rank=6, kernel=3), dict(id="inner", region="inner", rank=6, kernel=3)],
+        dict(id="outer", region="outer", rank=6, kernel=3, **({"fusion":"full_rank"} if fusion else {})),
+        dict(id="inner", region="inner", rank=6, kernel=3, **({"fusion":"full_rank"} if fusion else {}))],
         refiners=[dict(id="entry", stream="main", after_block=0, rank=6, kernel=3),
                   dict(id="exit", stream="main", after_block=5, rank=6, kernel=3)],
         skips=[dict(id="full", stream="main", source_after=0, destination_before=5, rank=6),
@@ -33,9 +34,10 @@ def model_and_spec():
     return model, spec, base
 
 
-def test_native_zero_init_then_all_branches_learn():
+@pytest.mark.parametrize("fusion", [False, True])
+def test_native_zero_init_then_all_branches_learn(fusion):
     torch.manual_seed(122)
-    model, spec, base = model_and_spec()
+    model, spec, base = model_and_spec(fusion)
     baseline = deepcopy(model)
     restore_topology(baseline, base)
     restore_topology(model, spec)
@@ -51,10 +53,11 @@ def test_native_zero_init_then_all_branches_learn():
 
 
 @pytest.mark.parametrize("sharded", [False, True])
-def test_full_adapter_checkpoint_and_optimizer_resume(tmp_path, monkeypatch, sharded):
+@pytest.mark.parametrize("fusion", [False, True])
+def test_full_adapter_checkpoint_and_optimizer_resume(tmp_path, monkeypatch, sharded, fusion):
     if sharded:
         monkeypatch.setattr("core.training.adapters.qwen_image_21_adapter.DEFAULT_EXPORT_SHARD_BYTES", 1024)
-    model, spec, _ = model_and_spec()
+    model, spec, _ = model_and_spec(fusion)
     restore_topology(model, spec)
     from hybrid_provenance_test import record
     initialization = record()

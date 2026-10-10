@@ -1953,3 +1953,66 @@ retains a coherent person, hands and food. This exercises normal full-model
 export/load and shared optimizer remapping, not a complete train_runner,
 dataset-order or UI resume. Evidence:
 `docs/audits/data/hybrid_anima_public_feature_fusion_2026-10.json`.
+
+### Public full-rank candidate: U-Net / Qwen VAE compute matrix
+
+RTX6000 Ada,1024px, BF16, AdamW8bit with SR,24 native blocks checkpointed,
+hybrid modules checkpointed, GPU skip storage, gradient clipping1. Each arm runs
+in a fresh worker with one warmup and five measured updates per batch. All four
+arms start from the same lower-rate Full FT native body (public step2 checkpoint),
+not the original pretrained quality baseline. Removing the U-Net deletes only
+its structural modules. The Qwen64ch/16x arms reuse40 general-rated calibration
+images' fitted spatial/noise bridges; no images are re-encoded for this test.
+Inputs and64-token conditioning are synthetic. VAE/TE encoding, IO, partition,
+global adapter and EMA are excluded. Backward includes clipping; median columns
+need not sum exactly to median wall time. Loss is not a quality metric.
+
+| Structure / codec | Batch | Forward ms | Backward + clip ms | Optimizer ms | Sec/update | Images/sec | Peak allocated GiB | Peak reserved GiB |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| No U-Net / native | 1 | 227.0 | 795.6 | 160.9 | 1.172 | 0.85 | 12.09 | 12.16 |
+| No U-Net / native | 2 | 502.4 | 1642.1 | 147.1 | 2.282 | 0.88 | 14.37 | 15.13 |
+| No U-Net / native | 4 | 1149.3 | 3484.6 | 149.4 | 4.781 | 0.84 | 20.84 | 22.28 |
+| Hybrid / native | 1 | 147.8 | 520.9 | 152.7 | 0.828 | 1.21 | 12.31 | 12.39 |
+| Hybrid / native | 2 | 328.5 | 1061.5 | 152.9 | 1.547 | 1.29 | 14.65 | 15.31 |
+| Hybrid / native | 4 | 756.9 | 2243.6 | 165.6 | 3.156 | 1.27 | 21.24 | 22.50 |
+| No U-Net / Qwen | 1 | 87.7 | 220.9 | 138.4 | 0.453 | 2.21 | 11.59 | 11.76 |
+| No U-Net / Qwen | 2 | 108.6 | 317.7 | 144.1 | 0.578 | 3.46 | 11.73 | 11.96 |
+| No U-Net / Qwen | 4 | 202.7 | 748.9 | 151.8 | 1.094 | 3.66 | 12.11 | 12.22 |
+| Hybrid / Qwen | 1 | 128.4 | 304.4 | 171.9 | 0.594 | 1.68 | 11.79 | 11.99 |
+| Hybrid / Qwen | 2 | 146.9 | 295.0 | 183.8 | 0.625 | 3.20 | 11.94 | 12.17 |
+| Hybrid / Qwen | 4 | 180.7 | 443.0 | 179.0 | 0.812 | 4.93 | 12.34 | 12.44 |
+
+Hybrid alone gives1.42/1.48/1.51x update speed atB1/B2/B4 but increases peak
+allocated storage by0.22/0.27/0.41GiB. The same native weights and optimizer
+remain, with35.63M added structural parameters and saved fine-resolution
+activations: reducing coarse-token work does not imply lower measured peak.
+Qwen's base patch-token grid is1024 tokens versus4096 with the native codec.
+Combined versus Qwen-only is31%/8% slower atB1/B2, but1.35x faster atB4: the
+extra fusion/checkpoint/optimizer work outweighs the coarse-block saving at
+small batch, while atB4 backward falls749→443ms. Combined is1.97/3.65/5.89x
+faster than no-U-Net/native for this compute probe. ItsB1→B4 peak11.79→12.34GiB
+is dominated by fixed parameter/gradient/optimizer storage, with a smaller
+batch-dependent activation contribution. These are measured costs, not quality
+acceptance or end-to-end training speed guarantees. Raw samples and host RSS:
+`docs/audits/data/hybrid_anima_public_feature_fusion_matrix_2026-10.json`.
+
+The candidate's Qwen VAE/fusion combination also saves and reloads through the
+ordinary Anima Full FT adapter and component loader:1006 tensors, bundled
+64ch/16x codec, ready spatial/noise bridge and exact hybrid-module digest. The
+extracted `model:` codec must be bundled under the existing save contract.
+An initial probe incorrectly selected the older frame facade; using the same
+`NormalizedImageVAE` as production restores raw codec keys correctly. This was
+a probe configuration error, not a backend fix or an owner run change.
+
+Matched seed63/28-step512px generation from the same native body remains a
+negative quality result. Native-codec CFG4 retains two back-facing figures and
+a separate person/hand/food composition; CFG1 has detail defects. Combined CFG4
+has strong gridlike noise and missing/distorted figures. Removing only the
+U-Net from the same restored combined model preserves the64ch bridge/codec,
+yet swap-only also shows gridlike noise and changed composition (partial
+person/food outlines remain). The shared defect therefore cannot be attributed
+solely to U-Net; this does not exclude extra damage from its smaller grids.
+Prioritize codec/noise alignment before declaring combined quality acceptance.
+No combined fine-tuning or equal-time quality comparison was done in this probe.
+General-only image hashes and restoration evidence:
+`docs/audits/data/hybrid_anima_public_feature_fusion_combined_2026-10.json`.

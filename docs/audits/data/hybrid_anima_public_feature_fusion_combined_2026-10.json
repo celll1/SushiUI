@@ -1,0 +1,76 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "steps": 28,
+  "seed": 63,
+  "noise_policy": "gaussian_row_orthogonal_v1",
+  "calibration_sha256": "3108111868c39839d2e776002201490bc7cee8827ebfa6467525e5bb26c93d64",
+  "calibration_images": 40,
+  "samples": [
+    {
+      "arm": "hybrid",
+      "index": 28,
+      "cfg": 4.0,
+      "sha256": "eac076e66e8d05cfc515b147cf319efe5fa354c65dd8d841069792cc28f3458e"
+    },
+    {
+      "arm": "hybrid",
+      "index": 31,
+      "cfg": 4.0,
+      "sha256": "f7a1d12734ba00bd4c397b8189e58be69471fdfcf7720b6e33947ab6b8742e00"
+    },
+    {
+      "arm": "hybrid",
+      "index": 31,
+      "cfg": 1.0,
+      "sha256": "74e2a28dbb42474c4f00a91c14541488c36a5b4023a98a182aceb1182ae98e79"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 28,
+      "cfg": 4.0,
+      "sha256": "e0378ad8053d4231176a337260585032b9c31e2c22bedcc63d5b2b23fd00fefe"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 31,
+      "cfg": 4.0,
+      "sha256": "cd1402f600778e6ee7c9279ac7afee59f7a566ecf7476ce2d185a6eb45a9051a"
+    },
+    {
+      "arm": "hybrid_swap",
+      "index": 31,
+      "cfg": 1.0,
+      "sha256": "b87e035d41c37736d888fd577b9a02725c438609f2d30a938354f1e026b25e0f"
+    },
+    {
+      "arm": "swap",
+      "index": 28,
+      "cfg": 4.0,
+      "sha256": "3fabafbcb98dedb6bda5ac07ebe186d8c4ac0551c1fa77ddb98e9c9d3739f3cc"
+    },
+    {
+      "arm": "swap",
+      "index": 31,
+      "cfg": 4.0,
+      "sha256": "53febbe74153ac69561cddf50a036126a7691c4ea14e2fdda5c08fa39be9395b"
+    }
+  ],
+  "limits": [
+    "Bounded generation only; no combined fine-tuning or equal-time quality acceptance."
+  ],
+  "combined_reload": {
+    "hybrid_exact": true,
+    "bridge_ready": true,
+    "vae_family": "custom",
+    "latent_channels": 64,
+    "spatial_scale": 16,
+    "checkpoint_bytes": 4930802745
+  },
+  "visual_assessment": {
+    "swap_only": "Strong gridlike noise and composition shift, with partial recognizable person/food outlines.",
+    "native_codec": "Coherent figures and hand/food composition at CFG4; CFG1 has detail defects.",
+    "combined": "Strong gridlike noise and missing/deformed figures; not quality accepted.",
+    "interpretation": "Swap-only also fails; U-Net alone cannot explain the common artifact. No combined fine-tuning tested."
+  }
+}

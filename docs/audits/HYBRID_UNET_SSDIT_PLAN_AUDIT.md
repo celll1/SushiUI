@@ -538,3 +538,22 @@ save/load/remapping check, not full process resume, broad quality, combined code
 acceptance, stage-width redesign or the final1024px B1/B2/B4 performance matrix.
 Frontend checks are static; owner build/UI acceptance remains. Evidence:
 `hybrid_anima_public_feature_fusion_2026-10.json`.
+
+The public full-rank candidate now has the requested1024px B1/B2/B4 four-arm
+compute measurement. All arms share the trained native body and use fresh
+workers, BF16/SR AdamW8bit,24 native block checkpoints and clipping1; one warmup
+plus five measured updates. Hybrid-only update speed improves1.42–1.51x but
+allocated VRAM rises0.22–0.41GiB. Qwen-only is faster than combined atB1/B2;
+combined wins1.35x atB4. Synthetic inputs, VAE/TE/IO/global/partition exclusions
+and reuse of40 general calibration records are explicit. This closes this
+candidate's compute measurement, not a quality-approved final architecture.
+See `hybrid_anima_public_feature_fusion_matrix_2026-10.json` and guide table.
+
+Combined public export/load reconstructs the bundled64ch/16x Qwen codec, ready
+spatial/noise bridge and exact fusion module digest. Held general CFG1/4 samples
+are still visually negative: gridlike noise, missing figures and changed
+composition. A matched swap-only control made by removing just the U-Net from
+the same restored artifact also fails, so the common artifact is not evidence
+against U-Net alone. Native-codec controls retain figures. Codec/noise alignment
+and combined learning quality remain open; throughput and strict restoration
+do not close P5. See `hybrid_anima_public_feature_fusion_combined_2026-10.json`.

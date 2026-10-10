@@ -1,0 +1,482 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "mode": "boundary_capacity512",
+  "samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_capacity_fit\\p28_capacity512_cfg1.png",
+      "sha256": "8ca68158ba5040d03f2eb0595761a75816df3eda799f792b6d3b0632a8d039db"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_capacity_fit\\p28_capacity512_cfg4.png",
+      "sha256": "db5b75745f3f047bc22cfefc44ef533c732b8329bf28a5e82508dcd4aaadbc32"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_capacity_fit\\p29_capacity512_cfg1.png",
+      "sha256": "7a5673d594cc8e5bfc5308eadd3feb640bf835dbde980c78c70b9f996b703172"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_boundary_capacity_fit\\p29_capacity512_cfg4.png",
+      "sha256": "f840373dba72ab1255bf445d880a3037272e83881de1d073c4a1f635a77ecce6"
+    }
+  ],
+  "init_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "declaration": {
+    "schema_version": 2,
+    "method": "hybrid_unet_ssdit",
+    "architecture": "anima",
+    "streams": [
+      {
+        "name": "main",
+        "block_count": 28
+      }
+    ],
+    "regions": [
+      {
+        "id": "r0",
+        "stream": "main",
+        "parent": null,
+        "start_block": 8,
+        "end_block": 20,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      },
+      {
+        "id": "r1",
+        "stream": "main",
+        "parent": "r0",
+        "start_block": 12,
+        "end_block": 16,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      }
+    ],
+    "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+    "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+    "stream_widths": {
+      "main": 2048
+    },
+    "boundaries": [
+      {
+        "id": "downup_r0",
+        "region": "r0",
+        "rank": 512,
+        "kernel": 3
+      },
+      {
+        "id": "downup_r1",
+        "region": "r1",
+        "rank": 512,
+        "kernel": 3
+      }
+    ],
+    "refiners": [
+      {
+        "id": "local_main_0",
+        "stream": "main",
+        "after_block": 0,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_12",
+        "stream": "main",
+        "after_block": 12,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_16",
+        "stream": "main",
+        "after_block": 16,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_20",
+        "stream": "main",
+        "after_block": 20,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_24",
+        "stream": "main",
+        "after_block": 24,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_4",
+        "stream": "main",
+        "after_block": 4,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_8",
+        "stream": "main",
+        "after_block": 8,
+        "rank": 64,
+        "kernel": 3
+      }
+    ],
+    "skips": [
+      {
+        "id": "skip_main_0_27",
+        "stream": "main",
+        "source_after": 0,
+        "destination_before": 27,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_10_17",
+        "stream": "main",
+        "source_after": 10,
+        "destination_before": 17,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_12_15",
+        "stream": "main",
+        "source_after": 12,
+        "destination_before": 15,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_2_25",
+        "stream": "main",
+        "source_after": 2,
+        "destination_before": 25,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_4_23",
+        "stream": "main",
+        "source_after": 4,
+        "destination_before": 23,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_6_21",
+        "stream": "main",
+        "source_after": 6,
+        "destination_before": 21,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_8_19",
+        "stream": "main",
+        "source_after": 8,
+        "destination_before": 19,
+        "rank": 256,
+        "storage": "gpu"
+      }
+    ],
+    "module_layout_sha256": "437c54499bca5047af0571d83b04e70eae415952407a63cd40dbbc355ab95b61"
+  },
+  "source_declaration": {
+    "schema_version": 2,
+    "method": "hybrid_unet_ssdit",
+    "architecture": "anima",
+    "streams": [
+      {
+        "name": "main",
+        "block_count": 28
+      }
+    ],
+    "regions": [
+      {
+        "id": "r0",
+        "stream": "main",
+        "parent": null,
+        "start_block": 8,
+        "end_block": 20,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      },
+      {
+        "id": "r1",
+        "stream": "main",
+        "parent": "r0",
+        "start_block": 12,
+        "end_block": 16,
+        "down_factor": [
+          2,
+          2
+        ],
+        "down": "avg_pool",
+        "up": "bilinear",
+        "align_corners": false,
+        "merge": "identity_delta_add",
+        "position_policy": "coarse_integer",
+        "grid_policy": "require_divisible",
+        "delta_dtype": "float32"
+      }
+    ],
+    "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+    "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+    "stream_widths": {
+      "main": 2048
+    },
+    "boundaries": [
+      {
+        "id": "downup_r0",
+        "region": "r0",
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "downup_r1",
+        "region": "r1",
+        "rank": 64,
+        "kernel": 3
+      }
+    ],
+    "refiners": [
+      {
+        "id": "local_main_0",
+        "stream": "main",
+        "after_block": 0,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_12",
+        "stream": "main",
+        "after_block": 12,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_16",
+        "stream": "main",
+        "after_block": 16,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_20",
+        "stream": "main",
+        "after_block": 20,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_24",
+        "stream": "main",
+        "after_block": 24,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_4",
+        "stream": "main",
+        "after_block": 4,
+        "rank": 64,
+        "kernel": 3
+      },
+      {
+        "id": "local_main_8",
+        "stream": "main",
+        "after_block": 8,
+        "rank": 64,
+        "kernel": 3
+      }
+    ],
+    "skips": [
+      {
+        "id": "skip_main_0_27",
+        "stream": "main",
+        "source_after": 0,
+        "destination_before": 27,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_10_17",
+        "stream": "main",
+        "source_after": 10,
+        "destination_before": 17,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_12_15",
+        "stream": "main",
+        "source_after": 12,
+        "destination_before": 15,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_2_25",
+        "stream": "main",
+        "source_after": 2,
+        "destination_before": 25,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_4_23",
+        "stream": "main",
+        "source_after": 4,
+        "destination_before": 23,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_6_21",
+        "stream": "main",
+        "source_after": 6,
+        "destination_before": 21,
+        "rank": 256,
+        "storage": "gpu"
+      },
+      {
+        "id": "skip_main_8_19",
+        "stream": "main",
+        "source_after": 8,
+        "destination_before": 19,
+        "rank": 256,
+        "storage": "gpu"
+      }
+    ],
+    "module_layout_sha256": "10ada261aa96721eb741fc22078d27ee83add4bd1d9159b8c653ea5ca10fbf2f"
+  },
+  "added_parameters": 17803264,
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "limits": [
+    "Boundary rank only64-to512; skip256 and local64 unchanged. Existing fitted coordinates retained.",
+    "Same200 exposures and starting RNG as field-only continuation; wider tensors change SR draw ownership.",
+    "No public preset promotion; equal updates, not equal total time or Full FT/combined-codec quality."
+  ],
+  "cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+  "cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+  "new_coordinates_gradient_step1": {
+    "down.downup_r0": {
+      "expand": 0.0010380599414929748,
+      "reduce": 0.0
+    },
+    "down.downup_r1": {
+      "expand": 0.0004554250626824796,
+      "reduce": 0.0
+    },
+    "up.downup_r0": {
+      "expand": 0.08760522305965424,
+      "reduce": 0.0
+    },
+    "up.downup_r1": {
+      "expand": 0.08039505779743195,
+      "reduce": 0.0
+    }
+  },
+  "new_coordinates_gradient_step200": {
+    "down.downup_r0": {
+      "expand": 0.0013355788541957736,
+      "reduce": 0.001940262853167951
+    },
+    "down.downup_r1": {
+      "expand": 0.00032308080699294806,
+      "reduce": 0.0005773842567577958
+    },
+    "up.downup_r0": {
+      "expand": 0.00020550897170323879,
+      "reduce": 0.0006370968767441809
+    },
+    "up.downup_r1": {
+      "expand": 0.0003815616946667433,
+      "reduce": 0.0018927775090560317
+    }
+  },
+  "optimizer_entries": 65,
+  "optimizer_counters": [
+    200
+  ],
+  "peak_allocated_gib": 4.532329559326172,
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "module_sha256": "83c2b7e2a330c6622330571e2ece9c0d8e6a9f2b6dca5ac22365323542b5f2c1",
+  "matched_exposures": 200,
+  "first_loss_difference_from_rank64": -6.050989031791687e-05,
+  "last50_field_mean": 0.025392947960644962,
+  "cuda_update_seconds": 68.46412484741211,
+  "controls": {
+    "rank64_last50_field_mean": 0.029491450693458317,
+    "rank64_samples": [
+      {
+        "index": 28,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg1.png",
+        "sha256": "669caeaeaf6f8cc35213ac2253ce83319a2bd8386ee95403b19e0376c3d24a10"
+      },
+      {
+        "index": 28,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p28_field_only_cfg4.png",
+        "sha256": "685cf32f067196ada35f07bae1ad574cefe9d50b51aa59217995c2e72363d381"
+      },
+      {
+        "index": 29,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg1.png",
+        "sha256": "1c0bfa027d61b6f3217c6392bbaf2668f224183cbb76d031283ac3645cd045b9"
+      },
+      {
+        "index": 29,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_feature_fit\\p29_field_only_cfg4.png",
+        "sha256": "b045d164086a828ea0ffd2a27380b3018400cb159f1297e24d0a894305ccd632"
+      }
+    ],
+    "initial_forward": "Copied fitted coordinates and zero new output columns; CPU output/gradient parity passes. BF16 first field loss differs by about6.05e-5, so no exact GPU output parity claim."
+  },
+  "observations": {
+    "p28_cfg4": "Strong teal/dark scene bands and fragmented or missing heads/bodies; no stable two-person composition.",
+    "p29_cfg4": "One body silhouette survives but face/eyes and hands are severely deformed; unwanted teal/color/texture shift.",
+    "cfg1": "Overlapping scene fragments, disconnected/duplicated body parts and fine texture distortions on both prompts."
+  },
+  "decision": "Reject this200-update boundary-rank512 recipe as default/quality acceptance. More boundary capacity and a lower field loss do not establish better generation. This does not exclude other capacity layouts or longer fitting. Factory state restoration passes, not production training/resume or a new speed matrix."
+}

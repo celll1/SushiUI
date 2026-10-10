@@ -1693,3 +1693,37 @@ parameters, so this fix does not explain or repair their quality regression.
 No API parameter/default or owner config changes.
 
 Evidence: `docs/audits/data/hybrid_anima_gradient_allocation_2026-10.json`.
+
+### Boundary capacity extension control
+
+An independent experimental helper widens declared boundary ranks while copying
+fitted reduce rows/expand columns and zeroing the new output columns. New reduce
+rows keep factory initialization. It returns new factory-described modules,
+never edits a live run, and refuses extra private state. Ten new CPU cases cover
+fitted-output/input-gradient parity, checkpointing, RNG/source preservation,
+staged gradients into new coordinates, strict factory reload/census and bad
+capacity requests. With25 existing hybrid cases,35 tests pass. Boundary rank
+is already part of the strict declaration; no API/default field is added.
+
+The Anima control starts from the same319-update fitted coordinates and raises
+only the two boundary ranks64→512. Skip rank256 and local rank64 remain fixed.
+It adds7,340,032 parameters for17,803,264 structural weights total. Native-body
+hashes remain exact, all65 optimizer counters reach200, and the new output
+coordinates receive gradients before their new reduce coordinates do. Saved
+modules reload strictly through the declared factory with every tensor exact.
+This proves module restoration, not production optimizer/resume acceptance.
+
+All200 item/null/sigma/noise exposures and starting RNG match the reused rank64
+field control. Wider tensors change SR draw ownership; BF16 first field loss
+also differs by6.05e-5 despite copied/zero-padded coordinates. No exact GPU
+forward or update parity is claimed. Last50 teacher-field loss0.02539 improves
+on0.02949, but held CFG4 samples have teal/dark bands, incomplete figures and
+deformed faces/hands. CFG1 retains collage fragments. Reject this recipe as a
+default; do not infer that every capacity layout or longer fitting must fail.
+Whole-update68.464s and4.532GiB own peak are bounded200-update initialization
+costs, not isolated convolution overhead or a revised Full FT matrix.
+
+The next architecture question is the information layout at down/up and fusion,
+rather than promoting rank512 from its field loss. Owner artifacts and presets
+remain unchanged. Evidence:
+`docs/audits/data/hybrid_anima_boundary_capacity_fit_2026-10.json`.

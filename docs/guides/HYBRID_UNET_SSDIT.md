@@ -2261,6 +2261,16 @@ checkpoint or default changed. Evidence:
 
 ### Native clean covariance with exact flow closure (2026-10-10)
 
+Owner evaluation policy update: combined VAE swap may require training longer
+than these bounded probes. Evaluate improvement tendencies at matched inputs,
+seeds and intermediate training points; removal of clipping/grid artifacts in
+a short run is not an acceptance requirement. A negative short probe means
+improvement was not demonstrated within that budget, not that long training
+cannot recover quality. Keep functional/numerical/compute acceptance separate
+from final image quality. Historical statements below about unaccepted quality
+apply to their recorded scope and do not override this policy. Loss reduction
+alone remains insufficient to claim visual improvement.
+
 The experimental calibrator adds `match_native_covariance`, accepted only with
 orthogonal input selection. The latter selects an initial row space; covariance
 matching then rescales/rotates it, so the final rows need not be orthonormal.

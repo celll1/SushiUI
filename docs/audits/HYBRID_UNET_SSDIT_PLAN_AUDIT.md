@@ -589,3 +589,20 @@ combined quality remain open; this does not close P5 or promote a default.
 Final CPU initialization/provenance/job/export suite:119 passed,95 warnings;
 changed backend files compile and real imports complete without CUDA context
 initialization. Owner frontend build/type-check is not run by the agent.
+
+Official Anima mixed-grid owner execution now passes: native512/256 preparation,
+four updates of each teacher-field phase, source parameter retention, real
+streaming export/native reload and fresh67-parameter gradient updates on both
+grids. Own initializer peak4.576GiB is not a Full FT measurement. Export is
+relocated to a private directory, not mocked; no full API/dataset resume or
+quality acceptance is inferred. Evidence:
+`hybrid_anima_public_multigrid_initializer_2026-10.json`.
+
+The pixel-resize versus latent-area calibration diagnostic gives a small2.93%
+held reconstruction improvement, while matched combined512/1024 generation
+retains clipping/grid defects. Independent input/output fits have measurable
+flow-composition error under the current Gaussian/bias algebra; a synthetic
+identity fixture closes to numerical zero. Constrained map/bias initialization
+is the next hypothesis to test, not a proven universal fix. Combined quality
+and P5 remain open. Evidence:
+`hybrid_codec_pixel_resize_calibration_2026-10.json`.

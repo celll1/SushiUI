@@ -1,0 +1,363 @@
+{
+  "rating": "general",
+  "fit_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_indices": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "resolutions": {
+    "target": 512,
+    "pixel_source": 256,
+    "pooled_source": 512
+  },
+  "target_grid": [
+    32,
+    32
+  ],
+  "reused_native_train_inputs": 56,
+  "new_target_encodings": 32,
+  "new_native_held_encodings": 8,
+  "arms": [
+    {
+      "name": "latent_area",
+      "results": [
+        {
+          "index": 28,
+          "kind": "direct",
+          "target_latent_mse": 0.766055166721344
+        },
+        {
+          "index": 28,
+          "kind": "pair",
+          "target_latent_mse": 0.7386946678161621
+        },
+        {
+          "index": 28,
+          "kind": "cycle",
+          "target_latent_mse": 0.7441915273666382
+        },
+        {
+          "index": 29,
+          "kind": "direct",
+          "target_latent_mse": 0.6714179515838623
+        },
+        {
+          "index": 29,
+          "kind": "pair",
+          "target_latent_mse": 0.6376180052757263
+        },
+        {
+          "index": 29,
+          "kind": "cycle",
+          "target_latent_mse": 0.6064774990081787
+        },
+        {
+          "index": 30,
+          "kind": "direct",
+          "target_latent_mse": 0.7532261610031128
+        },
+        {
+          "index": 30,
+          "kind": "pair",
+          "target_latent_mse": 0.728381872177124
+        },
+        {
+          "index": 30,
+          "kind": "cycle",
+          "target_latent_mse": 0.6760690808296204
+        },
+        {
+          "index": 31,
+          "kind": "direct",
+          "target_latent_mse": 0.593368411064148
+        },
+        {
+          "index": 31,
+          "kind": "pair",
+          "target_latent_mse": 0.5476564168930054
+        },
+        {
+          "index": 31,
+          "kind": "cycle",
+          "target_latent_mse": 0.5243344306945801
+        }
+      ]
+    },
+    {
+      "name": "pixel256",
+      "results": [
+        {
+          "index": 28,
+          "kind": "direct",
+          "target_latent_mse": 0.7372346520423889
+        },
+        {
+          "index": 28,
+          "kind": "pair",
+          "target_latent_mse": 0.6965963840484619
+        },
+        {
+          "index": 28,
+          "kind": "cycle",
+          "target_latent_mse": 0.7024018168449402
+        },
+        {
+          "index": 29,
+          "kind": "direct",
+          "target_latent_mse": 0.6644989848136902
+        },
+        {
+          "index": 29,
+          "kind": "pair",
+          "target_latent_mse": 0.6272971034049988
+        },
+        {
+          "index": 29,
+          "kind": "cycle",
+          "target_latent_mse": 0.5940459370613098
+        },
+        {
+          "index": 30,
+          "kind": "direct",
+          "target_latent_mse": 0.7322747707366943
+        },
+        {
+          "index": 30,
+          "kind": "pair",
+          "target_latent_mse": 0.6967524290084839
+        },
+        {
+          "index": 30,
+          "kind": "cycle",
+          "target_latent_mse": 0.646609902381897
+        },
+        {
+          "index": 31,
+          "kind": "direct",
+          "target_latent_mse": 0.6148604154586792
+        },
+        {
+          "index": 31,
+          "kind": "pair",
+          "target_latent_mse": 0.5539869070053101
+        },
+        {
+          "index": 31,
+          "kind": "cycle",
+          "target_latent_mse": 0.5094338655471802
+        }
+      ]
+    }
+  ],
+  "seconds": 3.5541462004184723,
+  "peak_allocated_gib": 2.277888774871826,
+  "limits": [
+    "Codec-only held reconstruction; no DiT generation, noise-field or Full FT acceptance.",
+    "Both fits use the same 28 images and exclude all four held items.",
+    "Source pixel resize and latent pooling intentionally differ; both runtime target grids stay32x32.",
+    "Owner models, runs and defaults are unchanged."
+  ],
+  "images": [
+    {
+      "index": 28,
+      "arm": "latent_area_direct",
+      "sha256": "af447701eaf4677243fb9abf8f5c327023a06c2e84ddc90f82c8b79715565f00"
+    },
+    {
+      "index": 28,
+      "arm": "latent_area_pair",
+      "sha256": "c922da0075209f388c7908a6aacba79b2fb8cc6a8a3a5a36abf36be934327127"
+    },
+    {
+      "index": 28,
+      "arm": "latent_area_cycle",
+      "sha256": "8c4725968046a89b3c17edf927806adb8774bba458ccde7479f41b7b1142bac2"
+    },
+    {
+      "index": 31,
+      "arm": "latent_area_direct",
+      "sha256": "99d2854f5b5f669b653385f7cce655a96532dbfafd2f90fc8f4b3ffe05374aae"
+    },
+    {
+      "index": 31,
+      "arm": "latent_area_pair",
+      "sha256": "c9e60e63377e80396e7938bc566638a1ad71f27b07448ffb389b991696602c0c"
+    },
+    {
+      "index": 31,
+      "arm": "latent_area_cycle",
+      "sha256": "aadd57341ae5e3de081b888e26c24e1f6ea6d2fc7829327779c635ee893cff1e"
+    },
+    {
+      "index": 28,
+      "arm": "pixel256_direct",
+      "sha256": "7c81b60f5ab5c9152258b1a38eaca7d7d5ee80d8441a0662b11f072c8f3aa88a"
+    },
+    {
+      "index": 28,
+      "arm": "pixel256_pair",
+      "sha256": "df7320da37886c72fa87569bc0f16887892e78db1b9cd2f0cb100f482872ff5b"
+    },
+    {
+      "index": 28,
+      "arm": "pixel256_cycle",
+      "sha256": "fee1b037c8b7f5804f34ef900e50103bdec1bcc726e127981ed5945c2262dd52"
+    },
+    {
+      "index": 31,
+      "arm": "pixel256_direct",
+      "sha256": "bed8383a915caf334394b3da0be5d8e4fb3e8577da71a02e937e4e06f4403d24"
+    },
+    {
+      "index": 31,
+      "arm": "pixel256_pair",
+      "sha256": "8b69dabf5b30e4cadba711b0bea719dd470eed157d6ad4172a93c1a62756b7da"
+    },
+    {
+      "index": 31,
+      "arm": "pixel256_cycle",
+      "sha256": "42db70cd4aaca8a75b7153df77053185a21aeffe5e82e8e4f08d5fdfd5384379"
+    },
+    {
+      "index": 28,
+      "arm": "target_native",
+      "sha256": "8239529634f6accac9c4f0ac9b0f981ce3d3706d5b3c38754db0e78fab67a42e"
+    },
+    {
+      "index": 31,
+      "arm": "target_native",
+      "sha256": "54f7dd23a8b371b487bfb09c1d7804d8596bb8fd54bc6fe36b924fa8f3070340"
+    }
+  ],
+  "held_mean_mse": {
+    "latent_area": {
+      "direct": 0.6960169225931168,
+      "pair": 0.6630877405405045,
+      "cycle": 0.6377681344747543
+    },
+    "pixel256": {
+      "direct": 0.6872172057628632,
+      "pair": 0.6436582058668137,
+      "cycle": 0.6131228804588318
+    }
+  },
+  "pair_mse_relative_improvement": 0.029301604426969385,
+  "composition": {
+    "arms": [
+      {
+        "arm": "retained40",
+        "interior_ab_identity_mse": 0.5084572977638159,
+        "interior_source_flow_consistency_mse": 1.044358219636777,
+        "source_velocity_variance": 1.0024973993619457
+      },
+      {
+        "arm": "identity_fixture",
+        "interior_ab_identity_mse": 0.0,
+        "interior_source_flow_consistency_mse": 5.5667512711828374e-33,
+        "source_velocity_variance": 1.0024973993619457
+      },
+      {
+        "arm": "latent_area",
+        "interior_ab_identity_mse": 0.7808488347537708,
+        "interior_source_flow_consistency_mse": 1.5685803996501828,
+        "source_velocity_variance": 1.0024973993619457
+      },
+      {
+        "arm": "pixel256",
+        "interior_ab_identity_mse": 0.5669987565650941,
+        "interior_source_flow_consistency_mse": 1.1580715342496728,
+        "source_velocity_variance": 1.0024973993619457
+      }
+    ],
+    "seed": 381,
+    "dtype": "float64",
+    "grid": [
+      32,
+      32
+    ],
+    "boundary_crop": 2,
+    "limits": [
+      "Synthetic algebraic closure check; no image inspection or DiT prediction.",
+      "Uses fitted FP32 bridge coefficients promoted to FP64, not BF16 runtime kernels.",
+      "Gaussian center row-orthogonal whitening and the current clean-bias/initial-noise formulas.",
+      "Closure error motivates testing constrained mappings; it does not prove causality for every visual defect."
+    ]
+  },
+  "combined_generation": {
+    "rating": "general",
+    "resolutions": [
+      512,
+      1024
+    ],
+    "steps": 28,
+    "cfg": 4,
+    "seed": 63,
+    "mixed_modules_sha256": "d80639dd8a280e7754a923aa0f6a8e15d3de315a6d6938f28c8be9200fffef27",
+    "native_parameters_sha256": "64db9e785a7efca070fa32d71d088f13c5b730cc90cfbab9bd6d17738bff6571",
+    "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "bridge_file_sha256": "0930dc14f2815ed05c23f931e731c66704207602bfb8ac7fcbd6aeef5fb00d99",
+    "limits": [
+      "Same frozen body and mixed-grid U-Net as retained controls; pixel256 calibration replaces only bridge kernels and their Gaussian noise snapshots. No exported artifact/default is changed."
+    ],
+    "samples": [
+      {
+        "index": 28,
+        "resolution": 512,
+        "sha256": "a49d48c77c18cce02a85b2a54ff3588661257d327b56899e4924c1f362864b92"
+      },
+      {
+        "index": 31,
+        "resolution": 512,
+        "sha256": "8d64bacfc9b409d0b8a5601cc69130632cd697c03529e6dffd462389652ceb9d"
+      },
+      {
+        "index": 28,
+        "resolution": 1024,
+        "sha256": "768f8c3947452807599d3d5414a34556356fe537b9810ac7b3824212abcaf43d"
+      },
+      {
+        "index": 31,
+        "resolution": 1024,
+        "sha256": "850b30e18d50a82a5ca7b32d36910da71ee5fda5f6d49da296ab8a5e66759132"
+      }
+    ]
+  },
+  "assessment": {
+    "codec": "Pixel resizing slightly improves pair reconstruction; blocklike texture persists.",
+    "combined512": "Same retained failure class: distorted scene and bright fragmented person outline.",
+    "combined1024": "Two figures/person/food outlines remain recognizable but clipping and gridlike texture persist.",
+    "default_promotion": false,
+    "next_hypothesis": "Constrain input/output composition and clean-bias closure before further generation fitting."
+  }
+}

@@ -2100,4 +2100,61 @@ cycle and added preparation/host-memory cost. Recorded `resolution_sampling`
 is output lineage, not an accepted request option. Frontend validation/errors,
 pending actions, polling, cancellation and using the result retain their
 existing paths; owner build/type-check remains pending. Official-weight Anima
-GPU execution and held-image quality remain separate acceptance gates.
+GPU owner execution is verified below; held-image quality remains a separate
+acceptance gate.
+
+### Official Anima multi-grid owner execution (2026-10-10)
+
+The actual `initialize_loaded_anima` owner prepares four verified general
+images, excludes the final two from fitting, captures native512/256 trajectories
+and executes four data-noising plus four trajectory updates in BF16 with
+AdamW8bit/stochastic rounding. The67 public added parameters include full-rank
+boundary fusion. All eight hybrid forwards alternate latent64/32, losses stay
+finite and the original parameter digest is unchanged. The owner restores
+component devices, flags and training modes and removes its temporary modules.
+
+The verified streaming exporter writes4,253,493,072bytes/752tensors into a
+private verification directory. Its destination is relocated for this probe;
+preparation, fitting and source-byte validation are unchanged. Native loading
+reconstructs the mixed recipe and exactly the initialized67 modules. A separate
+CPU reload confirms the native parameter digest too. Fresh structural-optimizer
+updates on both grids give all67 parameters finite gradients and advance their
+counters to2. This is functional acceptance, not optimizer/dataset process
+resume, convergence or default promotion. Initializer own peak is4.576GiB,
+not Full FT peak. No owner model, DB run or artifact is overwritten.
+Evidence: `docs/audits/data/hybrid_anima_public_multigrid_initializer_2026-10.json`.
+
+### Pixel-resize calibration and flow composition diagnostic (2026-10-10)
+
+An equal-data codec diagnostic compares native512 latents area-pooled onto the
+target32x32 grid against native256 image encodes on that grid. Both3x3 fits use
+the same28 general images and exclude four held items; existing56 native train
+encodes are reused. New target32/held native8 encodes are retained locally for
+subsequent experiments. Mean held target-latent pair MSE drops0.66309→0.64366
+(2.93%); cycle refit drops0.63777→0.61312. Neither is DiT loss or quality proof.
+
+Replacing only bridge kernels and their Gaussian snapshots in the same retained
+mixed-grid combined model does not fix generation. Reused controls and new
+512/1024px general CFG4 samples use the same body/U-Net, seed63 and28 steps.
+The1024px two-person/person-food outlines remain recognizable, but clipped
+tones and gridlike texture remain;512px still loses composition. The retained
+older calibration is not claimed disjoint from every held item. No default or
+artifact is promoted.
+
+For frozen original-channel heads, linear input/output maps A/B, clean biases
+a/b and fixed exposure noise e, the current corrected flow has
+`z=A*x+(1-sigma)*a+sigma*(G-A)*e` and
+`v_x=B*v_z-b+e-B*G*e`. Differentiation gives
+`dz/dsigma=A*B*v_z+(I-A*B)*G*e-A*b-a`.
+Matching `v_z` requires operator composition and bias closure, in addition to
+clean-image reconstruction. Independent fits do not enforce those conditions.
+
+A synthetic FP64 interior-grid check measures source-flow consistency MSE
+1.04436 for the retained40-image calibration,1.56858 for the new latent-area
+fit and1.15807 for pixel256, against unit source-velocity variance1.00250.
+An identity-map positive control gives5.57e-33. This diagnoses a concrete
+mapping-consistency gap, not sole causality for visual artifacts or a trained
+model's loss. The next bounded prototype should constrain A/B and bias closure
+and verify generation before any production promotion; pixel resizing alone
+does not meet that gate.
+Evidence: `docs/audits/data/hybrid_codec_pixel_resize_calibration_2026-10.json`.

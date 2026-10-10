@@ -1,0 +1,445 @@
+{
+  "rating": "general",
+  "calibration_indices": [
+    0,
+    1,
+    28,
+    31
+  ],
+  "fitting_indices": [
+    0,
+    1
+  ],
+  "held_indices": [
+    28,
+    31
+  ],
+  "resolutions": [
+    512,
+    256
+  ],
+  "updates": [
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        64,
+        64
+      ],
+      "sigma": 0.875,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        32,
+        32
+      ],
+      "sigma": 0.9296875,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        64,
+        64
+      ],
+      "sigma": 0.4921875,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        32,
+        32
+      ],
+      "sigma": 0.173828125,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        64,
+        64
+      ],
+      "sigma": 0.7578125,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        32,
+        32
+      ],
+      "sigma": 0.65234375,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        64,
+        64
+      ],
+      "sigma": 0.7578125,
+      "finite": true
+    },
+    {
+      "shape": [
+        1,
+        16,
+        1,
+        32,
+        32
+      ],
+      "sigma": 0.65234375,
+      "finite": true
+    }
+  ],
+  "native_parameters_sha256": "eaf74553c4830ae8e3a944a43e520849e92c78cb0c8d22351645870cf5e516b9",
+  "native_parameters_preserved": true,
+  "restored_native_parameters_sha256": "eaf74553c4830ae8e3a944a43e520849e92c78cb0c8d22351645870cf5e516b9",
+  "record": {
+    "schema_version": 1,
+    "method": "native_teacher_velocity",
+    "source_sha256": "bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e",
+    "calibration_sha256": "cbb85a9b22f7ffa2c28e4a8861a590e35872cea9f351f89964bbb82be8d1f7b4",
+    "initialized_weights_sha256": "13e7d1457a5f094713ddb00b34c190850b519e6bae488d0b4eda0957d42cd605",
+    "origin_spec": {
+      "schema_version": 2,
+      "method": "hybrid_unet_ssdit",
+      "architecture": "anima",
+      "streams": [
+        {
+          "name": "main",
+          "block_count": 28
+        }
+      ],
+      "regions": [
+        {
+          "id": "r0",
+          "stream": "main",
+          "parent": null,
+          "start_block": 8,
+          "end_block": 20,
+          "down_factor": [
+            2,
+            2
+          ],
+          "down": "avg_pool",
+          "up": "bilinear",
+          "align_corners": false,
+          "merge": "identity_delta_add",
+          "position_policy": "coarse_integer",
+          "grid_policy": "require_divisible",
+          "delta_dtype": "float32"
+        },
+        {
+          "id": "r1",
+          "stream": "main",
+          "parent": "r0",
+          "start_block": 12,
+          "end_block": 16,
+          "down_factor": [
+            2,
+            2
+          ],
+          "down": "avg_pool",
+          "up": "bilinear",
+          "align_corners": false,
+          "merge": "identity_delta_add",
+          "position_policy": "coarse_integer",
+          "grid_policy": "require_divisible",
+          "delta_dtype": "float32"
+        }
+      ],
+      "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+      "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+      "stream_widths": {
+        "main": 2048
+      },
+      "boundaries": [
+        {
+          "id": "downup_r0",
+          "region": "r0",
+          "rank": 64,
+          "kernel": 3,
+          "fusion": "full_rank"
+        },
+        {
+          "id": "downup_r1",
+          "region": "r1",
+          "rank": 64,
+          "kernel": 3,
+          "fusion": "full_rank"
+        }
+      ],
+      "refiners": [
+        {
+          "id": "local_main_0",
+          "stream": "main",
+          "after_block": 0,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_12",
+          "stream": "main",
+          "after_block": 12,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_16",
+          "stream": "main",
+          "after_block": 16,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_20",
+          "stream": "main",
+          "after_block": 20,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_24",
+          "stream": "main",
+          "after_block": 24,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_4",
+          "stream": "main",
+          "after_block": 4,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_8",
+          "stream": "main",
+          "after_block": 8,
+          "rank": 64,
+          "kernel": 3
+        }
+      ],
+      "skips": [
+        {
+          "id": "skip_main_0_27",
+          "stream": "main",
+          "source_after": 0,
+          "destination_before": 27,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_10_17",
+          "stream": "main",
+          "source_after": 10,
+          "destination_before": 17,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_12_15",
+          "stream": "main",
+          "source_after": 12,
+          "destination_before": 15,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_2_25",
+          "stream": "main",
+          "source_after": 2,
+          "destination_before": 25,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_4_23",
+          "stream": "main",
+          "source_after": 4,
+          "destination_before": 23,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_6_21",
+          "stream": "main",
+          "source_after": 6,
+          "destination_before": 21,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_8_19",
+          "stream": "main",
+          "source_after": 8,
+          "destination_before": 19,
+          "rank": 256,
+          "storage": "gpu"
+        }
+      ],
+      "module_layout_sha256": "b63e1ea4f181dd5521e1bd444bdd985e12488bf5a509b49b2139c84ced8ca920"
+    },
+    "sample_count": 4,
+    "seed": 718,
+    "phases": [
+      {
+        "kind": "data_noising",
+        "updates": 4,
+        "learning_rate": 0.0001,
+        "skip_learning_rate_multiplier": 0.25
+      },
+      {
+        "kind": "native_trajectory",
+        "updates": 4,
+        "learning_rate": 0.0001,
+        "skip_learning_rate_multiplier": 0.25
+      }
+    ],
+    "recipe": {
+      "schema_version": 1,
+      "settings": {
+        "caption_type": "tags",
+        "sample_count": 4,
+        "weight_decay": 0.0,
+        "optimizer": "adamw8bit",
+        "teacher_cfg": 4.0,
+        "attention_backend": "flash",
+        "stochastic_rounding": true,
+        "seed": 718,
+        "conditioning_dropout": 0.1,
+        "holdout_count": 2,
+        "teacher_steps": 2,
+        "clip_norm": 1.0,
+        "resolution": 512,
+        "additional_resolutions": [
+          256
+        ],
+        "resolution_sampling": "round_robin_v1"
+      }
+    }
+  },
+  "checkpoint_bytes": 4253493072,
+  "checkpoint_tensors": 752,
+  "initializer_peak_allocated_gib": 4.576113700866699,
+  "restored_updates": [
+    {
+      "latent_side": 64,
+      "finite_loss": 2.6663670539855957,
+      "parameters_with_gradient": 67
+    },
+    {
+      "latent_side": 32,
+      "finite_loss": 2.5622220039367676,
+      "parameters_with_gradient": 67
+    }
+  ],
+  "limits": [
+    "Eight teacher-field updates are functional verification, not quality or convergence acceptance.",
+    "Shared exporter uses an explicit private output directory; no owner artifact or database run is changed.",
+    "Post-restore updates are synthetic structural gradient checks, not full train_runner resume."
+  ],
+  "fitting_events": [
+    {
+      "completed": 1,
+      "total": 8,
+      "phase": "data_noising",
+      "phase_update": 1,
+      "loss": 0.020052466541528702,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 2,
+      "total": 8,
+      "phase": "data_noising",
+      "phase_update": 2,
+      "loss": 0.06623487174510956,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 3,
+      "total": 8,
+      "phase": "data_noising",
+      "phase_update": 3,
+      "loss": 0.05575297772884369,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 4,
+      "total": 8,
+      "phase": "data_noising",
+      "phase_update": 4,
+      "loss": 0.09930388629436493,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 5,
+      "total": 8,
+      "phase": "native_trajectory",
+      "phase_update": 1,
+      "loss": 0.07227481156587601,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 6,
+      "total": 8,
+      "phase": "native_trajectory",
+      "phase_update": 2,
+      "loss": 0.06703372299671173,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 7,
+      "total": 8,
+      "phase": "native_trajectory",
+      "phase_update": 3,
+      "loss": 0.025675591081380844,
+      "stage": "fitting",
+      "units": "updates"
+    },
+    {
+      "completed": 8,
+      "total": 8,
+      "phase": "native_trajectory",
+      "phase_update": 4,
+      "loss": 0.031809497624635696,
+      "stage": "fitting",
+      "units": "updates"
+    }
+  ],
+  "checks": {
+    "public_owner_execution": true,
+    "source_parameter_hash_preserved": true,
+    "restored_parameter_hash_preserved": true,
+    "phase_grids_alternate": true,
+    "module_count": 67,
+    "restored_fresh_structural_optimizer_entries": 67,
+    "restored_fresh_structural_optimizer_counter": 2,
+    "original_devices_flags_modes_restored": true,
+    "official_weight_quality_acceptance": false,
+    "full_train_runner_resume": false
+  }
+}

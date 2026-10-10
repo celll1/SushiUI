@@ -109,7 +109,9 @@ export default function HybridInitializationPanel({ modelPath, architecture, spe
           onChange={e => setName(e.target.value)} /></label>
       <details><summary>Fitting settings and ordered phases</summary>
         <p className="my-2 text-gray-400">Defaults come from the API. Optional item_ids selects explicit dataset items in order;
-          otherwise the first sample_count IDs are used.</p>
+          otherwise the first sample_count IDs are used. Each phase can set skip_learning_rate_multiplier
+          to reduce compressed-skip learning rates while keeping other branches at learning_rate.
+          This affects initialization only.</p>
         <textarea aria-label="Hybrid initialization settings" rows={18} value={settings}
           className="w-full rounded bg-gray-900 p-2 font-mono" onChange={e => setSettings(e.target.value)} />
       </details>

@@ -28,6 +28,7 @@ class FitPhase:
     updates: int
     learning_rate: float
     examples: object
+    skip_learning_rate_multiplier: float | None = None
 
 
 def weights_digest(module):
@@ -60,7 +61,9 @@ def fit_teacher_modules(model, phases, predict, optimizer_factory, *, source_sha
         source_sha256=source_sha256, calibration_sha256=calibration_sha256,
         initialized_weights_sha256="0"*64, origin_spec=model._residual_unet_spec,
         sample_count=sample_count, seed=seed,
-        phases=[dict(kind=phase.kind, updates=phase.updates, learning_rate=phase.learning_rate)
+        phases=[dict(kind=phase.kind, updates=phase.updates, learning_rate=phase.learning_rate,
+                    **({"skip_learning_rate_multiplier": phase.skip_learning_rate_multiplier}
+                       if phase.skip_learning_rate_multiplier is not None else {}))
                 for phase in phases])
     if recipe is not None:
         record["recipe"] = deepcopy(recipe)
@@ -80,14 +83,27 @@ def fit_teacher_modules(model, phases, predict, optimizer_factory, *, source_sha
                         for name, value in model.rewiring_modules.state_dict().items()}
             check_cancel()
             for phase in phases:
-                optimizer = optimizer_factory(teacher.parameters, phase.learning_rate)
+                multiplier = phase.skip_learning_rate_multiplier
+                skip_ids = {id(parameter) for parameter in model.rewiring_modules.skips.parameters()}
+                rates = {id(parameter): phase.learning_rate * (
+                    multiplier if multiplier is not None and id(parameter) in skip_ids else 1)
+                    for parameter in teacher.parameters}
+                parameters = teacher.parameters
+                if multiplier is not None and multiplier != 1:
+                    parameters = [dict(params=[p for p in teacher.parameters if id(p) not in skip_ids],
+                                       lr=phase.learning_rate),
+                                  dict(params=[p for p in teacher.parameters if id(p) in skip_ids],
+                                       lr=phase.learning_rate * multiplier)]
+                    parameters = [group for group in parameters if group["params"]]
+                optimizer = optimizer_factory(parameters, phase.learning_rate)
                 if not isinstance(optimizer, torch.optim.Optimizer) or optimizer.state:
                     raise ValueError("Initialization requires a fresh optimizer")
                 owned = [id(parameter) for group in optimizer.param_groups for parameter in group["params"]]
                 if len(owned) != len(set(owned)) or set(owned) != {id(p) for p in teacher.parameters}:
                     raise ValueError("Initialization optimizer must own exactly the added parameters")
-                if any(group["lr"] != phase.learning_rate for group in optimizer.param_groups):
-                    raise ValueError("Initialization optimizer disagrees with the phase learning rate")
+                if any(group["lr"] != rates[id(parameter)] for group in optimizer.param_groups
+                       for parameter in group["params"]):
+                    raise ValueError("Initialization optimizer disagrees with declared parameter learning rates")
                 examples = iter(phase.examples)
                 for index in range(phase.updates):
                     check_cancel()

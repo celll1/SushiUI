@@ -9985,7 +9985,8 @@ export interface HybridInitializationRecord {
   schema_version: 1; method: "native_teacher_velocity";
   source_sha256: string; calibration_sha256: string; initialized_weights_sha256: string;
   origin_spec: HybridDiTRewiringSpec; sample_count: number; seed: number;
-  phases: { kind: "data_noising" | "native_trajectory"; updates: number; learning_rate: number }[];
+  phases: { kind: "data_noising" | "native_trajectory"; updates: number; learning_rate: number;
+    skip_learning_rate_multiplier?: number }[];
   recipe?: { schema_version: 1; settings: HybridInitializationSettings };
 }
 export interface HybridInitializationSettings {

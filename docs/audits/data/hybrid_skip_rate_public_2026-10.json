@@ -1,0 +1,259 @@
+{
+  "rating": "general",
+  "updates": 2,
+  "weight_dtype": "bf16",
+  "stochastic_rounding": true,
+  "source": "M:\\model\\anima\\anima-base-v1.0.safetensors",
+  "record": {
+    "schema_version": 1,
+    "method": "native_teacher_velocity",
+    "source_sha256": "bd43b7cffe1ed1153d9c41e7beb2f18cb1273eafbaa3af3edd6a173dc90a006e",
+    "calibration_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+    "initialized_weights_sha256": "f2401385c9ec2cf199dea7ce11be9de1c1f372db7f11670a2f903d66d2b37e37",
+    "origin_spec": {
+      "schema_version": 2,
+      "method": "hybrid_unet_ssdit",
+      "architecture": "anima",
+      "streams": [
+        {
+          "name": "main",
+          "block_count": 28
+        }
+      ],
+      "regions": [
+        {
+          "id": "r0",
+          "stream": "main",
+          "parent": null,
+          "start_block": 8,
+          "end_block": 20,
+          "down_factor": [
+            2,
+            2
+          ],
+          "down": "avg_pool",
+          "up": "bilinear",
+          "align_corners": false,
+          "merge": "identity_delta_add",
+          "position_policy": "coarse_integer",
+          "grid_policy": "require_divisible",
+          "delta_dtype": "float32"
+        },
+        {
+          "id": "r1",
+          "stream": "main",
+          "parent": "r0",
+          "start_block": 12,
+          "end_block": 16,
+          "down_factor": [
+            2,
+            2
+          ],
+          "down": "avg_pool",
+          "up": "bilinear",
+          "align_corners": false,
+          "merge": "identity_delta_add",
+          "position_policy": "coarse_integer",
+          "grid_policy": "require_divisible",
+          "delta_dtype": "float32"
+        }
+      ],
+      "base_config_sha256": "66df3b3b1d455c2a30b737ec07883f9e572cc9375b4fcc44dfeaa9e671ac678c",
+      "block_layout_sha256": "8a865656538e5407107fad65c02b05295bdd77704552df0890d65bd224162f48",
+      "stream_widths": {
+        "main": 2048
+      },
+      "boundaries": [
+        {
+          "id": "downup_r0",
+          "region": "r0",
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "downup_r1",
+          "region": "r1",
+          "rank": 64,
+          "kernel": 3
+        }
+      ],
+      "refiners": [
+        {
+          "id": "local_main_0",
+          "stream": "main",
+          "after_block": 0,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_12",
+          "stream": "main",
+          "after_block": 12,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_16",
+          "stream": "main",
+          "after_block": 16,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_20",
+          "stream": "main",
+          "after_block": 20,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_24",
+          "stream": "main",
+          "after_block": 24,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_4",
+          "stream": "main",
+          "after_block": 4,
+          "rank": 64,
+          "kernel": 3
+        },
+        {
+          "id": "local_main_8",
+          "stream": "main",
+          "after_block": 8,
+          "rank": 64,
+          "kernel": 3
+        }
+      ],
+      "skips": [
+        {
+          "id": "skip_main_0_27",
+          "stream": "main",
+          "source_after": 0,
+          "destination_before": 27,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_10_17",
+          "stream": "main",
+          "source_after": 10,
+          "destination_before": 17,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_12_15",
+          "stream": "main",
+          "source_after": 12,
+          "destination_before": 15,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_2_25",
+          "stream": "main",
+          "source_after": 2,
+          "destination_before": 25,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_4_23",
+          "stream": "main",
+          "source_after": 4,
+          "destination_before": 23,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_6_21",
+          "stream": "main",
+          "source_after": 6,
+          "destination_before": 21,
+          "rank": 256,
+          "storage": "gpu"
+        },
+        {
+          "id": "skip_main_8_19",
+          "stream": "main",
+          "source_after": 8,
+          "destination_before": 19,
+          "rank": 256,
+          "storage": "gpu"
+        }
+      ],
+      "module_layout_sha256": "10ada261aa96721eb741fc22078d27ee83add4bd1d9159b8c653ea5ca10fbf2f"
+    },
+    "sample_count": 28,
+    "seed": 718,
+    "phases": [
+      {
+        "kind": "data_noising",
+        "updates": 2,
+        "learning_rate": 0.001,
+        "skip_learning_rate_multiplier": 0.25
+      }
+    ]
+  },
+  "body_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "body_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "learning_rates": [
+    0.001,
+    0.00025
+  ],
+  "group_tensor_counts": [
+    51,
+    14
+  ],
+  "optimizer_entries": 65,
+  "optimizer_counters": [
+    2
+  ],
+  "events": [
+    {
+      "completed": 1,
+      "total": 2,
+      "phase": "data_noising",
+      "phase_update": 1,
+      "loss": 0.05959406495094299
+    },
+    {
+      "completed": 2,
+      "total": 2,
+      "phase": "data_noising",
+      "phase_update": 2,
+      "loss": 0.03786244988441467
+    }
+  ],
+  "peak_allocated_gib": 5.696956157684326,
+  "payload_count": 65,
+  "payload_sha256": "e044512606ff30af530e4a0e92859231baae2a151a1b094f49ea73e4a9fd1e86",
+  "limitations": [
+    "Short official-weight transaction verifies parameter ownership, rates, finite updates and metadata/tensor round-trip.",
+    "This local structural-only payload is not a full production model and is not a quality acceptance."
+  ],
+  "api_restart": {
+    "success": true,
+    "owner_source": "M:\\model\\ming_image_01\\layer_int8_convrot",
+    "default_skip_multiplier": 1.0,
+    "invalid_zero_status": 422
+  },
+  "cpu_verification": {
+    "first_batch": 66,
+    "export_roundtrips": 17,
+    "final_changed_subsets": 35,
+    "distinct_cases": 85,
+    "cuda_context_created": false,
+    "native_owner_explicit_multiplier_cases": 12
+  },
+  "frontend_static": {
+    "phase_type_optional_for_old_records": true,
+    "defaults_populate_phase_json": true,
+    "request_preserves_phase_fields": true,
+    "owner_build_typecheck": "pending"
+  }
+}

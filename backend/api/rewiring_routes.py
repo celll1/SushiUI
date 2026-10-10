@@ -7,6 +7,7 @@ from typing import Literal
 from safetensors import SafetensorError
 
 from api.param_defaults import DIT_REWIRING_PRESETS, DIT_HYBRID_DEFAULTS, DIT_HYBRID_INITIALIZATION_DEFAULTS as INIT_DEFAULTS
+from api.param_defaults import DIT_HYBRID_INITIALIZATION_PHASE_DEFAULTS as PHASE_DEFAULTS
 from database import get_datasets_db
 from core.rewiring.capability import RUNTIME_ARCHITECTURES
 from core.rewiring.spec import digest, preview_plan, validate_spec
@@ -35,6 +36,8 @@ class HybridInitializationPhaseRequest(BaseModel):
     kind: Literal["data_noising", "native_trajectory"]
     updates: int = Field(ge=1, le=10000)
     learning_rate: float = Field(gt=0, le=1)
+    skip_learning_rate_multiplier: float = Field(
+        default=PHASE_DEFAULTS["skip_learning_rate_multiplier"], gt=0, le=1)
 
 
 class HybridInitializationRequest(BaseModel):
@@ -70,6 +73,12 @@ class HybridInitializationRequest(BaseModel):
             raise ValueError("item_ids must contain sample_count distinct positive IDs")
         if self.spec is not None and validate_spec(self.spec).get("method") != "hybrid_unet_ssdit":
             raise ValueError("Initialization requires a hybrid U-Net declaration")
+        for phase in self.phases:
+            if phase.learning_rate * phase.skip_learning_rate_multiplier <= 0:
+                raise ValueError("Effective skip learning rate must be positive")
+            if (phase.skip_learning_rate_multiplier < 1 and self.spec is not None
+                    and not self.spec.get("skips")):
+                raise ValueError("Skip learning-rate multiplier requires compressed skips")
         return self
 
 

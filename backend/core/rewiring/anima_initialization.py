@@ -168,7 +168,8 @@ def initialize_loaded_anima(components, source, spec, items, options, progress, 
                                          pair["target"].to(device))
 
             for phase in options["phases"]:
-                phases.append(FitPhase(phase["kind"],phase["updates"],phase["learning_rate"],examples(phase["kind"])))
+                phases.append(FitPhase(phase["kind"],phase["updates"],phase["learning_rate"],examples(phase["kind"]),
+                                       phase.get("skip_learning_rate_multiplier")))
 
             def optimizer(parameters, lr):
                 if options["optimizer"] == "adamw8bit":

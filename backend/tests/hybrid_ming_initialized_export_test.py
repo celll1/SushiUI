@@ -49,7 +49,7 @@ def test_publish_fitted_ming_preserves_native_assets_and_restores(tmp_path,profi
                          dict(cap_feats_2=[torch.randn(5,24)]))
     def predict(module,args,kwargs):
         return module(*args,**kwargs).sample[0][:,:frames]
-    fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example])],predict,
+    fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example],.25)],predict,
         lambda parameters,lr:torch.optim.AdamW(parameters,lr=lr),
         source_sha256=checksum,calibration_sha256="2"*64,sample_count=1,seed=98,clip_norm=1.)
     result = export_initialized_ming_package(model,source,tmp_path/"initialized")

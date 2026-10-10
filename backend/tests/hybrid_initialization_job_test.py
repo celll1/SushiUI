@@ -98,6 +98,37 @@ def test_request_refuses_invalid_recipe(changes):
         HybridInitializationRequest(model_path="native", output_name="new", dataset_id=1, **changes)
 
 
+@pytest.mark.parametrize("multiplier", [0, -1, 2, True, float("nan"), float("inf")])
+def test_phase_refuses_invalid_skip_multiplier(multiplier):
+    from api.rewiring_routes import HybridInitializationPhaseRequest
+    with pytest.raises(ValueError):
+        HybridInitializationPhaseRequest(kind="data_noising", updates=1, learning_rate=.001,
+                                         skip_learning_rate_multiplier=multiplier)
+
+
+def test_skip_multiplier_defaults_and_explicit_request_serialization():
+    from api.param_defaults import DIT_HYBRID_INITIALIZATION_PHASE_DEFAULTS
+    from api.rewiring_routes import HybridInitializationPhaseRequest
+    phase = HybridInitializationPhaseRequest(kind="data_noising", updates=1, learning_rate=.001)
+    assert phase.skip_learning_rate_multiplier == DIT_HYBRID_INITIALIZATION_PHASE_DEFAULTS["skip_learning_rate_multiplier"]
+    request = HybridInitializationRequest(model_path="native", output_name="new", dataset_id=1,
+        phases=[dict(kind="data_noising", updates=1, learning_rate=.001, skip_learning_rate_multiplier=.25)])
+    assert request.model_dump()["phases"][0]["skip_learning_rate_multiplier"] == .25
+
+
+def test_skip_multiplier_refuses_underflow_and_absent_skip_modules():
+    from hybrid_rewiring_test import declaration
+    from core.rewiring.hybrid_spec import build_hybrid_spec, legacy_topology
+    spec = declaration()
+    no_skips = build_hybrid_spec(legacy_topology(spec), stream_widths=spec["stream_widths"],
+        boundaries=spec["boundaries"], refiners=spec["refiners"], skips=[])
+    for changes in (dict(learning_rate=5e-324, skip_learning_rate_multiplier=5e-324),
+                    dict(learning_rate=.001, skip_learning_rate_multiplier=.25)):
+        with pytest.raises(ValueError):
+            HybridInitializationRequest(model_path="native", output_name="new", dataset_id=1,
+                spec=no_skips, phases=[dict(kind="data_noising", updates=1, **changes)])
+
+
 @pytest.fixture
 def owner(monkeypatch):
     from api import routes

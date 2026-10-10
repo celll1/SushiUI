@@ -24,10 +24,11 @@ def test_packed_noising_and_native_teacher_update():
     def predict(network,args,inputs):
         return network(*args,**inputs)[0][:,-96:]
     example = FitExample((),kwargs)
-    record = fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example])],predict,
+    record = fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example],.25)],predict,
         lambda parameters,lr:torch.optim.AdamW(parameters,lr=lr),source_sha256="1"*64,
         calibration_sha256="2"*64,sample_count=1,seed=73,clip_norm=1.)
     assert record["phases"][0]["updates"] == 2
+    assert record["phases"][0]["skip_learning_rate_multiplier"] == .25
     assert all(torch.equal(model.state_dict()[name],value) for name,value in source.items())
     assert all(parameter.grad is None for parameter in model.parameters())
     assert all(torch.isfinite(value).all() for value in model.rewiring_modules.state_dict().values())

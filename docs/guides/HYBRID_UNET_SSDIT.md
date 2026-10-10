@@ -1484,9 +1484,40 @@ single girl's face and outline are coherent, while the two-person image retains
 overlapping heads/figures and fragmented anatomy. Relative to rank64 the result
 is mixed, not a consistent quality advantage. This establishes optimization
 sensitivity rather than proving a larger skip is intrinsically harmful or that
-rank256 should be the default. Public initialization currently enforces one
-phase learning rate for all parameter groups; the tested differential-rate
-recipe is private and must not be represented as a public initializer record.
-Any adoption needs explicit API/provenance support and further quality evidence.
+rank256 should be the default. At the time of this probe public initialization
+enforced uniform phase rates. Its private module weights still have no public
+initializer lineage and must not be relabeled as a public initialized artifact.
+The subsequent explicit rate control below permits new, recorded initialization;
+default adoption still needs further quality evidence.
 No runtime defaults or owner artifacts change. Evidence:
 `docs/audits/data/hybrid_anima_wide_skip_lr_fit_2026-10.json`.
+
+### Recorded skip-rate initialization option
+
+Each API initialization phase accepts `skip_learning_rate_multiplier` in(0,1],
+default1 from `api/param_defaults.py`. For example a phase with learning_rate0.001
+and multiplier0.25 fits compressed-skip capture/restore weights at0.00025 while
+down/up/local weights stay at0.001. It changes initialization only, not subsequent
+training rates. Anima, Ming and Qwen pass the setting through the shared fitting
+transaction. Reduced rates require skip modules; invalid/nonfinite/boolean values,
+effective-rate underflow and optimizer group overrides are rejected. Parameters
+must still have exactly one optimizer owner, with rollback on failure/cancellation.
+
+Phase rates are stored in initialization lineage and included in its hash.
+Older records without the optional field retain their exact contents and hash;
+absence means uniform rates. New records explicitly describe any requested
+multiplier. Default1 preserves numerical updates and optimizer ordering, without
+changing topology defaults or migrating owner runs. The UI's advanced phase JSON
+receives defaults from the schema, sends the field intact and explains its scope.
+Frontend build/type checks remain owner work; static review covers types, request
+transport, busy/cancel/error paths and default state.
+
+Eighty-five distinct CPU cases cover transactions, legacy/new lineage, API
+defaults/validation, native owners and all three artifact export/reload paths.
+Real Anima BF16/AdamW8bit/SR completes two public fitting updates:51 non-skip and
+14 skip tensors have rates0.001/0.00025, all65 optimizer entries reach2 and the
+native body stays exact. Complete structural tensors and metadata round-trip
+through a local safetensors payload. That payload is not a full production model
+or quality acceptance. Backend compilation and real GPU-free imports pass;
+API restart confirms schema defaults, invalid-zero422 and the prior Ming Layer
+model. Evidence: `docs/audits/data/hybrid_skip_rate_public_2026-10.json`.

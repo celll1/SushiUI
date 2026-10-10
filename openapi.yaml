@@ -12213,6 +12213,14 @@ components:
         kind: {type: string, enum: [data_noising, native_trajectory]}
         updates: {type: integer, minimum: 1, maximum: 10000, example: 1000}
         learning_rate: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 1, example: 0.0003}
+        skip_learning_rate_multiplier:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1
+          default: 1.0
+          example: 0.25
+          description: Multiplies only compressed-skip parameter learning rates in this phase; boundary and local corrections retain learning_rate. Values below 1 require skip modules. Effective rates must remain positive. Recorded in initialization lineage; this does not change subsequent training rates or select a new topology default.
     HybridInitializationRequest:
       type: object
       additionalProperties: false
@@ -12330,6 +12338,13 @@ components:
               kind: {type: string, enum: [data_noising, native_trajectory]}
               updates: {type: integer, minimum: 1, maximum: 1000000, example: 1000}
               learning_rate: {type: number, minimum: 0, exclusiveMinimum: true, maximum: 1, example: 0.0003}
+              skip_learning_rate_multiplier:
+                type: number
+                minimum: 0
+                exclusiveMinimum: true
+                maximum: 1
+                example: 0.25
+                description: Optional recorded compressed-skip LR multiplier. Absence means uniform phase rates in older artifacts; omitted fields are not inserted when restoring lineage.
     DiTRewiringSpec:
       type: object
       additionalProperties: false

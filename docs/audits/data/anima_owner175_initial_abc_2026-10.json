@@ -1,0 +1,104 @@
+{
+  "run_id": 175,
+  "size": 1024,
+  "seed": 63,
+  "cfg": 4,
+  "steps": 28,
+  "calibration_rating": "general",
+  "calibration_dataset": 30,
+  "calibration_item_ids": [
+    3813125,
+    3813130,
+    3813135,
+    3813138,
+    3813141,
+    3813149,
+    3813151,
+    3813154,
+    3813157,
+    3813161,
+    3813162,
+    3813163,
+    3813164,
+    3813166,
+    3813167,
+    3813183,
+    3813236,
+    3813239,
+    3813245,
+    3813264,
+    3813266,
+    3813275,
+    3813278,
+    3813280,
+    3813283,
+    3813284,
+    3813288,
+    3813297,
+    3813298,
+    3813299,
+    3813301,
+    3813302
+  ],
+  "calibration_samples": 32,
+  "calibration_resolution": 256,
+  "source_calibration_side": 128,
+  "calibration_cohort_differs_from_full_training_dataset": true,
+  "trained_updates": 0,
+  "hybrid_structural_tensors": 67,
+  "owner_run_unchanged": true,
+  "completed": true,
+  "limits": [
+    "Same generated general prompts, native backbone, seed, CFG and sampler across arms.",
+    "Calibration is restricted to the previously authorized general cohort; full-run calibration may differ.",
+    "Hybrid uses the exact run175 checkpoint with only8 structural teacher-initialization updates.",
+    "No training, partition/global adapter or owner run changes; full-frame initial generation.",
+    "Matched seed does not imply identical latent noise tensors when channel/grid geometry changes.",
+    "Initial appearance only; no claim about long-training recovery."
+  ],
+  "hybrid_teacher_updates": 8,
+  "samples": [
+    {
+      "arm": "A_native",
+      "prompt": 0,
+      "sha256": "9887b7bde5b36b485b17bd05c124403acdc4f40a774bbfa8a472c9f407befe98",
+      "seconds": 16.467999999877065
+    },
+    {
+      "arm": "A_native",
+      "prompt": 1,
+      "sha256": "86b6c4d6abb5abc3071c927f610ee5151fdd961a9b09246f4f73443a77d9a004",
+      "seconds": 16.625
+    },
+    {
+      "arm": "B_qwen_vae",
+      "prompt": 0,
+      "sha256": "d6c927cba68de77d51ee706c721766ec56005a4fd297346f5706179eb462ac30",
+      "seconds": 4.92200000025332
+    },
+    {
+      "arm": "B_qwen_vae",
+      "prompt": 1,
+      "sha256": "8e02a971ddbe4468de556cf59aa6b71343bbf8495b645f57bd6f1ae722707c5d",
+      "seconds": 4.828999999910593
+    },
+    {
+      "arm": "C_qwen_vae_hybrid",
+      "prompt": 0,
+      "sha256": "0dbf047665a1d68cb63f5ebea0807088201c55738b20fd92eb89c5392efafcb4",
+      "seconds": 5.859000000171363
+    },
+    {
+      "arm": "C_qwen_vae_hybrid",
+      "prompt": 1,
+      "sha256": "d25094935dc61b4ea24bc9dc7b76dc496cc9a8ecc255a4af1954c9a4ab65f496",
+      "seconds": 5.360000000335276
+    }
+  ],
+  "visual_review": {
+    "native": "Both prompts form coherent recognizable subjects and backgrounds.",
+    "vae_only": "Coarse woman/fox structures remain; finer facial/fur details fragment, green saturation increases and repeated grid texture is visible.",
+    "combined": "Both prompts become mostly pale blurred color fields; recognizable subjects are largely lost.",
+    "interpretation": "The exact eight-update run175 structural initialization does not preserve coarse appearance in these two initial generations. This is not evidence that longer full fine-tuning cannot recover it."
+  }
+}

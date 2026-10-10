@@ -55,6 +55,26 @@ zero-branch preset's initial appearance or long-run quality. Owner interactive
 review should cover topology editing, initializer cancellation/error handling,
 artifact selection and save/load/resume; build/type checks remain owner-run.
 
+### Run175 initial native / codec / combined comparison
+
+The owner's A/B/C request uses the exact run175 eight-update teacher-initialized
+16/8/4 full-rank structure, not the trained body used in the compute matrix.
+Two newly generated general prompts (clothed adult woman and fox holding
+apple/book) share1024px,28 steps,CFG4 and seed63. Native Anima is coherent;
+Qwen64ch VAE-only preserves coarse subjects with fragmented detail, stronger
+green saturation and repeated grid texture. Adding the eight-update hybrid
+largely removes recognizable subjects, leaving pale blurred color fields in
+both examples. This bounded structural initialization is insufficient to
+preserve their coarse initial appearance. Long-training recovery remains
+unproven; these results do not establish that recovery is impossible.
+
+Calibration uses the production paired-spatial classes, Gaussian noise policy
+and32 general images at target256/native128 pixels, FP32 VAE encoding/decoding
+and BF16 DiT sampling. The cohort differs from the full owner dataset. This is
+full-frame generation without partition/global adapters, with no training or
+owner-config changes. No images, captions or tensors are checked in. Evidence:
+`docs/audits/data/anima_owner175_initial_abc_2026-10.json`.
+
 A complete API/trainer lifecycle also verifies the public full-rank boundary
 configuration with bundled Qwen64ch/16x VAE, partition/global adapter,
 activation dispatch and CPU EMA. A temporary eight-general-image run completes

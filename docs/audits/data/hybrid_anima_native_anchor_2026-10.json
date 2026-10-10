@@ -1,0 +1,126 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "mode": "joint_fullft_native_field_anchor",
+  "updates_per_arm": 222,
+  "native_learning_rate": 5E-06,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "init_state_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "arms": [
+    {
+      "arm": "native_anchor",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_anchor\\p28_native_anchor_cfg1.png",
+          "sha256": "c2aee8deff112eb806d39d7d785c1702cdcef57c1fe324cf1e2ffb7e09599984"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_anchor\\p28_native_anchor_cfg4.png",
+          "sha256": "658b055edebfa082aed90c19b5ca327384acd2c39ff1b37fbc38f88eee6f2c36"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_anchor\\p29_native_anchor_cfg1.png",
+          "sha256": "1898145c5cf2b4c342aaccc3b3c3a01d8c489fcd9132baf19664176db0064146"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_native_anchor\\p29_native_anchor_cfg4.png",
+          "sha256": "fe79a9251ed31c31b96177bf6d399e53e06f5ca5a44228ed0ce6617088c77e99"
+        }
+      ],
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_start_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "learning_rates": [
+        5E-06,
+        5E-05
+      ],
+      "group_tensor_counts": [
+        567,
+        65
+      ],
+      "start_cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "start_cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "native_after_first_update_sha256": "1dafc347c843aaffbc52f86480e48cd894dab20cb8cfbc2b23acff4227d3bdca",
+      "optimizer_entries": 632,
+      "optimizer_counters": [
+        222
+      ],
+      "joint_peak_allocated_gib": 15.554582595825195,
+      "statistics": {
+        "first_supervised_loss": 0.16938236355781555,
+        "first_anchor_loss": 0.03148011118173599,
+        "last50_mean_supervised_loss": 0.16821363419294358,
+        "last50_mean_anchor_loss": 0.023632375597953795,
+        "student_update_cuda_seconds": 106.54919781494141,
+        "teacher_forward_cuda_seconds": 15.410172161102295
+      }
+    }
+  ],
+  "limits": [
+    "Joint Full FT with supervised field MSE plus equally weighted frozen-native-teacher field MSE.",
+    "Same initialization, encoded inputs, starting CPU/CUDA RNG and item/null/sigma/noise exposures as joint control.",
+    "Teacher inference is isolated with fork_rng and its compute/memory are recorded separately.",
+    "This is an equal-update diagnostic, not equal-total-time or universal quality acceptance; backward may be nondeterministic."
+  ],
+  "teacher_parameter_bytes": 4182137856,
+  "teacher_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "anchor_weight": 1.0,
+  "teacher_end_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "matched_exposures": 222,
+  "observations": {
+    "p28_cfg4": "Missing/fragmented heads and limbs, large horizontal black band and text-like marks; coherent two-person composition fails.",
+    "p29_cfg4": "Coherent single-girl face with distorted torso/limbs and neck/body contour.",
+    "cfg1": "Fragmented/duplicated figures and contours; horizontal dark band remains in p28."
+  },
+  "decision": "Reject equally weighted native-field anchoring as a default remedy in this bounded test. Smaller field MSE does not recover two-person composition. All632 optimizer counters reach222 and frozen teacher hashes remain identical; Full FT quality acceptance remains open.",
+  "next_action": "Compare an anchor on paired conditional/unconditional guided fields, with identical exposures and rates, to test CFG-amplified field differences. No default or owner-run changes before a demonstrated quality benefit."
+}

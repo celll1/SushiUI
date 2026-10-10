@@ -1,0 +1,1237 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "updates": 0,
+  "vae_swap": false,
+  "native_before_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "fit_sha256": "dde327598e3b4650885fef576d14f46edf97226450477d2e6d50d623144d3f19",
+  "exposures": [
+    {
+      "step": 1,
+      "index": 8,
+      "dropped": false,
+      "sigma": 0.32421875,
+      "arms": [
+        {
+          "arm": "native",
+          "loss": 0.1383688598871231,
+          "total_gradient_norm": 2.4694379448205126,
+          "global_clip_coefficient": 0.4049502831796813,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.08656679093837738,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.2942223494882355,
+              "cosine_to_native": null
+            },
+            "native.t_embedder": {
+              "square_norm": 3.640847814269364,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 1.9081005776083617,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.2434511156189743,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.1151013925284885,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.7337370461483872,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.8565845236451493,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.35140373604213426,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.5927931646385055,
+              "cosine_to_native": null
+            },
+            "native.final_layer": {
+              "square_norm": 0.04204724399482984,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.20505424646865972,
+              "cosine_to_native": null
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 7.001630729064345e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.00836757475560532,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.down": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 10,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 6,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 35,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 14,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 2,
+              "norm": 0.0,
+              "cosine_to_native": null
+            }
+          }
+        },
+        {
+          "arm": "hybrid",
+          "loss": 0.15910561382770538,
+          "total_gradient_norm": 1.4049794219167056,
+          "global_clip_coefficient": 0.7117536902299164,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.01439750287681818,
+              "native_square_norm": 0.08656679093837738,
+              "dot": 0.010017813183367252,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.11998959486896428,
+              "cosine_to_native": 0.28376163795122755
+            },
+            "native.t_embedder": {
+              "square_norm": 0.6503868823492667,
+              "native_square_norm": 3.640847814269364,
+              "dot": 0.35329440981149673,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.806465673385586,
+              "cosine_to_native": 0.22958822790996247
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.0683267990509158,
+              "native_square_norm": 1.2434511156189743,
+              "dot": 0.40731697548436974,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.0335989546487148,
+              "cosine_to_native": 0.3533996301772841
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.13645433711259708,
+              "native_square_norm": 0.7337370461483872,
+              "dot": 0.028850023323845196,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.36939726191811045,
+              "cosine_to_native": 0.09117636484077571
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.02887895542779359,
+              "native_square_norm": 0.35140373604213426,
+              "dot": 0.0047571781410294025,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.16993809292737633,
+              "cosine_to_native": 0.04722320806991769
+            },
+            "native.final_layer": {
+              "square_norm": 0.054127510219871056,
+              "native_square_norm": 0.04204724399482984,
+              "dot": 0.03566314356010025,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.23265319731280518,
+              "cosine_to_native": 0.7475527250219269
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 3.0181307010934688e-05,
+              "native_square_norm": 7.001630729064345e-05,
+              "dot": 4.4285163312451914e-05,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.005493751633531925,
+              "cosine_to_native": 0.9633622584838454
+            },
+            "rewiring_modules.down": {
+              "square_norm": 1.178201429913317e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 10,
+              "missing": 0,
+              "norm": 0.00343249388916181,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 7.3776468395792e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 6,
+              "missing": 0,
+              "norm": 0.00858932292999815,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0006638900973472343,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 35,
+              "missing": 0,
+              "norm": 0.025766064840158157,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.02060955978018164,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 14,
+              "missing": 0,
+              "norm": 0.14356030015356488,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 5.999304903525626e-06,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.002449347852699903,
+              "cosine_to_native": null
+            }
+          }
+        }
+      ],
+      "structural_squared_norm_fraction": 0.010823385477117772
+    },
+    {
+      "step": 2,
+      "index": 7,
+      "dropped": false,
+      "sigma": 0.65234375,
+      "arms": [
+        {
+          "arm": "native",
+          "loss": 0.09887953847646713,
+          "total_gradient_norm": 3.3228650406485976,
+          "global_clip_coefficient": 0.3009450238941344,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.09953214973211288,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.31548716254724674,
+              "cosine_to_native": null
+            },
+            "native.t_embedder": {
+              "square_norm": 6.665446317929309,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 2.5817525671390955,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.7451216381655903,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.3210305212846485,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth1": {
+              "square_norm": 1.5797261788908368,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 1.2568715840891769,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.902445860968889,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.9499715053457598,
+              "cosine_to_native": null
+            },
+            "native.final_layer": {
+              "square_norm": 0.04910422262037173,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.2215947260662395,
+              "cosine_to_native": null
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 5.571005749516189e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.0074639170343166255,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.down": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 10,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 6,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 35,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 14,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 2,
+              "norm": 0.0,
+              "cosine_to_native": null
+            }
+          }
+        },
+        {
+          "arm": "hybrid",
+          "loss": 0.10650833696126938,
+          "total_gradient_norm": 1.9935104534566717,
+          "global_clip_coefficient": 0.5016274164194235,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.03768736869096756,
+              "native_square_norm": 0.09953214973211288,
+              "dot": 0.008361575193703175,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.19413234838884416,
+              "cosine_to_native": 0.13652384131682374
+            },
+            "native.t_embedder": {
+              "square_norm": 2.060650836385321,
+              "native_square_norm": 6.665446317929309,
+              "dot": 0.17111870789085515,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 1.4354967211336016,
+              "cosine_to_native": 0.046172210809852725
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.355499922926266,
+              "native_square_norm": 1.7451216381655903,
+              "dot": 0.3134744038039383,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.1642593881632504,
+              "cosine_to_native": 0.2038165681642707
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.3582870430815352,
+              "native_square_norm": 1.5797261788908368,
+              "dot": 0.05111683836975666,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.598570833804601,
+              "cosine_to_native": 0.06794500350342234
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.07046224410379154,
+              "native_square_norm": 0.902445860968889,
+              "dot": 0.02467952894709649,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.2654472529595881,
+              "cosine_to_native": 0.09786965381762322
+            },
+            "native.final_layer": {
+              "square_norm": 0.06875145225103552,
+              "native_square_norm": 0.04910422262037173,
+              "dot": 0.048238102225923285,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.26220498136197856,
+              "cosine_to_native": 0.83021362286636
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 8.7366324805771e-06,
+              "native_square_norm": 5.571005749516189e-05,
+              "dot": 1.886515019577928e-05,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.0029557795047291838,
+              "cosine_to_native": 0.8551089075542553
+            },
+            "rewiring_modules.down": {
+              "square_norm": 0.00016388820072954502,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 10,
+              "missing": 0,
+              "norm": 0.012801882702538132,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 3.4868427292167326e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 6,
+              "missing": 0,
+              "norm": 0.005904949389467054,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0009382551427595889,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 35,
+              "missing": 0,
+              "norm": 0.030630950732218366,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.02159591299366248,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 14,
+              "missing": 0,
+              "norm": 0.14695547963128996,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 3.399205183995946e-06,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.00184369335411178,
+              "cosine_to_native": null
+            }
+          }
+        }
+      ],
+      "structural_squared_norm_fraction": 0.005721148415915656
+    },
+    {
+      "step": 3,
+      "index": 13,
+      "dropped": false,
+      "sigma": 0.244140625,
+      "arms": [
+        {
+          "arm": "native",
+          "loss": 0.211947500705719,
+          "total_gradient_norm": 1.5432159330508664,
+          "global_clip_coefficient": 0.6479970369577579,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.04059020057320595,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.20147009845931468,
+              "cosine_to_native": null
+            },
+            "native.t_embedder": {
+              "square_norm": 1.166490401039482,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 1.0800418515221908,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth0": {
+              "square_norm": 0.7156293810875085,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 0.8459488052403104,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.30753089494269087,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.5545546816524867,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.09722630907603408,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.3118113357080433,
+              "cosine_to_native": null
+            },
+            "native.final_layer": {
+              "square_norm": 0.05403606223944735,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.23245658140703898,
+              "cosine_to_native": null
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 1.2167063687229529e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.0034881318334073225,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.down": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 10,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 6,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 35,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 14,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 2,
+              "norm": 0.0,
+              "cosine_to_native": null
+            }
+          }
+        },
+        {
+          "arm": "hybrid",
+          "loss": 0.23180191218852997,
+          "total_gradient_norm": 1.4741645123077762,
+          "global_clip_coefficient": 0.6783498811029165,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.02767682820558548,
+              "native_square_norm": 0.04059020057320595,
+              "dot": 0.01388042327016592,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.1663635422969392,
+              "cosine_to_native": 0.414127386893195
+            },
+            "native.t_embedder": {
+              "square_norm": 0.7132207711874798,
+              "native_square_norm": 1.166490401039482,
+              "dot": 0.24348175715340403,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.8445239908892345,
+              "cosine_to_native": 0.26694011994434585
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.1614730015351453,
+              "native_square_norm": 0.7156293810875085,
+              "dot": 0.431684804923764,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.077716568275326,
+              "cosine_to_native": 0.4734979696144838
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.13840975127526606,
+              "native_square_norm": 0.30753089494269087,
+              "dot": 0.018263638077936954,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.3720346103190751,
+              "cosine_to_native": 0.08852370295407538
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.01833604096861218,
+              "native_square_norm": 0.09722630907603408,
+              "dot": 0.001590567466560546,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.1354106383140268,
+              "cosine_to_native": 0.037671022658062214
+            },
+            "native.final_layer": {
+              "square_norm": 0.0897543198097992,
+              "native_square_norm": 0.05403606223944735,
+              "dot": 0.059938652907021606,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.29959025319559246,
+              "cosine_to_native": 0.860671558277448
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 5.211586903897114e-05,
+              "native_square_norm": 1.2167063687229529e-05,
+              "dot": 7.432906841131626e-07,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.007219132152757084,
+              "cosine_to_native": 0.029517583944050137
+            },
+            "rewiring_modules.down": {
+              "square_norm": 1.0990168164859426e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 10,
+              "missing": 0,
+              "norm": 0.0033151422540909805,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 5.271010552476696e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 6,
+              "missing": 0,
+              "norm": 0.007260172554751502,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0005757896292349172,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 35,
+              "missing": 0,
+              "norm": 0.023995616875482014,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.023591487385388632,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 14,
+              "missing": 0,
+              "norm": 0.1535952062578407,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 7.203208383543824e-06,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.0026838793533882676,
+              "cosine_to_native": null
+            }
+          }
+        }
+      ],
+      "structural_squared_norm_fraction": 0.011153421395119245
+    },
+    {
+      "step": 4,
+      "index": 12,
+      "dropped": false,
+      "sigma": 0.3671875,
+      "arms": [
+        {
+          "arm": "native",
+          "loss": 0.16933485865592957,
+          "total_gradient_norm": 1.5563311063414393,
+          "global_clip_coefficient": 0.64253638148657,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.024154067039489746,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.15541578761338806,
+              "cosine_to_native": null
+            },
+            "native.t_embedder": {
+              "square_norm": 1.2418057940521976,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 1.1143634030477658,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth0": {
+              "square_norm": 0.5624009304256147,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 0.7499339507087373,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.38065475429165074,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.6169722475862677,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.17209467489076086,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.41484295208037564,
+              "cosine_to_native": null
+            },
+            "native.final_layer": {
+              "square_norm": 0.041047471452031914,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.2026017557970116,
+              "cosine_to_native": null
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 8.82041422300972e-06,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.0029699182182359365,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.down": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 10,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 6,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 35,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 14,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 2,
+              "norm": 0.0,
+              "cosine_to_native": null
+            }
+          }
+        },
+        {
+          "arm": "hybrid",
+          "loss": 0.18151184916496277,
+          "total_gradient_norm": 1.3737172515180716,
+          "global_clip_coefficient": 0.7279513094442167,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.014127882197499275,
+              "native_square_norm": 0.024154067039489746,
+              "dot": 0.009212763980031013,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.11886076811757224,
+              "cosine_to_native": 0.4987194190623651
+            },
+            "native.t_embedder": {
+              "square_norm": 0.6773329008028668,
+              "native_square_norm": 1.2418057940521976,
+              "dot": 0.2281359198350401,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.8230023698646722,
+              "cosine_to_native": 0.24875152006464632
+            },
+            "native.blocks.depth0": {
+              "square_norm": 0.8673924313600538,
+              "native_square_norm": 0.5624009304256147,
+              "dot": 0.31441871629790497,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 0.931339052848131,
+              "cosine_to_native": 0.45017104821445864
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.19711871739707432,
+              "native_square_norm": 0.38065475429165074,
+              "dot": 0.01999470560619979,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.44398053718273994,
+              "cosine_to_native": 0.07299371249207891
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.04641851188994768,
+              "native_square_norm": 0.17209467489076086,
+              "dot": 0.0014703417813705282,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.21544955764621027,
+              "cosine_to_native": 0.016450873979938538
+            },
+            "native.final_layer": {
+              "square_norm": 0.05878947025871639,
+              "native_square_norm": 0.041047471452031914,
+              "dot": 0.038582086261506277,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.2424654001269385,
+              "cosine_to_native": 0.7854033141369404
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 2.5710171485116007e-06,
+              "native_square_norm": 8.82041422300972e-06,
+              "dot": 4.001952675025677e-06,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.0016034391627098299,
+              "cosine_to_native": 0.8403785744134608
+            },
+            "rewiring_modules.down": {
+              "square_norm": 4.423425230459799e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 10,
+              "missing": 0,
+              "norm": 0.006650883573225289,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.00010600063077426114,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 6,
+              "missing": 0,
+              "norm": 0.010295660774047538,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0003292292612577328,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 35,
+              "missing": 0,
+              "norm": 0.0181446758377694,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.025432075874549653,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 14,
+              "missing": 0,
+              "norm": 0.1594743737236477,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 5.062176171577448e-06,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.002249928036977505,
+              "cosine_to_native": null
+            }
+          }
+        }
+      ],
+      "structural_squared_norm_fraction": 0.013733567236595379
+    },
+    {
+      "step": 28,
+      "index": 24,
+      "dropped": true,
+      "sigma": 0.63671875,
+      "arms": [
+        {
+          "arm": "native",
+          "loss": 0.13944965600967407,
+          "total_gradient_norm": 2.4224325178441375,
+          "global_clip_coefficient": 0.41280802657071775,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.035489607602357864,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.188386856235667,
+              "cosine_to_native": null
+            },
+            "native.t_embedder": {
+              "square_norm": 2.731544350157492,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 1.6527384397288918,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.392165619402613,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.17990068200786,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.9886459538789376,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.9943067705084471,
+              "cosine_to_native": null
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.6685958039124985,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.8176770780158256,
+              "cosine_to_native": null
+            },
+            "native.final_layer": {
+              "square_norm": 0.051597269404283,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.227150323363809,
+              "cosine_to_native": null
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 0.00014069915050640702,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.011861667273465692,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.down": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 10,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 6,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 35,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 14,
+              "norm": 0.0,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 0.0,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 0,
+              "missing": 2,
+              "norm": 0.0,
+              "cosine_to_native": null
+            }
+          }
+        },
+        {
+          "arm": "hybrid",
+          "loss": 0.14963649213314056,
+          "total_gradient_norm": 1.9755081355707462,
+          "global_clip_coefficient": 0.5061986208993607,
+          "groups": {
+            "native.x_embedder": {
+              "square_norm": 0.020501509308815002,
+              "native_square_norm": 0.035489607602357864,
+              "dot": 0.01245616190135479,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.14318348127076322,
+              "cosine_to_native": 0.4617859639078721
+            },
+            "native.t_embedder": {
+              "square_norm": 1.2893846924780519,
+              "native_square_norm": 2.731544350157492,
+              "dot": 0.6435996169311693,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 1.1355107628191166,
+              "cosine_to_native": 0.3429417769576337
+            },
+            "native.blocks.depth0": {
+              "square_norm": 1.9553687883405457,
+              "native_square_norm": 1.392165619402613,
+              "dot": 0.6650924452655482,
+              "tensors": 320,
+              "missing": 0,
+              "norm": 1.3983450176335401,
+              "cosine_to_native": 0.4031087481994407
+            },
+            "native.blocks.depth1": {
+              "square_norm": 0.4445769010738152,
+              "native_square_norm": 0.9886459538789376,
+              "dot": 0.06699117876926923,
+              "tensors": 160,
+              "missing": 0,
+              "norm": 0.6667660017381024,
+              "cosine_to_native": 0.101047081820372
+            },
+            "native.blocks.depth2": {
+              "square_norm": 0.10135573105117388,
+              "native_square_norm": 0.6685958039124985,
+              "dot": 0.017612483154922483,
+              "tensors": 80,
+              "missing": 0,
+              "norm": 0.31836414850163935,
+              "cosine_to_native": 0.06765729217896023
+            },
+            "native.final_layer": {
+              "square_norm": 0.0547616645690141,
+              "native_square_norm": 0.051597269404283,
+              "dot": 0.043023211515901494,
+              "tensors": 3,
+              "missing": 0,
+              "norm": 0.23401210346692347,
+              "cosine_to_native": 0.8093775348148683
+            },
+            "native.t_embedding_norm": {
+              "square_norm": 1.999841288125026e-06,
+              "native_square_norm": 0.00014069915050640702,
+              "dot": 1.584618257766124e-05,
+              "tensors": 1,
+              "missing": 0,
+              "norm": 0.0014141574481382991,
+              "cosine_to_native": 0.9446722382356236
+            },
+            "rewiring_modules.down": {
+              "square_norm": 5.0419911836740994e-05,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 10,
+              "missing": 0,
+              "norm": 0.007100697982363494,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.up": {
+              "square_norm": 0.00011402657618475587,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 6,
+              "missing": 0,
+              "norm": 0.010678322723384787,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.local": {
+              "square_norm": 0.00048600937032858456,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 35,
+              "missing": 0,
+              "norm": 0.02204562020739232,
+              "cosine_to_native": null
+            },
+            "rewiring_modules.skips": {
+              "square_norm": 0.03602213459161341,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 14,
+              "missing": 0,
+              "norm": 0.18979498041732665,
+              "cosine_to_native": null
+            },
+            "rewiring_modules._boundary_detail_probe": {
+              "square_norm": 8.516593538843154e-06,
+              "native_square_norm": 0.0,
+              "dot": 0.0,
+              "tensors": 2,
+              "missing": 0,
+              "norm": 0.0029183203283469675,
+              "cosine_to_native": null
+            }
+          }
+        }
+      ],
+      "structural_squared_norm_fraction": 0.009399067947741665
+    }
+  ],
+  "limits": [
+    "Five starting-state gradients; no optimizer update or general quality evidence.",
+    "Cosines compare the same native-body tensors at native versus hybrid execution.",
+    "Global clipping coefficient is inferred for norm threshold1; Adam/SR update magnitudes are not inferred from gradient norm."
+  ],
+  "native_after_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "summary": {
+    "structural_squared_norm_fraction_range": [
+      0.005721148415915656,
+      0.013733567236595379
+    ],
+    "mid_gradient_cosine_range": [
+      0.06794500350342234,
+      0.101047081820372
+    ],
+    "deep_gradient_cosine_range": [
+      0.016450873979938538,
+      0.09786965381762322
+    ]
+  },
+  "decision": "No evidence that added structural gradients dominate the shared norm or starve native gradients at these five starting exposures. Mid/deep native-block gradient directions differ strongly after conversion. This does not prove a cause or measure actual Adam/SR updates. Investigate retained stage information and optimization interaction; do not promote gains or infer an LR from gradient magnitudes.",
+  "separate_production_fix": "Static trainer review found max_grad_norm clipped optimizer group0 only in both normal GradScaler/non-GradScaler paths. A shared all-group clip now replaces it, with four CPU tests. Earlier private Full FT probes already clipped all params, so this bug does not explain their quality difference. Fused paths keep their existing contract."
+}

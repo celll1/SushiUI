@@ -1665,3 +1665,31 @@ interactions still require improvement before a default is selected. Next
 inspect update allocation and retained stage information rather than promoting
 the boundary gain from its initialization samples or repeating loss-only fits.
 Evidence: `docs/audits/data/hybrid_anima_native_matched_fullft_2026-10.json`.
+
+### Starting-state gradient allocation and shared clipping
+
+Five exact cached general exposures (four conditional, one dropped) compare
+native execution with the fitted boundary-detail candidate without updates.
+The native-body hash remains exact. Structural tensors contribute only
+0.57–1.37% of the total squared gradient norm. Hybrid total norms are smaller
+than native on all five exposures, so these measurements do not support
+structural gradients dominating the shared clip and starving the native body.
+Mid-stage native-block gradient cosines are0.068–0.101 and deepest-stage
+cosines0.016–0.098; the output-head cosines remain0.748–0.861. These are grouped
+starting-state gradient directions, not actual Adam/SR update magnitudes or a
+causal proof. Converted low-resolution processing changes the optimization
+direction strongly even when field loss is fairly close. Prior feature fitting
+did not establish quality recovery; do not turn these norms into an LR default.
+
+Static review also found a separate production bug: both ordinary optimizer
+step paths applied `max_grad_norm` only to group0. Normal GradScaler and
+non-GradScaler execution now clip one shared norm over every optimizer group,
+counting each parameter once. Existing single-group behavior and fused-path
+contracts remain intact. Four analytical CPU cases cover two independently
+rated groups and their optimizer update, single-group reference equivalence,
+duplicate identity and absent gradients; the existing fused clip/accumulation
+tests also pass (49 total). Earlier private Full FT probes already clipped all
+parameters, so this fix does not explain or repair their quality regression.
+No API parameter/default or owner config changes.
+
+Evidence: `docs/audits/data/hybrid_anima_gradient_allocation_2026-10.json`.

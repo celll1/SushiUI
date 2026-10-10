@@ -1,0 +1,182 @@
+{
+  "rating": "general",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_indices": [
+    28,
+    31
+  ],
+  "updates": 200,
+  "learning_rate": 0.0001,
+  "storage": "FP32 IO/bridges, BF16 frozen body/compute",
+  "optimizer": "AdamW8bit",
+  "trainable_names": [
+    "x_embedder.proj.1.weight",
+    "final_layer.linear.weight",
+    "vae_latent_bridge.input.projection.weight",
+    "vae_latent_bridge.input.projection.bias",
+    "vae_latent_bridge.output.projection.weight",
+    "vae_latent_bridge.output.projection.bias"
+  ],
+  "trainable_parameters": 1130624,
+  "frozen_before": "91f0cf7c1bdfc5a483179a5438e66d4bd0e5a4fe41f93c962f48dbcb110058d6",
+  "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+  "source": "retained combined public_step2 body with mixed-grid U-Net",
+  "limits": [
+    "Matched exposures, not equal GPU-time or broad quality acceptance.",
+    "No new image/TE/VAE encoding; existing general caches reused.",
+    "Original IO/bridges fitted; native body and U-Net weights stay frozen.",
+    "Private probe, no owner run or artifact/default changed."
+  ],
+  "matched_exposures": 200,
+  "arms": [
+    {
+      "arm": "independent_spatial",
+      "training_seconds": 49.53099999995902,
+      "peak_allocated_gib": 4.153641223907471,
+      "optimizer_counters": [
+        200
+      ],
+      "frozen_after": "91f0cf7c1bdfc5a483179a5438e66d4bd0e5a4fe41f93c962f48dbcb110058d6",
+      "training_summary": {
+        "first25_mean_loss": 1.3275452756881714,
+        "last50_mean_loss": 1.1509886920452117,
+        "min_loss": 0.5684228539466858,
+        "max_loss": 5.2475409507751465,
+        "min_grad_norm": 2.7874438762664795,
+        "max_grad_norm": 298.56817626953125,
+        "exposure_digest": "557b4622ce33f7a7200656684fdf7698f4dde23c1a6081747b3eaf0e74291c2e"
+      },
+      "samples": [
+        {
+          "index": 28,
+          "resolution": 512,
+          "sha256": "1a11c618b74f4659eabab350e4e1602050706138c75baef597317e78fa4ea297"
+        },
+        {
+          "index": 31,
+          "resolution": 512,
+          "sha256": "0b5fe228c67f1bffa08808cbc792fd3f2a01be0cff5e4e566d7b6c22afad0168"
+        },
+        {
+          "index": 28,
+          "resolution": 1024,
+          "sha256": "40f8de54465bc75d8b4d234a94fa63a6d0df9e9a69cec5ac2affaf04e27970d3"
+        },
+        {
+          "index": 31,
+          "resolution": 1024,
+          "sha256": "567c8dfdad96c35685a4bddb3feff933c2eb627f6df11dd8a881c40c8ad9a763"
+        }
+      ],
+      "modules_sha256": "74bf2c1e6f18247fb96bc9dcbe913d12e4afaf1a06e1e7d46e87c8b97189fcc8",
+      "modules_bytes": 4605270,
+      "optimizer_sha256": "bfbcf8e13add0a2a75ce357991edca50d44310622c21f7b52371cd575ad484bb",
+      "optimizer_bytes": 2307465
+    },
+    {
+      "arm": "flow_spatial",
+      "training_seconds": 44.967999999877065,
+      "peak_allocated_gib": 4.155595302581787,
+      "optimizer_counters": [
+        200
+      ],
+      "frozen_after": "91f0cf7c1bdfc5a483179a5438e66d4bd0e5a4fe41f93c962f48dbcb110058d6",
+      "training_summary": {
+        "first25_mean_loss": 2.3879277396202085,
+        "last50_mean_loss": 2.2009536802768705,
+        "min_loss": 0.7749780416488647,
+        "max_loss": 16.1971435546875,
+        "min_grad_norm": 4.63193941116333,
+        "max_grad_norm": 861.1392211914062,
+        "exposure_digest": "557b4622ce33f7a7200656684fdf7698f4dde23c1a6081747b3eaf0e74291c2e"
+      },
+      "samples": [
+        {
+          "index": 28,
+          "resolution": 512,
+          "sha256": "982de473c42499c33ffcd402b2882384b7e70afb9b386a5845dca7887da7b0c2"
+        },
+        {
+          "index": 31,
+          "resolution": 512,
+          "sha256": "af03ca606908c952b415f18474da8187b31d29193b6236c6f7c4ca5767158768"
+        },
+        {
+          "index": 28,
+          "resolution": 1024,
+          "sha256": "28e0ba7a11b11f05ba1b4e4f97dd65b18c97939e6030c1fc2dd11ff4dc642abc"
+        },
+        {
+          "index": 31,
+          "resolution": 1024,
+          "sha256": "369efaffacee0e73ea69cbf042dd235db536de076f7fe66b8249bd2e1c610097"
+        }
+      ],
+      "modules_sha256": "a971a17448cf52ce8e341db6bc8ff7505d144e8c10c235582a6ead23758a8f24",
+      "modules_bytes": 4605087,
+      "optimizer_sha256": "8db5fd4dd5dea446839e167bf958ddaf4895ed71358e880272e7b715f18d97b7",
+      "optimizer_bytes": 2307269
+    }
+  ],
+  "visual_assessment": {
+    "independent_spatial_1024": "Two-person and person/food outlines remain, with heavy fragmented/grid texture and clipping; no consistent quality recovery.",
+    "flow_spatial_1024": "Outlines remain but colored spots and clipping persist or increase; not superior to the independent calibration.",
+    "review_scope": "Both 1024px held samples per arm; one independent 512px sample also inspected. No claim about unreviewed 512px images."
+  },
+  "noise_drift": {
+    "arms": [
+      {
+        "arm": "independent_spatial",
+        "initial_covariance_max_error": 3.4661202352737064e-08,
+        "postfit_covariance_max_error": 0.012651574173126456,
+        "postfit_channel_noise_std_min": 0.9936540775475505,
+        "postfit_channel_noise_std_max": 0.9995081487056945,
+        "incoming_drift_frobenius": 0.13504359346338346,
+        "output_noise_residual_drift_mean_variance": 0.00026125131787155346
+      },
+      {
+        "arm": "flow_spatial",
+        "initial_covariance_max_error": 1.8723130046360836e-08,
+        "postfit_covariance_max_error": 0.023899753675349134,
+        "postfit_channel_noise_std_min": 0.9879778572036171,
+        "postfit_channel_noise_std_max": 0.9935831264664271,
+        "incoming_drift_frobenius": 0.11397766989745807,
+        "output_noise_residual_drift_mean_variance": 0.00018099025065544336
+      }
+    ],
+    "limits": [
+      "Interior white-noise operator covariance; not full model or image quality.",
+      "Snapshot buffers remain unchanged during bridge training; this quantifies the resulting operator drift.",
+      "No GPU, image decoding or owner artifact changes."
+    ]
+  }
+}

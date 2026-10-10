@@ -2224,3 +2224,37 @@ resized IO/bridges rather than infer post-training behavior from this frozen
 head; use equal exposure/GPU-time controls and keep native-body stability
 separate from codec adaptation. Evidence:
 `docs/audits/data/hybrid_codec_spatial_flow_consistent_2026-10.json`.
+
+### Matched IO/bridge adaptation after spatial calibration (2026-10-10)
+
+Two arms start from the same retained public-step2 body and mixed-grid U-Net;
+only the28-image pixel256 calibration differs (independent spatial versus
+flow-constrained spatial). Existing target512 latents and TE conditions are
+reused. Both train the same six IO/bridge tensors (1,130,624 parameters) for200
+updates at1e-4 using FP32 storage, BF16 frozen body/compute and AdamW8bit.
+All six receive finite gradients every update; clipping uses norm1. Body and
+U-Net parameter hashes remain exact, all six optimizer counters reach200,
+and item/null/sigma/noise exposure digests match. Null probability is0.1;
+sigma sampling is uniform over0.01–0.99 before BF16 rounding.
+
+Independent/constrained fitting uses49.531/44.968 wall seconds with own peak
+4.154/4.156GiB. These include probe synchronizations and exclude encoding,
+checkpoint export and evaluation, so they are not end-to-end training speeds
+or Full FT VRAM. First25/last50 mean losses are1.3275/1.1510 versus
+2.3879/2.2010. Shared inputs permit loss comparison; lower loss alone does
+not prove held generation quality. Both1024px held conditions retain outlines
+but strong fragmentation/clipping remains. The constrained arm retains or
+increases colored spots and does not show a quality advantage. Four512px
+outputs are retained locally; only one independent512px image was inspected.
+
+A post-fit interior white-noise operator check quantifies mutable bridges
+against their fixed Gaussian snapshots. Independent/constrained native-channel
+noise standard deviations span0.99365–0.99951 /0.98798–0.99358; maximum
+covariance errors are0.01265/0.02390. Output residual drift mean variances
+are0.000261/0.000181. The drift exists but is small in this bounded probe;
+it is not evidence that snapshot staleness alone causes the severe artifacts.
+Do not change the production Gaussian policy on that assumption. Further
+codec work should control inverse amplification and generated-state mismatch;
+short IO-only adaptation did not establish combined quality. No owner run,
+checkpoint or default changed. Evidence:
+`docs/audits/data/hybrid_anima_spatial_codec_io_fit_2026-10.json`.

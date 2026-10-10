@@ -626,3 +626,14 @@ statistics and finite output-latent ranges are recorded; neither identifies a
 sole cause or proves post-training quality. This remains an experiment, with
 short resized-IO/bridge training and combined P5 acceptance still pending.
 Evidence: `hybrid_codec_spatial_flow_consistent_2026-10.json`.
+
+Matched short IO/bridge adaptation is now measured for independent-spatial and
+flow-constrained-spatial calibration: six tensors/1.131M parameters,200 updates,
+identical item/null/sigma/noise exposure digests, finite gradients, exact frozen
+body/U-Net hashes and all optimizer counters200. Own peaks are4.154/4.156GiB;
+these are not Full FT measurements. Constrained loss and reviewed held1024px
+images do not outperform the independent fit. Post-fit Gaussian snapshot drift
+is measurable but small (native noise std0.988–1.000), so snapshot staleness is
+not established as the main cause. Combined quality remains unaccepted; no
+production policy is changed. Evidence:
+`hybrid_anima_spatial_codec_io_fit_2026-10.json`.

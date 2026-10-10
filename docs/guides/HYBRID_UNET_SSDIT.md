@@ -27,6 +27,16 @@ stable IDs inside down/up/local/skip ModuleDicts. Skip activations are compresse
 to the declared rank and owned by one forward execution, without detaching the
 encoder graph or retaining activations in module state across calls.
 
+`core/experiments/full_width_skip.py` is a private comparison control: it keeps
+the existing compressed branch and additionally retains every source channel,
+restored through a zero-initialized depthwise3x3 convolution. It adds9D weights
+per edge without D-by-D mixing. Twelve CPU cases cover exact initial preservation,
+all-channel information, gradients through resident/CPU/recomputed skips and
+checkpointing, dtype moves and failure cleanup. Its concatenated capture includes
+rank+D channels, which the public rank-only preview does not account for. Do not
+export its temporary wrapper state as a public topology checkpoint or imply that
+this experiment is selectable through the UI. GPU quality acceptance is separate.
+
 Learned convolutions and both skip projections use non-reentrant checkpointing
 when native checkpointing is enabled. Checkpoint calls wrap only pure tensor
 modules, never the mutable skip ownership dictionary. Anima CPU/async block

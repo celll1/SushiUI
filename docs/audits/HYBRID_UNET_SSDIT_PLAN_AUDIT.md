@@ -374,6 +374,20 @@ individual records' limitations.
    Thus smaller generated latent RMS does not establish a simple velocity-scale
    defect. Do not add a global output multiplier on this evidence. The responsible
    topology operation and a quality-preserving replacement remain unproved.
+   A private full-width skip control adds zero-output depthwise3x3 restoration
+   alongside existing compressed skips, retaining all source channels rather
+   than further widening a channel-mixing bottleneck. Twelve CPU cases verify
+   storage/checkpoint gradients, exact preservation of nonzero existing skips,
+   full-channel identity, dtype alignment and exception restoration.
+   Matched200 frozen-body updates (`hybrid_anima_full_width_skip_fit_2026-10.json`)
+   add129,024 weights in7 tensors; all72 optimizer counters reach200 and all7
+   new gradients are positive. Source body/RNG boundaries/first loss and all
+   exposure/noise records match. Final50 field error0.02765 does not recover held
+   quality: CFG4 loses a person and washes out cyan/white, while CFG1 has damaged
+   limbs and fragments of another composition. Reject this recipe as a default,
+   not every full-width fusion. Whole-probe79.381s/4.519GiB is not isolated
+   overhead or production Full FT evidence. Public preview omits the extra
+   full-channel capture cost; this temporary wrapper must not be publicly exported.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

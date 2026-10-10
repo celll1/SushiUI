@@ -2158,3 +2158,35 @@ model's loss. The next bounded prototype should constrain A/B and bias closure
 and verify generation before any production promotion; pixel resizing alone
 does not meet that gate.
 Evidence: `docs/audits/data/hybrid_codec_pixel_resize_calibration_2026-10.json`.
+
+### Constrained affine flow initialization (2026-10-10)
+
+`core/experiments/flow_consistent_alignment.py` implements a bounded CPU
+prototype, not a production calibration policy. Streaming paired covariances
+fit a pointwise input map A and output map B, then enforce `A*B=I` and
+`A*b+a=0`. An optional row-orthogonal input limits inverse amplification.
+The existing spatial bridge/pair containers carry these center-only kernels;
+their Gaussian noise snapshots and ordinary save/gradient paths are retained.
+Channel counts, finite data, grid equality and full row rank are validated.
+
+On the same28 general fit items/four held items, fitted input reduces synthetic
+source-flow consistency MSE to approximately1e-14. Its input condition numbers
+are22.83 (latent-area) and11.40 (pixel256), with inverse norms46.25/27.92.
+Row-orthogonal input has condition1/inverse norm4 and likewise closes the
+algebra, but increases clean reconstruction error. CPU pair tests cover
+FP32/BF16, image/frame shapes, boundaries, gradients and strict restoration:
+38 tests pass together with the Gaussian-alignment suite. These are numerical
+and contract checks, not image-quality acceptance.
+
+Actual combined-checkpoint inspection confirms added input/output channels
+16:64 are zero; the input padding-mask channel is excluded. Thus the frozen
+original-head assumption holds for these generation comparisons. The same
+body/mixed U-Net, held items, CFG4, seed63 and28 steps are used at512/1024px.
+Fitted-input generation has strong colored clipping/fragmentation. The
+orthogonal pixel256 variant retains two-person/person-food outlines at1024px,
+but gridlike fragmentation and clipped tones remain. Exact flow composition
+does not establish that the projected clean/noisy states lie on the native
+or target codec manifold. Neither variant is promoted, and no owner artifact
+or production default changes. Further quality work must assess that state
+distribution and trainability rather than treating closure alone as success.
+Evidence: `docs/audits/data/hybrid_codec_flow_consistent_2026-10.json`.

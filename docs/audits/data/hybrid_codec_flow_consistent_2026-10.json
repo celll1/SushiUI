@@ -1,0 +1,443 @@
+{
+  "fitted": {
+    "rating": "general",
+    "fit_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "held_indices": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "arms": [
+      {
+        "arm": "latent_area",
+        "metrics": {
+          "input_condition_number": 22.826948072125514,
+          "inverse_norm": 46.25224585252617,
+          "composition_max_error": 2.4424906541753444e-15,
+          "bias_closure_max_error": 9.992007221626409e-16
+        },
+        "fp32_coefficients_flow_closure_mse": 1.1195470097496609e-14,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.9956792593002319
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.7851534485816956
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 1.114804744720459
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.7238367795944214
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 1.0954322814941406
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 0.8738134503364563
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.9089266657829285
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.646872341632843
+          }
+        ]
+      },
+      {
+        "arm": "pixel256",
+        "metrics": {
+          "input_condition_number": 11.404524516128141,
+          "inverse_norm": 27.91669591389641,
+          "composition_max_error": 7.934153761647548e-16,
+          "bias_closure_max_error": 5.551115123125783e-16
+        },
+        "fp32_coefficients_flow_closure_mse": 6.012678066899814e-15,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.968230128288269
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.776108980178833
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 1.0025203227996826
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.7255321741104126
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 1.0542926788330078
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 0.8569837808609009
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.902294397354126
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.6485930681228638
+          }
+        ]
+      }
+    ],
+    "target_grid": [
+      32,
+      32
+    ],
+    "reused_latent_inputs": true,
+    "limits": [
+      "Constrained pointwise coefficients in existing 3x3 bridge containers; no production default change.",
+      "No image re-encoding, no new data collection or CUDA context in this fitting step.",
+      "Clean reconstruction and closure checks do not establish generation or Full FT quality."
+    ]
+  },
+  "orthogonal": {
+    "rating": "general",
+    "fit_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "held_indices": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "arms": [
+      {
+        "arm": "latent_area",
+        "metrics": {
+          "input_condition_number": 1.0,
+          "fitted_input_condition_number": 22.826948072125514,
+          "orthogonal_input": true,
+          "inverse_norm": 4.0,
+          "composition_max_error": 2.4424906541753444e-15,
+          "bias_closure_max_error": 1.3322676295501878e-15
+        },
+        "fp32_coefficients_flow_closure_mse": 5.784596869365078e-15,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.9302642345428467
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 1.6478729248046875
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 0.8454210758209229
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 1.5761642456054688
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 1.030853033065796
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 1.9771506786346436
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.7352504730224609
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.9820972681045532
+          }
+        ]
+      },
+      {
+        "arm": "pixel256",
+        "metrics": {
+          "input_condition_number": 1.0,
+          "fitted_input_condition_number": 11.404524516128141,
+          "orthogonal_input": true,
+          "inverse_norm": 3.999999999999999,
+          "composition_max_error": 1.5575453687073862e-15,
+          "bias_closure_max_error": 1.887379141862766e-15
+        },
+        "fp32_coefficients_flow_closure_mse": 3.4715805495452183e-15,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.9089463949203491
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.9657610654830933
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 0.8521566390991211
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.8893674612045288
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 1.0307035446166992
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 1.068763017654419
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.7442737221717834
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.7179110050201416
+          }
+        ]
+      }
+    ],
+    "target_grid": [
+      32,
+      32
+    ],
+    "reused_latent_inputs": true,
+    "limits": [
+      "Constrained pointwise coefficients in existing 3x3 bridge containers; no production default change.",
+      "No image re-encoding, no new data collection or CUDA context in this fitting step.",
+      "Clean reconstruction and closure checks do not establish generation or Full FT quality."
+    ]
+  },
+  "fitted_generation": {
+    "rating": "general",
+    "resolutions": [
+      512,
+      1024
+    ],
+    "steps": 28,
+    "cfg": 4,
+    "seed": 63,
+    "mixed_modules_sha256": "d80639dd8a280e7754a923aa0f6a8e15d3de315a6d6938f28c8be9200fffef27",
+    "native_parameters_sha256": "64db9e785a7efca070fa32d71d088f13c5b730cc90cfbab9bd6d17738bff6571",
+    "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "bridge_file_sha256": "ed8fa9464c151aec49cc4a53d48f721688136c2d0ba64e812142a99072552045",
+    "limits": [
+      "Same frozen body and mixed-grid U-Net as retained controls; Affine flow-consistent pointwise calibration replaces only bridge kernels and their Gaussian noise snapshots. No exported artifact/default is changed."
+    ],
+    "samples": [
+      {
+        "arm": "latent_area",
+        "index": 28,
+        "resolution": 512,
+        "sha256": "63fdd6b6655a0f60bf3b3ecc9b6d1c98792ebef8c2c6c6fd4bdcb44b54fc51d0"
+      },
+      {
+        "arm": "latent_area",
+        "index": 31,
+        "resolution": 512,
+        "sha256": "fa412c14fb4c9042b85beb2256e20a0237c78adee144e01a741820eaf2c71012"
+      },
+      {
+        "arm": "latent_area",
+        "index": 28,
+        "resolution": 1024,
+        "sha256": "01c7003bb70666c50f27a6fc76f695a7c96bd8d1e11a3157345ec95554f24597"
+      },
+      {
+        "arm": "latent_area",
+        "index": 31,
+        "resolution": 1024,
+        "sha256": "ed852edbb29210d0d188c544f2c1f9c3342cdcb7c7f88900f48bae54670f46fa"
+      },
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 512,
+        "sha256": "e5376717a0c3bdfb1c2a82b2316cfff2a5c8f2f4a956ec3eda79822c83fbc149"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 512,
+        "sha256": "d6a149f8f33bb61757f2d2174cf24870ad13c68071f8d1090f3f9c620547485a"
+      },
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 1024,
+        "sha256": "367866b7fb5188fbe6624e73af0315f1b2de4659d8abe43c0e5ef9c1c0a18c27"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 1024,
+        "sha256": "a036231c90fe2135559798dd4f4c0f9ee1cf853ec65e9af042c3047e552b0ee1"
+      }
+    ]
+  },
+  "orthogonal_generation": {
+    "rating": "general",
+    "resolutions": [
+      512,
+      1024
+    ],
+    "steps": 28,
+    "cfg": 4,
+    "seed": 63,
+    "mixed_modules_sha256": "d80639dd8a280e7754a923aa0f6a8e15d3de315a6d6938f28c8be9200fffef27",
+    "native_parameters_sha256": "64db9e785a7efca070fa32d71d088f13c5b730cc90cfbab9bd6d17738bff6571",
+    "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "bridge_file_sha256": "4cd9e9d4d263116c751e0e3335a33c6a3061dbb8140129b21da30478e29ac59c",
+    "limits": [
+      "Same frozen body and mixed-grid U-Net as retained controls; Row-orthogonal input with affine flow-consistent output calibration replaces only bridge kernels and their Gaussian noise snapshots. No exported artifact/default is changed."
+    ],
+    "samples": [
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 512,
+        "sha256": "d27940a44ed2a01e52cb2fc3eb450e41bb71fc362b07f84511f9153f612d8b71"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 512,
+        "sha256": "5a67ab366d69f8933fe78cf6ac92c2cc1f99c97b4772034dac989bf05fb9bbe8"
+      },
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 1024,
+        "sha256": "2e5f34b4105a2c47b41444df728cde86274399adb2f20e846cb969c40039ed6d"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 1024,
+        "sha256": "caa5bd80b65cc017b0b106f4e8c13407ac7051fdf7196263e69fe2e5c5c95de9"
+      }
+    ]
+  },
+  "verification": {
+    "cpu_tests_passed": 38,
+    "body_extra_input_channels_max_abs": 0.0,
+    "body_extra_output_channels_max_abs": 0.0,
+    "checkpoint_inspection": "Actual combined checkpoint input channels 16:64 and output channels 16:64; mask excluded.",
+    "visual_assessment": {
+      "fitted_1024": "Large colored/clipped regions or fragmented texture obscure the retained outlines.",
+      "orthogonal_1024": "Two-person and person/food outlines survive; gridlike fragmentation and clipped tones remain."
+    },
+    "accepted_default": false,
+    "limits": [
+      "Exact affine composition is a frozen-original-head algebra property, not a guarantee of target-codec manifold or image quality.",
+      "No owner checkpoint, DB run, production calibration or API default changed.",
+      "No image pixels, captions or calibration tensors are included in this evidence file.",
+      "No short full-fine-tuning acceptance is inferred from these frozen-body generations."
+    ]
+  }
+}

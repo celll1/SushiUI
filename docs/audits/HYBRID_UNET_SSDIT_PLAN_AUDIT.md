@@ -515,3 +515,13 @@ FT updates degrade the two-person composition and face/body. All634 optimizer
 counters reach222 and native weights change; no public/default acceptance is
 claimed. See `hybrid_anima_boundary_features_2026-10.json`. Full FT stability,
 public lineage, combined codec and final matrix are still required.
+
+The follow-up stability controls isolate all-native freezing and tenfold lower
+Full FT rates from the same initial fusion/native state. Frozen-body222 updates
+improve coarse composition relative to earlier Full FT but retain eye/body
+defects. Tenfold-lower rates update all634 tensors to222, change native weights
+and retain coarse figures in two held scenes. A fresh private-context reload
+matches all755 full-body tensors and preserves an additional held food/person
+composition. This bounded candidate does not establish public optimizer resume,
+codec/partition parity, equal-time general quality or final performance. See
+`hybrid_anima_boundary_features_stability_2026-10.json`. Defaults remain unchanged.

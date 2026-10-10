@@ -606,3 +606,13 @@ identity fixture closes to numerical zero. Constrained map/bias initialization
 is the next hypothesis to test, not a proven universal fix. Combined quality
 and P5 remain open. Evidence:
 `hybrid_codec_pixel_resize_calibration_2026-10.json`.
+
+The constrained affine prototype now closes source-flow composition numerically
+and passes38 CPU Gaussian/pair checks, including BF16 gradients and restoration.
+Actual combined-checkpoint added IO weights are zero, so the frozen-head
+assumption was checked rather than inferred. Matched fitted/orthogonal-input
+generation still has clipping/grid defects; orthogonal input retains coarse
+outlines but does not pass quality acceptance. This falsifies closure alone as
+a sufficient remedy. It remains experimental, with no default/owner artifact
+change; combined quality and P5 remain open. Evidence:
+`hybrid_codec_flow_consistent_2026-10.json`.

@@ -317,6 +317,20 @@ individual records' limitations.
    those tap errors. Inspect post-refiner stages before changing fusion. If that
    mismatch remains, test plan3.3's compressed concat fusion rather than more
    output-loss tuning. Private continuation weights have no public fit lineage.
+   The post-refiner diagnostic (`hybrid_anima_stage_diagnostic_2026-10.json`)
+   covers the same12 cases and exact unchanged native body across zero/319/
+   field519/feature519 states. Its observer leaves the old zero/319 field
+   predictions unchanged. Restored stage20 relative error remains near0.39–0.40
+   after local refinement; feature519's small reductions do not recover held
+   generation. This supports a fusion comparison, not a proved degradation cause.
+   A compressed concat correction primitive now exists experimentally: current
+   and compressed skip are separately normalized, mixed at skip rank and
+   projected back, with per-token RMS units and zero final projection.
+   Six CPU cases verify exact initial preservation, staged inner/input gradients,
+   parameter census, tile equivalence, invalid contracts, zero-input gradients
+   and rank1 skip information. It is not installed by the public topology factory
+   or given artifact lineage/default acceptance. Next verify integration and
+   matched GPU fitting before public API/UI and payload wiring.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

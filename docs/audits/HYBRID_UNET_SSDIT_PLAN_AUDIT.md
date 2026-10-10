@@ -227,6 +227,16 @@ individual records' limitations.
    acceptance. Compare the trained native-body path with the rewired path under
    identical weights before continuing the same fitting/FT recipe. Private
    historical weights do not become public initialized artifacts by this test.
+   The trained-routing diagnostic
+   (`hybrid_anima_trained_routing_2026-10.json`) matches222 item/null/sigma/noise
+   records and first loss, but not later losses or historical image hashes;
+   exact historical replay is unproved. Its within-model native/hybrid routing
+   comparison preserves the same trained-body hash and codec. Both routes fail
+   the two-person composition; both retain a single girl with differing defects.
+   Native routing cannot cure this sample, but a body trained for hybrid execution
+   is not guaranteed to preserve native behavior. No sole/root cause or#174
+   diagnosis is claimed. Compare higher correction-only FT rates before adding
+   more structural capacity; capture RNG boundaries in subsequent probes.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

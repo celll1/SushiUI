@@ -1,0 +1,118 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "mode": "frozen_body_structural_supervised_control",
+  "updates_per_arm": 222,
+  "native_learning_rate": 0.0,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "init_state_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "arms": [
+    {
+      "arm": "frozen_body",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_frozen_body_control\\p28_frozen_body_cfg1.png",
+          "sha256": "e1b4be4dc324a405b8607f98562c44f9501476d2ca9b23051d3fd7e03343f81c"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_frozen_body_control\\p28_frozen_body_cfg4.png",
+          "sha256": "dbc49f7a2178ffd6908553bf8f94ed9554e1eda210872b20f4166f295e106e16"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_frozen_body_control\\p29_frozen_body_cfg1.png",
+          "sha256": "3562786c00cac5eeebbf598d3c79eaca717b5d6952920cb6f66e068f7750bc55"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_frozen_body_control\\p29_frozen_body_cfg4.png",
+          "sha256": "1f8eeed39a84aeb946c157bf58a340b31489cc20ec29559b8b3bbf17c9ecef9e"
+        }
+      ],
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_start_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "learning_rates": [
+        5E-05
+      ],
+      "group_tensor_counts": [
+        65
+      ],
+      "start_cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "start_cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "native_after_first_update_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "optimizer_entries": 65,
+      "native_end_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "optimizer_counters": [
+        222
+      ],
+      "fullft_peak_allocated_gib": 4.500621795654297,
+      "statistics": {
+        "first_loss": 0.16938236355781555,
+        "last50_mean_loss": 0.16945231422781945,
+        "training_cuda_seconds": 63.508416259765625
+      }
+    }
+  ],
+  "limits": [
+    "Frozen-body diagnostic with structural LR5e-5, compared to existing joint body5e-6/structural5e-5 control.",
+    "Same initialization, exact encoded inputs, initial CPU/CUDA RNG and item/null/sigma/noise exposures.",
+    "Freezing changes optimizer/SR draw consumption and the set of gradients clipped; no bitwise trajectory equivalence is claimed.",
+    "This tests body trainability as a whole intervention, not a sole root cause or a substitute for Full FT acceptance."
+  ],
+  "matched_exposures": 222,
+  "observations": {
+    "p28_cfg4": "Two distinct back-facing heads and standing figures return relative to joint FT, but hands/left torso and scene geometry remain distorted.",
+    "p29_cfg4": "Single-girl face and body outline remain, with exaggerated mouth/eye and hand defects.",
+    "cfg1": "Both images retain ghost/overlapping structures and fragmented anatomy; no quality acceptance."
+  },
+  "decision": "Frozen-body structural fitting preserves the two-person coarse outline better than matched joint Full FT in this bounded test. Native body remains exactly unchanged. This supports investigating native-field retention during joint adaptation; it does not establish a sole root cause, close quality acceptance or authorize replacing Full FT with frozen-body training.",
+  "next_action": "Compare joint Full FT with an auxiliary frozen-native-teacher field loss under matched source/init/exposures. Measure teacher overhead separately; require evidence before public options/defaults."
+}

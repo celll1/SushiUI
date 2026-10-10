@@ -251,6 +251,18 @@ individual records' limitations.
    Next isolate body adaptation with frozen-body structural fitting at the same
    correction rate and encoded exposures. That diagnostic does not replace
    Full FT support, establish#174's cause or close the quality gate.
+   The frozen-body control (`hybrid_anima_frozen_body_control_2026-10.json`)
+   completes222 identical exposures from the same initialization/RNG boundary
+   at structural LR5e-5. Native-body hashes remain exact and all65 optimizer
+   entries reach222. CFG4 restores two distinct heads/standing figures relative
+   to joint Full FT, but torso/hand/scene defects remain; the single girl retains
+   exaggerated facial defects. CFG1 still has overlapping/fragmented structures.
+   Own allocation4.501GiB and63.508 training seconds describe this diagnostic,
+   not Full FT speed. Freezing also changes gradient clipping and stochastic
+   rounding draw consumption. Native-body adaptation is a useful intervention
+   to investigate, not an established sole cause or permission to replace Full FT.
+   Next compare joint adaptation with a frozen-native-teacher field retention
+   loss, recording its extra compute/memory separately before any public wiring.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

@@ -1834,3 +1834,49 @@ or two-person structure. Reject this200-update recipe as a default. Width
 projection functionality is verified, but alignment/Full FT quality remains
 open; these results do not show that every narrower architecture must fail.
 Evidence: `docs/audits/data/hybrid_anima_projected_stage_2026-10.json`.
+
+### Full-rank boundary feature fusion probe
+
+`core/experiments/boundary_features.py` exposes saved fine features and actual
+coarse input/output independently to a full-rank1×1 projection. The coarse
+features are bilinearly restored to the fine grid before concatenation. This
+learnable correction is added to existing boundary restoration; zero weights
+preserve the starting output exactly. It can learn unrestricted channel mixing
+of all three fields, unlike low-rank skips or diagonal gains. This is not a
+replacement of all decoder blocks with SDXL residual blocks.
+
+The optional runtime hook receives the actual coarse output, before restoration,
+instead of approximating it from the already corrected fine-grid update.
+No hook means unchanged execution. Temporary registration is root-specific;
+invalid widths, active hooks and concurrent probes are refused. Modes with
+checkpointing retain gradients through all three fields, including nested and
+grouped grids and encoder replay. Thirteen new CPU cases and32 existing
+runtime/hybrid cases pass. Private strict tensor reload is verified; public
+factory lineage, optimizer restoration and preset adoption remain conditional
+on generation/Full FT acceptance.
+
+The fixed-width Anima probe adds25,165,824 parameters in two fusion weights to
+the same319-update initialization. Original51/14 structural tensors keep
+LR0.001/0.00025; new feature weights use0.000025. All67 optimizer counters reach
+200, first/final new gradients are positive and native fingerprints remain exact.
+Same200 cached exposures, start RNG and first loss match the field-only control;
+additional SR parameters change draw ownership. Last50 field loss0.02725 versus
+0.02949 does not itself prove quality. Whole-update GPU time74.364s and4.690GiB
+own peak describe initialization only. Explicit private-context CPU restoration
+matches all67 saved tensors exactly.
+
+Two held CFG4 generations retain two back-facing figures and a coherent girl's
+face/body, with extra lettering and detail defects. This is a candidate for
+Full FT verification, not a default or a general quality guarantee.
+
+The subsequent222 supervised Full FT exposures match the previous boundary-detail
+control by item/dropout/sigma/noise hash and starting native/RNG hashes. Native
+LR5e-6 and old/new structural LR5e-5 update all634 tensors to counter222; native
+body hash changes. Initialization and parameter shapes differ, so SR/backward
+updates are not identical. Last50 supervised loss0.17743, GPU update time105.972s
+and11.779GiB own peak do not establish quality. The two-person output loses one
+coherent figure; the single person's face/body become substantially distorted.
+Reject this recipe as a default despite its initially coherent teacher-fit
+generation. Public wiring and final performance matrix remain pending quality
+recovery. This does not prove unrestricted feature fusion cannot work.
+Evidence: `docs/audits/data/hybrid_anima_boundary_features_2026-10.json`.

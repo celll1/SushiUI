@@ -1,0 +1,47 @@
+{
+  "cpu_cases": 45,
+  "new_cpu_cases": 13,
+  "architecture": "anima",
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "fusion": "Zero-output full-rank 1x1 projection of saved fine, actual coarse input and actual coarse output features",
+  "new_parameters": 25165824,
+  "teacher_fit": {
+    "updates": 200,
+    "optimizer_entries": 67,
+    "optimizer_counters": [200],
+    "group_rates": [0.001, 0.00025, 0.000025],
+    "new_first_gradient_norms": [1.4299379587173462, 1.4528779983520508],
+    "new_final_gradient_norms": [0.6992567181587219, 0.71199631690979],
+    "last50_mean_field_loss": 0.0272504359576851,
+    "cuda_update_seconds": 74.3637547912598,
+    "peak_allocated_gib": 4.690196990966797,
+    "native_fingerprint_unchanged": true,
+    "matched_exposures_start_rng_first_loss": true,
+    "private_cpu_reload_tensors_exact": 67,
+    "visual_result": "Two held CFG4 images retain two back-facing figures and a coherent girl's face/body, with lettering and detail defects."
+  },
+  "full_ft": {
+    "updates": 222,
+    "group_counts": [567, 65, 2],
+    "group_rates": [0.000005, 0.00005, 0.00005],
+    "optimizer_entries": 634,
+    "optimizer_counters": [222],
+    "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "native_after_sha256": "e94e6986a99157e60448edafe56d47cc67558366b7166689e31ae2887c0b71ce",
+    "matched_exposures_and_start_rng_with_previous_boundary_detail": true,
+    "last50_mean_supervised_loss": 0.17742900788784,
+    "cuda_update_seconds": 105.972023590088,
+    "peak_allocated_gib": 11.778765678405762,
+    "private_full_body_bytes": 4253719671,
+    "visual_result": "Two-person composition loses a coherent figure; single-person face/body substantially distorted. Reject this recipe as a default."
+  },
+  "limits": [
+    "Initial output exactness does not establish complete SDXL decoder equivalence.",
+    "Different initialization and tensor shapes change stochastic-rounding draw ownership.",
+    "Private weight restoration, not public artifact or optimizer resume.",
+    "No combined codec or final speed/VRAM matrix acceptance.",
+    "No owner run/default modified; no images, captions or tensors committed."
+  ]
+}

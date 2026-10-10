@@ -1467,3 +1467,26 @@ concluding that compressed-skip capacity cannot help. A separate IRIS GPU worker
 is active; wall times do not establish isolated throughput ranking. No runtime
 default or owner artifact changes. Evidence contains no images or tensor payloads:
 `docs/audits/data/hybrid_anima_wide_skip_fit_2026-10.json`.
+
+### Skip-only learning-rate control
+
+A fresh rank256 arm lowers only skip LR from0.001 to0.00025 while the other
+branches stay at0.001. Initial module/body hashes match the previous rank256
+arm, encoded CPU latents and conditioning are reused from the same hashed file,
+and all300 exposure/noise records and the first loss match. The frozen native
+body remains exact; optimizer groups own all65 tensors once and reach300.
+This removes the prior comparison's unrecorded posterior-sample confound when
+comparing the two rank256 arms. Against the older rank64 arm that limitation
+remains; it is not retroactively erased.
+
+Two new held CFG4 images recover much of the severe wide-skip collapse: the
+single girl's face and outline are coherent, while the two-person image retains
+overlapping heads/figures and fragmented anatomy. Relative to rank64 the result
+is mixed, not a consistent quality advantage. This establishes optimization
+sensitivity rather than proving a larger skip is intrinsically harmful or that
+rank256 should be the default. Public initialization currently enforces one
+phase learning rate for all parameter groups; the tested differential-rate
+recipe is private and must not be represented as a public initializer record.
+Any adoption needs explicit API/provenance support and further quality evidence.
+No runtime defaults or owner artifacts change. Evidence:
+`docs/audits/data/hybrid_anima_wide_skip_lr_fit_2026-10.json`.

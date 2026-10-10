@@ -204,6 +204,15 @@ individual records' limitations.
    is the next concrete hypothesis. This rejects the tested recipe, not wider-skip
    capacity generally. Previous per-image VAE posterior hashes are unavailable,
    and concurrent GPU work prevents isolated speed ranking. Quality remains open.
+   The subsequent skip-only LR0.00025 control
+   (`hybrid_anima_wide_skip_lr_fit_2026-10.json`) reuses the exact hashed encoded
+   inputs and initial modules from rank256; all300 exposures/noises match and
+   the base remains exact. All65 tensors reach300. Single-figure face/outline
+   recovers, but two-person composition remains overlapping/fragmented and the
+   comparison with rank64 is mixed. Optimization sensitivity is established;
+   default quality acceptance is not. Public per-branch initialization LR and
+   its provenance are not implemented; do not publish this private recipe as
+   if it satisfied the current uniform-rate initializer contract.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

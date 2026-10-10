@@ -44,6 +44,13 @@ Dataset, optimizer, sample, exposure and dropout settings inherit #173 at creati
 7. Stitch detached core predictions only when debug output requires a full canvas.
    Normal training must not retain full tile activation graphs or predictions.
 
+Reconstruction metrics always report latent-space predicted-x0 MSE, including
+when `reconstruction_loss_weight=0`; only a positive weight adds its gradient
+to the objective. Full-frame metrics average the batch; partition metrics also
+weight supervised cores by area. Debug `recon_loss` describes the first image,
+while `recon_loss_batch_mean` matches the training metric. This is independent
+of VAE preview decoding. Historical zero metrics are not backfilled.
+
 ## Wiring and persistence
 
 - Install the adapter before optimizer construction; include its parameters in

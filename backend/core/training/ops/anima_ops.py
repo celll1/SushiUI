@@ -521,16 +521,12 @@ def train_step(
 
     loss = mse_loss
 
-    # Reconstruction loss (predicted x0 vs ground-truth x0) — optional.
-    # Normalized mixing, (1-w)*pred + w*recon, the formula the UI states; no
-    # min-SNR weighting on this arch, so there is nothing to compensate for.
-    recon_loss_value = 0.0
-    if trainer.reconstruction_loss_weight > 0:
-        # Grad-carrying on purpose: this term enters the backward loss, and
-        # under no_grad it would only shift the reported number.
-        pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
+    # Report reconstruction even when it contributes nothing to backward.
+    with torch.set_grad_enabled(trainer.reconstruction_loss_weight > 0):
+        pred_x0 = noisy_latents - sigma_view * model_pred
         recon_loss = F.mse_loss(pred_x0.float(), latents.float())
-        recon_loss_value = recon_loss.detach()
+    recon_loss_value = recon_loss.detach()
+    if trainer.reconstruction_loss_weight > 0:
         recon_weight = trainer.reconstruction_loss_weight
         loss = (1.0 - recon_weight) * loss + recon_weight * recon_loss
 
@@ -594,27 +590,17 @@ def train_step(
             debug_save_path.mkdir(parents=True, exist_ok=True)
             timestep_value = timesteps[0].item()
 
-            with torch.no_grad():
-                # Anima noising is x_t = (1 - sigma) * x_0 + sigma * noise with the
-                # target v = noise - x_0 (see above), so x_0 = x_t - sigma * v.
-                # NOTE the sign: this is standard flow matching, the OPPOSITE of
-                # Z-Image's x_0 = x_t + t * v (which uses v = x_0 - noise).
-                predicted_latent = noisy_latents - sigma_view * model_pred
-                debug_recon_per_element = F.mse_loss(
-                    predicted_latent.float(), latents.float(), reduction="none")
-                debug_recon_per_sample = debug_recon_per_element.mean([1, 2, 3])
-
             debug_data = {
                 'latents': latents[0:1].detach().cpu(),
                 'noisy_latents': noisy_latents[0:1].detach().cpu(),
                 'predicted_velocity': model_pred[0:1].detach().cpu(),
                 'actual_velocity': target[0:1].detach().cpu(),
-                'predicted_latent': predicted_latent[0:1].detach().cpu(),
+                'predicted_latent': pred_x0[0:1].detach().cpu(),
                 'timestep': timestep_value,
                 'loss': loss_per_sample[0].item(),
                 'loss_batch_mean': loss.item(),
-                'recon_loss': debug_recon_per_sample[0].item(),
-                'recon_loss_batch_mean': debug_recon_per_sample.mean().item(),
+                'recon_loss': F.mse_loss(pred_x0[0:1].detach().float(), latents[0:1].float()).item(),
+                'recon_loss_batch_mean': recon_loss_value.item(),
                 'batch_size': batch_size,
                 'scheduler_type': 'FlowMatching',
                 'model_type': 'anima',
@@ -632,12 +618,12 @@ def train_step(
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
             from core.models.anima.training_debug import queue_debug_previews
             queue_debug_previews(trainer, debug_save_path, debug_data)
-            del predicted_latent, debug_recon_per_element, debug_recon_per_sample
         except Exception as _dbg_e:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
     del noise, noisy_latents, noisy_latents_5d, model_pred, target
     del loss_per_element, loss_per_sample
+    del pred_x0, recon_loss
     return loss, pred_loss_value, recon_loss_value
 
 

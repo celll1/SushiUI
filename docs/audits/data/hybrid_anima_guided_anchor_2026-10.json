@@ -1,0 +1,129 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "mode": "joint_fullft_guided_field_anchor",
+  "updates_per_arm": 222,
+  "native_learning_rate": 5E-06,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "init_state_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "arms": [
+    {
+      "arm": "guided_anchor",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_anchor\\p28_guided_anchor_cfg1.png",
+          "sha256": "fe5e23a21a6f1d1db232f1e91721812ef80d9f0b11fc1c8ce2344c02d7686860"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_anchor\\p28_guided_anchor_cfg4.png",
+          "sha256": "b3fcf1d43d8762dee342b3e9abb62dd0ded7b89d70986f4582d8760f25f70c38"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_anchor\\p29_guided_anchor_cfg1.png",
+          "sha256": "ec03b2a27592030bf2bb04e6aa0aa01e3f63ad2e9850b41770e0ccefe9044657"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_guided_anchor\\p29_guided_anchor_cfg4.png",
+          "sha256": "854d3be2ffdcdf51f1c6f2efcd896ed893f52c07051f628aae51b8e0ed309887"
+        }
+      ],
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_start_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "learning_rates": [
+        5E-06,
+        5E-05
+      ],
+      "group_tensor_counts": [
+        567,
+        65
+      ],
+      "start_cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "start_cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "native_after_first_update_sha256": "c4d90320a8b4440c451094be3781066ec581213b3e996eaa41240a37e2ef8273",
+      "optimizer_entries": 632,
+      "optimizer_counters": [
+        222
+      ],
+      "joint_peak_allocated_gib": 16.424546718597412,
+      "statistics": {
+        "first_supervised_loss": 0.16938236355781555,
+        "first_guided_anchor_loss": 0.06233903020620346,
+        "last50_mean_supervised_loss": 0.17085939139127732,
+        "last50_mean_guided_anchor_loss": 0.05825382262468338,
+        "last50_mean_conditional_error": 0.02502094902098179,
+        "last50_mean_unconditional_error": 0.024690923066809773,
+        "student_update_cuda_seconds": 174.207658782959,
+        "teacher_forward_cuda_seconds": 29.909330604553222
+      }
+    }
+  ],
+  "limits": [
+    "Joint Full FT with supervised field MSE plus equally weighted raw CFG4 frozen-native-teacher field MSE.",
+    "Same initialization, encoded inputs, starting CPU/CUDA RNG and item/null/sigma/noise exposures as joint control.",
+    "Teacher inference is isolated with fork_rng and its compute/memory are recorded separately.",
+    "This is an equal-update diagnostic, not equal-total-time or universal quality acceptance; backward may be nondeterministic."
+  ],
+  "teacher_parameter_bytes": 4182137856,
+  "teacher_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "anchor_weight": 1.0,
+  "anchor_cfg": 4.0,
+  "teacher_end_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "matched_exposures": 222,
+  "observations": {
+    "p28_cfg4": "Fragmented figures with missing heads, displaced limbs and a large horizontal dark band; two-person composition fails.",
+    "p29_cfg4": "Single-girl face survives, but hair/body/limb contours remain distorted.",
+    "cfg1": "Severe fragmented structures; p29 contains scene elements resembling the p28 result, with weak prompt differentiation."
+  },
+  "decision": "Reject raw CFG4 field anchoring as a default remedy in this bounded test. All632 optimizer counters reach222 and frozen teacher hashes remain identical, but held generation does not recover composition. Stop varying this retention-loss recipe without new evidence.",
+  "next_action": "Inspect restored high-resolution intermediate features and evaluate normalized feature alignment during structural initialization. Preserve Full FT support and owner settings; no default adoption from field-loss reduction alone."
+}

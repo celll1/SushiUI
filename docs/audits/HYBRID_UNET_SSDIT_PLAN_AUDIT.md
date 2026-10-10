@@ -276,6 +276,19 @@ individual records' limitations.
    bytes. This is not an equal-total-time comparison or isolated speed ranking.
    Next test paired conditional/unconditional guided-field retention to separate
    CFG amplification from single-field matching; owner artifacts remain untouched.
+   The raw CFG4 paired-field anchor (`hybrid_anima_guided_anchor_2026-10.json`)
+   also completes222 matched exposures/RNG/start hashes,632 optimizer counters
+   at222 and an unchanged teacher. Conditional and unconditional student forwards
+   participate in the guidance loss; dropout exposures reuse the null branch.
+   Last50 supervised/guided losses0.170859/0.058254 do not restore composition.
+   Four new held outputs retain fragmented figures and a horizontal band; one
+   CFG4 face survives, while CFG1 has poor prompt differentiation. Reject this
+   bounded recipe. Student/teacher compute174.208/29.909 CUDA seconds and joint
+   allocation16.425GiB add cost without the required visual recovery. Neither
+   single-field nor guided-field retention establishes a quality remedy; do not
+   keep varying these losses without new evidence. Next inspect restored-stage
+   intermediate features and evaluate normalized feature alignment during
+   structural initialization. Full FT and combined-codec quality gates stay open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

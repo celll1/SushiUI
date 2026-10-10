@@ -1,0 +1,118 @@
+{
+  "stage": "interim500; second calibration arm and1000-update comparison pending",
+  "rating": "general",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_indices": [
+    28,
+    31
+  ],
+  "prior_io_updates": 200,
+  "train_resolution": 512,
+  "evaluation_resolution": 1024,
+  "cfg": 4.0,
+  "seed": 63,
+  "sampling_steps": 28,
+  "arm": "independent_spatial",
+  "group_counts": [
+    565,
+    67,
+    6
+  ],
+  "group_rates": {
+    "body": 5e-07,
+    "structural": 5e-06,
+    "io_bridge": 5e-05
+  },
+  "optimizer": "AdamW8bit + stochastic rounding",
+  "body_before": "e8d4ef62183464de2a77ebda84d92d0e3c4e05579b08b08e372b76d0aa97782d",
+  "structural_before": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+  "training_seconds": 359.7709999997169,
+  "peak_allocated_gib": 11.792992115020752,
+  "loss_windows": [
+    {
+      "first_step": 1,
+      "last_step": 100,
+      "mean": 0.9481820771098137
+    },
+    {
+      "first_step": 101,
+      "last_step": 200,
+      "mean": 0.8936092954874039
+    },
+    {
+      "first_step": 201,
+      "last_step": 300,
+      "mean": 0.7869084343314171
+    },
+    {
+      "first_step": 301,
+      "last_step": 400,
+      "mean": 0.7953018972277641
+    },
+    {
+      "first_step": 401,
+      "last_step": 500,
+      "mean": 0.6765016999840736
+    }
+  ],
+  "samples": [
+    {
+      "index": 28,
+      "step": 500,
+      "sha256": "b770f553d41c0a4b75e492d497bcfa53bf8cecb38a5433df1436e25b93fea3cb"
+    },
+    {
+      "index": 31,
+      "step": 500,
+      "sha256": "7420bed90ec7d200a01f45ba11c36476d5e55eb3fe8d8e7faddaa7cba01fff4a"
+    }
+  ],
+  "initial_samples": [
+    {
+      "index": 28,
+      "sha256": "40f8de54465bc75d8b4d234a94fa63a6d0df9e9a69cec5ac2affaf04e27970d3"
+    },
+    {
+      "index": 31,
+      "sha256": "567c8dfdad96c35685a4bddb3feff933c2eb627f6df11dd8a881c40c8ad9a763"
+    }
+  ],
+  "visual_review": "Direct review of both matched initial/500-update pairs: p28 large clothing/background areas are more continuous and less fragmented; p31 cheek, hand and food color areas are more continuous. Clipping, grid fragmentation and isolated colored spots remain. This is a selected positive interim tendency, not final quality acceptance.",
+  "limits": [
+    "1000 updates and the other calibration arm are not yet available in this interim record.",
+    "Only two held prompts, same seed/CFG; no broad visual-quality claim.",
+    "Loss windows alone do not establish visual improvement.",
+    "Compute excludes VAE/TE encoding, input preparation and sample evaluation.",
+    "No owner run, checkpoint, production initialization or default changed.",
+    "No image pixels, captions or model tensors are included."
+  ]
+}

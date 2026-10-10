@@ -2271,6 +2271,17 @@ from final image quality. Historical statements below about unaccepted quality
 apply to their recorded scope and do not override this policy. Loss reduction
 alone remains insufficient to claim visual improvement.
 
+The subsequent Full FT comparison has an interim500-update observation for the
+independent-spatial arm, starting after the retained200 IO updates. The two held
+1024px CFG4/seed63 samples show more continuous large clothing/background areas
+and cheek/hand/food color regions than their starting samples. Clipping, grid
+fragmentation and colored spots remain. This is a selected positive tendency;
+the1000-update result and native-moment calibration comparator remain pending.
+All638 trainable tensors had finite gradients at the500-update boundary.
+Numeric evidence and initial/intermediate image hashes are recorded in
+`docs/audits/data/hybrid_anima_codec_fullft_interim_2026-10.json`; no images or
+weights are committed, and no owner run or production default is changed.
+
 The experimental calibrator adds `match_native_covariance`, accepted only with
 orthogonal input selection. The latter selects an initial row space; covariance
 matching then rescales/rotates it, so the final rows need not be orthonormal.

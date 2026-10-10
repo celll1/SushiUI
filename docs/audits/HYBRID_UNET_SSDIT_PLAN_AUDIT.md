@@ -217,6 +217,16 @@ individual records' limitations.
    New initialization can reproduce declared rates; private historical weights
    are not retroactively granted public lineage.85 CPU cases and a real Anima
    BF16 two-update transaction pass; owner build/UI and quality remain separate.
+   The new factory rank256/skip-LR0.00025 candidate also completes an equal-total
+   budget (`hybrid_anima_wide_skip_equal_total_2026-10.json`):319 teacher updates
+   plus222 Full FT updates total240.113 CUDA-event seconds. All211 common FT
+   item/null/sigma records match historical controls; their old latent/noise
+   hashes are unavailable. Six new images preserve initial coarse figures but
+   Full FT damages two-person composition, while one face/outline survives.
+   Reused native controls remain stronger; no consistent advantage or default
+   acceptance. Compare the trained native-body path with the rewired path under
+   identical weights before continuing the same fitting/FT recipe. Private
+   historical weights do not become public initialized artifacts by this test.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

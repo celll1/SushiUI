@@ -1521,3 +1521,34 @@ through a local safetensors payload. That payload is not a full production model
 or quality acceptance. Backend compilation and real GPU-free imports pass;
 API restart confirms schema defaults, invalid-zero422 and the prior Ming Layer
 model. Evidence: `docs/audits/data/hybrid_skip_rate_public_2026-10.json`.
+
+### Equal-total-budget wide-skip candidate
+
+Fresh factory rank256 skips with initial skip LR0.00025 and other branches0.001
+receive120.274 CUDA-event seconds of teacher fitting (319 updates), followed by
+119.839s of native-codec Full FT at uniform LR5e-6/SR (222 updates). Total240.113s
+includes initialization, matching the historical native/legacy/rank64 budget.
+The frozen source body matches the earlier rank64 initializer and remains exact
+through teacher fitting; all211 common Full FT item/null/sigma records match.
+Encoded inputs reuse the current hashed cache. Historical per-image posterior
+and noise hashes were not retained, so those equalities are not independently
+proved against the old sessions. Preprocessing, hashing and generation are excluded
+from the model-update budget. The new factory does not copy the prior private
+rank64 capture rows into larger skips; do not treat the two initializations as
+identical. Existing twelve Full FT comparator images are reused by hash.
+
+Six new held general images separate initialization and Full FT. Initial CFG4
+outputs retain two distinct back-facing figures and a coherent single girl,
+with contour/ghost defects. Full FT retains the single face/outline but the
+two-person output develops a headless foreground coat and fails composition.
+Both new CFG1 outputs retain overlapping/fragmented contours. The native CFG4
+control remains stronger on two-person structure; legacy and rank64 controls
+also fail that prompt differently. There is no consistent equal-budget advantage
+that would justify promotion. Own Full FT peak allocation is11.644GiB; this
+512px ordered quality session is not a new1024px throughput matrix.
+
+Next distinguish the fine-tuned native-body path from the rewired path under the
+same weights before extending this recipe: deterioration after initialization
+does not prove whether native-body drift or structural mismatch dominates.
+No owner checkpoint, runtime default or public initialization lineage changes.
+Evidence: `docs/audits/data/hybrid_anima_wide_skip_equal_total_2026-10.json`.

@@ -1,0 +1,270 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "seed": 718,
+  "noise_seed": 918,
+  "learning_rate": 5e-06,
+  "budget_seconds": 240,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "adaptation_held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "spec_source_sha256": "5eff00e1bc7dca6a7c509561e6ced79aa7427d73877d3d364cb0ba5bb390d422",
+  "retained_weights_loaded": false,
+  "limits": [
+    "Fresh native-codec rank256 factory: initial fit120 CUDA-event seconds plus Full FT remainder to240.",
+    "Only this new candidate is rendered; prior native/legacy/rank64 controls reused by image hash.",
+    "Exact cached input reuse from recent width probes; historical equal-budget per-image latent hashes unavailable.",
+    "Seeded historical fullFT item/null/sigma prefixes match; previous controls did not record noise hashes.",
+    "One ordered bounded probe does not establish a general quality or isolated throughput advantage.",
+    "Only one ordered candidate session plus historical controls; source factory skip capture rows differ from the prior private copied-rank64-to256 initialization."
+  ],
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "skip_rank": 256,
+  "initialization_skip_lr_multiplier": 0.25,
+  "matched_fullft_prefix": 211,
+  "new_candidate": {
+    "arm": "hybrid_skip256_quarter",
+    "samples": [
+      {
+        "index": 28,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p28_hybrid_skip256_quarter_cfg1.png",
+        "sha256": "4889c5643862ccbb4d06c54337468eac745b5853748db13f07804c4ffd2ab1e0"
+      },
+      {
+        "index": 28,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p28_hybrid_skip256_quarter_cfg4.png",
+        "sha256": "3751b450dcb47d3a9a212b78496a4e394796fe3df0ed71653fb2328311c1046e"
+      },
+      {
+        "index": 29,
+        "cfg": 1.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p29_hybrid_skip256_quarter_cfg1.png",
+        "sha256": "8faff98c03ad42280ef5db7502910f2831e8cfb24650878dc98040a9bdbefeb1"
+      },
+      {
+        "index": 29,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p29_hybrid_skip256_quarter_cfg4.png",
+        "sha256": "3ef815a0ab6eeb6cea28dbba83ac2bf87cd4b9cda9472d1658f1fccff7088bee"
+      }
+    ],
+    "initialization_cuda_seconds": 120.27405361938476,
+    "frozen_before_initialization_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "initialization_learning_rates": [
+      0.001,
+      0.00025
+    ],
+    "initialization_group_counts": [
+      51,
+      14
+    ],
+    "initialization_wall_seconds": 121.06199999991804,
+    "initialization_peak_allocated_gib": 4.500743865966797,
+    "frozen_after_initialization_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+    "initialization_samples": [
+      {
+        "index": 28,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p28_hybrid_fresh_initialized_cfg4.png",
+        "sha256": "7ea3156bff787fd42e89d9eb3cf9a66b341b3e2fe9b33d063adc850dbcfc729f"
+      },
+      {
+        "index": 29,
+        "cfg": 4.0,
+        "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p29_hybrid_fresh_initialized_cfg4.png",
+        "sha256": "679f4dc1e886167d42ed197eeb3f2aac68d3760d99a5b9cba8785cd8b0f5f04b"
+      }
+    ],
+    "update_cuda_seconds": 119.83921295166016,
+    "update_wall_seconds": 120.90599999995902,
+    "peak_allocated_gib": 11.644378662109375,
+    "total_cuda_seconds": 240.1132665710449,
+    "fullft_updates": 222,
+    "initialization_updates": 319,
+    "fullft_prefix_sha256": "68f6d443aca4d234d57cd9dca05b228213bf04f43422986f09a6e86932c2d045"
+  },
+  "reused_comparators": [
+    {
+      "arm": "native",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_native_cfg1.png",
+          "sha256": "36246d323df4aa73bf46be0260e7283e138d5f0c098deaa5873f69d4e0d1bff9"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_native_cfg4.png",
+          "sha256": "eed092f32f206d6d051d907a401d42bab13352e389bf4afa449dc050c0c9c1fa"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_native_cfg1.png",
+          "sha256": "57a07e21e09eb0bdaddce97a73ed0d48cc0992252f193d17bbdb39f5d7e229d3"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_native_cfg4.png",
+          "sha256": "310e9d846e1e84dbdc2f62ba3ae618b8aa5ac47c62891d733099f4f63e6725b7"
+        }
+      ],
+      "initialization_cuda_seconds": 0.0,
+      "update_cuda_seconds": 240.45606924438476,
+      "update_wall_seconds": 242.75,
+      "peak_allocated_gib": 11.590145111083984,
+      "total_cuda_seconds": 240.45606924438476,
+      "fullft_updates": 480,
+      "initialization_updates": 0,
+      "fullft_prefix_sha256": "68f6d443aca4d234d57cd9dca05b228213bf04f43422986f09a6e86932c2d045"
+    },
+    {
+      "arm": "legacy",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_legacy_cfg1.png",
+          "sha256": "1356887bb776441c32e55e8a81ee9f5240792cdd9c92601a8e509f4e6f7be9ca"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_legacy_cfg4.png",
+          "sha256": "ada97856900afd634c956efa4b4c0749518d44566d720b1f91812373c6361d5e"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_legacy_cfg1.png",
+          "sha256": "3a6b9ceb3a5059a2235743ddac0ff5aa1a0114fc71f6a7a834f54b585ad8c910"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_legacy_cfg4.png",
+          "sha256": "65f810e5482d38b5f289cb68ae9d72f071e6b51766f2463958002530ef404447"
+        }
+      ],
+      "initialization_cuda_seconds": 0.0,
+      "update_cuda_seconds": 240.47933831787108,
+      "update_wall_seconds": 242.78099999995902,
+      "peak_allocated_gib": 11.577584266662598,
+      "total_cuda_seconds": 240.47933831787108,
+      "fullft_updates": 459,
+      "initialization_updates": 0,
+      "fullft_prefix_sha256": "68f6d443aca4d234d57cd9dca05b228213bf04f43422986f09a6e86932c2d045"
+    },
+    {
+      "arm": "hybrid",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_hybrid_cfg1.png",
+          "sha256": "1294a9a70a0b01c8680333d09fe3a0d8507aef9e0d64d874161d4bb34a9ed5a3"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_hybrid_cfg4.png",
+          "sha256": "49ce156fec8ff36d97634260492db57dc771ac48594f4ad20d7218bc91f653f8"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_hybrid_cfg1.png",
+          "sha256": "16de7c2f8c15f011fa3a16c56dde0e4190fc6646f81bb8864e18220760776ab9"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_hybrid_cfg4.png",
+          "sha256": "92545dab76a6617d825569cdcd3ff131ea01fcef5be11141b5869c9218555f2a"
+        }
+      ],
+      "initialization_cuda_seconds": 120.05469760131835,
+      "frozen_before_initialization_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "initialization_wall_seconds": 120.875,
+      "initialization_peak_allocated_gib": 4.47670841217041,
+      "frozen_after_initialization_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "initialization_samples": [
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p28_hybrid_fresh_initialized_cfg4.png",
+          "sha256": "2ff7a0d3a2113091511fa29d565940412d22e4dec7f2fadf04e3f65d6a12d00a"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_equal_total\\p29_hybrid_fresh_initialized_cfg4.png",
+          "sha256": "d4e94871b540000491f5ec31f7235477d8b5bbbfe4788bec8dc7aec2d5661206"
+        }
+      ],
+      "update_cuda_seconds": 120.39806704711914,
+      "update_wall_seconds": 121.51500000013039,
+      "peak_allocated_gib": 11.611015319824219,
+      "total_cuda_seconds": 240.4527646484375,
+      "fullft_updates": 211,
+      "initialization_updates": 297,
+      "fullft_prefix_sha256": "68f6d443aca4d234d57cd9dca05b228213bf04f43422986f09a6e86932c2d045"
+    }
+  ],
+  "observations": {
+    "initialized_p28_cfg4": "Two distinct back-facing figures with floating/ghost fragments; coarse layout retained.",
+    "initialized_p29_cfg4": "Coherent single-girl face/body with contour and texture defects.",
+    "fullft_p28_cfg4": "One background person and a headless foreground coat; composition fails, worse than initialization.",
+    "fullft_p29_cfg4": "Coherent face and girl silhouette, remaining hand/clothing details imperfect.",
+    "fullft_cfg1": "Both prompts show overlapping/fragmented contours and distorted anatomy.",
+    "native_controls": "Both CFG4 subjects coherent; native two-person composition stronger.",
+    "legacy_controls": "CFG4 single face coherent but two-person composition fails.",
+    "rank64_control": "CFG4 single face retained; two-person output has collage/grid/text-like artifacts."
+  },
+  "decision": "No consistent equal-total-budget advantage and no rank256 default promotion. Separate the trained native-body path from the rewired path before extending the same fitting/FT recipe.",
+  "owner_model_source": "M:\\model\\ming_image_01\\layer_int8_convrot"
+}

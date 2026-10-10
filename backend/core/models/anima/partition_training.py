@@ -151,8 +151,7 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                 box = region.core
                 stitched[..., 2*box.top:2*box.bottom, 2*box.left:2*box.right] = prediction[:1].detach().float().cpu()
             per_item = (prediction.float() - expected.float()).square().mean((1, 2, 3))
-            recon_items = torch.zeros_like(per_item)
-            if weight > 0 or debug_save_path is not None:
+            with torch.set_grad_enabled(weight > 0):
                 recovered = crop(noisy, region.core).float() - sigma_view.float() * prediction.float()
                 recon_items = (recovered - crop(clean, region.core).float()).square().mean((1, 2, 3))
                 debug_recon += region.core.tokens / plan.full_tokens * recon_items.mean().detach()
@@ -167,7 +166,7 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                 else:
                     scaled.backward(retain_graph=retain)
             totals += fraction * torch.stack((combined.mean().detach(), per_item.mean().detach(),
-                                             recon_items.mean().detach() if weight > 0 else totals.new_zeros(())))
+                                             recon_items.mean().detach()))
             pred_items += fraction * per_item.detach()
             loss_items += fraction * combined.detach()
             del prediction, expected, per_item, combined, scaled, recon_items

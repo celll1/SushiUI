@@ -2,6 +2,7 @@
 
 import asyncio
 
+import pytest
 import torch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -76,6 +77,21 @@ def test_v2_metrics_come_from_run_database(tmp_path):
     local.close()
 
     assert _metrics(central, run)["loss"][0]["value"] == 0.2
+    central.close()
+
+
+@pytest.mark.parametrize("v2", [False, True])
+def test_nonzero_reconstruction_monitor_reaches_metrics_api(tmp_path, v2):
+    central, run = _central(tmp_path, v2=v2)
+    if v2:
+        initialize_run_detail_database(run)
+    store = open_run_detail_session(run) if v2 else central
+    store.add(TrainingMetrics(run_id=run.id, step=2, loss=.2, recon_loss=.37))
+    store.commit()
+    if v2:
+        store.close()
+    point = next(p for p in _metrics(central, run)["recon_loss"] if p["step"] == 2)
+    assert point["value"] == .37
     central.close()
 
 

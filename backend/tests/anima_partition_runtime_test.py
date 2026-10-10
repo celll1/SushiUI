@@ -21,7 +21,9 @@ from core.rewiring.spec import build_spec, OPERATORS
 
 
 @pytest.mark.parametrize("swap", [False, True])
-def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
+@pytest.mark.parametrize("recon_weight", [0.0, .2])
+@pytest.mark.parametrize("debug", [False, True])
+def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap, recon_weight, debug):
     torch.manual_seed(113)
     channels = 64 if swap else 4
     model = Anima(max_img_h=64, max_img_w=64, max_frames=1,
@@ -58,7 +60,7 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
     model.train().enable_gradient_checkpointing()
     configure(model, config)
     owner = SimpleNamespace(config=config, transformer=model, device=torch.device("cpu"),
-        training_dtype=torch.float32, reconstruction_loss_weight=.2, mixed_precision=False,
+        training_dtype=torch.float32, reconstruction_loss_weight=recon_weight, mixed_precision=False,
         _collect_concept_sample_loss=True, _current_epoch=2, _current_batch_position=5)
     metrics = {}
     owner.log_extra_metric = lambda name, value: metrics.__setitem__(name, value)
@@ -72,7 +74,8 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
     try:
         result = backward_regions(owner, clean=clean, noise=noise, sigma=sigma,
             prompt_embeds=text, anima_aux=aux, plan=training_plan(owner, clean),
-            backward_scale=.5, debug_save_path=tmp_path, debug_captions=["general synthetic", "second"])
+            backward_scale=.5, debug_save_path=tmp_path if debug else None,
+            debug_captions=["general synthetic", "second"])
     finally:
         handle.remove()
     assert all(torch.isfinite(torch.tensor(value)) for value in result)
@@ -83,7 +86,14 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap):
     assert any(p.grad is not None and torch.isfinite(p.grad).all() and p.grad.abs().sum() > 0
                for name, p in model.named_parameters() if not name.startswith(NAME))
     assert [block.gradient_checkpoint_mode for block in model.blocks] == ["standard"]*3 + ["none"]*4
+    assert result[2] > 0
+    if recon_weight == 0:
+        assert result[0] == result[1]
+    if not debug:
+        assert not list(tmp_path.glob('latents_*.pt'))
+        return
     data = torch.load(tmp_path / "latents_t0.3000.pt", weights_only=True)
+    assert result[2] == pytest.approx(data["recon_loss_batch_mean"])
     assert data["predicted_velocity"].shape == (1, channels, 32, 48)
     assert data["partition_count"] == 4 and data["caption"] == "general synthetic"
     torch.testing.assert_close(data["predicted_latent"], data["noisy_latents"] - .3*data["predicted_velocity"])

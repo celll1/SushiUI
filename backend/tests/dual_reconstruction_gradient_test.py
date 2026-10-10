@@ -235,10 +235,12 @@ def test_reported_values_are_unchanged_from_the_pre_fix_module(
         prefix_ops, arch, recon_weight):
     now = _step(LIVE[arch], arch, recon_weight)
     before = _step(prefix_ops[arch], arch, recon_weight)
-    # The two reported series keep their pre-fix meaning at either weight; the
-    # total loss is pinned only at weight == 0, since weight > 0 deliberately
-    # moved from the additive mix to the normalized one.
-    assert now[1:3] == before[1:3]
+    # Anima now reports reconstruction at weight zero; its objective is unchanged.
+    assert now[1] == before[1]
+    if arch == "anima" and recon_weight == 0.0:
+        assert now[2] > 0 and before[2] == 0
+    else:
+        assert now[2] == before[2]
     if recon_weight == 0.0:
         assert now[0] == before[0]
 

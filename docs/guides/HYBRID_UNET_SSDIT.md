@@ -1,11 +1,14 @@
 # Hybrid U-Net ssDiT foundation
 
-Status: experimental native Anima/Ming/Qwen 2.1 integration; CPU contracts and
-actual Anima full-training/save/resume/generation verified. Quality acceptance is pending.
+Status: experimental native Anima/Ming/Qwen 2.1 integration. The fixed-width
+implementation, bounded functional verification, Anima compute matrix and
+training-trend assessment are complete. Actual Anima Full FT and all three
+official-weight LoRA save/resume/generation paths are verified within their
+recorded scopes. Owner UI/build review and long-training quality are unverified.
 The owner permits incompatibility with the previous residual U-Net system.
 Existing runs are not silently converted. This guide records only implemented
 behavior; the broader implementation proposal remains under `local/strategy/`.
-The requirement/evidence audit and remaining acceptance work are recorded in
+The requirement/evidence audit and remaining owner evaluation are recorded in
 `docs/audits/HYBRID_UNET_SSDIT_PLAN_AUDIT.md`.
 
 ## Use from Training

@@ -111,6 +111,9 @@ export default function HybridInitializationPanel({ modelPath, architecture, spe
         <p className="my-2 text-gray-400">Defaults come from the API. Optional item_ids selects explicit dataset items in order;
           otherwise the first sample_count IDs are used. Each phase can set skip_learning_rate_multiplier
           to reduce compressed-skip learning rates while keeping other branches at learning_rate.
+          Set additional_resolutions to extra square sizes (for example [256] with resolution 512).
+          Each phase cycles through resolution then these sizes; update counts stay unchanged.
+          Encoding and teacher generation cover every size, increasing preparation time and host memory.
           This affects initialization only.</p>
         <textarea aria-label="Hybrid initialization settings" rows={18} value={settings}
           className="w-full rounded bg-gray-900 p-2 font-mono" onChange={e => setSettings(e.target.value)} />

@@ -12,7 +12,7 @@ from api.param_defaults import DIT_HYBRID_INITIALIZATION_DEFAULTS
 from core.rewiring import provenance
 from core.rewiring.resolution_schedule import (
     ResolutionSchedule, calibration_identity, exposure_noise,
-    initialization_resolutions, resolution_recipe_fields,
+    initialization_resolutions, resolution_recipe_fields, timestep_generator,
 )
 from core.rewiring.spec import digest
 from hybrid_provenance_test import record
@@ -37,17 +37,19 @@ def test_single_grid_preserves_rng_and_calibration_hash():
 
 
 def test_mixed_grids_have_balanced_reproducible_shape_independent_timesteps():
-    settings = dict(resolution=512, additional_resolutions=[256, 1024])
+    settings = dict(resolution=512, additional_resolutions=[256, 1024], seed=718)
     schedule = ResolutionSchedule(settings)
     assert [schedule.next() for _ in range(9)] == [512, 256, 1024] * 3
     observed = []
     for shapes in ([8] * 9, [8, 4, 16] * 3):
         noise_rng = torch.Generator().manual_seed(718)
-        sigma_rng = torch.Generator().manual_seed(719)
+        sigma_rng = timestep_generator(settings,"cpu")
+        assert sigma_rng.initial_seed() == 719
         observed.append([exposure_noise(torch.zeros(1, 16, side, side), noise_rng, sigma_rng)[1]
                          for side in shapes])
     assert all(torch.equal(left, right) for left, right in zip(*observed))
     assert ResolutionSchedule(settings).next() == 512
+    assert timestep_generator(dict(resolution=512,seed=718),"cpu") is None
 
 
 @pytest.mark.parametrize("extra", [[512], [256, 256], [True], [65], [0], [1088],

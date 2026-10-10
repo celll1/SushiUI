@@ -12,6 +12,9 @@ from .fitting import FitExample, FitPhase, InitializationCancelled, fit_teacher_
 from .initialized_export import export_initialized_qwen_package
 from .provenance import RECIPE_FIELDS
 from .spec import digest
+from .resolution_schedule import (ResolutionSchedule, calibration_identity, exposure_noise,
+                                  initialization_resolutions, resolution_items, resolution_recipe_fields,
+                                  timestep_generator)
 
 
 def qwen_inputs(latent, sigma, features, mask, height, width):
@@ -52,9 +55,9 @@ def initialize_loaded_qwen(components, source, spec, items, options, progress, c
                   ("_attention_backend","_target_query_chunk_tokens")]
     manifest = load_manifest(str(source))
     device = torch.device("cuda")
-    latents,conditioning,pairs,phases = [],[],[],[]
+    resolutions = initialization_resolutions(options)
+    latents,conditioning,pairs,phases = {},[],{side: [] for side in resolutions},[]
     fit_count = len(items)-options["holdout_count"]
-    side = options["resolution"]//16
     pipe = build_pipeline({**components,"scheduler":deepcopy(components["scheduler"])})
     teacher_pipe = TeacherPipeline(scheduler=deepcopy(components["scheduler"]),vae=vae,
                                   text_encoder=te,processor=components["processor"],transformer=model)
@@ -80,13 +83,14 @@ def initialize_loaded_qwen(components, source, spec, items, options, progress, c
     def condition(index):
         return tuple(value.to(device) for value in conditioning[index])
 
-    def inputs(value,sigma,index):
+    def inputs(value,sigma,index,side):
         features,mask = condition(index)
-        return qwen_inputs(value,sigma,features,mask,side,side)
+        return qwen_inputs(value,sigma,features,mask,side//16,side//16)
 
     def predict(network,args,kwargs):
         with torch.autocast("cuda",dtype=torch.bfloat16):
-            return network(*args,**kwargs)[0][:,-side*side:]
+            height,width = kwargs["img_shapes"][0][0][1:]
+            return network(*args,**kwargs)[0][:,-height*width:]
 
     try:
         with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
@@ -94,26 +98,28 @@ def initialize_loaded_qwen(components, source, spec, items, options, progress, c
             source_hash = checksum(manifest.transformer,"source_verification")
             selection = torch.Generator().manual_seed(options["seed"])
             noise_rng = torch.Generator(device=device).manual_seed(options["seed"])
+            sigma_rng = timestep_generator(options,device)
             for root in roots:
                 root.to("cpu").eval().requires_grad_(False)
             torch.cuda.empty_cache()
             fingerprints = []
             vae.to(device)
             owner = SimpleNamespace(qwen_image_21_pipeline=pipe,vae=vae,vae_dtype=next(vae.parameters()).dtype)
-            for index,item in enumerate(items):
-                report("encoding_latents",index,len(items),"items")
+            for completed,(side,index,item) in enumerate(resolution_items(items,options)):
+                report("encoding_latents",completed,len(items)*len(resolutions),"items")
                 fingerprint = checksum(item["image_path"],"calibration_verification")
                 with Image.open(item["image_path"]) as image:
                     image = ImageOps.fit(ImageOps.exif_transpose(image).convert("RGBA"),
-                        (options["resolution"],options["resolution"]),method=Image.Resampling.LANCZOS)
+                        (side,side),method=Image.Resampling.LANCZOS)
                     with torch.no_grad():
-                        latent = vae_encode(owner,None,image=image,width=options["resolution"],
-                                            height=options["resolution"],vae_device=device)
-                    latents.append(latent.cpu())
+                        latent = vae_encode(owner,None,image=image,width=side,
+                                            height=side,vae_device=device)
+                    latents[side,index] = latent.cpu()
                     del latent
-                fingerprints.append(dict(image_sha256=fingerprint,
-                    caption_sha256=hashlib.sha256(item["caption"].encode()).hexdigest(),
-                    role="fit" if index<fit_count else "held_out"))
+                if side == resolutions[0]:
+                    fingerprints.append(dict(image_sha256=fingerprint,
+                        caption_sha256=hashlib.sha256(item["caption"].encode()).hexdigest(),
+                        role="fit" if index<fit_count else "held_out"))
             vae.to("cpu")
             torch.cuda.empty_cache()
             te.to(device)
@@ -146,30 +152,31 @@ def initialize_loaded_qwen(components, source, spec, items, options, progress, c
                             pointers[pointer] = len(items)
                         else:
                             raise ValueError("Native Qwen teacher conditioning was unexpectedly transformed")
-                    pairs.append(dict(x=kwargs["hidden_states"].detach().cpu(),
-                        sigma=kwargs["timestep"].detach().cpu(),target=output[0][:,-side*side:].detach().cpu(),
+                    tokens = (current["side"]//16)**2
+                    pairs[current["side"]].append(dict(x=kwargs["hidden_states"].detach().cpu(),
+                        sigma=kwargs["timestep"].detach().cpu(),target=output[0][:,-tokens:].detach().cpu(),
                         conditioning_index=pointers[pointer]))
 
                 hook = model.register_forward_hook(capture,with_kwargs=True)
                 try:
-                    for index in range(fit_count):
-                        report("teacher_trajectory",index,fit_count,"prompts")
+                    for completed,(side,index,_) in enumerate(resolution_items(items[:fit_count],options)):
+                        report("teacher_trajectory",completed,fit_count*len(resolutions),"prompts")
                         features,mask = condition(index)
                         negative,negative_mask = condition(len(items))
-                        current.update(index=index,features=features,negative=negative)
+                        current.update(index=index,side=side,features=features,negative=negative)
                         pointers.clear()
                         with torch.no_grad(),torch.autocast("cuda",dtype=torch.bfloat16):
                             teacher_pipe(prompt_embeds=features,prompt_embeds_mask=mask,
                                 negative_prompt_embeds=negative,negative_prompt_embeds_mask=negative_mask,
-                                true_cfg_scale=options["teacher_cfg"],height=options["resolution"],width=options["resolution"],
-                                output_resolution=options["resolution"],num_inference_steps=options["teacher_steps"],
+                                true_cfg_scale=options["teacher_cfg"],height=side,width=side,
+                                output_resolution=side,num_inference_steps=options["teacher_steps"],
                                 generator=torch.Generator(device=device).manual_seed(options["seed"]+index),
                                 output_type="latent",use_kv_cache=False,before_step_callback=lambda *a:check_cancel())
                         del features,mask,negative,negative_mask
                 finally:
                     hook.remove()
                 current.clear()
-                if not pairs:
+                if any(not values for values in pairs.values()):
                     raise ValueError("Native Qwen teacher produced no trajectory targets")
             restore_topology(model,spec)
             model.enable_gradient_checkpointing()
@@ -177,19 +184,22 @@ def initialize_loaded_qwen(components, source, spec, items, options, progress, c
             model.train()
 
             def examples(kind):
+                schedule = ResolutionSchedule(options)
                 while True:
                     check_cancel()
+                    side = schedule.next()
                     if kind == "data_noising":
                         index = int(torch.randint(fit_count,(1,),generator=selection))
-                        latent = latents[index].to(device=device,dtype=torch.bfloat16)
-                        noise = torch.randn(latent.shape,device=device,dtype=latent.dtype,generator=noise_rng)
-                        value,sigma = noising_input(latent,noise,.01+.98*torch.rand(1,device=device,generator=noise_rng))
+                        latent = latents[side,index].to(device=device,dtype=torch.bfloat16)
+                        noise,sigma = exposure_noise(latent,noise_rng,sigma_rng)
+                        value,sigma = noising_input(latent,noise,sigma)
                         if float(torch.rand(1,generator=selection))<options["conditioning_dropout"]:
                             index = len(items)
-                        yield FitExample((),inputs(value,sigma,index))
+                        yield FitExample((),inputs(value,sigma,index,side))
                     else:
-                        pair = pairs[int(torch.randint(len(pairs),(1,),generator=selection))]
-                        yield FitExample((),inputs(pair["x"].to(device),pair["sigma"].to(device),pair["conditioning_index"]),
+                        bucket = pairs[side]
+                        pair = bucket[int(torch.randint(len(bucket),(1,),generator=selection))]
+                        yield FitExample((),inputs(pair["x"].to(device),pair["sigma"].to(device),pair["conditioning_index"],side),
                                          pair["target"].to(device))
 
             for phase in options["phases"]:
@@ -209,9 +219,10 @@ def initialize_loaded_qwen(components, source, spec, items, options, progress, c
                 return value
 
             fit_teacher_modules(model,phases,predict,optimizer,source_sha256=source_hash,
-                calibration_sha256=digest(dict(items=fingerprints,resolution=options["resolution"])),
+                calibration_sha256=digest(calibration_identity(fingerprints,options)),
                 sample_count=len(items),seed=options["seed"],clip_norm=options["clip_norm"],
-                recipe=dict(schema_version=1,settings={key:options[key] for key in RECIPE_FIELDS}),
+                recipe=dict(schema_version=1,settings=dict({key:options[key] for key in RECIPE_FIELDS},
+                                                         **resolution_recipe_fields(options))),
                 progress=lambda event:progress(dict(event,stage="fitting",units="updates")),cancelled=cancelled)
             report("saving",0,1,"models")
             return export_initialized_qwen_package(model,source,Path(manifest.root).parent/options["output_name"],cancelled=cancelled)

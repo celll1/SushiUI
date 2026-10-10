@@ -9988,10 +9988,13 @@ export interface HybridInitializationRecord {
   origin_spec: HybridDiTRewiringSpec; sample_count: number; seed: number;
   phases: { kind: "data_noising" | "native_trajectory"; updates: number; learning_rate: number;
     skip_learning_rate_multiplier?: number }[];
-  recipe?: { schema_version: 1; settings: HybridInitializationSettings };
+  recipe?: { schema_version: 1; settings: HybridInitializationSettings & {
+    resolution_sampling?: "round_robin_v1";
+  } };
 }
 export interface HybridInitializationSettings {
   sample_count: number; holdout_count: number; resolution: number; seed: number;
+  additional_resolutions?: number[];
   caption_type: string; teacher_steps: number; teacher_cfg: number;
   conditioning_dropout: number; clip_norm: number; optimizer: "adamw8bit" | "adamw";
   stochastic_rounding: boolean; weight_decay: number; attention_backend: "flash" | "native";

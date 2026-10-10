@@ -2071,8 +2071,33 @@ unchanged; the helper emits these fields only for a real multi-grid plan.
 The40-test CPU check covers shape-independent timestep draws, historical
 single-grid RNG order, lineage round trips and initializer ownership.
 
-This is shared infrastructure, not an exposed option yet. Anima/Ming/Qwen
-preparation, trajectory capture, API geometry preflight and frontend controls
-still need to consume it before a public request may select mixed grids.
-No GPU quality claim, default promotion or owner-run change follows from this
-CPU check.
+Anima/Ming/Qwen preparation and the public API now consume this infrastructure
+as described below. No GPU quality claim, default promotion or owner-run change
+follows from the CPU check.
+
+### Public multi-grid initializer wiring (2026-10-10)
+
+`additional_resolutions` is exposed by the initialization request and schema
+defaults, with an empty SSOT default preserving single-grid behavior. For
+example, `resolution:512, additional_resolutions:[256]` cycles512 then256 on
+each fitting phase, without multiplying its update count. Geometry preflight
+checks every grid before a job acquires heavy resources. Captured trajectory
+targets are partitioned by grid; selection cannot overweight a grid merely
+because its sampler captured more forwards.
+
+Anima and Qwen encode captions once and encode images at each requested size.
+Qwen predicts and crops by the current example's native image grid, rather
+than a fixed anchor size. Ming keeps conditioning, pixels, reference latents
+and native-generated Layer canvas/layers associated with each resolution.
+Its Design and Layer CPU owners both verify actual mixed-grid fitting and
+strict checkpoint restoration, including cancellation/failure rollback.
+The timestep stream uses seed+1 only for mixed plans; noise and exposure
+selection keep their own seed streams. Single-grid draw order remains intact.
+
+The frontend settings editor receives the field through schema defaults and
+submits it with the existing JSON request. Its help explains the ordered grid
+cycle and added preparation/host-memory cost. Recorded `resolution_sampling`
+is output lineage, not an accepted request option. Frontend validation/errors,
+pending actions, polling, cancellation and using the result retain their
+existing paths; owner build/type-check remains pending. Official-weight Anima
+GPU execution and held-image quality remain separate acceptance gates.

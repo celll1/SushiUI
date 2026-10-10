@@ -82,7 +82,7 @@ DIT_HYBRID_INITIALIZATION_PHASE_DEFAULTS: Dict[str, Any] = {
 
 DIT_HYBRID_INITIALIZATION_DEFAULTS: Dict[str, Any] = {
     "spec": None, "item_ids": None, "sample_count": 32, "holdout_count": 4,
-    "resolution": 512, "seed": 718, "caption_type": "tags", "teacher_steps": 28,
+    "resolution": 512, "additional_resolutions": [], "seed": 718, "caption_type": "tags", "teacher_steps": 28,
     "teacher_cfg": 4.0, "conditioning_dropout": 0.1, "clip_norm": 1.0,
     "optimizer": "adamw8bit", "stochastic_rounding": True, "weight_decay": 0.0,
     "attention_backend": "flash",

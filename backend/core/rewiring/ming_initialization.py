@@ -13,6 +13,9 @@ from .fitting import FitExample, FitPhase, InitializationCancelled, fit_teacher_
 from .initialized_export import export_initialized_ming_package
 from .provenance import RECIPE_FIELDS
 from .spec import digest
+from .resolution_schedule import (ResolutionSchedule, calibration_identity, exposure_noise,
+                                  initialization_resolutions, resolution_items, resolution_recipe_fields,
+                                  timestep_generator)
 
 
 def ming_inputs(value,time,condition,reference=None):
@@ -54,8 +57,9 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
     fit_count = len(items)-options["holdout_count"]
     layer = native.artifact.profile == "layer_decompose"
     frames = 2 if layer else 1
-    latents,conditioning,pixels,pairs,phases,references = [],[],[],[],[],[]
-    side = options["resolution"]
+    resolutions = initialization_resolutions(options)
+    latents,conditioning,pixels,references = {},{},{},{}
+    pairs,phases = {side: [] for side in resolutions},[]
 
     class TeacherPipeline(ImageGenerationPipeline):
         @property
@@ -90,8 +94,8 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                 report(stage,completed,total,"bytes")
         return value.hexdigest()
 
-    def condition(index,zero=False):
-        value = conditioning[index]
+    def condition(side,index,zero=False):
+        value = conditioning[side,index]
         result = MingConditioning(value.queries.to(device=device,dtype=model.dtype),
                                   value.direct.to(device=device,dtype=model.dtype))
         return result.zero() if zero else result
@@ -107,40 +111,42 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                 progress=lambda completed,total:report("source_verification",completed,total,"bytes"))
             selection = torch.Generator().manual_seed(options["seed"])
             noise_rng = torch.Generator(device=device).manual_seed(options["seed"])
+            sigma_rng = timestep_generator(options,device)
             for root in roots:
                 root.to("cpu").eval().requires_grad_(False)
             torch.cuda.empty_cache()
             fingerprints = []
             vae.to(device)
-            for index,item in enumerate(items):
-                report("encoding_latents",index,len(items),"items")
+            for completed,(side,index,item) in enumerate(resolution_items(items,options)):
+                report("encoding_latents",completed,len(items)*len(resolutions),"items")
                 fingerprint = checksum(item["image_path"],"calibration_verification")
                 with Image.open(item["image_path"]) as original:
                     image = ImageOps.fit(ImageOps.exif_transpose(original).convert("RGBA"),
                                         (side,side),method=Image.Resampling.LANCZOS)
                     value = torch.from_numpy(np.asarray(image).copy()).permute(2,0,1).float()/127.5-1
-                    pixels.append(value.unsqueeze(0))
+                    pixels[side,index] = value.unsqueeze(0)
                     with torch.no_grad():
                         latent = encode_frames(vae,value[None,:,None].to(device=device,dtype=vae.dtype))
-                    latents.append(latent.cpu())
-                    references.append(latents[-1][0])
+                    latents[side,index] = latent.cpu()
+                    references[side,index] = latents[side,index][0]
                     del latent,value
-                fingerprints.append(dict(image_sha256=fingerprint,
-                    caption_sha256=hashlib.sha256(item["caption"].encode()).hexdigest(),
-                    role="fit" if index<fit_count else "held_out"))
+                if side == resolutions[0]:
+                    fingerprints.append(dict(image_sha256=fingerprint,
+                        caption_sha256=hashlib.sha256(item["caption"].encode()).hexdigest(),
+                        role="fit" if index<fit_count else "held_out"))
             vae.to("cpu")
             torch.cuda.empty_cache()
             te.to(device)
-            for index,item in enumerate(items):
-                report("encoding_captions",index,len(items),"items")
-                image = Image.fromarray(((pixels[index][0].permute(1,2,0)+1)*127.5).round().byte().numpy(),"RGBA")
+            for completed,(side,index,item) in enumerate(resolution_items(items,options)):
+                report("encoding_captions",completed,len(items)*len(resolutions),"items")
+                image = Image.fromarray(((pixels[side,index][0].permute(1,2,0)+1)*127.5).round().byte().numpy(),"RGBA")
                 prepared = prepare_inputs(native.processor,[item["caption"]],references=[[image] if layer else []],
                     width=side,height=side,resolution=side,vae_references=False)
                 with torch.no_grad():
                     result = encode_inputs(te,prepared,requires_grad=False)
                 if not all(torch.isfinite(value).all() for value in (result.queries,result.direct)):
                     raise ValueError("Ming initializer received nonfinite native conditioning")
-                conditioning.append(MingConditioning(result.queries.cpu(),result.direct.cpu()))
+                conditioning[side,index] = MingConditioning(result.queries.cpu(),result.direct.cpu())
                 del result,prepared,image
             te.to("cpu")
             torch.cuda.empty_cache()
@@ -172,7 +178,7 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                         if not zero and (not torch.equal(query,expected.queries[0]) or not torch.equal(direct,expected.direct[0])):
                             raise ValueError("Native Ming teacher conditioning was unexpectedly transformed")
                         reference = kwargs.get("ref_x")
-                        pairs.append(dict(x=value.detach().cpu().unsqueeze(0),
+                        pairs[current["side"]].append(dict(x=value.detach().cpu().unsqueeze(0),
                             time=kwargs["t"][index:index+1].detach().cpu(),
                             target=target[:,:frames].detach().cpu().unsqueeze(0),
                             reference=None if reference is None else reference[index].detach().cpu(),
@@ -180,9 +186,9 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                 activation = model.register_forward_pre_hook(activate,with_kwargs=True)
                 hook = model.register_forward_hook(capture,with_kwargs=True)
                 try:
-                    for index in range(fit_count):
-                        report("teacher_trajectory",index,fit_count,"prompts")
-                        current.update(index=index,condition=condition(index))
+                    for completed,(side,index,_) in enumerate(resolution_items(items[:fit_count],options)):
+                        report("teacher_trajectory",completed,fit_count*len(resolutions),"prompts")
+                        current.update(index=index,side=side,condition=condition(side,index))
                         if layer:
                             model.to("cpu")
                             torch.cuda.empty_cache()
@@ -190,15 +196,18 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                         groups = sampler.run(task="layer-decompose" if layer else "text-to-image",
                             conditioning=current["condition"],width=side,height=side,steps=options["teacher_steps"],
                             cfg=options["teacher_cfg"],seed=options["seed"]+index,requested_layers=1,
-                            reference_pixels=pixels[index].to(device) if layer else None,
+                            reference_pixels=pixels[side,index].to(device) if layer else None,
                             output_type="latent",cancelled=sampler_cancelled)
                         if layer:
-                            latents[index] = torch.stack(groups[0].values,dim=1).unsqueeze(0).cpu()
+                            latents[side,index] = torch.stack(groups[0].values,dim=1).unsqueeze(0).cpu()
                         del groups
                 finally:
                     hook.remove()
                     activation.remove()
                 current.clear()
+                if (any(phase["kind"] == "native_trajectory" for phase in options["phases"])
+                        and any(not values for values in pairs.values())):
+                    raise ValueError("Native Ming teacher produced no trajectory targets")
             model.to(device)
             vae.to("cpu")
             restore_topology(model,spec)
@@ -207,22 +216,24 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
             model.train()
 
             def examples(kind):
+                schedule = ResolutionSchedule(options)
                 while True:
                     check_cancel()
+                    side = schedule.next()
                     if kind == "data_noising":
                         index = int(torch.randint(fit_count,(1,),generator=selection))
-                        clean = latents[index].to(device=device,dtype=model.dtype)
-                        noise = torch.randn(clean.shape,device=device,dtype=clean.dtype,generator=noise_rng)
-                        sigma = .01+.98*torch.rand(1,device=device,generator=noise_rng)
+                        clean = latents[side,index].to(device=device,dtype=model.dtype)
+                        noise,sigma = exposure_noise(clean,noise_rng,sigma_rng)
                         value,_,time = flow_training_pair(clean,noise,sigma)
                         zero = float(torch.rand(1,generator=selection))<options["conditioning_dropout"]
-                        reference = [references[index].to(device=device,dtype=model.dtype)] if layer else None
-                        yield FitExample((),ming_inputs(value.to(model.dtype),time,condition(index,zero),reference))
+                        reference = [references[side,index].to(device=device,dtype=model.dtype)] if layer else None
+                        yield FitExample((),ming_inputs(value.to(model.dtype),time,condition(side,index,zero),reference))
                     else:
-                        pair = pairs[int(torch.randint(len(pairs),(1,),generator=selection))]
+                        bucket = pairs[side]
+                        pair = bucket[int(torch.randint(len(bucket),(1,),generator=selection))]
                         reference = None if pair["reference"] is None else [pair["reference"].to(device=device,dtype=model.dtype)]
                         yield FitExample((),ming_inputs(pair["x"].to(device),pair["time"].to(device),
-                            condition(pair["conditioning_index"],pair["zero"]),reference),pair["target"].to(device))
+                            condition(side,pair["conditioning_index"],pair["zero"]),reference),pair["target"].to(device))
 
             for phase in options["phases"]:
                 phases.append(FitPhase(phase["kind"],phase["updates"],phase["learning_rate"],examples(phase["kind"]),
@@ -239,9 +250,10 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                         raise ValueError("Ming initializer cannot enable stochastic rounding")
                 return value
             fit_teacher_modules(model,phases,predict,optimizer,source_sha256=source_hash,
-                calibration_sha256=digest(dict(items=fingerprints,resolution=side)),sample_count=len(items),
+                calibration_sha256=digest(calibration_identity(fingerprints,options)),sample_count=len(items),
                 seed=options["seed"],clip_norm=options["clip_norm"],
-                recipe=dict(schema_version=1,settings={key:options[key] for key in RECIPE_FIELDS}),
+                recipe=dict(schema_version=1,settings=dict({key:options[key] for key in RECIPE_FIELDS},
+                                                         **resolution_recipe_fields(options))),
                 progress=lambda event:progress(dict(event,stage="fitting",units="updates")),cancelled=cancelled)
             report("saving",0,1,"models")
             return export_initialized_ming_package(model,source,native.artifact.root.parent/options["output_name"],cancelled=cancelled)

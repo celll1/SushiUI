@@ -1,0 +1,429 @@
+{
+  "date": "2026-10-10",
+  "architecture": "anima",
+  "rating": "general",
+  "general_items": 8,
+  "api_owned_run_id": 175,
+  "dataset_id": 45,
+  "native_fullft": true,
+  "full_rank_boundaries": 2,
+  "structural_tensors": 67,
+  "trainable_optimizer_tensors": 643,
+  "first_phase_step": 2,
+  "resumed_final_step": 3,
+  "optimizer_restored": 643,
+  "optimizer_fresh": 0,
+  "ema_restored": 643,
+  "ema_expected": 643,
+  "final_optimizer_counters": [
+    3
+  ],
+  "partition_enabled": true,
+  "global_adapter_enabled": true,
+  "activation_dispatch_enabled": true,
+  "bundle_vae_channels": 64,
+  "bundle_vae_scale": 16,
+  "bundled_vae_tensors": 238,
+  "topology_sha256": "326629e5141f3aefd5cbd4c202f705ca24fe6cc494b7e4107023751fe2a93d6e",
+  "structural_shapes": {
+    "net.rewiring_modules.down.downup_r0.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.down.downup_r0.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.down.downup_r0.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.down.downup_r0.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.down.downup_r0.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.down.downup_r1.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.down.downup_r1.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.down.downup_r1.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.down.downup_r1.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.down.downup_r1.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.features.downup_r0.weight": [
+      2048,
+      6144,
+      1,
+      1
+    ],
+    "net.rewiring_modules.features.downup_r1.weight": [
+      2048,
+      6144,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_0.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_0.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_0.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_0.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_0.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.local.local_main_12.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_12.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_12.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_12.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_12.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.local.local_main_16.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_16.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_16.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_16.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_16.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.local.local_main_20.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_20.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_20.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_20.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_20.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.local.local_main_24.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_24.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_24.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_24.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_24.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.local.local_main_4.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_4.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_4.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_4.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_4.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.local.local_main_8.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_8.norm.bias": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_8.norm.weight": [
+      2048
+    ],
+    "net.rewiring_modules.local.local_main_8.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.local.local_main_8.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.skips.skip_main_0_27.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_0_27.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_10_17.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_10_17.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_12_15.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_12_15.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_2_25.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_2_25.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_4_23.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_4_23.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_6_21.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_6_21.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_8_19.capture.weight": [
+      256,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.skips.skip_main_8_19.restore.weight": [
+      2048,
+      256,
+      1,
+      1
+    ],
+    "net.rewiring_modules.up.downup_r0.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.up.downup_r0.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.up.downup_r0.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ],
+    "net.rewiring_modules.up.downup_r1.expand.weight": [
+      2048,
+      64,
+      1,
+      1
+    ],
+    "net.rewiring_modules.up.downup_r1.reduce.weight": [
+      64,
+      2048,
+      1,
+      1
+    ],
+    "net.rewiring_modules.up.downup_r1.spatial.weight": [
+      2048,
+      1,
+      3,
+      3
+    ]
+  },
+  "final_status": {
+    "status": "completed",
+    "progress": 100.0,
+    "current_step": 3,
+    "total_steps": 3,
+    "current_epoch": 1,
+    "total_epochs": null,
+    "loss": 0.8168733716011047,
+    "learning_rate": 5e-07,
+    "phase": "training",
+    "phase_progress": 100.0,
+    "phase_detail": "Epoch 0, Step 3/3",
+    "process_status": {
+      "is_running": false,
+      "current_step": 0,
+      "current_loss": null,
+      "current_lr": null,
+      "returncode": 0
+    },
+    "warnings": [
+      {
+        "level": "warning",
+        "code": "lr_schedule_total_steps_changed",
+        "message": "total_steps changed since the checkpoint (2 -> 3 scheduler steps). The schedule up to step 2 is unchanged; the remaining shape is mapped from the old remainder onto the new one, so the curve is continuous here and still reaches its end at the new total."
+      }
+    ]
+  },
+  "samples": [
+    {
+      "step": 0,
+      "width": 512,
+      "height": 512,
+      "sha256": "979553f22afb3aaddd68f8ba81c2ce991eff5384500f8b3113767ace5051e929"
+    },
+    {
+      "step": 2,
+      "width": 512,
+      "height": 512,
+      "sha256": "d745ffdce0f4fd70473dd1c1031006e7e3f4dd747215d64b979ff06c73770cdd"
+    }
+  ],
+  "debug_decoded_images": 9,
+  "vae_only_decode_allocated_gib": 0.66,
+  "cleanup": "Owned run175 and dataset45 removed through API with404 confirmation; exact resolved smoke output and copied general-image directories removed from disk. Original models/images and owner runs retained.",
+  "limits": [
+    "Two initial updates and one resumed update prove bounded API/trainer functionality, not convergence.",
+    "Source is retained trained public-step2 artifact; this is not a fresh pretrained quality control.",
+    "Periodic512px sample integrity and debug decode verified; image quality is outside this lifecycle check.",
+    "No image pixels, captions, model weights or optimizer tensors committed.",
+    "No owner run or production defaults changed."
+  ]
+}

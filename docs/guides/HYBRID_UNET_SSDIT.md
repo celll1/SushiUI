@@ -43,6 +43,17 @@ zero-branch preset's initial appearance or long-run quality. Owner interactive
 review should cover topology editing, initializer cancellation/error handling,
 artifact selection and save/load/resume; build/type checks remain owner-run.
 
+A complete API/trainer lifecycle also verifies the public full-rank boundary
+configuration with bundled Qwen64ch/16x VAE, partition/global adapter,
+activation dispatch and CPU EMA. A temporary eight-general-image run completes
+two updates and resumes its saved step2 to3:643 named optimizer entries restore
+with none fresh,643/643 EMA shadows restore, all optimizer counters reach3 and
+the67 structural tensor shapes match regular/EMA saves. Periodic512px PNG
+integrity and nine decoded debug images are verified; VAE-only debug allocation
+is0.66 GiB. The owned run/dataset and generated training output are removed.
+This is bounded functional verification, not convergence or sample quality.
+See `docs/audits/data/hybrid_fullrank_combined_lifecycle_2026-10.json`.
+
 ## Graph and modules
 
 `backend/core/rewiring/hybrid_spec.py` owns schema version 2 with method

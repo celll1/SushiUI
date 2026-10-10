@@ -557,3 +557,15 @@ the same restored artifact also fails, so the common artifact is not evidence
 against U-Net alone. Native-codec controls retain figures. Codec/noise alignment
 and combined learning quality remain open; throughput and strict restoration
 do not close P5. See `hybrid_anima_public_feature_fusion_combined_2026-10.json`.
+
+The subsequent same-token-grid native256 control also exposes a resolution
+weakness: no-U-Net retains figures, while the512px-fitted hybrid loses them.
+Matched200-update single512 versus mixed512/256 added-weight fitting freezes
+the body and restores all67 counters, with identical item/null/sigma/noise seeds
+and first loss. Mixed fitting improves small-grid person/hand outlines while
+held512px compositions remain coherent. At swapped1024px, mixed weights restore
+the missing second figure; strong gridlike texture still remains. This supports
+multi-grid initializer work alongside codec/IO adaptation, not a claim that
+codec error alone explains every failure. No defaults changed; multi-grid public
+recipe, combined Full FT and broad quality are still pending. Evidence:
+`hybrid_anima_public_feature_fusion_multigrid_2026-10.json`.

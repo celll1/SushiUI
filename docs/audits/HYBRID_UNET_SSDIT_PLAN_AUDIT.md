@@ -442,8 +442,18 @@ individual records' limitations.
    clipping across all optimizer groups;49 CPU regression cases pass. Earlier
    private probes already clipped all params, so this fix does not resolve their
    quality regression. See `hybrid_anima_gradient_allocation_2026-10.json`.
-   Retained stage information remains the next architecture question; public
-   factory/payload/UI/default promotion and revised matrix remain open.
+   A factory-described boundary-capacity control now widens64→512 with fitted
+   coordinates copied and new output columns zero. Ten new CPU cases plus25
+   existing hybrid cases pass. Same200 cached exposures/start RNG, native hashes
+   exact,65 counters200 and strict saved-module restoration are verified.
+   Structural weight count rises10,463,232→17,803,264. BF16 first field loss
+   differs6.05e-5; changed SR ownership prevents exact update parity. Last50
+   error0.02539 improves on0.02949, but CFG4 faces/hands and two-person structure
+   remain broken with color/band defects. Reject this recipe; neither all
+   capacity layouts nor longer fitting are ruled out. Record:
+   `hybrid_anima_boundary_capacity_fit_2026-10.json`. Down/up/fusion information
+   layout remains the next question; public default promotion and final matrix
+   remain open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

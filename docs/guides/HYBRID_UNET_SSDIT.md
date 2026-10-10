@@ -1759,3 +1759,43 @@ recipe as a default. Explicit rank64 private-context restoration reproduces
 all77 saved tensors on CPU, but this is not public payload/optimizer/resume,
 Full FT or combined-codec acceptance. No owner config/default is changed.
 Evidence: `docs/audits/data/hybrid_anima_phase_boundary_fit_2026-10.json`.
+
+### Head-aligned Anima width-projection foundation
+
+After fixed-width fitting controls fail practical recovery, the conditional
+stage-width investigation starts with a private block-level weight transfer.
+Keep native head dimension128, select whole heads, and copy corresponding
+QKV/output rows/columns, MLP neurons, QK-norm weights and all three AdaLN
+shift/scale/gate slices. Cross-attention keeps the full1024 text input width.
+Native timestep embedding and shared AdaLN conditioning are selected in the
+same channel order; RoPE frequencies keep their head dimension. Quantized/custom
+Linear layers, active style context, live block-offload callbacks and extra
+per-block positions are refused by this prototype.
+
+The wrapper keeps the outer2048 feature stream, initially updating selected
+coordinates. An optional learnable encoder/decoder bridge starts as those
+selection/lift matrices, shares input projection with timestep/AdaLN inputs,
+and lifts the narrow residual update to every outer channel. CPU tests prove
+initial parity and a decoder update into previously unselected channels.
+This is a block-working-width foundation, not a completed variable-width
+stage graph. Its manifest/weights have no public artifact/factory lineage.
+Sixteen CPU cases cover full-width input-gradient/forward parity including
+head reorder and both AdaLN forms, checkpoint modes, strict private reload,
+conditioning layout, source/RNG preservation and learned bridge gradients.
+
+Two synthetic GPU probes read only actual native block12 weights. At unchanged
+width, BF16/RoPE output matches exactly with and without the learned bridges;
+native weight hashes stay exact. Width1024/512 forward/backward is finite, and
+encoder/decoder gradients—including omitted output-channel rows—are positive.
+Block parameters fall69,206,528→19,923,456/6,291,968 without bridges, or
+24,117,760/8,389,120 with bridges. Native-relative synthetic output errors are
+0.702/0.730 at initialization: this is not an aligned or quality-accepted
+student. No images are used, and no optimizer update occurs in GPU timing.
+
+Each probe records just two timed passes after warmup with native checkpointing.
+These one-block synthetic timings/allocations cannot replace the requested
+whole-model U-Net±codec matrix, nor prove end-to-end speed. Next needs explicit
+private stage teacher/student ownership and alignment, then whole generation
+and optimizer restoration before public factory/API/UI promotion. Existing
+owner runs, topology presets and checkpoint identities remain unchanged.
+Evidence: `docs/audits/data/hybrid_anima_projected_block_2026-10.json`.

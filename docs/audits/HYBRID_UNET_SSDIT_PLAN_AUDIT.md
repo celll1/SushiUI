@@ -486,8 +486,17 @@ individual records' limitations.
 4. **Owner UI acceptance:** build/type checking and interactive editing remain
    owner work under AGENTS.md. They do not block static review or backend work.
 
-P6 stage-width changes, heavy convolutions, audio/video and Lens GPU quality work
-are conditional or outside this initial plan. They are not substituted for the
-unfinished quality gate. Existing legacy defaults remain unchanged until the
-new candidate has quality acceptance. A successful loss curve, green CPU tests
-or a speedup alone is insufficient to close the goal.
+The conditional P6 width investigation now has a private head-aligned Anima
+block student with selected QKV/MLP/AdaLN weights and optional learned
+encoder/decoder bridges. Sixteen CPU cases and synthetic real-block GPU probes
+verify full-width exact BF16/RoPE output, finite narrow backward and gradients
+into omitted output channels. Block weights shrink69.207M→24.118M/8.389M with
+bridges, but initial synthetic source-relative errors0.702/0.730 require fitting.
+Outer stream width stays2048; this is not a variable-width stage graph or public
+artifact lineage. See `hybrid_anima_projected_block_2026-10.json`. Private stage
+teacher/student alignment, generation, restore and public wiring remain open.
+One-block timings are not the required final U-Net±codec matrix. Heavy
+convolutions, audio/video and Lens GPU quality work remain conditional or
+outside this initial plan. They do not replace the unfinished quality gate.
+Existing defaults remain unchanged until quality acceptance; loss, CPU tests
+or a speedup alone cannot close the goal.

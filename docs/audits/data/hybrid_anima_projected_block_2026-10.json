@@ -1,0 +1,267 @@
+{
+  "cpu_cases": 16,
+  "real_weight_block_probes": [
+    {
+      "mode": "synthetic_real_weight_block",
+      "source_block": 12,
+      "source_before_sha256": "9cf0a73e6b0d93be792b8916cb5936f78a07963c108a3336fa28b6f19b4a8af3",
+      "arms": [
+        {
+          "arm": "native",
+          "working_width": 2048,
+          "parameters": 69206528,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 4.8888959884643555,
+              "backward_ms": 11.160575866699219
+            },
+            {
+              "forward_ms": 4.564095973968506,
+              "backward_ms": 11.190272331237793
+            }
+          ],
+          "peak_allocated_gib": 0.35774660110473633,
+          "mean_forward_ms": 4.726495981216431,
+          "mean_backward_ms": 11.175424098968506
+        },
+        {
+          "arm": "full_oracle",
+          "working_width": 2048,
+          "parameters": 69206528,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 7.679776191711426,
+              "backward_ms": 14.136320114135742
+            },
+            {
+              "forward_ms": 6.421823978424072,
+              "backward_ms": 14.310400009155273
+            }
+          ],
+          "head_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "full_width_max_abs_difference": 0.0,
+          "peak_allocated_gib": 0.35683107376098633,
+          "mean_forward_ms": 7.050800085067749,
+          "mean_backward_ms": 14.223360061645508
+        },
+        {
+          "arm": "width1024",
+          "working_width": 1024,
+          "parameters": 19923456,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 3.769023895263672,
+              "backward_ms": 7.701504230499268
+            },
+            {
+              "forward_ms": 2.78108811378479,
+              "backward_ms": 7.618559837341309
+            }
+          ],
+          "head_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "relative_output_mse_vs_native": 0.7021146416664124,
+          "peak_allocated_gib": 0.11449098587036133,
+          "mean_forward_ms": 3.275056004524231,
+          "mean_backward_ms": 7.660032033920288
+        },
+        {
+          "arm": "width512",
+          "working_width": 512,
+          "parameters": 6291968,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 3.0402560234069824,
+              "backward_ms": 7.127039909362793
+            },
+            {
+              "forward_ms": 3.23523211479187,
+              "backward_ms": 7.165952205657959
+            }
+          ],
+          "head_indices": [
+            0,
+            4,
+            8,
+            12
+          ],
+          "relative_output_mse_vs_native": 0.7302185893058777,
+          "peak_allocated_gib": 0.04636049270629883,
+          "mean_forward_ms": 3.1377440690994263,
+          "mean_backward_ms": 7.146496057510376
+        }
+      ],
+      "limits": [
+        "Synthetic random features/conditioning only; no images or calibration data.",
+        "Outer2048 stream retained; narrower working block is not variable-width stage integration.",
+        "No quality/teacher-fit/Full FT/resume acceptance or full-model speed/VRAM matrix."
+      ],
+      "source_after_sha256": "9cf0a73e6b0d93be792b8916cb5936f78a07963c108a3336fa28b6f19b4a8af3"
+    },
+    {
+      "mode": "synthetic_real_weight_block_trainable_bridges",
+      "source_block": 12,
+      "source_before_sha256": "9cf0a73e6b0d93be792b8916cb5936f78a07963c108a3336fa28b6f19b4a8af3",
+      "arms": [
+        {
+          "arm": "native",
+          "working_width": 2048,
+          "parameters": 69206528,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 6.503200054168701,
+              "backward_ms": 13.822976112365723
+            },
+            {
+              "forward_ms": 4.936831951141357,
+              "backward_ms": 16.048128128051758
+            }
+          ],
+          "peak_allocated_gib": 0.35774660110473633,
+          "mean_forward_ms": 5.720016002655029,
+          "mean_backward_ms": 14.93555212020874
+        },
+        {
+          "arm": "full_oracle",
+          "working_width": 2048,
+          "parameters": 77595136,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 5.673215866088867,
+              "backward_ms": 12.346367835998535
+            },
+            {
+              "forward_ms": 5.5280961990356445,
+              "backward_ms": 16.104448318481445
+            }
+          ],
+          "head_indices": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "encoder_gradient_norm": 160.65380859375,
+          "decoder_gradient_norm": 4.980745792388916,
+          "full_width_max_abs_difference": 0.0,
+          "peak_allocated_gib": 0.38808107376098633,
+          "mean_forward_ms": 5.600656032562256,
+          "mean_backward_ms": 14.22540807723999
+        },
+        {
+          "arm": "width1024",
+          "working_width": 1024,
+          "parameters": 24117760,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 3.8114240169525146,
+              "backward_ms": 11.071488380432129
+            },
+            {
+              "forward_ms": 3.9029440879821777,
+              "backward_ms": 8.085503578186035
+            }
+          ],
+          "head_indices": [
+            0,
+            2,
+            4,
+            6,
+            8,
+            10,
+            12,
+            14
+          ],
+          "encoder_gradient_norm": 0.9761912822723389,
+          "decoder_gradient_norm": 0.011672668159008026,
+          "omitted_decoder_gradient_norm": 0.00629127211868763,
+          "relative_output_mse_vs_native": 0.7021146416664124,
+          "peak_allocated_gib": 0.13011598587036133,
+          "mean_forward_ms": 3.857184052467346,
+          "mean_backward_ms": 9.578495979309082
+        },
+        {
+          "arm": "width512",
+          "working_width": 512,
+          "parameters": 8389120,
+          "updates": 0,
+          "timed_passes": [
+            {
+              "forward_ms": 4.017727851867676,
+              "backward_ms": 7.359488010406494
+            },
+            {
+              "forward_ms": 2.883807897567749,
+              "backward_ms": 9.864192008972168
+            }
+          ],
+          "head_indices": [
+            0,
+            4,
+            8,
+            12
+          ],
+          "encoder_gradient_norm": 0.11806171387434006,
+          "decoder_gradient_norm": 0.0037913357373327017,
+          "omitted_decoder_gradient_norm": 0.002963484963402152,
+          "relative_output_mse_vs_native": 0.7302185893058777,
+          "peak_allocated_gib": 0.05502748489379883,
+          "mean_forward_ms": 3.4507678747177124,
+          "mean_backward_ms": 8.611840009689331
+        }
+      ],
+      "limits": [
+        "Synthetic random features/conditioning only; no images or calibration data.",
+        "Outer2048 stream retained; narrower working block is not variable-width stage integration.",
+        "No quality/teacher-fit/Full FT/resume acceptance or full-model speed/VRAM matrix."
+      ],
+      "source_after_sha256": "9cf0a73e6b0d93be792b8916cb5936f78a07963c108a3336fa28b6f19b4a8af3"
+    }
+  ],
+  "decision": "Retain a private width-projection/learnable-bridge foundation, not an adopted stage architecture. Full-width weight transfer is exact in these BF16 GPU probes; narrower source-relative synthetic error about0.70/0.73 requires alignment/distillation. Outer stream width remains2048. No images, quality or whole-model matrix proof.",
+  "next": "Integrate a private stage teacher/student comparison with explicit projected-block lineage before public factory/API/UI wiring. Validate whole generation and optimizer restoration before promotion."
+}

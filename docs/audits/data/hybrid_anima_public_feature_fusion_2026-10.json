@@ -207,5 +207,117 @@
   "sample": {
     "sha256": "44fa673043499570ea28dd8db33f2f31fda12a950000283d8f053c9df2257d69",
     "index": 31
+  },
+  "api_after_restart": {
+    "default_fusion": "none",
+    "roundtrip_exact": true,
+    "invalid_status": 422,
+    "parameter_counts": {
+      "scope": "learned_hybrid_modules",
+      "added": 35629056,
+      "modules": [
+        {
+          "id": "downup_r0",
+          "kind": "boundary",
+          "count": 13148160
+        },
+        {
+          "id": "downup_r1",
+          "kind": "boundary",
+          "count": 13148160
+        },
+        {
+          "id": "local_main_0",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "local_main_12",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "local_main_16",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "local_main_20",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "local_main_24",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "local_main_4",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "local_main_8",
+          "kind": "refiner",
+          "count": 284672
+        },
+        {
+          "id": "skip_main_0_27",
+          "kind": "skip",
+          "count": 1048576
+        },
+        {
+          "id": "skip_main_10_17",
+          "kind": "skip",
+          "count": 1048576
+        },
+        {
+          "id": "skip_main_12_15",
+          "kind": "skip",
+          "count": 1048576
+        },
+        {
+          "id": "skip_main_2_25",
+          "kind": "skip",
+          "count": 1048576
+        },
+        {
+          "id": "skip_main_4_23",
+          "kind": "skip",
+          "count": 1048576
+        },
+        {
+          "id": "skip_main_6_21",
+          "kind": "skip",
+          "count": 1048576
+        },
+        {
+          "id": "skip_main_8_19",
+          "kind": "skip",
+          "count": 1048576
+        }
+      ]
+    },
+    "workspace": [
+      {
+        "id": "downup_r0",
+        "region": "r0",
+        "stream": "main",
+        "elements": 12582912
+      },
+      {
+        "id": "downup_r1",
+        "region": "r1",
+        "stream": "main",
+        "elements": 3145728
+      }
+    ],
+    "active_training": false
+  },
+  "cpu_tests": {
+    "passed": 213,
+    "cuda_initialized": false,
+    "seconds": 47.49,
+    "skipped": 16
   }
 }

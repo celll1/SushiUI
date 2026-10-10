@@ -303,9 +303,11 @@ def inspect_model(model_path):
     if architecture == "acestep":
         info["temporal_geometry"] = adapter.temporal_geometry(config)
     if architecture in ("anima", "qwen_image_21"):
-        from .hybrid_spec import default_hybrid_spec
+        from .hybrid_spec import default_hybrid_spec, measured_hybrid_candidates
         width = config["model_channels"] if architecture == "anima" else config["num_attention_heads"] * config["attention_head_dim"]
         info["hybrid_default_spec"] = default_hybrid_spec(info["default_spec"] or initial, {"main": width})
+        info["hybrid_candidates"] = measured_hybrid_candidates(initial, {"main": width},
+            native_patch_spatial=config.get("patch_spatial"))
         info["initialization"] = initialization
     return info
 

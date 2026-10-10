@@ -86,6 +86,43 @@ def test_builder_rehashes_edits_and_rejects_cross_grid_skip():
     assert error.value.status_code == 422
 
 
+def test_measured_candidate_matches_recorded_graph_without_mutating_source():
+    import json
+    from collections import Counter
+    from core.rewiring.hybrid_spec import measured_hybrid_candidates
+    record = Path(__file__).resolve().parents[2] / "docs/audits/data/hybrid_anima_public_feature_fusion_matrix_2026-10.json"
+    expected = json.loads(record.read_text())["arms"]["hybrid"]["graph"]
+    base = legacy_topology(expected)
+    base["regions"][0].update(start_block=4, end_block=24)
+    before = deepcopy(base)
+    candidates = measured_hybrid_candidates(base, expected["stream_widths"], native_patch_spatial=2)
+    assert base == before and len(candidates) == 1
+    spec = candidates[0]["spec"]
+    assert spec == expected
+    assert read_checkpoint_metadata(checkpoint_metadata(spec)) == expected
+    assert Counter(block["depth"] for block in hybrid_preview(spec, 64, 64,
+        batch_size=1, element_bytes=2)["blocks"]) == {0: 16, 1: 8, 2: 4}
+    modules = HybridModules(spec)
+    assert len(modules.state_dict()) == 67
+    assert sum(parameter.numel() for parameter in modules.parameters()) == 35629056
+    spec["skips"][0]["rank"] = 1
+    assert measured_hybrid_candidates(base, expected["stream_widths"], native_patch_spatial=2)[0]["spec"] == expected
+    for patch in (None, 4, 2.0, True):
+        assert measured_hybrid_candidates(base, expected["stream_widths"], native_patch_spatial=patch) == []
+
+
+@pytest.mark.parametrize("architecture,count,width", [
+    ("anima", 28, 1024), ("anima", 32, 2048), ("qwen_image_21", 28, 2048),
+    ("ming_image_01", 28, 2048),
+])
+def test_measured_candidate_does_not_claim_unmeasured_native_layouts(architecture, count, width):
+    from core.rewiring.hybrid_spec import measured_hybrid_candidates
+    base = build_spec(architecture, [{"name": "main", "block_count": count}], [
+        dict(id="r0", stream="main", parent=None, start_block=1, end_block=count-1,
+             down_factor=[2, 2], **OPERATORS)], {})
+    assert measured_hybrid_candidates(base, {"main": width}, native_patch_spatial=2) == []
+
+
 def test_parameter_census_matches_registered_modules():
     spec = declaration()
     modules = HybridModules(spec)

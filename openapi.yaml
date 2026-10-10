@@ -3977,6 +3977,18 @@ paths:
                     allOf: [{$ref: '#/components/schemas/DiTRewiringSpec'}]
                     nullable: true
                     description: Opt-in experimental hybrid preset for Anima, Ming and Qwen 2.1; does not replace an existing default or inherited checkpoint.
+                  hybrid_candidates:
+                    type: array
+                    description: Explicit opt-in measured graph candidates for matching native layouts. These contain geometry only, not fitted weights or a quality guarantee; absent or empty when none matches. Existing defaults and inherited checkpoints are unchanged.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [id, label, description, spec]
+                      properties:
+                        id: {type: string, example: anima_16_8_4_full_rank}
+                        label: {type: string, example: 'Anima 16/8/4 + full-width fusion'}
+                        description: {type: string}
+                        spec: {$ref: '#/components/schemas/DiTRewiringSpec'}
                   initialization:
                     allOf: [{$ref: '#/components/schemas/HybridInitializationRecord'}]
                     nullable: true

@@ -277,6 +277,8 @@ assert info['architecture'] == 'anima'
 assert info['parameter_counts']['total'] == 2091068928
 assert info['streams'][0]['block_count'] == 28
 assert info['default_spec']['regions'][1]['end_block'] == 16
+assert len(info['hybrid_candidates']) == 1
+assert info['hybrid_candidates'][0]['spec']['skips'][0]['rank'] == 256
 assert 'core.models.anima.anima_models' not in sys.modules
 assert 'core.models.anima.anima_loader' not in sys.modules
 assert not torch.cuda.is_initialized()
@@ -289,6 +291,7 @@ assert not torch.cuda.is_initialized()
             info = inspect_model(str(source))
             self.assertEqual(info["latent_scale_factor"], 32)
             self.assertEqual(info["pixel_alignment"], 32)
+            self.assertEqual(info["hybrid_candidates"], [])
             for value in (True, 0):
                 save_file(keys, str(source), metadata={"model_type": "anima", "transformer_config": json.dumps(dict(config, patch_spatial=value))})
                 with self.assertRaisesRegex(ValueError, "patch size"):

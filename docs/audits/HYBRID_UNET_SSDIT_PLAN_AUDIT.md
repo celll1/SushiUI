@@ -77,6 +77,7 @@ trend comparison, not long-training quality or broad appearance acceptance.
 | Real public initialization/load/generation and cancellation | `hybrid_initialization_api_2026-10.json`, Qwen and Ming Design/Layer API records | Bounded official-weight GPU functionality verified; each record's cancellation scope remains distinct |
 | API defaults/OpenAPI serialization, explicit unsupported-architecture refusal | `param_defaults.py`, `openapi.yaml`, `rewiring_routes.py`, strict hybrid architecture validation | Hybrid is explicitly limited to Anima/Ming/Qwen; legacy runtime membership does not imply hybrid support |
 | Editable structure, graphical grids/skips/census/lifetime, readonly inherited structure | `DiTRewiringEditor.tsx`, `HybridDiTModuleEditor.tsx`, graph/summary components | Static wiring reviewed; owner build/interactive confirmation remains separately recorded |
+| Selectable measured Anima candidate geometry | `hybrid_measured_candidate_api_2026-10.json`; SSOT candidate definitions, inspect/OpenAPI/frontend types | Explicit16/8/4 full-width fusion with rank256 skips; exact measured graph and67 tensors/35,629,056 added params,53 CPU cases, actual API round-trip after restart; standard defaults/inherited artifacts unchanged; fitting/quality not implied |
 | Edit config round-trip and state/cancellation/error behavior | API-to-YAML adapter tests; editor/API types and initialization panel static review | Static/CPU evidence; no owner build result is invented |
 | Final native/hybrid × native/Qwen VAE matrix at 1024, batches 1/2/4 | `hybrid_anima_final_matrix_2026-10.json` | Completed with initialized structural weights, production bridge classes and explicit calibration provenance |
 | Forward/backward/update, allocated/reserved VRAM, RSS, preprocessing separation | Final matrix per-update records and guide | Compute measurements complete; end-to-end VAE/TE/IO throughput is explicitly excluded |
@@ -96,6 +97,10 @@ individual records' limitations.
   contracts above. The hybrid preset is explicitly selectable through
   `DiTRewiringEditor.tsx` and `inspect.py`; existing owner structures are not
   replaced. Owner build/interactive verification remains separate.
+- P5 candidate selection now exposes the measured Anima16/8/4 full-width
+  fusion graph as an explicit UI preset for matching28-block/2048-width/patch2
+  models. It carries geometry, not retained fitted weights; the standard
+  preset/default is not promoted by this comparison.
 - The requested1024px batch1/2/4 native/hybrid x native/Qwen-VAE compute matrix
   exists, including the later full-rank feature-fusion candidate in
   `hybrid_anima_public_feature_fusion_matrix_2026-10.json`. Statements below

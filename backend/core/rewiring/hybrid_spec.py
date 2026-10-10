@@ -165,6 +165,34 @@ def hybrid_metadata(value):
     return {META_SPEC: canonical_json(value), META_HASH: digest(value)}
 
 
+def measured_hybrid_candidates(base, stream_widths, *, native_patch_spatial):
+    """Geometry-only candidates; source identities stay bound to this checkpoint."""
+    from api.param_defaults import DIT_HYBRID_CANDIDATES
+    from .spec import OPERATORS
+    base = legacy_topology(base) if base.get("method") == METHOD else validate_spec(base)
+    candidates = []
+    for name, recipe in DIT_HYBRID_CANDIDATES.items():
+        if (base["architecture"] != recipe["architecture"]
+                or base["streams"] != [{"name": "main", "block_count": recipe["block_count"]}]
+                or stream_widths != {"main": recipe["width"]}
+                or type(native_patch_spatial) is not int or native_patch_spatial != recipe["patch_spatial"]):
+            continue
+        layout = deepcopy(base)
+        layout["regions"] = [dict(item, stream="main", down_factor=deepcopy(recipe["down_factor"]),
+                                  **OPERATORS) for item in recipe["regions"]]
+        spec = build_hybrid_spec(layout, stream_widths=stream_widths,
+            boundaries=[dict(id=f"downup_{item['id']}", region=item["id"],
+                rank=recipe["boundary_rank"], kernel=recipe["kernel"], fusion=recipe["boundary_fusion"])
+                for item in recipe["regions"]],
+            refiners=[dict(id=f"local_main_{index}", stream="main", after_block=index,
+                rank=recipe["refiner_rank"], kernel=recipe["kernel"]) for index in recipe["refiner_blocks"]],
+            skips=[dict(id=f"skip_main_{source}_{target}", stream="main", source_after=source,
+                destination_before=target, rank=recipe["skip_rank"], storage=recipe["skip_storage"])
+                for source, target in recipe["skip_pairs"]])
+        candidates.append(dict(id=name, label=recipe["label"], description=recipe["description"], spec=spec))
+    return candidates
+
+
 def hybrid_parameter_counts(value):
     value = validate_hybrid_spec(value)
     widths = value["stream_widths"]

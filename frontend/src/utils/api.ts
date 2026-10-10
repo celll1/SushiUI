@@ -5060,8 +5060,10 @@ export const deleteImage = async (id: number, deleteFiles: boolean = true) => {
   return response.data;
 };
 
-export const getModels = async () => {
-  const response = await api.get("/models");
+export const getModels = async (forceRescan = false) => {
+  const response = await api.get("/models", {
+    params: forceRescan ? { force_rescan: true } : undefined,
+  });
   return response.data;
 };
 

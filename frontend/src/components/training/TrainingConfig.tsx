@@ -66,6 +66,13 @@ interface ModelInfo {
   source_dir: string;
 }
 
+const modelPathKey = (path: string) => {
+  const normalized = path.replace(/\\/g, "/");
+  return /^[a-z]:\//i.test(normalized) || normalized.startsWith("//")
+    ? normalized.toLowerCase() : normalized;
+};
+const sameModelPath = (left: string, right: string) => modelPathKey(left) === modelPathKey(right);
+
 export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRunUpdated }: TrainingConfigProps) {
   // All request fields share one object so loading, editing, and submission use
   // the same values. Fallbacks and fixed option tables live in
@@ -347,7 +354,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, []);
   const sampleWidth = params.sample_width ?? DEFAULT_PARAMS.sample_width!;
   const sampleHeight = params.sample_height ?? DEFAULT_PARAMS.sample_height!;
-  const sampleDefaultArch = availableModels.find(model => model.path === baseModelPath)?.profile === "layer_decompose"
+  const sampleDefaultArch = availableModels.find(model => sameModelPath(model.path, baseModelPath))?.profile === "layer_decompose"
     ? "ming_image_01_layer" : getModelArchitecture(baseModelPath);
   const selectedSampleDefaults = trainingSampleDefaultsByArch
     ? ((sampleDefaultArch && trainingSampleDefaultsByArch[sampleDefaultArch])
@@ -580,55 +587,55 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // blocks (an option only that architecture has). A capability gate must not
   // be written with them — use unsupportedTrainingFeature/Method below.
   const isFlux2Model = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "flux2";
   };
 
   const isAnimaModel = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "anima";
   };
 
   const isLensModel = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "lens";
   };
 
   const isIdeogram4Model = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "ideogram4";
   };
 
   const isMiniT2IModel = (modelPath: string): boolean => {
     if (modelPath.startsWith("scratch:minit2i:")) return true;
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "minit2i";
   };
 
 
   const isKrea2Model = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "krea2";
   };
 
   const isLtx2Model = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "ltx2";
   };
 
   function isSenseNovaModel(modelPath: string): boolean {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "sensenova";
   }
 
   function isChimeraModel(modelPath: string): boolean {
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture === "sensenova_sdxl_chimera";
   }
 
   function getModelArchitecture(modelPath: string): string | undefined {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
-    const model = availableModels.find(m => m.path === modelPath);
+    const model = availableModels.find(m => sameModelPath(m.path, modelPath));
     return model?.architecture;
   }
 
@@ -707,7 +714,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const cfgUncondDropDefaultRate = cfgUncondDropDefault(
     archCapabilities, getModelArchitecture(baseModelPath));
   const minit2iLabelDropDefault = cfgUncondDropDefault(archCapabilities, "minit2i");
-  const selectedModel = availableModels.find((model) => model.path === baseModelPath);
+  const selectedModel = availableModels.find((model) => sameModelPath(model.path, baseModelPath));
   const pixelSpaceMiniT2I = (
     (selectedModel?.architecture === "minit2i" && selectedModel.vae_type === "none")
     || (fromScratchMiniT2I && scratchVaeType === "none")
@@ -948,7 +955,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     .sort((a, b) => a.label.localeCompare(b.label));
 
   const filteredModels = availableModels.filter(
-    (model) => !hiddenArchs.includes(model.architecture)
+    (model) => sameModelPath(model.path, baseModelPath) || !hiddenArchs.includes(model.architecture)
   );
 
   // ============================================================
@@ -1824,7 +1831,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const startTime = performance.now();
     console.log("[TrainingConfig] loadModels starting...");
     try {
-      const response = await getModels();
+      const response = await getModels(!!editRunId);
       console.log(`[TrainingConfig] loadModels API took ${performance.now() - startTime}ms`);
       const models = response.models || [];
       setAvailableModels(models);
@@ -2788,6 +2795,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             required={!fromScratchMiniT2I}
           >
             <option value="">Select a model...</option>
+            {baseModelPath && !fromScratchMiniT2I && !selectedModel && (
+              <option value={baseModelPath}>{baseModelPath} (saved model; not in index)</option>
+            )}
             {filteredModels.map((model) => {
               // For MiniT2I show the latent format (vae_type) since it is fixed per
               // model and determines training/inference (pixel vs sdxl/flux1 latent).
@@ -2795,12 +2805,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 ? `${model.architecture.toUpperCase()} · ${model.vae_type === "none" ? "pixel" : model.vae_type + " latent"}`
                 : model.architecture.toUpperCase();
               return (
-                <option key={model.path} value={model.path}>
+                <option key={model.path} value={sameModelPath(model.path, baseModelPath) ? baseModelPath : model.path}>
                   {model.name} ({label})
                 </option>
               );
             })}
           </select>
+          {baseModelPath && !fromScratchMiniT2I && !selectedModel && (
+            <p className="text-xs text-amber-400 mt-1">The saved model path is retained, but its architecture is unavailable in the model index. Check that the file exists in a configured models directory.</p>
+          )}
           {availableModels.length === 0 && (
             <p className="text-xs text-gray-500 mt-1">No models available. Please add models to the models directory.</p>
           )}
@@ -6454,10 +6467,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 mode={params.dit_rewiring_mode} spec={params.dit_rewiring_spec}
                 onValidated={onRewiringValidated}
                 onInitialized={async (path) => {
-                  const response = await getModels();
+                  const response = await getModels(true);
                   const models: ModelInfo[] = response.models ?? [];
-                  const normalized = path.replace(/\\/g, "/").toLowerCase();
-                  const exported = models.find(model => model.path.replace(/\\/g, "/").toLowerCase() === normalized);
+                  const exported = models.find(model => sameModelPath(model.path, path));
                   if (!exported) throw new Error("Initialized checkpoint was saved, but is absent from the model list. Refresh the model index before selecting it.");
                   setAvailableModels(models);
                   setBaseModelPath(exported.path);
@@ -8467,7 +8479,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
-            {isMingImageModel && availableModels.find(model => model.path === baseModelPath)?.profile === "layer_decompose" && <div>
+            {isMingImageModel && availableModels.find(model => sameModelPath(model.path, baseModelPath))?.profile === "layer_decompose" && <div>
               <label className="block text-xs text-gray-400 mb-1">Layer preview layers</label>
               <input type="number" min="1" step="1"
                 value={params.ming_image_01_sample_layers ?? DEFAULT_PARAMS.ming_image_01_sample_layers ?? ""}

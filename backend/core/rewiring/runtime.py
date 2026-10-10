@@ -39,6 +39,13 @@ def run_rewired_stream(hidden, spec, stream, height, width, prefix, context,
             update = F.interpolate(delta, size=(height // grid_groups, width), mode="bilinear", align_corners=False)
             if extensions is not None:
                 update = extensions.up(entry["region"], update)
+                fusion = getattr(extensions, "boundary_fusion", None)
+                if fusion is not None:
+                    correction = fusion(entry["region"], saved, low_in, update, height, width)
+                    if correction is not None:
+                        if correction.shape != update.shape:
+                            raise ValueError("Boundary fusion changed the restored grid layout")
+                        update = update + correction.to(update)
             update = update.reshape(batch, grid_groups, channels, height // grid_groups, width)
             update = update.permute(0, 2, 1, 3, 4).flatten(2).transpose(1, 2)
             hidden = torch.cat((hidden[:, :prefix],

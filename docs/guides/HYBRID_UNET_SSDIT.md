@@ -37,6 +37,17 @@ rank+D channels, which the public rank-only preview does not account for. Do not
 export its temporary wrapper state as a public topology checkpoint or imply that
 this experiment is selectable through the UI. GPU quality acceptance is separate.
 
+The runtime also permits an internal `boundary_fusion` callback after learned
+up correction and before restoring encoder tokens; absent callbacks preserve
+the original path. Callback output must match the restored BCHW grid.
+`core/experiments/boundary_detail.py` privately adds zero-initialized per-channel
+gains on saved features minus bilinearly interpolated low-input features. This
+is a retained-detail control, not a strict high-pass filter: low input includes
+the learned down branch. Fifteen CPU cases cover identity, paired-input
+gradients, nested/grouped grids, skip storage, checkpointing, dtype moves and
+setup/runtime failure cleanup. These gains have no public topology declaration
+or payload lineage; do not export the temporary module tree as a public artifact.
+
 Learned convolutions and both skip projections use non-reentrant checkpointing
 when native checkpointing is enabled. Checkpoint calls wrap only pure tensor
 modules, never the mutable skip ownership dictionary. Anima CPU/async block

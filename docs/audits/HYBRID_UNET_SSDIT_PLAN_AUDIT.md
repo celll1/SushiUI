@@ -263,6 +263,19 @@ individual records' limitations.
    to investigate, not an established sole cause or permission to replace Full FT.
    Next compare joint adaptation with a frozen-native-teacher field retention
    loss, recording its extra compute/memory separately before any public wiring.
+   The equally weighted native-field anchor
+   (`hybrid_anima_native_anchor_2026-10.json`) completes222 matching exposures
+   and RNG/start hashes. All632 optimizer counters reach222; the frozen native
+   teacher hash remains exact. The supervised initial loss matches the control.
+   Final50 mean supervised/anchor losses are0.168214/0.023632, but four new held
+   outputs still fail two-person structure and retain a large horizontal band.
+   A single face survives with body defects. Reject this bounded recipe as a
+   default remedy; small field MSE does not establish free-running quality.
+   Teacher forward costs15.410 CUDA seconds in addition to106.549 student update
+   seconds; joint peak allocation15.555GiB includes4,182,137,856 teacher parameter
+   bytes. This is not an equal-total-time comparison or isolated speed ranking.
+   Next test paired conditional/unconditional guided-field retention to separate
+   CFG amplification from single-field matching; owner artifacts remain untouched.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

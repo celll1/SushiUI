@@ -2016,3 +2016,41 @@ Prioritize codec/noise alignment before declaring combined quality acceptance.
 No combined fine-tuning or equal-time quality comparison was done in this probe.
 General-only image hashes and restoration evidence:
 `docs/audits/data/hybrid_anima_public_feature_fusion_combined_2026-10.json`.
+
+### Separating small-grid initialization from codec error
+
+Native-codec256px uses a16x16 patch-token grid, the same as Qwen-codec512px.
+From the same public step2 native body, no-U-Net native256 generation retains
+two back-facing figures and a separate person/hand/food outline. Hybrid256
+produces missing figures, stripes and cropped/deformed facial structure. This
+separates a small-grid weakness in the512px-fitted U-Net from codec error, but
+does not equate pixel size or latent channel representation across codecs.
+
+An initialization comparison starts both arms from exactly the same67 added
+tensors and freezes the native body. Single512 and alternating512/256 receive200
+updates with identical item/null/sigma/noise seeds, parameter groups and initial
+field loss. Sigma is drawn before shape-dependent noise. Native256 inputs are
+encoded once from28 general images;512 inputs/conditioning are reused. Held
+indices28/31 never enter the fitting data. Rates are1e-4 for51 original non-skip
+tensors,2.5e-5 for14 skips and1e-5 for2 full-rank fusion tensors. Both67 optimizer
+counters reach200 and frozen native fingerprints match before/after.
+
+Update GPU time is74.694s for single512 and76.934s for mixed grids; own peak is
+4.690/4.692GiB. These exclude setup, hashing and evaluation and are not Full FT
+memory claims. Last50 teacher-field mean is0.02031 at512 for single-grid;
+mixed-grid has0.01987 at512 and0.03440 at256. Differing geometries' loss magnitudes
+are not a quality comparison. The mixed arm improves small-grid person/hand
+outlines versus single512 and preserves held512 compositions. The256 two-person
+scene still fails; neither universal resolution robustness nor default promotion
+is established. This is equal-update, not explicitly equal-GPU-time fitting.
+
+Replacing only the U-Net weights in the retained combined artifact restores
+more person outline at swapped512px, but gridlike codec texture remains. At
+swapped1024px (32x32 patch grid, matching native512px), a matched before/after
+comparison restores the left figure in the two-person scene with mixed fitting.
+Person/food outlines are recognizable in both1024px arms; substantial gridlike
+texture remains. Small-grid initialization is therefore a separate improvement
+from codec/noise alignment, not its replacement. No combined Full FT was done
+here and no owner artifact/default changed. Next gates are a reusable multi-grid
+initialization recipe and codec/IO adaptation with held generation.
+Evidence: `docs/audits/data/hybrid_anima_public_feature_fusion_multigrid_2026-10.json`.

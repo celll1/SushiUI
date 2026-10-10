@@ -2190,3 +2190,37 @@ or target codec manifold. Neither variant is promoted, and no owner artifact
 or production default changes. Further quality work must assess that state
 distribution and trainability rather than treating closure alone as success.
 Evidence: `docs/audits/data/hybrid_codec_flow_consistent_2026-10.json`.
+
+### Spatial output under exact flow closure (2026-10-10)
+
+Held clean-latent statistics distinguish the previous variants: native mean
+channel standard deviation is0.37090; fitted/orthogonal projected inputs are
+0.33361/0.75127. Target is0.94181, while fitted/orthogonal round trips are
+0.40109/0.72945. Thus the orthogonal-input variant changes clean-state scale
+substantially; exact noisy-flow closure alone does not preserve it.
+
+The experimental calibrator now accepts `output_kernel_size=3`. Input remains
+pointwise. Output uses unfolded native neighborhoods and constrains each output
+kernel slice: `A*B_center=I`, `A*B_off_center=0`; bias closure remains unchanged.
+This permits neighboring information in the target-space null directions
+without source-flow leakage, including padding boundaries. Existing bridge
+containers, parameter counts and runtime operators are unchanged. A planted
+neighbor-feature fixture verifies spatial recovery and multiple-frame ordering;
+Gaussian/pair tests cover both kernel choices and FP32/BF16 gradients/reload.
+48 tests pass, with compile and real import verification and no CUDA context.
+
+Pixel256 held round-trip MSE drops0.75180→0.62672 (16.64%) versus the pointwise
+constrained variant; direct native-to-target MSE remains0.86306, worse than
+the independently fitted spatial baseline0.68722. Round-trip channel standard
+deviation rises to0.52143, still below target0.94181. Improvements are not
+universal across these different measures.
+
+Matched frozen-body512/1024px generation retains the coarse two-person and
+person/food outlines at1024px, but clipping, fragmentation and colored spots
+remain. Output latents are finite (RMS0.97–1.16, max absolute4.38–4.75), which
+does not prove decoder-manifold compatibility. No production default is
+changed. The next quality comparison must include short training of the
+resized IO/bridges rather than infer post-training behavior from this frozen
+head; use equal exposure/GPU-time controls and keep native-body stability
+separate from codec adaptation. Evidence:
+`docs/audits/data/hybrid_codec_spatial_flow_consistent_2026-10.json`.

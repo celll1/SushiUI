@@ -616,3 +616,13 @@ outlines but does not pass quality acceptance. This falsifies closure alone as
 a sufficient remedy. It remains experimental, with no default/owner artifact
 change; combined quality and P5 remain open. Evidence:
 `hybrid_codec_flow_consistent_2026-10.json`.
+
+Spatial output with pointwise input now preserves exact flow closure while
+using neighboring native features.48 CPU checks pass, including a planted
+spatial-recovery fixture and multiple-frame ordering. Held pixel256 round-trip
+MSE improves16.64% over the constrained pointwise variant, but matched frozen
+generation retains clipping/grid/color artifacts. Clean native/target moment
+statistics and finite output-latent ranges are recorded; neither identifies a
+sole cause or proves post-training quality. This remains an experiment, with
+short resized-IO/bridge training and combined P5 acceptance still pending.
+Evidence: `hybrid_codec_spatial_flow_consistent_2026-10.json`.

@@ -1,0 +1,877 @@
+{
+  "distribution": {
+    "rating": "general",
+    "fit_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "held_indices": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "arms": [
+      {
+        "name": "independent_spatial",
+        "held": [
+          {
+            "index": 28,
+            "native": {
+              "mean_abs": 0.2936745050828904,
+              "rms": 0.4921043887022726,
+              "channel_std_mean": 0.35406558879466077,
+              "covariance_trace": 2.1105820063929586
+            },
+            "projected": {
+              "mean_abs": 0.273024011824468,
+              "rms": 0.49689476229200197,
+              "channel_std_mean": 0.37354892501586123,
+              "covariance_trace": 2.3575407002683684
+            },
+            "target": {
+              "mean_abs": 0.528633612091653,
+              "rms": 1.149041657705153,
+              "channel_std_mean": 0.9388810583326689,
+              "covariance_trace": 58.12295806784638
+            },
+            "direct": {
+              "mean_abs": 0.5074052960289634,
+              "rms": 0.8170928799256268,
+              "channel_std_mean": 0.47235271054575945,
+              "covariance_trace": 15.546571980384293
+            },
+            "pair": {
+              "mean_abs": 0.4972353872776978,
+              "rms": 0.8235734133108336,
+              "channel_std_mean": 0.4851875295030731,
+              "covariance_trace": 16.53428706930578
+            },
+            "native_projection_mse": 0.027013545855879784,
+            "target_pair_mse": 0.6965963840484619,
+            "target_direct_mse": 0.7372346520423889
+          },
+          {
+            "index": 29,
+            "native": {
+              "mean_abs": 0.5685330122360028,
+              "rms": 0.7386637925854252,
+              "channel_std_mean": 0.3998497221107129,
+              "covariance_trace": 2.6920293348433666
+            },
+            "projected": {
+              "mean_abs": 0.5603697055339794,
+              "rms": 0.7202872094860556,
+              "channel_std_mean": 0.37796605905753744,
+              "covariance_trace": 2.4385051520134806
+            },
+            "target": {
+              "mean_abs": 0.6500000088417437,
+              "rms": 1.2533263003310162,
+              "channel_std_mean": 0.9471886249469023,
+              "covariance_trace": 59.15069732654691
+            },
+            "direct": {
+              "mean_abs": 0.6595666438276098,
+              "rms": 0.9753654548002323,
+              "channel_std_mean": 0.5460386024555575,
+              "covariance_trace": 20.684521093536098
+            },
+            "pair": {
+              "mean_abs": 0.6469970905119027,
+              "rms": 0.9466770513042534,
+              "channel_std_mean": 0.5114793327058889,
+              "covariance_trace": 18.43686813717769
+            },
+            "native_projection_mse": 0.02763974294066429,
+            "target_pair_mse": 0.6272971034049988,
+            "target_direct_mse": 0.6644989848136902
+          },
+          {
+            "index": 30,
+            "native": {
+              "mean_abs": 0.6376109456177801,
+              "rms": 0.8159775277786409,
+              "channel_std_mean": 0.42459651593471326,
+              "covariance_trace": 3.0001161137447276
+            },
+            "projected": {
+              "mean_abs": 0.6351020941118009,
+              "rms": 0.7864132523875292,
+              "channel_std_mean": 0.37665811619468537,
+              "covariance_trace": 2.3617299137035843
+            },
+            "target": {
+              "mean_abs": 0.7477320228499593,
+              "rms": 1.4085787691058769,
+              "channel_std_mean": 1.0347345911317063,
+              "covariance_trace": 70.9492677590066
+            },
+            "direct": {
+              "mean_abs": 0.6727869513603864,
+              "rms": 1.0521106956284514,
+              "channel_std_mean": 0.5910283003348148,
+              "covariance_trace": 24.897093368329546
+            },
+            "pair": {
+              "mean_abs": 0.6839522201557031,
+              "rms": 1.0239204678692704,
+              "channel_std_mean": 0.542020289460686,
+              "covariance_trace": 20.926915817264746
+            },
+            "native_projection_mse": 0.029929259791970253,
+            "target_pair_mse": 0.6967524290084839,
+            "target_direct_mse": 0.7322747707366943
+          },
+          {
+            "index": 31,
+            "native": {
+              "mean_abs": 0.390655217517633,
+              "rms": 0.5423940383847924,
+              "channel_std_mean": 0.30508782400352746,
+              "covariance_trace": 1.6272281609436563
+            },
+            "projected": {
+              "mean_abs": 0.38284367503958805,
+              "rms": 0.5241107929158578,
+              "channel_std_mean": 0.29465943416038987,
+              "covariance_trace": 1.4981996915944962
+            },
+            "target": {
+              "mean_abs": 0.5633026194118429,
+              "rms": 1.1101952264816664,
+              "channel_std_mean": 0.8464496453596577,
+              "covariance_trace": 47.3044356386616
+            },
+            "direct": {
+              "mean_abs": 0.5433984799535239,
+              "rms": 0.7956783976356676,
+              "channel_std_mean": 0.4138633346430408,
+              "covariance_trace": 11.540821975708036
+            },
+            "pair": {
+              "mean_abs": 0.536205037566468,
+              "rms": 0.7914174275537527,
+              "channel_std_mean": 0.4186293498217229,
+              "covariance_trace": 11.968845950851728
+            },
+            "native_projection_mse": 0.036691971123218536,
+            "target_pair_mse": 0.5539869070053101,
+            "target_direct_mse": 0.6148604154586792
+          }
+        ]
+      },
+      {
+        "name": "fitted_flow",
+        "held": [
+          {
+            "index": 28,
+            "native": {
+              "mean_abs": 0.2936745050828904,
+              "rms": 0.4921043887022726,
+              "channel_std_mean": 0.35406558879466077,
+              "covariance_trace": 2.1105820063929586
+            },
+            "projected": {
+              "mean_abs": 0.2692431075872648,
+              "rms": 0.47817989488422086,
+              "channel_std_mean": 0.3613922702962802,
+              "covariance_trace": 2.196114948463149
+            },
+            "target": {
+              "mean_abs": 0.528633612091653,
+              "rms": 1.149041657705153,
+              "channel_std_mean": 0.9388810583326689,
+              "covariance_trace": 58.12295806784638
+            },
+            "direct": {
+              "mean_abs": 0.526032172538649,
+              "rms": 0.8669553784028817,
+              "channel_std_mean": 0.520313534294535,
+              "covariance_trace": 18.889876176874697
+            },
+            "pair": {
+              "mean_abs": 0.49691140886264407,
+              "rms": 0.7818449292902576,
+              "channel_std_mean": 0.4090071760666153,
+              "covariance_trace": 12.885831792785977
+            },
+            "native_projection_mse": 0.04139574244618416,
+            "target_pair_mse": 0.776108980178833,
+            "target_direct_mse": 0.968230128288269
+          },
+          {
+            "index": 29,
+            "native": {
+              "mean_abs": 0.5685330122360028,
+              "rms": 0.7386637925854252,
+              "channel_std_mean": 0.3998497221107129,
+              "covariance_trace": 2.6920293348433666
+            },
+            "projected": {
+              "mean_abs": 0.5578432536968307,
+              "rms": 0.7003196985928576,
+              "channel_std_mean": 0.3483100593628981,
+              "covariance_trace": 2.073750943128361
+            },
+            "target": {
+              "mean_abs": 0.6500000088417437,
+              "rms": 1.2533263003310162,
+              "channel_std_mean": 0.9471886249469023,
+              "covariance_trace": 59.15069732654691
+            },
+            "direct": {
+              "mean_abs": 0.6456655144351089,
+              "rms": 1.0440784698916799,
+              "channel_std_mean": 0.6484641430238688,
+              "covariance_trace": 28.878900969723897
+            },
+            "pair": {
+              "mean_abs": 0.6182753052396492,
+              "rms": 0.8791390918535056,
+              "channel_std_mean": 0.4022290703177359,
+              "covariance_trace": 12.690726708680366
+            },
+            "native_projection_mse": 0.04535131901502609,
+            "target_pair_mse": 0.7255321741104126,
+            "target_direct_mse": 1.0025203227996826
+          },
+          {
+            "index": 30,
+            "native": {
+              "mean_abs": 0.6376109456177801,
+              "rms": 0.8159775277786409,
+              "channel_std_mean": 0.42459651593471326,
+              "covariance_trace": 3.0001161137447276
+            },
+            "projected": {
+              "mean_abs": 0.6293836273581945,
+              "rms": 0.7698036556748038,
+              "channel_std_mean": 0.35275881641371093,
+              "covariance_trace": 2.086266379148882
+            },
+            "target": {
+              "mean_abs": 0.7477320228499593,
+              "rms": 1.4085787691058769,
+              "channel_std_mean": 1.0347345911317063,
+              "covariance_trace": 70.9492677590066
+            },
+            "direct": {
+              "mean_abs": 0.6541107432515787,
+              "rms": 1.0567777578439614,
+              "channel_std_mean": 0.6303219255728267,
+              "covariance_trace": 28.05262907727709
+            },
+            "pair": {
+              "mean_abs": 0.6628524386683239,
+              "rms": 0.9566660150521015,
+              "channel_std_mean": 0.44575357426074713,
+              "covariance_trace": 15.370615325627025
+            },
+            "native_projection_mse": 0.047299545258283615,
+            "target_pair_mse": 0.8569837808609009,
+            "target_direct_mse": 1.0542926788330078
+          },
+          {
+            "index": 31,
+            "native": {
+              "mean_abs": 0.390655217517633,
+              "rms": 0.5423940383847924,
+              "channel_std_mean": 0.30508782400352746,
+              "covariance_trace": 1.6272281609436563
+            },
+            "projected": {
+              "mean_abs": 0.3909123615708836,
+              "rms": 0.5166014177266843,
+              "channel_std_mean": 0.27198601274853124,
+              "covariance_trace": 1.2676558183324356
+            },
+            "target": {
+              "mean_abs": 0.5633026194118429,
+              "rms": 1.1101952264816664,
+              "channel_std_mean": 0.8464496453596577,
+              "covariance_trace": 47.3044356386616
+            },
+            "direct": {
+              "mean_abs": 0.5353898610047167,
+              "rms": 0.8817377743970366,
+              "channel_std_mean": 0.5459044436470154,
+              "covariance_trace": 20.30905971144543
+            },
+            "pair": {
+              "mean_abs": 0.5483006426786403,
+              "rms": 0.7729497676786662,
+              "channel_std_mean": 0.34737079227146384,
+              "covariance_trace": 8.704663856525917
+            },
+            "native_projection_mse": 0.05118782818317413,
+            "target_pair_mse": 0.6485930681228638,
+            "target_direct_mse": 0.902294397354126
+          }
+        ]
+      },
+      {
+        "name": "spatial_flow",
+        "held": [
+          {
+            "index": 28,
+            "native": {
+              "mean_abs": 0.2936745050828904,
+              "rms": 0.4921043887022726,
+              "channel_std_mean": 0.35406558879466077,
+              "covariance_trace": 2.1105820063929586
+            },
+            "projected": {
+              "mean_abs": 0.2692431075872648,
+              "rms": 0.47817989488422086,
+              "channel_std_mean": 0.3613922702962802,
+              "covariance_trace": 2.196114948463149
+            },
+            "target": {
+              "mean_abs": 0.528633612091653,
+              "rms": 1.149041657705153,
+              "channel_std_mean": 0.9388810583326689,
+              "covariance_trace": 58.12295806784638
+            },
+            "direct": {
+              "mean_abs": 0.5207042970077849,
+              "rms": 0.9131591414303946,
+              "channel_std_mean": 0.6038435270228746,
+              "covariance_trace": 24.508666448027448
+            },
+            "pair": {
+              "mean_abs": 0.49087968370994073,
+              "rms": 0.8323697914416542,
+              "channel_std_mean": 0.5230355563631,
+              "covariance_trace": 18.908282378722383
+            },
+            "native_projection_mse": 0.04139574244618416,
+            "target_pair_mse": 0.6656810641288757,
+            "target_direct_mse": 0.8690940141677856
+          },
+          {
+            "index": 29,
+            "native": {
+              "mean_abs": 0.5685330122360028,
+              "rms": 0.7386637925854252,
+              "channel_std_mean": 0.3998497221107129,
+              "covariance_trace": 2.6920293348433666
+            },
+            "projected": {
+              "mean_abs": 0.5578432536968307,
+              "rms": 0.7003196985928576,
+              "channel_std_mean": 0.3483100593628981,
+              "covariance_trace": 2.073750943128361
+            },
+            "target": {
+              "mean_abs": 0.6500000088417437,
+              "rms": 1.2533263003310162,
+              "channel_std_mean": 0.9471886249469023,
+              "covariance_trace": 59.15069732654691
+            },
+            "direct": {
+              "mean_abs": 0.6591618884103996,
+              "rms": 1.1090239610856627,
+              "channel_std_mean": 0.7417404049048122,
+              "covariance_trace": 36.625775384779374
+            },
+            "pair": {
+              "mean_abs": 0.6242469476595831,
+              "rms": 0.9424513402929314,
+              "channel_std_mean": 0.5305687108886996,
+              "covariance_trace": 19.566227981006097
+            },
+            "native_projection_mse": 0.04535131901502609,
+            "target_pair_mse": 0.6081050634384155,
+            "target_direct_mse": 0.8891767859458923
+          },
+          {
+            "index": 30,
+            "native": {
+              "mean_abs": 0.6376109456177801,
+              "rms": 0.8159775277786409,
+              "channel_std_mean": 0.42459651593471326,
+              "covariance_trace": 3.0001161137447276
+            },
+            "projected": {
+              "mean_abs": 0.6293836273581945,
+              "rms": 0.7698036556748038,
+              "channel_std_mean": 0.35275881641371093,
+              "covariance_trace": 2.086266379148882
+            },
+            "target": {
+              "mean_abs": 0.7477320228499593,
+              "rms": 1.4085787691058769,
+              "channel_std_mean": 1.0347345911317063,
+              "covariance_trace": 70.9492677590066
+            },
+            "direct": {
+              "mean_abs": 0.6563501459032848,
+              "rms": 1.123358482432953,
+              "channel_std_mean": 0.7315875540298324,
+              "covariance_trace": 36.28905452227795
+            },
+            "pair": {
+              "mean_abs": 0.6653864016332864,
+              "rms": 1.0234047736635226,
+              "channel_std_mean": 0.5724921437895292,
+              "covariance_trace": 22.92591444758876
+            },
+            "native_projection_mse": 0.047299545258283615,
+            "target_pair_mse": 0.6932086944580078,
+            "target_direct_mse": 0.881888747215271
+          },
+          {
+            "index": 31,
+            "native": {
+              "mean_abs": 0.390655217517633,
+              "rms": 0.5423940383847924,
+              "channel_std_mean": 0.30508782400352746,
+              "covariance_trace": 1.6272281609436563
+            },
+            "projected": {
+              "mean_abs": 0.3909123615708836,
+              "rms": 0.5166014177266843,
+              "channel_std_mean": 0.27198601274853124,
+              "covariance_trace": 1.2676558183324356
+            },
+            "target": {
+              "mean_abs": 0.5633026194118429,
+              "rms": 1.1101952264816664,
+              "channel_std_mean": 0.8464496453596577,
+              "covariance_trace": 47.3044356386616
+            },
+            "direct": {
+              "mean_abs": 0.5392656520850854,
+              "rms": 0.9292250956087779,
+              "channel_std_mean": 0.6208737035146716,
+              "covariance_trace": 25.66757664872861
+            },
+            "pair": {
+              "mean_abs": 0.5541566521812653,
+              "rms": 0.8370948485015164,
+              "channel_std_mean": 0.4596377376923326,
+              "covariance_trace": 14.313998711638499
+            },
+            "native_projection_mse": 0.05118782818317413,
+            "target_pair_mse": 0.5398778319358826,
+            "target_direct_mse": 0.8120640516281128
+          }
+        ]
+      },
+      {
+        "name": "orthogonal_flow",
+        "held": [
+          {
+            "index": 28,
+            "native": {
+              "mean_abs": 0.2936745050828904,
+              "rms": 0.4921043887022726,
+              "channel_std_mean": 0.35406558879466077,
+              "covariance_trace": 2.1105820063929586
+            },
+            "projected": {
+              "mean_abs": 0.38333708711877534,
+              "rms": 0.925695796908431,
+              "channel_std_mean": 0.7806496728307266,
+              "covariance_trace": 10.442259214074314
+            },
+            "target": {
+              "mean_abs": 0.528633612091653,
+              "rms": 1.149041657705153,
+              "channel_std_mean": 0.9388810583326689,
+              "covariance_trace": 58.12295806784638
+            },
+            "direct": {
+              "mean_abs": 0.5139355842729003,
+              "rms": 0.6869086708956306,
+              "channel_std_mean": 0.2551907529455427,
+              "covariance_trace": 4.691077488009191
+            },
+            "pair": {
+              "mean_abs": 0.5548553716902234,
+              "rms": 1.0146927691482772,
+              "channel_std_mean": 0.6999439163204592,
+              "covariance_trace": 34.197071305481124
+            },
+            "native_projection_mse": 0.44731810688972473,
+            "target_pair_mse": 0.9657610654830933,
+            "target_direct_mse": 0.9089463949203491
+          },
+          {
+            "index": 29,
+            "native": {
+              "mean_abs": 0.5685330122360028,
+              "rms": 0.7386637925854252,
+              "channel_std_mean": 0.3998497221107129,
+              "covariance_trace": 2.6920293348433666
+            },
+            "projected": {
+              "mean_abs": 0.8278492765377905,
+              "rms": 1.2166737565675327,
+              "channel_std_mean": 0.7756751448943778,
+              "covariance_trace": 10.238680588175074
+            },
+            "target": {
+              "mean_abs": 0.6500000088417437,
+              "rms": 1.2533263003310162,
+              "channel_std_mean": 0.9471886249469023,
+              "covariance_trace": 59.15069732654691
+            },
+            "direct": {
+              "mean_abs": 0.5549381246509313,
+              "rms": 0.7477053126811589,
+              "channel_std_mean": 0.2963904094509032,
+              "covariance_trace": 6.225142565677735
+            },
+            "pair": {
+              "mean_abs": 0.6937279247609354,
+              "rms": 1.1655318801617667,
+              "channel_std_mean": 0.7542799077506958,
+              "covariance_trace": 40.12931677392567
+            },
+            "native_projection_mse": 0.4477907717227936,
+            "target_pair_mse": 0.8893674612045288,
+            "target_direct_mse": 0.8521566390991211
+          },
+          {
+            "index": 30,
+            "native": {
+              "mean_abs": 0.6376109456177801,
+              "rms": 0.8159775277786409,
+              "channel_std_mean": 0.42459651593471326,
+              "covariance_trace": 3.0001161137447276
+            },
+            "projected": {
+              "mean_abs": 0.9921695520315552,
+              "rms": 1.4103391166363493,
+              "channel_std_mean": 0.8169096857532605,
+              "covariance_trace": 12.120722854282203
+            },
+            "target": {
+              "mean_abs": 0.7477320228499593,
+              "rms": 1.4085787691058769,
+              "channel_std_mean": 1.0347345911317063,
+              "covariance_trace": 70.9492677590066
+            },
+            "direct": {
+              "mean_abs": 0.5587247349416558,
+              "rms": 0.7774096434278703,
+              "channel_std_mean": 0.3218401389137197,
+              "covariance_trace": 7.659902464333547
+            },
+            "pair": {
+              "mean_abs": 0.7687716625618606,
+              "rms": 1.3107436263999466,
+              "channel_std_mean": 0.8297552758127797,
+              "covariance_trace": 48.93844406897597
+            },
+            "native_projection_mse": 0.6434003114700317,
+            "target_pair_mse": 1.068763017654419,
+            "target_direct_mse": 1.0307035446166992
+          },
+          {
+            "index": 31,
+            "native": {
+              "mean_abs": 0.390655217517633,
+              "rms": 0.5423940383847924,
+              "channel_std_mean": 0.30508782400352746,
+              "covariance_trace": 1.6272281609436563
+            },
+            "projected": {
+              "mean_abs": 0.4283763106256302,
+              "rms": 0.8106774194140431,
+              "channel_std_mean": 0.6318459139133152,
+              "covariance_trace": 6.7154161692269945
+            },
+            "target": {
+              "mean_abs": 0.5633026194118429,
+              "rms": 1.1101952264816664,
+              "channel_std_mean": 0.8464496453596577,
+              "covariance_trace": 47.3044356386616
+            },
+            "direct": {
+              "mean_abs": 0.5337464806700893,
+              "rms": 0.7041990043557254,
+              "channel_std_mean": 0.23205017685818063,
+              "covariance_trace": 3.7200398102638963
+            },
+            "pair": {
+              "mean_abs": 0.5899236291497587,
+              "rms": 0.9858614471501151,
+              "channel_std_mean": 0.6338405272614733,
+              "covariance_trace": 27.90002150321653
+            },
+            "native_projection_mse": 0.283981055021286,
+            "target_pair_mse": 0.7179110050201416,
+            "target_direct_mse": 0.7442737221717834
+          }
+        ]
+      }
+    ],
+    "limits": [
+      "Clean held latent statistics; not a generation or quality measurement.",
+      "All cached encodes reused; no image pixels or captions recorded."
+    ]
+  },
+  "spatial_fit": {
+    "rating": "general",
+    "fit_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "held_indices": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "arms": [
+      {
+        "arm": "latent_area",
+        "metrics": {
+          "input_condition_number": 22.826948072125514,
+          "fitted_input_condition_number": 22.826948072125514,
+          "orthogonal_input": false,
+          "output_kernel_size": 3,
+          "inverse_norm": 46.25224585252617,
+          "composition_max_error": 2.060158758305482e-15,
+          "bias_closure_max_error": 9.992007221626409e-16
+        },
+        "fp32_coefficients_flow_closure_mse": 1.4157862841790007e-14,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.895585834980011
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.6696417927742004
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 1.0059688091278076
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.6075669527053833
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 0.9315277338027954
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 0.7097125053405762
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.7999919652938843
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.5354941487312317
+          }
+        ]
+      },
+      {
+        "arm": "pixel256",
+        "metrics": {
+          "input_condition_number": 11.404524516128141,
+          "fitted_input_condition_number": 11.404524516128141,
+          "orthogonal_input": false,
+          "output_kernel_size": 3,
+          "inverse_norm": 27.91669591389641,
+          "composition_max_error": 9.992007221626409e-16,
+          "bias_closure_max_error": 3.3306690738754696e-16
+        },
+        "fp32_coefficients_flow_closure_mse": 5.095928678183661e-15,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.8690940141677856
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.6656810641288757
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 0.8891767859458923
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.6081050634384155
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 0.881888747215271
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 0.6932086944580078
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.8120640516281128
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.5398778319358826
+          }
+        ]
+      }
+    ],
+    "target_grid": [
+      32,
+      32
+    ],
+    "reused_latent_inputs": true,
+    "limits": [
+      "Constrained pointwise coefficients in existing 3x3 bridge containers; no production default change.",
+      "No image re-encoding, no new data collection or CUDA context in this fitting step.",
+      "Clean reconstruction and closure checks do not establish generation or Full FT quality."
+    ]
+  },
+  "generation": {
+    "rating": "general",
+    "resolutions": [
+      512,
+      1024
+    ],
+    "steps": 28,
+    "cfg": 4,
+    "seed": 63,
+    "mixed_modules_sha256": "d80639dd8a280e7754a923aa0f6a8e15d3de315a6d6938f28c8be9200fffef27",
+    "native_parameters_sha256": "64db9e785a7efca070fa32d71d088f13c5b730cc90cfbab9bd6d17738bff6571",
+    "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "bridge_file_sha256": "4d6a2e44b086be50be342b47745cff902c2e7a4ad48ea707f7418873537b900b",
+    "limits": [
+      "Same frozen body and mixed-grid U-Net as retained controls; Fitted pointwise input with flow-consistent 3x3 output calibration replaces only bridge kernels and their Gaussian noise snapshots. No exported artifact/default is changed."
+    ],
+    "samples": [
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 512,
+        "latent_stats": {
+          "rms": 1.0756275653839111,
+          "std": 1.0745337009429932,
+          "maximum": 4.71875
+        },
+        "sha256": "b9ddc10e1df6ea89afade997f75b6161853a80859f0b2de28aa981a83eac1a4a"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 512,
+        "latent_stats": {
+          "rms": 1.1525216102600098,
+          "std": 1.1524969339370728,
+          "maximum": 4.625
+        },
+        "sha256": "4c88095f979e366e71135e0262883efa6abe985312a3ef3a330960afe53077e6"
+      },
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 1024,
+        "latent_stats": {
+          "rms": 0.9722608923912048,
+          "std": 0.9722587466239929,
+          "maximum": 4.375
+        },
+        "sha256": "a13de70423be5c8f3422278552bd9a3d74fdc10c32e90e905ca355d9854a9bdc"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 1024,
+        "latent_stats": {
+          "rms": 1.164176106452942,
+          "std": 1.1637585163116455,
+          "maximum": 4.75
+        },
+        "sha256": "b6562752874dc041150c7f00816d42a02c5a5d674529982b0d29cced1bcb1baf"
+      }
+    ]
+  },
+  "verification": {
+    "cpu_tests_passed": 48,
+    "visual_assessment_1024": "Two-person and person/food outlines remain; strong clipping, gridlike fragmentation and colored spots remain.",
+    "production_default_changed": false,
+    "limits": [
+      "No image pixels, captions or calibration tensors included.",
+      "Latent distribution statistics do not establish a sole cause of generation artifacts.",
+      "Frozen-body generation is not a post-training quality measurement."
+    ]
+  }
+}

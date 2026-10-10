@@ -1,0 +1,29 @@
+{
+  "cpu_tests_passed": 53,
+  "cuda_initialized_in_cpu_checks": false,
+  "backend_restart_via_api": true,
+  "health_available": true,
+  "candidate_id": "anima_16_8_4_full_rank",
+  "source_architecture": "anima",
+  "native_checkpoint_has_topology": false,
+  "source_identity_preserved": true,
+  "default_fusion_unchanged": "none",
+  "measured_module_layout_sha256": "b63e1ea4f181dd5521e1bd444bdd985e12488bf5a509b49b2139c84ced8ca920",
+  "canonical_builder_roundtrip": true,
+  "topology_sha256": "a361e54f76c3fb47f565544f768dab5baf5e734b985158013056553f949fdf23",
+  "depth_block_counts": {
+    "0": 16,
+    "1": 8,
+    "2": 4
+  },
+  "added_parameters": 35629056,
+  "qwen_candidates": [],
+  "training_idle": true,
+  "generation_idle": true,
+  "frontend_static_review": "Optional API field; explicit configure-only button; pending validation disables selection, resets parent validation, preview validates source identities, module draft revision cancels stale apply replies. Inherited artifacts/defaults unchanged.",
+  "limits": [
+    "Preset geometry matches the retained measured candidate, not its fitted/trained weights.",
+    "No new GPU benchmark or image generation: existing candidate measurements reused.",
+    "Owner frontend build/type checks and interactive confirmation remain separate."
+  ]
+}

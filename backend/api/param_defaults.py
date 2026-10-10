@@ -76,6 +76,24 @@ DIT_HYBRID_DEFAULTS: Dict[str, Any] = {
     "skip_storage": "gpu", "boundary_fusion": "none",
 }
 
+DIT_HYBRID_CANDIDATES: Dict[str, Any] = {
+    "anima_16_8_4_full_rank": {
+        "architecture": "anima", "block_count": 28, "width": 2048, "patch_spatial": 2,
+        "label": "Anima 16/8/4 + full-width fusion",
+        "description": "Measured graph candidate: 16 full-grid, 8 half-grid and 4 quarter-grid blocks, "
+            "with full-width boundary fusion and rank-256 skips. Geometry only; measurements used "
+            "fitted weights and a retained trained base. Initial appearance and long-run quality are not guaranteed.",
+        "regions": [
+            {"id": "r0", "parent": None, "start_block": 8, "end_block": 20},
+            {"id": "r1", "parent": "r0", "start_block": 12, "end_block": 16},
+        ],
+        "down_factor": [2, 2], "boundary_rank": 64, "refiner_rank": 64,
+        "kernel": 3, "boundary_fusion": "full_rank", "skip_rank": 256, "skip_storage": "gpu",
+        "refiner_blocks": [0, 4, 8, 12, 16, 20, 24],
+        "skip_pairs": [[0, 27], [2, 25], [4, 23], [6, 21], [8, 19], [10, 17], [12, 15]],
+    },
+}
+
 DIT_HYBRID_INITIALIZATION_PHASE_DEFAULTS: Dict[str, Any] = {
     "skip_learning_rate_multiplier": 1.0,
 }

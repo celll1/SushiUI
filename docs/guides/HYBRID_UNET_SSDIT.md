@@ -14,8 +14,11 @@ The requirement/evidence audit and remaining acceptance work are recorded in
    editor choose **Configure a new U-Net**, then **New hybrid U-Net preset**.
    Edit boundaries, local refiners, compressed skips and their storage in the
    graph/module controls. The standard preset uses rank64 branches and no
-   full-rank boundary fusion; the measured full-rank candidate is a distinct
-   configuration, not a silently changed default.
+   full-rank boundary fusion. For matching Anima28-block/2048-width/patch2
+   checkpoints, **Anima 16/8/4 + full-width fusion** selects the distinct measured
+   candidate:64-rank spatial branches,256-rank skips and full-width fusion.
+   Its geometry matches the recorded matrix; it does not load fitted weights or
+   silently change the default. Teacher fitting remains a separate step.
 2. For teacher initialization, first load that native model in Generate with
    adapters and VAE swap disabled. In Training open **Initialize hybrid modules
    with the native teacher**, select calibration data and a new output name,
@@ -53,6 +56,19 @@ integrity and nine decoded debug images are verified; VAE-only debug allocation
 is0.66 GiB. The owned run/dataset and generated training output are removed.
 This is bounded functional verification, not convergence or sample quality.
 See `docs/audits/data/hybrid_fullrank_combined_lifecycle_2026-10.json`.
+
+Candidate definitions live in `api/param_defaults.py`; inspect returns them as
+optional `hybrid_candidates`. The opt-in button is available only while
+configuring a new topology, resets parent validation, and uses the existing
+canonical validation/build and module-editor paths. CPU checks match the
+recorded graph exactly, verify67 module tensors/35,629,056 added parameters,
+metadata round-trip, source immutability and unmeasured-layout refusal.53
+related CPU cases pass with CUDA uninitialized. After API restart, native Anima
+inspection/validation/build verifies16/8/4 and unchanged standard fusion; Qwen
+receives no Anima candidate. Frontend types, pending/error states, draft revisions
+and inherited-mode behavior were statically reviewed; owner build/interactive
+confirmation remains separate. Evidence:
+`docs/audits/data/hybrid_measured_candidate_api_2026-10.json`.
 
 ## Graph and modules
 

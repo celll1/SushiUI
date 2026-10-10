@@ -186,6 +186,10 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         className="rounded bg-gray-700 px-3 py-2" onClick={() => {
           onValidated?.(null); onChange("configure", info.hybrid_default_spec ?? null);
         }}>New hybrid U-Net preset</button>}
+      {configuring && info?.hybrid_candidates?.map(candidate => <button key={candidate.id} type="button"
+        disabled={pending} title={candidate.description} className="rounded bg-gray-700 px-3 py-2"
+        onClick={() => { onValidated?.(null); onChange("configure", candidate.spec); }}>
+        {candidate.label}</button>)}
       {info && <span>{info.architecture}</span>}
       {streams.length > 0 && <label>Stream
         <select aria-label="DiT stream" value={stream?.name ?? ""} className="ml-2 rounded bg-gray-800 p-1"
@@ -203,6 +207,9 @@ export default function DiTRewiringEditor({ modelPath, resolution, mode, spec, o
         }}>Start custom layout</button>}
     </div>
     <MingGlobalSummary info={info?.ming_partition_global} />
+    {configuring && info?.hybrid_candidates?.map(candidate => <p key={candidate.id} className="text-gray-400">
+      {candidate.label}: {candidate.description}
+    </p>)}
     {onInitialized && info && !info.topology &&
       <HybridInitializationPanel key={modelPath} modelPath={modelPath} architecture={info.architecture}
         spec={!pending && !error && !hybridEditing && validatedSpec?.method === "hybrid_unet_ssdit" ? validatedSpec : null}

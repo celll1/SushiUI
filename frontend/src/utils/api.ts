@@ -10020,6 +10020,7 @@ export const cancelHybridInitialization = async (jobId: string): Promise<HybridI
 export interface DiTRewiringModelInfo {
   initialization?: HybridInitializationRecord | null;
   hybrid_default_spec?: HybridDiTRewiringSpec | null;
+  hybrid_candidates?: { id: string; label: string; description: string; spec: HybridDiTRewiringSpec }[];
   ming_partition_global?: MingGlobalSummaryInfo | null;
   parameter_counts?: DiTRewiringParameterCounts | null;
   architecture: string; streams: DiTRewiringSpec["streams"];

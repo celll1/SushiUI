@@ -1,5 +1,5 @@
 {
-  "stage": "interim500; second calibration arm and1000-update comparison pending",
+  "stage": "Both arms500 matched; first arm1000 recorded separately; second arm1000 pending.",
   "rating": "general",
   "train_indices": [
     0,
@@ -108,11 +108,76 @@
   ],
   "visual_review": "Direct review of both matched initial/500-update pairs: p28 large clothing/background areas are more continuous and less fragmented; p31 cheek, hand and food color areas are more continuous. Clipping, grid fragmentation and isolated colored spots remain. This is a selected positive interim tendency, not final quality acceptance.",
   "limits": [
-    "1000 updates and the other calibration arm are not yet available in this interim record.",
     "Only two held prompts, same seed/CFG; no broad visual-quality claim.",
     "Loss windows alone do not establish visual improvement.",
     "Compute excludes VAE/TE encoding, input preparation and sample evaluation.",
     "No owner run, checkpoint, production initialization or default changed.",
-    "No image pixels, captions or model tensors are included."
-  ]
+    "No image pixels, captions or model tensors are included.",
+    "Second-arm1000 images and the final matched comparison are pending; first-arm1000 has prompt-dependent rather than monotonic visual trends."
+  ],
+  "matched_exposures": 500,
+  "exposure_sha256": "174ac805907442e389c5f8ddc733e9c83aae63ea5ac728a8cc2c07d0d4ff2501",
+  "moment_arm": {
+    "arm": "moment_spatial",
+    "body_before": "e8d4ef62183464de2a77ebda84d92d0e3c4e05579b08b08e372b76d0aa97782d",
+    "structural_before": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "initial_io_sha256": "592db4569d4473ddff57975431ecb08f38530104c20b337e734fc72c2fbb0c0d",
+    "group_counts": [
+      565,
+      67,
+      6
+    ],
+    "training_seconds": 353.4049999974668,
+    "peak_allocated_gib": 11.791069507598877,
+    "loss_windows": [
+      {
+        "first_step": 1,
+        "last_step": 100,
+        "mean": 1.1719693237543105
+      },
+      {
+        "first_step": 101,
+        "last_step": 200,
+        "mean": 1.0940433606505393
+      },
+      {
+        "first_step": 201,
+        "last_step": 300,
+        "mean": 0.96472530990839
+      },
+      {
+        "first_step": 301,
+        "last_step": 400,
+        "mean": 1.001211383342743
+      },
+      {
+        "first_step": 401,
+        "last_step": 500,
+        "mean": 0.817880554497242
+      }
+    ],
+    "samples": [
+      {
+        "index": 28,
+        "step": 500,
+        "sha256": "4a46564bdd0b1f954208d31d61b3f84911e36a283bc73e5dd0b2123bc9e5f0a2"
+      },
+      {
+        "index": 31,
+        "step": 500,
+        "sha256": "845b6a805132ecd5e0aad8b9f0aa754cae3762176610e2f79300399dd756b787"
+      }
+    ],
+    "initial_samples": [
+      {
+        "index": 28,
+        "sha256": "84f9acc44149d9a3b0f4753a9395910fa9916e7f3d53a387785ec4313930c7f8"
+      },
+      {
+        "index": 31,
+        "sha256": "71af954fa8b312326091eb133bb0bcc6d55061be0a91f7959572508223fac1bd"
+      }
+    ],
+    "visual_review": "Direct initial/500 review: p28 clothing/background areas are more continuous; p31 face/hand/food gain continuous color regions and clearer coarse structure. Clipping/grid fragmentation and colored corner spots remain. No clear visual advantage over the independent-spatial500 control is established."
+  }
 }

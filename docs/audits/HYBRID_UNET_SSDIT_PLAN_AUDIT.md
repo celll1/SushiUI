@@ -35,6 +35,14 @@ not monotonic. All638 optimizer entries reach1000, body weights change and the
 frozen caption bridge remains exact. Recorded training compute is718.947
 seconds, peak allocated11.793 GiB. The matched native-moment arm is pending.
 
+The native-moment arm now has a500-update checkpoint. Its two reviewed images
+also gain more continuous clothing/background and face/hand/food color regions
+relative to their own starting samples. Clipping/grid fragments remain; no
+clear advantage over the independent500-update control is demonstrated.
+The interim record now verifies identical500 item/null/sigma/noise exposures,
+initial body and structural hashes between arms. Native-moment training compute
+is353.405 seconds and peak allocated11.791 GiB. Its1000-update point is pending.
+
 | Requirement | Current evidence | Assessment |
 |---|---|---|
 | Fixed native width; learned down/up, local residual processing, multiple compressed skips | `core/rewiring/hybrid_spec.py`, `hybrid_modules.py`; `hybrid_rewiring_test.py`, native Anima/Ming/Qwen tests | Implemented; isotropic 2x boundaries, native widths retained |
@@ -83,7 +91,8 @@ individual records' limitations.
 - P5 combined-codec training tendencies are being evaluated. The500-update
   independent-spatial observation is positive for two selected held prompts;
   its1000-update point shows continued improvement for p28 but stronger clipping
-  for p31. The matched native-moment comparator is pending.
+  for p31. The native-moment comparator has similar positive500-update
+  tendencies without a demonstrated advantage; its1000-update point is pending.
   Neither artifact removal within this budget nor exact native reproduction
   is required. Broader or long-training quality is not established.
 - P0 does not establish the exact cause of the owner's old #174 degradation.

@@ -2327,6 +2327,14 @@ loss is0.55080 versus0.94818 for the first100; this does not override the mixed
 visual result. The native-moment comparator remains pending. See
 `docs/audits/data/hybrid_anima_codec_fullft_first_arm_2026-10.json`.
 
+At500 updates the native-moment arm also improves large color regions and
+coarse structure in both held images relative to its own initial samples.
+Clipping/grid fragments and colored corner spots remain. Direct review does
+not establish a clear visual advantage over the independent500-update control.
+The interim record verifies identical500 exposures and shared initial body/
+structural hashes; native-moment compute is353.405 seconds, peak11.791 GiB.
+Its1000-update point remains pending.
+
 The experimental calibrator adds `match_native_covariance`, accepted only with
 orthogonal input selection. The latter selects an initial row space; covariance
 matching then rescales/rotates it, so the final rows need not be orthonormal.

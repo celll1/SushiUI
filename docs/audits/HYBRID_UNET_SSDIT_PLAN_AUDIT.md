@@ -388,6 +388,19 @@ individual records' limitations.
    not every full-width fusion. Whole-probe79.381s/4.519GiB is not isolated
    overhead or production Full FT evidence. Public preview omits the extra
    full-channel capture cost; this temporary wrapper must not be publicly exported.
+   The next fixed-body comparison (`hybrid_anima_conditioning_fit_2026-10.json`)
+   holds319 initialization, both-condition forwards,200 noisy exposures and
+   starting RNG fixed. Paired field anchoring versus an added0.1 normalized
+   conditional-minus-null error uses a1% teacher-field-energy floor. Six CPU
+   analytic/gradient/layout cases pass. All65 optimizer counters reach200,
+   native hashes remain exact and first anchor/contrast losses match between arms.
+   Contrast last50 error falls0.36484→0.31167, while field anchor rises0.02468→
+   0.02835. Held CFG4 face/figure defects worsen and CFG1 scene mixing remains.
+   Reject this recipe; do not add the objective to public initialization.
+   Whole-probe131.331/126.731s and4.980/4.985GiB are equal-update evidence, not
+   a universal speed result. Always paired conditioning differs from the earlier
+   single-condition/dropout control. Before further loss/rate variations, inspect
+   fusion of encoder detail and coarse update at restored resolution boundaries.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

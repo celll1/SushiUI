@@ -2054,3 +2054,25 @@ from codec/noise alignment, not its replacement. No combined Full FT was done
 here and no owner artifact/default changed. Next gates are a reusable multi-grid
 initialization recipe and codec/IO adaptation with held generation.
 Evidence: `docs/audits/data/hybrid_anima_public_feature_fusion_multigrid_2026-10.json`.
+
+### Multi-grid initializer foundations (2026-10-10)
+
+`core/rewiring/resolution_schedule.py` now owns bounded grid validation and
+the `round_robin_v1` curriculum: anchor resolution first, then at most three
+distinct additional square resolutions, each divisible by64 within64–1024.
+Each phase starts a fresh cycle. Grid selection consumes no exposure-selection
+RNG; mixed-grid noising accepts a separate timestep generator so changing a
+noise tensor's shape does not change subsequent timestep draws.
+
+Initialization lineage accepts the optional paired fields
+`additional_resolutions` and `resolution_sampling`. It rejects incomplete,
+unknown or empty curricula. Legacy recipes and calibration hashes remain
+unchanged; the helper emits these fields only for a real multi-grid plan.
+The40-test CPU check covers shape-independent timestep draws, historical
+single-grid RNG order, lineage round trips and initializer ownership.
+
+This is shared infrastructure, not an exposed option yet. Anima/Ming/Qwen
+preparation, trajectory capture, API geometry preflight and frontend controls
+still need to consume it before a public request may select mixed grids.
+No GPU quality claim, default promotion or owner-run change follows from this
+CPU check.

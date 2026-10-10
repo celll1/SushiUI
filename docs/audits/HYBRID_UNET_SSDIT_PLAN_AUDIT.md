@@ -7,6 +7,15 @@ Existing owner runs and their artifacts are not migrated implicitly.
 
 ## Implemented contracts and evidence
 
+Owner evaluation policy update (2026-10-10): VAE-swap quality may require long
+training beyond bounded verification. Evaluate matched before/intermediate/after
+improvement tendencies, not disappearance of clipping/grid artifacts within a
+short probe. Historical unsuccessful quality probes describe their finite
+budgets; they do not prove inability to recover through long training. Functional,
+numerical and compute acceptance is separate from final appearance quality.
+The active1000-update comparison retains500/1000 generation checkpoints to
+evaluate this trend against existing initial samples.
+
 | Requirement | Current evidence | Assessment |
 |---|---|---|
 | Fixed native width; learned down/up, local residual processing, multiple compressed skips | `core/rewiring/hybrid_spec.py`, `hybrid_modules.py`; `hybrid_rewiring_test.py`, native Anima/Ming/Qwen tests | Implemented; isotropic 2x boundaries, native widths retained |

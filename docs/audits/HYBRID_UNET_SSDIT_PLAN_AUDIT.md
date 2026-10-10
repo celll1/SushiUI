@@ -637,3 +637,19 @@ is measurable but small (native noise std0.988–1.000), so snapshot staleness i
 not established as the main cause. Combined quality remains unaccepted; no
 production policy is changed. Evidence:
 `hybrid_anima_spatial_codec_io_fit_2026-10.json`.
+
+An experimental input-covariance match now preserves clean native fit moments
+and exact affine flow closure while reducing pixel256 inverse norm27.92→14.71.
+56 CPU checks pass. Held projected std0.38685 is close to native0.37090, but
+paired native projection MSE worsens; different metrics must not be conflated.
+Matched frozen1024px generation has less prominent large green/purple regions
+but retains clipping and grid texture. This is not combined trained-quality
+acceptance or a default change. Evidence:
+`hybrid_codec_moment_flow_consistent_2026-10.json`.
+
+The covariance-matched candidate also completes200 matched IO/bridge updates
+with finite gradients, exact frozen hashes and counters200. Own peak4.154GiB
+and47.016 wall seconds describe restricted fitting, not Full FT. Last50 mean
+loss1.5127 improves over fitted-spatial2.2010 but remains above independent1.1510;
+reviewed held1024px generation retains clipping/grid defects. Combined quality
+remains open; no default or owner artifact is promoted.

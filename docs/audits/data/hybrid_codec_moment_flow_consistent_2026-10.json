@@ -1,0 +1,398 @@
+{
+  "fit": {
+    "rating": "general",
+    "fit_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "held_indices": [
+      28,
+      29,
+      30,
+      31
+    ],
+    "arms": [
+      {
+        "arm": "latent_area",
+        "metrics": {
+          "input_condition_number": 19.31974143866425,
+          "fitted_input_condition_number": 22.826948072125514,
+          "orthogonal_input": true,
+          "match_native_covariance": true,
+          "covariance_max_error": 2.4980018054066022e-15,
+          "output_kernel_size": 3,
+          "inverse_norm": 21.554602384127683,
+          "composition_max_error": 2.8116850956889196e-15,
+          "bias_closure_max_error": 9.43689570931383e-16
+        },
+        "fp32_coefficients_flow_closure_mse": 1.1875466490264585e-14,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.7924158573150635
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.7090297341346741
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 0.7189064621925354
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.6008704900741577
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 0.7838093042373657
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 0.690987765789032
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.6243575811386108
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.53838050365448
+          }
+        ]
+      },
+      {
+        "arm": "pixel256",
+        "metrics": {
+          "input_condition_number": 11.369675280530181,
+          "fitted_input_condition_number": 11.404524516128141,
+          "orthogonal_input": true,
+          "match_native_covariance": true,
+          "covariance_max_error": 1.609823385706477e-15,
+          "output_kernel_size": 3,
+          "inverse_norm": 14.711195348014602,
+          "composition_max_error": 8.689121786967898e-16,
+          "bias_closure_max_error": 4.440892098500626e-16
+        },
+        "fp32_coefficients_flow_closure_mse": 7.975304118341593e-15,
+        "results": [
+          {
+            "index": 28,
+            "kind": "direct",
+            "target_latent_mse": 0.7653303146362305
+          },
+          {
+            "index": 28,
+            "kind": "pair",
+            "target_latent_mse": 0.6626957058906555
+          },
+          {
+            "index": 29,
+            "kind": "direct",
+            "target_latent_mse": 0.7035512328147888
+          },
+          {
+            "index": 29,
+            "kind": "pair",
+            "target_latent_mse": 0.5955102443695068
+          },
+          {
+            "index": 30,
+            "kind": "direct",
+            "target_latent_mse": 0.7620790600776672
+          },
+          {
+            "index": 30,
+            "kind": "pair",
+            "target_latent_mse": 0.6741799712181091
+          },
+          {
+            "index": 31,
+            "kind": "direct",
+            "target_latent_mse": 0.6473106145858765
+          },
+          {
+            "index": 31,
+            "kind": "pair",
+            "target_latent_mse": 0.5204693078994751
+          }
+        ]
+      }
+    ],
+    "target_grid": [
+      32,
+      32
+    ],
+    "reused_latent_inputs": true,
+    "limits": [
+      "Moment-matched input and constrained spatial output in existing 3x3 bridge containers; no production default change.",
+      "No image re-encoding, no new data collection or CUDA context in this fitting step.",
+      "Clean reconstruction and closure checks do not establish generation or Full FT quality."
+    ]
+  },
+  "generation": {
+    "rating": "general",
+    "resolutions": [
+      512,
+      1024
+    ],
+    "steps": 28,
+    "cfg": 4,
+    "seed": 63,
+    "mixed_modules_sha256": "d80639dd8a280e7754a923aa0f6a8e15d3de315a6d6938f28c8be9200fffef27",
+    "native_parameters_sha256": "64db9e785a7efca070fa32d71d088f13c5b730cc90cfbab9bd6d17738bff6571",
+    "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "bridge_file_sha256": "8a74b4e57fe139e897257dd46f878e99985c4a19b1e3ddcdf3d822c1c990d4c2",
+    "limits": [
+      "Same frozen body and mixed-grid U-Net as retained controls; Native-covariance-matched pointwise input with flow-consistent 3x3 output calibration replaces only bridge kernels and their Gaussian noise snapshots. No exported artifact/default is changed."
+    ],
+    "samples": [
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 512,
+        "latent_stats": {
+          "rms": 1.014503836631775,
+          "std": 1.0138812065124512,
+          "maximum": 4.53125
+        },
+        "sha256": "d58d4d5551afba3a2e4d6170185a345f2a2e98914bf92e59362ac4485c8fa1ce"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 512,
+        "latent_stats": {
+          "rms": 1.1098963022232056,
+          "std": 1.109729290008545,
+          "maximum": 4.0625
+        },
+        "sha256": "f78b328a52ee12b61990c6ec5033b83ece43d8741ff508f5a800b454656d9902"
+      },
+      {
+        "arm": "pixel256",
+        "index": 28,
+        "resolution": 1024,
+        "latent_stats": {
+          "rms": 0.8649117350578308,
+          "std": 0.8648269176483154,
+          "maximum": 3.5
+        },
+        "sha256": "53a604388e106f247c6efafdf7ca535187946442af7c838a679d38699427912f"
+      },
+      {
+        "arm": "pixel256",
+        "index": 31,
+        "resolution": 1024,
+        "latent_stats": {
+          "rms": 1.1105800867080688,
+          "std": 1.1102696657180786,
+          "maximum": 4.1875
+        },
+        "sha256": "3ec2960314e879bde840b7e754a5ee51f3a2a1c9d3d6abfcd2b14c6a995513ff"
+      }
+    ]
+  },
+  "held_distribution_summary": [
+    {
+      "arm": "independent_spatial",
+      "native_projection_mse": 0.030318629927933216,
+      "target_pair_mse": 0.6436582058668137,
+      "target_direct_mse": 0.6872172057628632,
+      "channel_std_mean": {
+        "native": 0.3708999127109036,
+        "projected": 0.35570813360711845,
+        "target": 0.9418134799427338,
+        "pair": 0.4893291253728427
+      }
+    },
+    {
+      "arm": "fitted_flow",
+      "native_projection_mse": 0.046308608725667,
+      "target_pair_mse": 0.7518045008182526,
+      "target_direct_mse": 0.9818343818187714,
+      "channel_std_mean": {
+        "native": 0.3708999127109036,
+        "projected": 0.3336117897053551,
+        "target": 0.9418134799427338,
+        "pair": 0.40109015322914054
+      }
+    },
+    {
+      "arm": "spatial_flow",
+      "native_projection_mse": 0.046308608725667,
+      "target_pair_mse": 0.6267181634902954,
+      "target_direct_mse": 0.8630558997392654,
+      "channel_std_mean": {
+        "native": 0.3708999127109036,
+        "projected": 0.3336117897053551,
+        "target": 0.9418134799427338,
+        "pair": 0.5214335371834153
+      }
+    },
+    {
+      "arm": "moment_flow",
+      "native_projection_mse": 0.07897704467177391,
+      "target_pair_mse": 0.6132138073444366,
+      "target_direct_mse": 0.7195678055286407,
+      "channel_std_mean": {
+        "native": 0.3708999127109036,
+        "projected": 0.3868537819426579,
+        "target": 0.9418134799427338,
+        "pair": 0.5708450698615155
+      }
+    },
+    {
+      "arm": "orthogonal_flow",
+      "native_projection_mse": 0.455622561275959,
+      "target_pair_mse": 0.9104506373405457,
+      "target_direct_mse": 0.8840200752019882,
+      "channel_std_mean": {
+        "native": 0.3708999127109036,
+        "projected": 0.75127010434792,
+        "target": 0.9418134799427338,
+        "pair": 0.7294549067863519
+      }
+    }
+  ],
+  "verification": {
+    "cpu_tests_passed": 56,
+    "production_default_changed": false,
+    "visual_assessment": "Both1024px held outputs retain two-person/person-food outlines; large green/purple regions are less prominent than fitted spatial controls, but clipping and fragmented/grid texture remain.512px outputs were not visually reviewed.",
+    "limits": [
+      "No image pixels, captions or fitted tensors included.",
+      "Fit covariance matching is not held exact recovery or decoder-manifold equivalence.",
+      "Frozen-body generation is not short Full FT quality or broad acceptance."
+    ]
+  },
+  "io_training": {
+    "rating": "general",
+    "train_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27
+    ],
+    "held_indices": [
+      28,
+      31
+    ],
+    "updates": 200,
+    "learning_rate": 0.0001,
+    "storage": "FP32 IO/bridges, BF16 frozen body/compute",
+    "optimizer": "AdamW8bit",
+    "trainable_names": [
+      "x_embedder.proj.1.weight",
+      "final_layer.linear.weight",
+      "vae_latent_bridge.input.projection.weight",
+      "vae_latent_bridge.input.projection.bias",
+      "vae_latent_bridge.output.projection.weight",
+      "vae_latent_bridge.output.projection.bias"
+    ],
+    "trainable_parameters": 1130624,
+    "frozen_before": "91f0cf7c1bdfc5a483179a5438e66d4bd0e5a4fe41f93c962f48dbcb110058d6",
+    "structural_sha256": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "source": "retained combined public_step2 body with mixed-grid U-Net",
+    "limits": [
+      "Matched exposures, not equal GPU-time or broad quality acceptance.",
+      "No new image/TE/VAE encoding; existing general caches reused.",
+      "Original IO/bridges fitted; native body and U-Net weights stay frozen.",
+      "Private probe, no owner run or artifact/default changed."
+    ],
+    "reused_control": "hybrid_anima_spatial_codec_io_fit:independent_spatial",
+    "matched_exposures": 200,
+    "arm": {
+      "arm": "moment_spatial",
+      "training_seconds": 47.0160000002943,
+      "peak_allocated_gib": 4.153641223907471,
+      "optimizer_counters": [
+        200
+      ],
+      "frozen_after": "91f0cf7c1bdfc5a483179a5438e66d4bd0e5a4fe41f93c962f48dbcb110058d6",
+      "samples": [
+        {
+          "index": 28,
+          "resolution": 512,
+          "sha256": "0ea4a54330b637cefa4bed49eca3698f21c4e5fc65491c2434ca7f723c7ea0d8"
+        },
+        {
+          "index": 31,
+          "resolution": 512,
+          "sha256": "c6636837d56a53a3f869fe7a04508c4cbf0472a3d6c74e68f8287ab781b39531"
+        },
+        {
+          "index": 28,
+          "resolution": 1024,
+          "sha256": "84f9acc44149d9a3b0f4753a9395910fa9916e7f3d53a387785ec4313930c7f8"
+        },
+        {
+          "index": 31,
+          "resolution": 1024,
+          "sha256": "71af954fa8b312326091eb133bb0bcc6d55061be0a91f7959572508223fac1bd"
+        }
+      ],
+      "first25_mean_loss": 1.6853210186958314,
+      "last50_mean_loss": 1.5126509869098663
+    },
+    "matched_control_last50_mean_loss": 1.1509886920452117,
+    "visual_assessment": "Both reviewed1024px conditions retain coarse figures but clipping/grid fragmentation remains; no consistent recovery over the independent calibration control.512px images unreviewed."
+  }
+}

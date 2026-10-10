@@ -2258,3 +2258,45 @@ codec work should control inverse amplification and generated-state mismatch;
 short IO-only adaptation did not establish combined quality. No owner run,
 checkpoint or default changed. Evidence:
 `docs/audits/data/hybrid_anima_spatial_codec_io_fit_2026-10.json`.
+
+### Native clean covariance with exact flow closure (2026-10-10)
+
+The experimental calibrator adds `match_native_covariance`, accepted only with
+orthogonal input selection. The latter selects an initial row space; covariance
+matching then rescales/rotates it, so the final rows need not be orthonormal.
+For paired clean covariance C_native and projected covariance C_projected,
+input becomes `C_native^(1/2) * C_projected^(-1/2) * A_orthogonal`, with
+the clean mean offset refitted. Non-positive/degenerate covariance is refused.
+The output spatial kernels and bias are constrained as before using the final
+input pseudoinverse. Neither Gaussian snapshots nor production policy changes.
+
+The28-image fit preserves native covariance to approximately2e-15 and closes
+FP32-coefficient source-flow error to approximately8e-15. Pixel256 inverse norm
+falls27.92→14.71; input condition remains approximately11.37. On four held
+items, projected channel standard deviation becomes0.38685 (native0.37090),
+round-trip target MSE0.61321 and direct native-to-target MSE0.71957. Native
+projection MSE worsens0.04631→0.07898: covariance preservation trades away
+some paired reconstruction accuracy. Exact fit moments are not exact held
+moments or proof of codec-manifold compatibility.
+
+56 CPU Gaussian/pair tests cover mean/covariance recovery, both output kernels,
+FP32/BF16 gradients, frame ordering and strict restoration; compile and real
+import complete without CUDA initialization. The same frozen body/mixed U-Net
+and held general CFG4/seed63/28-step conditions are generated at512/1024px.
+Both reviewed1024px images retain figure outlines; large green/purple regions
+are less prominent than fitted-spatial controls, but clipping and fragmented
+grid texture remain.512px outputs are retained without visual acceptance.
+No production default or owner artifact changes. Evidence:
+`docs/audits/data/hybrid_codec_moment_flow_consistent_2026-10.json`.
+
+The same six IO/bridge tensors then receive200 updates with the identical
+item/null/sigma/noise sequence as the retained independent-spatial control.
+All gradients are finite; source body/U-Net hashes stay exact and all optimizer
+counters reach200. This uses47.016 wall seconds/4.154GiB own peak, with
+encoding/export/evaluation excluded. First25/last50 mean losses are1.6853/1.5127,
+between independent1.3275/1.1510 and fitted-spatial2.3879/2.2010. Both reviewed
+1024px held conditions retain coarse figures but clipping/grid fragmentation
+remains; there is no consistent recovery over the independent control. It is
+still not a production default or Full FT acceptance. Moment matching is a
+useful initialization constraint, not sufficient evidence that limited native
+features span the target decoder's clean manifold.

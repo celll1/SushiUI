@@ -1799,3 +1799,38 @@ private stage teacher/student ownership and alignment, then whole generation
 and optimizer restoration before public factory/API/UI promotion. Existing
 owner runs, topology presets and checkpoint identities remain unchanged.
 Evidence: `docs/audits/data/hybrid_anima_projected_block_2026-10.json`.
+
+### Private projected-stage ownership and restoration
+
+`core/experiments/anima_projected_stage.py` temporarily replaces selected
+coarse-region blocks with projected students. Native blocks remain frozen and
+are reinstalled for each no-grad, eval-mode teacher call with the U-Net topology
+disabled. Student blocks and training modes are restored even when the teacher
+raises; outer cleanup restores source blocks, flags, modes, topology and RNG.
+Existing gradients, block offload and other initialization owners are refused.
+The projected wrapper exposes its internal self-attention to Anima's per-forward
+style-context stamping without registering a duplicate module.
+
+Private payloads include native parameter fingerprint, exact topology, projection
+manifests, structural tensors and student tensors. Identity, keys, shape, dtype,
+finite values and integer channel coordinates are checked before any tensor is
+loaded. This is experimental weight restoration, not public checkpoint lineage
+or optimizer resume. Ten stage CPU cases plus sixteen projection cases pass.
+Outer features still have native width; these blocks do not yet implement a
+variable-width activation graph. Existing runs and presets are unchanged.
+
+Real Anima coarse blocks8..19 are projected2048→1024 with learned bridges,
+starting from the same319-update structural initialization and cached general
+exposures. Original51/14 structural tensors use LR0.001/0.00025;264 projected
+tensors use0.000005. All329 optimizer counters reach200; each encoder/decoder
+has positive first gradients. Native body fingerprints match after cleanup.
+The explicit private payload reload succeeds before generation. Initialization
+cost is88.890s and5.847GiB own peak, including resident frozen teacher blocks;
+this is not student-only memory or the final training matrix.
+
+Field loss starts0.24837 and last50 mean is0.03681. Both held CFG4 generations
+have severe figure fragmentation and horizontal bands, with no coherent facial
+or two-person structure. Reject this200-update recipe as a default. Width
+projection functionality is verified, but alignment/Full FT quality remains
+open; these results do not show that every narrower architecture must fail.
+Evidence: `docs/audits/data/hybrid_anima_projected_stage_2026-10.json`.

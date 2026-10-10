@@ -34,6 +34,10 @@ class ProjectedAnimaBlock(nn.Module):
             self.encoder, self.decoder = nn.Parameter(encoder), nn.Parameter(decoder)
 
     @property
+    def self_attn(self):
+        return self.student.self_attn
+
+    @property
     def gradient_checkpoint_mode(self):
         return self.student.gradient_checkpoint_mode
 

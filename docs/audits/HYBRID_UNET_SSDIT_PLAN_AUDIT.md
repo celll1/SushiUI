@@ -401,6 +401,25 @@ individual records' limitations.
    a universal speed result. Always paired conditioning differs from the earlier
    single-condition/dropout control. Before further loss/rate variations, inspect
    fusion of encoder detail and coarse update at restored resolution boundaries.
+   A private boundary-detail control now adds a channelwise gain on saved minus
+   interpolated low-input features, after existing learned up correction. Low
+   input includes learned down, so this is not a strict high-pass filter.
+   Fifteen new CPU cases plus32 existing runtime/hybrid cases verify identity,
+   nested/grouped layouts, gradients/checkpoint/skip policies, optional-hook
+   isolation, transfer failure recovery and shape rejection. The public path
+   has no callback by default. Both active-gain and same67-tensor zero-rate arms
+   finish200 matched exposures from319, identical starting RNG and first field
+   loss, with native-body hashes exact (`hybrid_anima_boundary_detail_fit_2026-10.json`,
+   `hybrid_anima_boundary_detail_zero_rate_2026-10.json`). Two gains add4,096
+   weights; active gains change while zero-rate gains remain exactly zero.
+   Final50 field errors0.02808/0.03250 accompany a bounded CFG4 benefit: active
+   gains retain two back-facing figures and a coherent girl face, while zero-rate
+   loses a person and deforms the face. CFG1 still fragments. Retain this as a
+   candidate, not a default or proved general/Full FT improvement. Old65-tensor
+   control has different SR ownership; use the matched67-tensor arm for comparison.
+   Whole-probe63.021/79.140s and4.509GiB are not isolated boundary overhead.
+   Next verify additional held prompts and matched Full FT before public factory,
+   payload/UI/default wiring or a revised four-condition performance matrix.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

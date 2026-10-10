@@ -9081,6 +9081,14 @@ class BaseTrainer(ABC):
             )
         return module
 
+    def _clip_global_grad_norm(self, max_norm):
+        """Clip one shared norm across every optimizer group."""
+        parameters = {}
+        for group in self.optimizer.param_groups:
+            for param in group["params"]:
+                parameters[id(param)] = param
+        return torch.nn.utils.clip_grad_norm_(parameters.values(), max_norm)
+
     def _clip_nonfused_parameters(self) -> None:
         """Observe raw accumulated gradients before the global-norm clip."""
         clipper = getattr(self, "_fused_grad_clipper", None)
@@ -21002,7 +21010,7 @@ class BaseTrainer(ABC):
                                     grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
                                     self._clip_nonfused_parameters()
                                     if max_grad_norm > 0:
-                                        torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+                                        self._clip_global_grad_norm(max_grad_norm)
                                     # A GradScaler step on non-finite gradients
                                     # updates nothing and lowers the scale; the
                                     # morph axis counts SUCCESSFUL updates only.
@@ -21018,7 +21026,7 @@ class BaseTrainer(ABC):
                                     grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
                                     self._clip_nonfused_parameters()
                                     if max_grad_norm > 0:
-                                        torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
+                                        self._clip_global_grad_norm(max_grad_norm)
                                     self.optimizer.step()
                                     self.optimizer.zero_grad()
                                     self._update_ema()

@@ -434,9 +434,16 @@ individual records' limitations.
    contamination remains and CFG1 still fragments. Thus the exposure recipe
    alone does not explain converted-model failures. Different parameter sets
    alter clipping/SR; the precise cause is not established. See
-   `hybrid_anima_native_matched_fullft_2026-10.json`. Inspect update allocation
-   and stage information next; public factory/payload/UI/default promotion and
-   revised four-condition matrix remain open.
+   `hybrid_anima_native_matched_fullft_2026-10.json`. Five starting-state
+   gradient exposures now exclude structural norm dominance in that bounded
+   sample: added tensors contribute0.57–1.37% of squared norm, while mid/deep
+   native-block gradient cosines are only0.068–0.101/0.016–0.098. This measures
+   gradients, not Adam/SR updates or a cause. Separately fix shared trainer
+   clipping across all optimizer groups;49 CPU regression cases pass. Earlier
+   private probes already clipped all params, so this fix does not resolve their
+   quality regression. See `hybrid_anima_gradient_allocation_2026-10.json`.
+   Retained stage information remains the next architecture question; public
+   factory/payload/UI/default promotion and revised matrix remain open.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

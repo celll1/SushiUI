@@ -9,12 +9,12 @@ from core.models.components.gaussian_alignment import POLICY
 from latent_adapter_contract_test import declaration
 
 
-def fitted(orthogonal_input):
+def fitted(orthogonal_input, output_kernel_size):
     generator = torch.Generator().manual_seed(218)
     target = torch.randn(4, 5, 12, 16, generator=generator)+.4
     matrix = torch.randn(3, 5, 1, 1, generator=generator)
     native = F.conv2d(target, matrix)+torch.tensor([.2, -.3, .5])[None, :, None, None]
-    fitter = AffineFlowCalibrator(3, 5, ridge=1e-4)
+    fitter = AffineFlowCalibrator(3, 5, ridge=1e-4, output_kernel_size=output_kernel_size)
     fitter.add(native[:2], target[:2]); fitter.add(native[2:], target[2:])
     before = torch.get_rng_state().clone()
     incoming, outgoing = fitter.finish(orthogonal_input=orthogonal_input)
@@ -31,8 +31,9 @@ def fitted(orthogonal_input):
 @pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize('frames', [False, True])
 @pytest.mark.parametrize('orthogonal_input', [False, True])
-def test_actual_pair_flow_derivative_and_reload(dtype, frames, orthogonal_input):
-    incoming, outgoing = fitted(orthogonal_input)
+@pytest.mark.parametrize('output_kernel_size', [1, 3])
+def test_actual_pair_flow_derivative_and_reload(dtype, frames, orthogonal_input, output_kernel_size):
+    incoming, outgoing = fitted(orthogonal_input, output_kernel_size)
     pair = SpatialAlignmentPair(dict(declaration(3, 5), noise_policy=POLICY)).to(dtype=dtype)
     pair.initialize_from_pair(incoming, outgoing)
     shape = (2,5,2,8,10) if frames else (2,5,8,10)
@@ -66,6 +67,8 @@ def test_rejects_degenerate_or_incompatible_pairs():
         with pytest.raises(ValueError):AffineFlowCalibrator(*channels,ridge=1e-4)
     for ridge in (0,float('nan'),True):
         with pytest.raises(ValueError):AffineFlowCalibrator(3,5,ridge=ridge)
+    for size in (0,2,True):
+        with pytest.raises(ValueError,match='kernel'):AffineFlowCalibrator(3,5,ridge=1e-4,output_kernel_size=size)
     fitter = AffineFlowCalibrator(3,5,ridge=1e-4)
     with pytest.raises(ValueError,match='boolean'):fitter.finish(orthogonal_input=1)
     with pytest.raises(ValueError,match='insufficient'):fitter.finish()
@@ -73,3 +76,28 @@ def test_rejects_degenerate_or_incompatible_pairs():
     with pytest.raises(ValueError,match='nonfinite'):fitter.add(torch.zeros(1,3,8,8),torch.full((1,5,8,8),float('nan')))
     fitter.add(torch.zeros(1,3,8,8),torch.randn(1,5,8,8))
     with pytest.raises(ValueError,match='full-row-rank'):fitter.finish()
+
+
+@pytest.mark.parametrize('frames', [False, True])
+def test_spatial_output_recovers_neighbor_features_without_flow_leakage(frames):
+    generator = torch.Generator().manual_seed(473)
+    native = torch.randn(4,3,12,16,generator=generator)
+    shifted = F.pad(native[:,:2,:,:-1],(1,0))
+    target = torch.cat((native,shifted),dim=1)
+    if frames:
+        native = torch.stack((native,2*native),dim=2)
+        target = torch.stack((target,2*target),dim=2)
+    spatial = AffineFlowCalibrator(3,5,ridge=1e-6,output_kernel_size=3)
+    point = AffineFlowCalibrator(3,5,ridge=1e-6)
+    for fitter in (spatial,point):fitter.add(native,target)
+    incoming,outgoing = spatial.finish()
+    _,point_out = point.finish()
+    image = native if not frames else native[:,:,0]
+    expected = target if not frames else target[:,:,0]
+    error = (outgoing(image)-expected).square().mean()
+    baseline = (point_out(image)-expected).square().mean()
+    assert error < 1e-8 and baseline > .1
+    off_center = outgoing.projection.weight.clone()
+    off_center[:,:,1,1] = 0
+    assert off_center.abs().max() > .9
+    torch.testing.assert_close(incoming(outgoing(image)),image,atol=1e-5,rtol=1e-5)

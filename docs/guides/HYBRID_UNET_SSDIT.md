@@ -1880,3 +1880,34 @@ Reject this recipe as a default despite its initially coherent teacher-fit
 generation. Public wiring and final performance matrix remain pending quality
 recovery. This does not prove unrestricted feature fusion cannot work.
 Evidence: `docs/audits/data/hybrid_anima_boundary_features_2026-10.json`.
+
+### Full-rank fusion training stability controls
+
+The same fitted fusion weights are now compared with a frozen native body and
+with all Full FT learning rates reduced tenfold. Both use the same222 supervised
+item/dropout/sigma/noise records, starting native/RNG hashes and exact first loss
+as the previous full-rank Full FT. No teacher loss is added.
+
+Frozen-body learning updates only67 structural tensors at5e-5, with counters222
+and identical native fingerprints. The two-person composition is more coherent
+than the earlier Full FT, but face/eye and body details remain distorted. Changed
+parameter and clipping sets also change SR draw ownership; native updates alone
+cannot explain all degradation. Update GPU time56.011s, own peak4.690GiB and
+last50 supervised loss0.17073 describe this diagnostic, not Full FT acceptance.
+
+The reduced-rate arm keeps the same634 trainable tensors and parameter ordering:
+native LR5e-7, original/new structure5e-6. All counters reach222 and the native
+body fingerprint changes. Two held CFG4 samples retain the two-person scene and
+single person's body, with detail/hand/face defects; catastrophic fragmentation
+seen at the previous rates is absent. Last50 supervised loss0.16469, update GPU
+time104.971s and11.779GiB own peak are bounded512px costs, not the final matrix.
+This is a candidate rate setting, not a universal Anima or hybrid default.
+
+Explicit private-context full-body restoration in a fresh model matches all755
+saved tensors exactly. An additional held prompt31 retains a coherent person,
+hands and food near the mouth, with imperfect facial/food detail. This verifies
+private weight restoration and one additional general composition, not public
+payload lineage, optimizer continuation, partition/codec parity or broad quality.
+P5/P6 remain open; public wiring and final U-Net±codec performance verification
+are still required. No owner run or learning rate is changed.
+Evidence: `docs/audits/data/hybrid_anima_boundary_features_stability_2026-10.json`.

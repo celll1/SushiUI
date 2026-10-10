@@ -1,0 +1,50 @@
+{
+  "architecture": "anima",
+  "rating": "general",
+  "resolution": 512,
+  "vae_swap": false,
+  "initial_private_fusion_sha256": "9eac4d0345391e22c69e0344facc34ad84fabfa3ab4f0c4188f370495858b9d7",
+  "matched_supervised_exposures": 222,
+  "same_native_start_rng_and_first_loss": true,
+  "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+  "frozen_native": {
+    "trainable_group_counts": [65, 2],
+    "group_rates": [0.00005, 0.00005],
+    "optimizer_entries": 67,
+    "optimizer_counters": [222],
+    "native_hash_unchanged": true,
+    "last50_mean_supervised_loss": 0.170725733935833,
+    "cuda_update_seconds": 56.0112249755859,
+    "peak_allocated_gib": 4.690074920654297,
+    "private_structural_bytes": 71287612,
+    "visual_result": "Two-person composition more coherent than prior Full FT, with face/eye/body detail distortion."
+  },
+  "tenfold_lower_full_ft": {
+    "trainable_group_counts": [567, 65, 2],
+    "group_rates": [0.0000005, 0.000005, 0.000005],
+    "optimizer_entries": 634,
+    "optimizer_counters": [222],
+    "native_after_sha256": "cde1224f3ecbd20a6f6607a155dd87246ef3c444f4eeac339aa7be4d1d6553fd",
+    "same_parameter_set_order_and_initial_state_as_prior_full_ft": true,
+    "last50_mean_supervised_loss": 0.164687254875898,
+    "cuda_update_seconds": 104.97132699585,
+    "peak_allocated_gib": 11.778765678405762,
+    "visual_result": "Two held CFG4 samples retain two-person and single-person coarse structure, with hand/face/detail defects. No prior catastrophic fragmentation."
+  },
+  "fresh_full_body_restore": {
+    "payload_sha256": "24828376e30620d8fe11532eb54b817ee61a7f106a721ef1445b824d779ebe60",
+    "exact_tensors": 755,
+    "extra_updates": 0,
+    "held_prompt": 31,
+    "cfg": 4,
+    "sample_sha256": "0a3f64fc37b35e719610a5b28a48ea22ec9a34477250ab6f2c3776a967180ade",
+    "visual_result": "Person, hands and food near mouth remain coherent; facial/food detail imperfect."
+  },
+  "limits": [
+    "Frozen-body parameter and clipping sets differ; no exclusive causal attribution to native updates.",
+    "Lower-rate candidate only, not a universal default or broad quality acceptance.",
+    "Private weight reload, not public artifact or optimizer resume.",
+    "No combined codec, partition or final speed/VRAM matrix acceptance.",
+    "No owner run/default changed; images, captions and tensors are not committed."
+  ]
+}

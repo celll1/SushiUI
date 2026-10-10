@@ -1,0 +1,165 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "mode": "paired_fullft_correction_lr",
+  "updates_per_arm": 222,
+  "native_learning_rate": 5E-06,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "init_state_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "arms": [
+    {
+      "arm": "uniform",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p28_uniform_cfg1.png",
+          "sha256": "2a6c9cbfb77ac42c0ca7d5b196292225c7ae9c6f4051ddef6e4fda7c28965b62"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p28_uniform_cfg4.png",
+          "sha256": "4c44e52ef132803d27af83d348bb686f88d6fe4562eadd407181f2a7225bd8bf"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p29_uniform_cfg1.png",
+          "sha256": "f7051a9931c8ebcbdb2ebd1b8f7986e47b830aa8122e932f8d87772fd9cee881"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p29_uniform_cfg4.png",
+          "sha256": "529db61dc6956946d3cd6336a21c1da027b4059ae972c3694c9d7f6bf8b61251"
+        }
+      ],
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_start_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "learning_rates": [
+        5E-06,
+        5E-06
+      ],
+      "group_tensor_counts": [
+        567,
+        65
+      ],
+      "start_cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "start_cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "native_after_first_update_sha256": "d70edc5703edcc86b4692b12b058fbec27142a502efc361a91d73d2c8099b441",
+      "optimizer_entries": 632,
+      "optimizer_counters": [
+        222
+      ],
+      "fullft_peak_allocated_gib": 11.643267631530762,
+      "observations": "CFG4: p28 oversized foreground garment and disconnected background figure; p29 coherent face but distorted anatomy. CFG1: fragmented figures and outlines.",
+      "last50_mean_loss": 0.169882682710886,
+      "first_loss": 0.16938236355781555,
+      "training_cuda_seconds": 122.95198330688477
+    },
+    {
+      "arm": "corrections_10x",
+      "samples": [
+        {
+          "index": 28,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p28_corrections_10x_cfg1.png",
+          "sha256": "d4bf1f035916f0fca2d8264e2dc5661d216777d1e8c3d5fa6b7d4f787d495523"
+        },
+        {
+          "index": 28,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p28_corrections_10x_cfg4.png",
+          "sha256": "3e8a447d9a3b78154aaf8e163f83f54a7b5f346e6c336fc9fb819616f4042be1"
+        },
+        {
+          "index": 29,
+          "cfg": 1.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p29_corrections_10x_cfg1.png",
+          "sha256": "6b6bfac250beba8222739a07890d75bd6cec6a091a713fac800f4c62bfd2ad10"
+        },
+        {
+          "index": 29,
+          "cfg": 4.0,
+          "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_ft_module_lr\\p29_corrections_10x_cfg4.png",
+          "sha256": "3c57fbabd0ba4660c380c89c797d9761c1591014a8ef55136eff5e5f75e0b463"
+        }
+      ],
+      "native_start_sha256": "6045ea4e828e63c7d208da610663ce5a8477922d046cba25d48f2397edc2cea9",
+      "module_start_sha256": "23ff36ba116ca0050a15d0c73ed7c41ff4ee5b91235a19dac9333e8a56b7cc7c",
+      "learning_rates": [
+        5E-06,
+        5E-05
+      ],
+      "group_tensor_counts": [
+        567,
+        65
+      ],
+      "start_cpu_rng_sha256": "42217c7cbe3243aacba0c2e85a8787bab1daf2e7c0410d0f5fc4bf816a37c70b",
+      "start_cuda_rng_sha256": "d25c9ad664800dd9af82d52927bc056a06ca18c495659ca79511d011498fd0c1",
+      "native_after_first_update_sha256": "55f9e210c64a44861e78d9e128e23243d09d160ab5109ea44fbbfe7d0b04339f",
+      "optimizer_entries": 632,
+      "optimizer_counters": [
+        222
+      ],
+      "fullft_peak_allocated_gib": 11.644378662109375,
+      "observations": "CFG4: p28 two partial figures split by a large horizontal band with missing heads and distorted limbs; p29 coherent face but distorted body. CFG1: fragmented figures and anatomy.",
+      "last50_mean_loss": 0.17030831828713416,
+      "first_loss": 0.16938236355781555,
+      "training_cuda_seconds": 118.09471923828124
+    }
+  ],
+  "limits": [
+    "Fresh grouped uniform control and tenfold correction-rate arm from identical saved319-update initialization.",
+    "Both reuse exact encoded tensors and restore common CPU/CUDA RNG state at the FT boundary.",
+    "Same222 updates and input/noise hashes; not equal-total-GPU-time or universal quality acceptance.",
+    "Backward kernels may be nondeterministic; common RNG alone is not a bitwise-gradient guarantee."
+  ],
+  "matched_exposures": 222,
+  "native_after_first_update_equal": false,
+  "decision": "Reject tenfold correction-only FT rate as a default-quality remedy in this bounded test. Both arms fail two-person composition; no consistent visual recovery follows. Native-body update hashes already differ after the first update despite matching initial field loss and RNG snapshots, so bitwise gradient/update reproducibility is not established.",
+  "next_action": "Separate native-body adaptation from structural fitting with a frozen-body control using the same correction rate, initialization and exact encoded exposures. Treat frozen-body fitting as a diagnostic, not a replacement for Full FT or quality acceptance."
+}

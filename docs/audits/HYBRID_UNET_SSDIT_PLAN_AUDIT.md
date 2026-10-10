@@ -237,6 +237,20 @@ individual records' limitations.
    is not guaranteed to preserve native behavior. No sole/root cause or#174
    diagnosis is claimed. Compare higher correction-only FT rates before adding
    more structural capacity; capture RNG boundaries in subsequent probes.
+   The paired Full FT correction-rate control
+   (`hybrid_anima_ft_module_lr_2026-10.json`) now matches initial body/module
+   hashes, CPU/CUDA RNG boundaries and all222 item/null/sigma/noise records.
+   Both arms use two optimizer groups; native LR stays5e-6 while structural LR
+   is5e-6 versus5e-5. All632 optimizer entries reach222; first loss is identical.
+   The first updated native-body hashes differ, so bitwise update reproducibility
+   remains unproved. Eight held general outputs retain a single face but fail
+   two-person composition in both arms; the tenfold rate adds a large horizontal
+   split in the CFG4 scene. Reject this bounded recipe as a default remedy.
+   Loss means0.169883/0.170308 do not establish quality recovery. Own Full FT
+   allocation is11.643/11.644GiB; this is an equal-update, not equal-time test.
+   Next isolate body adaptation with frozen-body structural fitting at the same
+   correction rate and encoded exposures. That diagnostic does not replace
+   Full FT support, establish#174's cause or close the quality gate.
 2. **P0 owner-run diagnosis:** synthetic same-input train/eval parity and native
    LR controls exclude some causes, but do not prove the cause of #174's old
    checkpoint degradation. Keep that limitation explicit; do not modify the

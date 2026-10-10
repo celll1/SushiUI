@@ -1,0 +1,181 @@
+{
+  "rating": "general",
+  "resolution": 512,
+  "vae_channels": 16,
+  "vae_scale": 8,
+  "vae_swap": false,
+  "mode": "same_fine_tuned_weights_native_vs_hybrid",
+  "replay_updates": 222,
+  "learning_rate": 5e-06,
+  "optimizer": "AdamW8bit",
+  "stochastic_rounding": true,
+  "checkpoint_blocks": 24,
+  "init_state_sha256": "20683309a6dd9ac92ed9ebc39aa7950b372300524ec32154951d1adae28dad3c",
+  "encoded_input_sha256": "47272d37c5cea7d77ae7815b88c6357d892cbafe21f2034e259ad8f89d8734e9",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_out": [
+    28,
+    29,
+    30,
+    31
+  ],
+  "samples": [
+    {
+      "route": "trained_hybrid",
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p28_trained_hybrid_cfg1.png",
+      "sha256": "081d9f0c28a20e15dc5a504246497acacea1661a7a9499ed38163d3a7f340280"
+    },
+    {
+      "route": "trained_hybrid",
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p28_trained_hybrid_cfg4.png",
+      "sha256": "6126c249cf960620b6edefe67c0a17571ccd1d77fc9243d6008677640b06531e"
+    },
+    {
+      "route": "trained_hybrid",
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p29_trained_hybrid_cfg1.png",
+      "sha256": "a6f49b8494b5f7ebff0560329f6aa65dc00a45095477df04fb74bab6294bd98a"
+    },
+    {
+      "route": "trained_hybrid",
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p29_trained_hybrid_cfg4.png",
+      "sha256": "5e364f9537e64bcc6ca19cd213cd6376f2def4b15354ac9b2e415c8e0dab6445"
+    },
+    {
+      "route": "trained_native",
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p28_trained_native_cfg1.png",
+      "sha256": "26410e34e5e5e09e9023489ee8439e08ca09d242e45a7198cd2fdfdeb0bfd564"
+    },
+    {
+      "route": "trained_native",
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p28_trained_native_cfg4.png",
+      "sha256": "615ba6a05ed24bf80d580d5b92b3baf4a55fbc5840cab6984af4e53acd6b0aef"
+    },
+    {
+      "route": "trained_native",
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p29_trained_native_cfg1.png",
+      "sha256": "2be1a40cbafcb288c8a2f78482aac4e5c83accc2eda58fa5aab3d36c04adf0d6"
+    },
+    {
+      "route": "trained_native",
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_trained_routing\\p29_trained_native_cfg4.png",
+      "sha256": "4732aa82e436876045a98070dedb2d0f00242c7d2cef0169d574862a6a5d913d"
+    }
+  ],
+  "reused_before_samples": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p28_hybrid_skip256_quarter_cfg1.png",
+      "sha256": "4889c5643862ccbb4d06c54337468eac745b5853748db13f07804c4ffd2ab1e0"
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p28_hybrid_skip256_quarter_cfg4.png",
+      "sha256": "3751b450dcb47d3a9a212b78496a4e394796fe3df0ed71653fb2328311c1046e"
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p29_hybrid_skip256_quarter_cfg1.png",
+      "sha256": "8faff98c03ad42280ef5db7502910f2831e8cfb24650878dc98040a9bdbefeb1"
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "path": "D:\\celll1\\webui_cl\\local\\verification\\hybrid_anima_wide_skip_equal_total\\p29_hybrid_skip256_quarter_cfg4.png",
+      "sha256": "3ef815a0ab6eeb6cea28dbba83ac2bf87cd4b9cda9472d1658f1fccff7088bee"
+    }
+  ],
+  "limits": [
+    "Replay fixed222 Full FT updates from the retained319-update factory initialization.",
+    "Native vs hybrid routing uses exactly the same fine-tuned body weights and codec.",
+    "Historical loss and image hashes checked; do not assume exact replay before those checks.",
+    "Two general prompts,one seed; no universal quality or throughput acceptance.",
+    "All exposures/noises and the first loss match, but later loss differs by up to0.0156529 and no hybrid image matches historical PNG bytes. Exact historical replay and its RNG cause are not established."
+  ],
+  "fullft_peak_allocated_gib": 11.643267631530762,
+  "max_replay_loss_error": 0.01565292477607727,
+  "trained_body_sha256": "96ea7804db16a6d77fea6977866cb6217ec670a3e21a2de060f7f32c49fe5875",
+  "hybrid_replay_image_matches": [
+    {
+      "index": 28,
+      "cfg": 1.0,
+      "exact": false
+    },
+    {
+      "index": 28,
+      "cfg": 4.0,
+      "exact": false
+    },
+    {
+      "index": 29,
+      "cfg": 1.0,
+      "exact": false
+    },
+    {
+      "index": 29,
+      "cfg": 4.0,
+      "exact": false
+    }
+  ],
+  "loss_replay_within_1e_minus5": false,
+  "experiment": "Two routing modes after replayed hybrid Full FT, same trained body and native codec",
+  "matched_exposures_and_noise": 222,
+  "first_loss_exact": true,
+  "observations": {
+    "p28_native_cfg4": "Split/collage scene with repeated/missing-head figures; coherent two-person composition fails.",
+    "p28_hybrid_cfg4": "Background person plus oversized headless foreground garment/body; composition fails.",
+    "p29_native_cfg4": "Coherent single-girl face and body with coarse detail.",
+    "p29_hybrid_cfg4": "Coherent single-girl face and outline with remaining facial/anatomy defects.",
+    "cfg1": "Both routes contain fragmented/duplicated contours and anatomy; p28 fails composition."
+  },
+  "decision": "A native-body-only route switch does not restore the two-person output after hybrid FT. This is not merely an upsample display defect; hybrid-specific body adaptation and correction tracking must be examined. Neither historical #174 cause nor dominance of native-body drift is proved.",
+  "next_action": "Test a higher correction-module FT LR while holding native-body rate/data/init fixed; retain full RNG boundary snapshots for future comparisons. Do not add the observed private rates to owner runs.",
+  "owner_model_source": "M:\\model\\ming_image_01\\layer_int8_convrot"
+}

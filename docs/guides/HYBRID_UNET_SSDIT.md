@@ -1552,3 +1552,31 @@ same weights before extending this recipe: deterioration after initialization
 does not prove whether native-body drift or structural mismatch dominates.
 No owner checkpoint, runtime default or public initialization lineage changes.
 Evidence: `docs/audits/data/hybrid_anima_wide_skip_equal_total_2026-10.json`.
+
+### Fine-tuned native versus hybrid routing
+
+A repeat starts from the saved319-update factory initialization and cached
+inputs, then performs222 Full FT updates. All item/null/sigma/noise hashes and
+the first loss match the previous probe. Later loss differs by up to0.015653;
+none of the four hybrid PNG hashes matches the historical output. This is not
+an exact historical replay, and the responsible RNG/backend state has not been
+established. Boundary RNG snapshots were not retained in the earlier test.
+
+The new within-model comparison remains valid independently: the trained body
+hash is unchanged across both routes, same native codec and conditioning are
+used, and only the runtime topology gate is disabled for native execution.
+Eight new held general outputs cover both routes at CFG1/4. On the two-person
+CFG4 prompt, native routing produces a split/collage scene with repeated or
+missing heads; hybrid routing has a background person and a headless foreground
+body. Both fail composition. On the one-person prompt both retain a recognizable
+girl; hybrid still has facial/anatomy defects. CFG1 outputs retain fragmented
+contours and anatomy.
+
+Switching back to native routing therefore does not cure this trained sample;
+it is not only a final upsample/display artifact. However the body was optimized
+for hybrid execution, so its original native behavior is not guaranteed, and
+this does not establish native-body drift as the dominant cause or diagnose
+owner run#174. Next test a separate, higher correction-module Full FT LR with
+native-body rate/init/data held fixed, and capture boundary RNG state for later
+comparisons. Existing owner runs and defaults remain unchanged. Evidence:
+`docs/audits/data/hybrid_anima_trained_routing_2026-10.json`.

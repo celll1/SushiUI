@@ -8,6 +8,41 @@ behavior; the broader implementation proposal remains under `local/strategy/`.
 The requirement/evidence audit and remaining acceptance work are recorded in
 `docs/audits/HYBRID_UNET_SSDIT_PLAN_AUDIT.md`.
 
+## Use from Training
+
+1. Select a native Anima, Ming or Qwen2.1 base checkpoint. In the topology
+   editor choose **Configure a new U-Net**, then **New hybrid U-Net preset**.
+   Edit boundaries, local refiners, compressed skips and their storage in the
+   graph/module controls. The standard preset uses rank64 branches and no
+   full-rank boundary fusion; the measured full-rank candidate is a distinct
+   configuration, not a silently changed default.
+2. For teacher initialization, first load that native model in Generate with
+   adapters and VAE swap disabled. In Training open **Initialize hybrid modules
+   with the native teacher**, select calibration data and a new output name,
+   then review fitting settings. Extra initialization resolutions and per-phase
+   skip learning-rate multipliers are optional. This writes a new artifact;
+   it does not overwrite the selected base or an existing run.
+3. After the job completes, choose **Use initialized checkpoint in this training
+   config**. The UI refreshes the model list, selects the new artifact and sets
+   topology mode to **Inherit checkpoint**. It explicitly clears the old resume
+   selection because this is a different model; it does not migrate optimizer
+   state from the previous run. If the artifact is missing from the model index,
+   selection reports an error instead of silently keeping another model.
+4. Configure Full FT or LoRA and any VAE swap for the new run. VAE calibration
+   is separate from native-teacher structural initialization. LoRA artifacts
+   include complete structural weights. A resumed initialized checkpoint uses
+   its saved modules and lineage instead of repeating teacher initialization.
+5. Generate from the saved checkpoint or adapter artifact using its inherited
+   topology and declared codec. Confirm the graph, native/shared versus added
+   parameter counts and calibration metadata correspond to that artifact.
+
+The native-moment codec fitting comparison described later is experimental and
+is not a calibration option in these controls. Current matched training probes
+show prompt-dependent tendencies; their results do not guarantee the standard
+zero-branch preset's initial appearance or long-run quality. Owner interactive
+review should cover topology editing, initializer cancellation/error handling,
+artifact selection and save/load/resume; build/type checks remain owner-run.
+
 ## Graph and modules
 
 `backend/core/rewiring/hybrid_spec.py` owns schema version 2 with method

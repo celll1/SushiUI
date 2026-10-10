@@ -25,6 +25,12 @@ def resolution_recipe_fields(settings):
             "resolution_sampling": RESOLUTION_SAMPLING}
 
 
+def resolution_items(items, settings):
+    for side in initialization_resolutions(settings):
+        for index, item in enumerate(items):
+            yield side, index, item
+
+
 def calibration_identity(fingerprints, settings):
     return dict(items=deepcopy(fingerprints), resolution=settings["resolution"],
                 **resolution_recipe_fields(settings))
@@ -41,6 +47,14 @@ class ResolutionSchedule:
         side = self.resolutions[self.position % len(self.resolutions)]
         self.position += 1
         return side
+
+
+def timestep_generator(settings, device):
+    import torch
+
+    if len(initialization_resolutions(settings)) == 1:
+        return None
+    return torch.Generator(device=device).manual_seed(settings["seed"] + 1)
 
 
 def exposure_noise(latent, noise_rng, sigma_rng=None):

@@ -574,5 +574,18 @@ Multi-grid implementation has started with shared resolution validation,
 deterministic cycling, shape-independent timestep RNG and optional strict
 provenance fields. CPU verification reports40 passing tests, including legacy
 recipe/hash preservation and initialization ownership. This does not close
-public initializer wiring: all three preparation owners, API/UI and GPU
-acceptance remain pending. The existing single-grid runtime is unchanged.
+public initializer wiring or GPU acceptance by itself. The existing single-grid
+runtime is unchanged.
+
+Public mixed-grid wiring now covers Anima, Qwen and Ming preparation and
+trajectory buckets, API defaults/request validation, every-grid geometry
+preflight and the frontend settings editor/types. Real tiny Ming Design/Layer
+CPU owners verify both grids enter fitting, export/reload lineage and cleanup
+after cancellation or publication failure. Qwen input slicing follows the
+example's grid. Static frontend review distinguishes output-only curriculum
+policy from accepted request fields. Official-weight Anima GPU execution and
+combined quality remain open; this does not close P5 or promote a default.
+
+Final CPU initialization/provenance/job/export suite:119 passed,95 warnings;
+changed backend files compile and real imports complete without CUDA context
+initialization. Owner frontend build/type-check is not run by the agent.

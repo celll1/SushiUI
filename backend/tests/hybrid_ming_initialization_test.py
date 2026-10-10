@@ -16,7 +16,8 @@ from core.rewiring.fitting import InitializationCancelled
 
 @pytest.mark.parametrize("profile", ["generation_edit","layer_decompose"])
 @pytest.mark.parametrize("outcome", ["complete","cancel","cancel_trajectory","failure"])
-def test_real_native_owner_initializes_and_restores_every_component(tmp_path,profile,outcome,monkeypatch):
+@pytest.mark.parametrize("mixed", [False,True])
+def test_real_native_owner_initializes_and_restores_every_component(tmp_path,profile,outcome,mixed,monkeypatch):
     from api.param_defaults import DIT_HYBRID_INITIALIZATION_DEFAULTS
     torch.manual_seed(99)
     source = tmp_path/"native"
@@ -42,6 +43,13 @@ def test_real_native_owner_initializes_and_restores_every_component(tmp_path,pro
                                                 skip_learning_rate_multiplier=.25),
                                            dict(kind="native_trajectory",updates=1,learning_rate=.003)])
     events = []
+    fitting_shapes = []
+    def capture_shape(module,args,kwargs,output):
+        if getattr(module,"_residual_unet_spec",None) is not None:
+            fitting_shapes.append(tuple(kwargs["x"][0].shape))
+    shape_hook = native.transformer.register_forward_hook(capture_shape,with_kwargs=True)
+    if mixed:
+        options["additional_resolutions"] = [256]
     if outcome == "failure":
         def fail(*args,**kwargs):
             raise OSError("publication failed")
@@ -60,10 +68,17 @@ def test_real_native_owner_initializes_and_restores_every_component(tmp_path,pro
         assert result["initialization"]["phases"][0]["skip_learning_rate_multiplier"] == .25
         assert "skip_learning_rate_multiplier" not in result["initialization"]["phases"][1]
         assert restored.artifact.profile == profile
+        if mixed:
+            assert result["initialization"]["recipe"]["settings"]["additional_resolutions"] == [256]
+            assert result["initialization"]["recipe"]["settings"]["resolution_sampling"] == "round_robin_v1"
+            assert max(event["total"] for event in events if event["stage"] == "encoding_latents") == 4
+            assert max(event["total"] for event in events if event["stage"] == "teacher_trajectory") == 2
+            assert len({shape[-1] for shape in fitting_shapes}) == 2
     else:
         with pytest.raises(InitializationCancelled if outcome.startswith("cancel") else OSError):
             execute()
         assert not (tmp_path/"initialized").exists()
+    shape_hook.remove()
     assert native.transformer.gradient_checkpointing is False
     assert not hasattr(native.transformer,"rewiring_modules")
     assert all(parameter.requires_grad == flag and parameter.grad is None for parameter,flag in flags)

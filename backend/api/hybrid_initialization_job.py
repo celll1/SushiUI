@@ -6,6 +6,7 @@ import time
 import uuid
 
 from core.model_state_coordinator import model_state_coordinator, ModelStateBusyError
+from core.rewiring.resolution_schedule import initialization_resolutions
 
 INITIALIZER_ARCHITECTURES = ("anima", "qwen_image_21", "ming_image_01")
 _lock = threading.Lock()
@@ -83,7 +84,8 @@ def _checked_source(manager, options):
         raise ValueError("Initialization requires a hybrid U-Net declaration")
     spec = validate_topology_identity(spec,model)
     stride = inspected["latent_scale_factor"]
-    preview_plan(spec,options["resolution"]//stride,options["resolution"]//stride)
+    for side in initialization_resolutions(options):
+        preview_plan(spec,side//stride,side//stride)
     return source,components,spec
 
 
@@ -138,7 +140,8 @@ def _checked_qwen_source(manager,options):
     validate_topology_identity(spec,manifest.transformer_config)
     import json
     validate_topology_identity(spec,json.loads(metadata.get("config") or "{}"))
-    preview_plan(spec,options["resolution"]//16,options["resolution"]//16)
+    for side in initialization_resolutions(options):
+        preview_plan(spec,side//16,side//16)
     return source,components,spec
 
 
@@ -196,7 +199,8 @@ def _checked_ming_source(manager,options):
     if spec["method"] != "hybrid_unet_ssdit":
         raise ValueError("Ming initialization requires a hybrid declaration")
     validate_topology_identity(spec,artifact.configs["transformer"])
-    preview_plan(spec,options["resolution"]//16,options["resolution"]//16)
+    for side in initialization_resolutions(options):
+        preview_plan(spec,side//16,side//16)
     return source,components,spec
 
 

@@ -50,6 +50,8 @@ class HybridInitializationRequest(BaseModel):
     sample_count: int = Field(default=INIT_DEFAULTS["sample_count"], ge=1, le=64)
     holdout_count: int = Field(default=INIT_DEFAULTS["holdout_count"], ge=0, le=63)
     resolution: int = Field(default=INIT_DEFAULTS["resolution"], ge=64, le=1024)
+    additional_resolutions: list[int] = Field(
+        default_factory=lambda: deepcopy(INIT_DEFAULTS["additional_resolutions"]), max_length=3)
     seed: int = Field(default=INIT_DEFAULTS["seed"], ge=0, le=2147483647)
     caption_type: str = Field(default=INIT_DEFAULTS["caption_type"], min_length=1, max_length=64)
     teacher_steps: int = Field(default=INIT_DEFAULTS["teacher_steps"], ge=1, le=100)
@@ -66,6 +68,8 @@ class HybridInitializationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_plan(self):
+        from core.rewiring.resolution_schedule import initialization_resolutions
+        initialization_resolutions(self.model_dump())
         if self.resolution % 64 or self.holdout_count >= self.sample_count:
             raise ValueError("Resolution must be divisible by 64 and holdout_count must be smaller than sample_count")
         if self.item_ids is not None and (len(self.item_ids) != self.sample_count

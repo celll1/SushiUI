@@ -12,7 +12,34 @@ from core.rewiring.fitting import InitializationCancelled
 from hybrid_anima_test import native
 
 
-def test_anima_source_guard_accepts_only_native_layout(native,tmp_path):
+def observe_preflight(monkeypatch):
+    from core.rewiring import spec
+    original = spec.preview_plan
+    grids = []
+    def preview(declaration,height,width):
+        grids.append((height,width))
+        return original(declaration,height,width)
+    monkeypatch.setattr(spec,"preview_plan",preview)
+    return grids
+
+
+def test_resolution_default_is_not_shared_and_openapi_matches():
+    from pathlib import Path
+    import yaml
+    first = HybridInitializationRequest(model_path="native",output_name="new",dataset_id=1)
+    second = HybridInitializationRequest(model_path="native",output_name="new",dataset_id=1)
+    first.additional_resolutions.append(256)
+    assert second.additional_resolutions == rewiring_schema()["initialization_defaults"]["additional_resolutions"] == []
+    schemas = yaml.safe_load((Path(__file__).resolve().parents[2]/"openapi.yaml").read_text(encoding="utf-8"))["components"]["schemas"]
+    field = schemas["HybridInitializationRequest"]["properties"]["additional_resolutions"]
+    assert field["default"] == second.additional_resolutions and field["maxItems"] == 3
+    assert field["items"]["multipleOf"] == 64 and field["uniqueItems"] is True
+    recipe = schemas["HybridInitializationRecord"]["properties"]["recipe"]["properties"]["settings"]
+    assert recipe["properties"]["resolution_sampling"]["enum"] == ["round_robin_v1"]
+    assert "additional_resolutions" not in recipe["required"]
+
+
+def test_anima_source_guard_accepts_only_native_layout(native,tmp_path,monkeypatch):
     from safetensors.torch import save_file
     from core.models.anima.residual_unet import restore_topology,native_config
     model,spec = native
@@ -23,15 +50,18 @@ def test_anima_source_guard_accepts_only_native_layout(native,tmp_path):
     manager = SimpleNamespace(current_model_info=dict(type="anima",source=str(source)),
         anima_components=dict(transformer=model,text_encoder=object(),vae=object(),scheduler=object(),
                               tokenizer=object(),t5_tokenizer=object()))
-    options = dict(model_path=str(source),output_name="initialized.safetensors",spec=spec,resolution=512)
+    options = dict(model_path=str(source),output_name="initialized.safetensors",spec=spec,resolution=512,
+                   additional_resolutions=[256])
+    grids = observe_preflight(monkeypatch)
     checked,_,declaration = job._checked_source(manager,options)
     assert checked == source and declaration == spec
+    assert len(grids) == 2 and grids[0][0] == 2*grids[1][0]
     restore_topology(model,spec)
     with pytest.raises(ValueError,match="native source"):
         job._checked_source(manager,options)
 
 
-def test_qwen_source_guard_validates_package_and_added_layout(tmp_path):
+def test_qwen_source_guard_validates_package_and_added_layout(tmp_path,monkeypatch):
     import torch
     from safetensors.torch import save_file
     from hybrid_qwen_test import model_and_spec
@@ -51,9 +81,12 @@ def test_qwen_source_guard_validates_package_and_added_layout(tmp_path):
     manager = SimpleNamespace(current_model_info=dict(type="qwen_image_21",source=str(source)),
         qwen_image_21_components=dict(transformer=model,text_encoder=torch.nn.Linear(1,1),
                                      vae=torch.nn.Linear(1,1),processor=object(),scheduler=object()))
-    options = dict(model_path=str(source),output_name="initialized-qwen",spec=spec,resolution=512)
+    options = dict(model_path=str(source),output_name="initialized-qwen",spec=spec,resolution=512,
+                   additional_resolutions=[256])
+    grids = observe_preflight(monkeypatch)
     checked,_,declaration = job._checked_source(manager,options)
     assert checked == source and declaration == spec
+    assert grids == [(32,32),(16,16)]
     restore_topology(model,spec)
     with pytest.raises(ValueError,match="native source"):
         job._checked_source(manager,options)
@@ -67,7 +100,7 @@ def test_request_defaults_and_schema_agree():
 
 
 @pytest.mark.parametrize("profile", ["generation_edit","layer_decompose"])
-def test_ming_source_guard_validates_native_package(tmp_path,profile):
+def test_ming_source_guard_validates_native_package(tmp_path,profile,monkeypatch):
     import torch
     from safetensors.torch import save_file
     from ming_image_01_conditioning_test import write_tiny_package
@@ -83,16 +116,22 @@ def test_ming_source_guard_validates_native_package(tmp_path,profile):
     manager = SimpleNamespace(current_model_info=dict(type="ming_image_01",source=str(source)),
                               ming_image_01_components=dict(ming_native=native))
     spec = hybrid_for(native.transformer)
-    options = dict(model_path=str(source),output_name="initialized-ming",spec=spec,resolution=128)
+    options = dict(model_path=str(source),output_name="initialized-ming",spec=spec,resolution=128,
+                   additional_resolutions=[256])
+    grids = observe_preflight(monkeypatch)
     checked,_,declaration = job._checked_source(manager,options)
     assert checked == source and declaration == spec
+    assert grids == [(8,8),(16,16)]
     restore_topology(native.transformer,spec)
     with pytest.raises(ValueError,match="native source"):
         job._checked_source(manager,options)
 
 
 @pytest.mark.parametrize("changes", [dict(resolution=513), dict(holdout_count=32),
-    dict(item_ids=[1, 1]), dict(phases=[]), dict(teacher_cfg=float("nan")), dict(seed=True)])
+    dict(item_ids=[1, 1]), dict(phases=[]), dict(teacher_cfg=float("nan")), dict(seed=True),
+    dict(additional_resolutions=[512]), dict(additional_resolutions=[256,256]),
+    dict(additional_resolutions=[True]), dict(additional_resolutions=[257]),
+    dict(additional_resolutions=[64,128,256,768])])
 def test_request_refuses_invalid_recipe(changes):
     with pytest.raises(ValueError):
         HybridInitializationRequest(model_path="native", output_name="new", dataset_id=1, **changes)

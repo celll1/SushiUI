@@ -12255,6 +12255,14 @@ components:
         sample_count: {type: integer, minimum: 1, maximum: 64, example: 32}
         holdout_count: {type: integer, minimum: 0, maximum: 63, example: 4, description: Must be smaller than sample_count; final selected items are excluded from fitting}
         resolution: {type: integer, minimum: 64, maximum: 1024, multipleOf: 64, example: 512}
+        additional_resolutions:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          default: []
+          items: {type: integer, minimum: 64, maximum: 1024, multipleOf: 64}
+          example: [256]
+          description: Additional square grids distinct from resolution. Every phase cycles anchor then these grids in order; latent encoding and native trajectories cover every grid. Empty keeps historical single-grid behavior. More grids increase preparation time and host memory; update counts remain unchanged.
         seed: {type: integer, minimum: 0, maximum: 2147483647, example: 718}
         caption_type: {type: string, minLength: 1, maxLength: 64, example: tags}
         teacher_steps: {type: integer, minimum: 1, maximum: 100, example: 28}
@@ -12314,6 +12322,17 @@ components:
                 sample_count: {$ref: '#/components/schemas/HybridInitializationRequest/properties/sample_count'}
                 holdout_count: {$ref: '#/components/schemas/HybridInitializationRequest/properties/holdout_count'}
                 resolution: {$ref: '#/components/schemas/HybridInitializationRequest/properties/resolution'}
+                additional_resolutions:
+                  type: array
+                  minItems: 1
+                  maxItems: 3
+                  uniqueItems: true
+                  items: {type: integer, minimum: 64, maximum: 1024, multipleOf: 64}
+                  description: Present only with resolution_sampling for a mixed-grid recipe; excludes anchor resolution.
+                resolution_sampling:
+                  type: string
+                  enum: [round_robin_v1]
+                  description: Requires additional_resolutions. Each phase starts at anchor and cycles grids; timestep RNG is separate from shape-dependent noise RNG. Older single-grid records omit both fields.
                 seed: {$ref: '#/components/schemas/HybridInitializationRequest/properties/seed'}
                 caption_type: {$ref: '#/components/schemas/HybridInitializationRequest/properties/caption_type'}
                 teacher_steps: {$ref: '#/components/schemas/HybridInitializationRequest/properties/teacher_steps'}

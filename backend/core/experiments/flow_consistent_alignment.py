@@ -60,9 +60,13 @@ class AffineFlowCalibrator:
         self.feature_cross.add_(features.T@x)
 
     @torch.no_grad()
-    def finish(self, *, orthogonal_input=False):
+    def finish(self, *, orthogonal_input=False, match_native_covariance=False):
         if type(orthogonal_input) is not bool:
             raise ValueError("Orthogonal input selection must be boolean")
+        if type(match_native_covariance) is not bool:
+            raise ValueError("Native covariance matching must be boolean")
+        if match_native_covariance and not orthogonal_input:
+            raise ValueError("Native covariance matching requires orthogonal input selection")
         if self.count <= self.target_channels:
             raise ValueError("Affine calibration has insufficient observations")
         xm, ym = self.xsum/self.count, self.ysum/self.count
@@ -84,8 +88,19 @@ class AffineFlowCalibrator:
         fitted_condition = float(singular[0]/singular[-1])
         if orthogonal_input:
             a = u@vh
+        center = torch.arange(self.native_channels)*self.output_kernel_size**2+self.output_kernel_size**2//2
+        native_covariance = gram[center][:, center]
+        if match_native_covariance:
+            def covariance_power(value, power):
+                values, vectors = torch.linalg.eigh((value+value.T)/2)
+                if values[-1] <= 0 or values[0] <= values[-1]*1e-10:
+                    raise ValueError("Native covariance matching requires positive definite covariance")
+                return (vectors*values.pow(power))@vectors.T
+            projected = a@xx@a.T
+            a = covariance_power(native_covariance, .5)@covariance_power(projected, -.5)@a
+        if orthogonal_input:
             a_bias = ym-a@xm
-            singular = torch.ones_like(singular)
+            u, singular, vh = torch.linalg.svd(a, full_matrices=False)
         inverse = (vh.T/singular)@u.T
         kernels = self.output_kernel_size**2
         b = b.reshape(self.target_channels, self.native_channels, kernels)
@@ -97,6 +112,8 @@ class AffineFlowCalibrator:
         self.metrics = dict(input_condition_number=float(singular[0]/singular[-1]),
                             fitted_input_condition_number=fitted_condition,
                             orthogonal_input=orthogonal_input,
+                            match_native_covariance=match_native_covariance,
+                            covariance_max_error=float((a@xx@a.T-native_covariance).abs().max()),
                             output_kernel_size=self.output_kernel_size,
                             inverse_norm=float(torch.linalg.matrix_norm(inverse)),
                             composition_max_error=float((torch.einsum('ij,jkl->ikl', a, b)-identity).abs().max()),

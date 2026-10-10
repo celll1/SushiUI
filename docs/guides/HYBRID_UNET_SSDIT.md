@@ -1137,6 +1137,16 @@ Future acceptance should compare each candidate against its actual native
 control, prioritizing usable coarse structure for subsequent training.
 Evidence: `docs/audits/data/hybrid_anima_guided_fit_2026-10.json`.
 
+`core/experiments/conditioning_alignment.py` supplies a private conditional-minus-
+null alignment control. It normalizes each example's difference error by teacher
+difference energy, with an explicit floor relative to the mean teacher field
+energy. A paired field anchor separately constrains their common component.
+Teacher tensors are detached; both student branches retain gradients. Six CPU
+cases cover the analytic error, common-offset invariance of the contrast term,
+independent example normalization, BF16 accumulation, zero differences and bad
+contracts. This objective has no public initializer recipe or artifact lineage;
+it is not an API/UI default or a quality claim.
+
 ### Compute matrix for the high16 candidate
 
 The retained paired-anchor high16 candidate was remeasured at 1024px, BF16,

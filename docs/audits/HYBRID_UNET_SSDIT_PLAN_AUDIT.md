@@ -43,6 +43,19 @@ The interim record now verifies identical500 item/null/sigma/noise exposures,
 initial body and structural hashes between arms. Native-moment training compute
 is353.405 seconds and peak allocated11.791 GiB. Its1000-update point is pending.
 
+The matched comparison is now terminal-successful
+(`hybrid_anima_codec_fullft_trends_2026-10.json`): both arms finish1000 updates
+with exactly matched item/null/sigma/noise sequences and shared initial body/
+structural hashes. Both have638 optimizer entries at1000, changed body weights
+and exact frozen caption bridges. Native-moment compute is710.857 seconds,
+peak11.791 GiB; independent compute is718.947 seconds, peak11.793 GiB.
+Direct initial/500/1000 review is prompt-dependent: independent p28 improves
+further, native-moment p28 retains a coherent scene but has more fragmented
+surface texture than at500, and both p31 outputs have stronger clipping/fine
+fragmentation than at500. No clear native-moment advantage is demonstrated;
+the production calibration policy is retained. This closes the bounded matched
+trend comparison, not long-training quality or broad appearance acceptance.
+
 | Requirement | Current evidence | Assessment |
 |---|---|---|
 | Fixed native width; learned down/up, local residual processing, multiple compressed skips | `core/rewiring/hybrid_spec.py`, `hybrid_modules.py`; `hybrid_rewiring_test.py`, native Anima/Ming/Qwen tests | Implemented; isotropic 2x boundaries, native widths retained |
@@ -92,7 +105,8 @@ individual records' limitations.
   independent-spatial observation is positive for two selected held prompts;
   its1000-update point shows continued improvement for p28 but stronger clipping
   for p31. The native-moment comparator has similar positive500-update
-  tendencies without a demonstrated advantage; its1000-update point is pending.
+  tendencies without a demonstrated advantage; its1000-update point also
+  develops stronger p31 clipping. The matched comparison is complete.
   Neither artifact removal within this budget nor exact native reproduction
   is required. Broader or long-training quality is not established.
 - P0 does not establish the exact cause of the owner's old #174 degradation.

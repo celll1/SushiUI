@@ -2335,6 +2335,19 @@ The interim record verifies identical500 exposures and shared initial body/
 structural hashes; native-moment compute is353.405 seconds, peak11.791 GiB.
 Its1000-update point remains pending.
 
+The full matched comparison subsequently completes1000 updates per arm.
+All item/null/sigma/noise sequences and initial body/structural hashes match,
+all638 optimizer entries reach1000, native body weights change and caption
+bridges remain exact. Native-moment compute totals710.857 seconds, peak
+allocated11.791 GiB. Its p28 scene remains coherent but has more fragmented
+surface texture than at500; its p31 clipping/fine fragments worsen from500,
+as in the independent control. Both show selected improvement from initial
+images, but not monotonic improvement across both held prompts. No clear
+native-moment visual advantage is established, so production calibration is
+unchanged. Evidence, snapshot/image hashes and ten loss windows per arm:
+`docs/audits/data/hybrid_anima_codec_fullft_trends_2026-10.json`. The private
+comparison worker exits successfully; long-training quality remains unproven.
+
 The experimental calibrator adds `match_native_covariance`, accepted only with
 orthogonal input selection. The latter selects an initial row space; covariance
 matching then rescales/rotates it, so the final rows need not be orthonormal.

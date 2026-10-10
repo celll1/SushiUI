@@ -16,6 +16,17 @@ numerical and compute acceptance is separate from final appearance quality.
 The active1000-update comparison retains500/1000 generation checkpoints to
 evaluate this trend against existing initial samples.
 
+Interim evidence (`hybrid_anima_codec_fullft_interim_2026-10.json`): the
+independent-spatial arm completed500 Full FT updates after its retained200 IO
+updates. Direct comparison of the two held1024px CFG4/seed63 images shows more
+continuous clothing/background areas for p28 and cheek/hand/food color areas for
+p31. Clipping, grid fragments and colored spots remain. This is a selected
+positive tendency, not a claim that the second calibration arm,1000-update
+comparison, broader quality or long-training recovery is verified. All638
+trainable tensors had finite gradients at the500-update boundary; recorded
+compute was359.771 seconds with11.793 GiB peak allocated. VAE/TE encoding,
+input preparation and sample evaluation are excluded from that timing.
+
 | Requirement | Current evidence | Assessment |
 |---|---|---|
 | Fixed native width; learned down/up, local residual processing, multiple compressed skips | `core/rewiring/hybrid_spec.py`, `hybrid_modules.py`; `hybrid_rewiring_test.py`, native Anima/Ming/Qwen tests | Implemented; isotropic 2x boundaries, native widths retained |

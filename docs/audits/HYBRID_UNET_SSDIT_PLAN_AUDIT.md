@@ -60,6 +60,35 @@ individual records' limitations.
 
 ## Remaining acceptance work
 
+### Current status (2026-10-10)
+
+- P1-P4 implementation and the bounded native integrations are covered by the
+  contracts above. The hybrid preset is explicitly selectable through
+  `DiTRewiringEditor.tsx` and `inspect.py`; existing owner structures are not
+  replaced. Owner build/interactive verification remains separate.
+- The requested1024px batch1/2/4 native/hybrid x native/Qwen-VAE compute matrix
+  exists, including the later full-rank feature-fusion candidate in
+  `hybrid_anima_public_feature_fusion_matrix_2026-10.json`. Statements below
+  that an older candidate still needs its matrix describe that experiment's
+  historical state, not absence of the current matrix. Encoding/IO/partition
+  remain excluded from its compute scope.
+- P5 combined-codec training tendencies are being evaluated. The500-update
+  independent-spatial observation is positive for two selected held prompts;
+  its1000-update point and matched native-moment comparator are pending.
+  Neither artifact removal within this budget nor exact native reproduction
+  is required. Broader or long-training quality is not established.
+- P0 does not establish the exact cause of the owner's old #174 degradation.
+  Existing diagnostic exclusions are retained; the owner artifact is untouched.
+- P6 variable-width student work is conditional. Negative private prototypes
+  are not a requirement to ship a narrower public graph or a reason to expand
+  this stage indefinitely.
+
+### Historical experiments and their individual limitations
+
+The entries below preserve the evidence and decisions at each experiment's
+time. Their short-budget quality judgments do not supersede the current owner
+trend policy or the implementation/matrix evidence above.
+
 1. **P5 quality:** the retained 3300-update native-teacher initialization plus
    low-LR Full FT preserves and improves selected Anima figures. It is not an
    equal-total-GPU-time legacy/hybrid quality comparison or an initialized

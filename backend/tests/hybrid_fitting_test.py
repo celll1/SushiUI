@@ -102,3 +102,56 @@ def test_fitted_artifact_refuses_second_initialization():
         run(model)
     assert model._hybrid_initialization == provenance
     assert all(torch.equal(value, model.state_dict()[name]) for name, value in before.items())
+
+
+@pytest.mark.parametrize("multiplier", [1., .25])
+def test_skip_multiplier_scales_only_skip_update_and_roundtrips(multiplier):
+    class SkipModel(TinyModel):
+        def forward(self, value):
+            output = super().forward(value)
+            if self._residual_unet_spec is not None:
+                for skip in self.rewiring_modules.skips.values():
+                    output = output + skip.restore_grid(skip.capture_grid(value))
+            return output
+
+    from core.rewiring.provenance import checkpoint_metadata, read_checkpoint_metadata
+    uniform = SkipModel()
+    reduced = deepcopy(uniform)
+    before = deepcopy(uniform.state_dict())
+    value = torch.arange(640, dtype=torch.float32).reshape(1, 8, 8, 10)/640
+    target = uniform.base(value).detach() + .1
+    records = []
+    for model, rate_multiplier in ((uniform, None), (reduced, multiplier)):
+        phase = FitPhase("native_trajectory", 1, .03, [FitExample((value,), {}, target)], rate_multiplier)
+        records.append(fit_teacher_modules(model, [phase], lambda net, a, k: net(*a, **k),
+            lambda parameters, lr: torch.optim.SGD(parameters, lr=lr), source_sha256="1"*64,
+            calibration_sha256="2"*64, sample_count=32, seed=718, clip_norm=1.))
+    assert "skip_learning_rate_multiplier" not in records[0]["phases"][0]
+    assert records[1]["phases"][0]["skip_learning_rate_multiplier"] == multiplier
+    metadata = checkpoint_metadata(records[1], reduced._residual_unet_spec)
+    assert read_checkpoint_metadata(metadata, reduced._residual_unet_spec) == records[1]
+    nonzero = False
+    for name, value in uniform.state_dict().items():
+        if name.startswith("rewiring_modules.skips."):
+            delta = value - before[name]
+            nonzero |= bool(delta.abs().sum())
+            torch.testing.assert_close(reduced.state_dict()[name]-before[name], delta*multiplier)
+        else:
+            torch.testing.assert_close(reduced.state_dict()[name], value, rtol=0, atol=0)
+    assert nonzero
+
+
+def test_skip_multiplier_rejects_optimizer_override_and_rolls_back():
+    model = TinyModel()
+    before = deepcopy(model.state_dict())
+    def factory(parameters, lr):
+        optimizer = torch.optim.SGD(parameters, lr=lr)
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+        return optimizer
+    phase = FitPhase("data_noising", 1, .03, [], .25)
+    with pytest.raises(ValueError, match="declared parameter learning rates"):
+        fit_teacher_modules(model, [phase], lambda net, a, k: net(*a, **k), factory,
+            source_sha256="1"*64, calibration_sha256="2"*64, sample_count=32, seed=718, clip_norm=1.)
+    assert not hasattr(model, "_hybrid_initialization")
+    assert all(torch.equal(value, model.state_dict()[name]) for name, value in before.items())

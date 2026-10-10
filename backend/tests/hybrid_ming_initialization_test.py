@@ -38,7 +38,8 @@ def test_real_native_owner_initializes_and_restores_every_component(tmp_path,pro
         items.append(dict(image_path=str(path),caption="word5 word6"))
     options = dict(DIT_HYBRID_INITIALIZATION_DEFAULTS,output_name="initialized",sample_count=2,
         holdout_count=1,resolution=128,teacher_steps=2,optimizer="adamw",stochastic_rounding=False,
-        attention_backend="native",phases=[dict(kind="data_noising",updates=2,learning_rate=.003),
+        attention_backend="native",phases=[dict(kind="data_noising",updates=2,learning_rate=.003,
+                                                skip_learning_rate_multiplier=.25),
                                            dict(kind="native_trajectory",updates=1,learning_rate=.003)])
     events = []
     if outcome == "failure":
@@ -56,6 +57,8 @@ def test_real_native_owner_initializes_and_restores_every_component(tmp_path,pro
         assert [event["completed"] for event in events if event["stage"] == "fitting"][-1] == 3
         restored = load_components(result["model_path"],dtype=torch.float32,conditioner_attention="eager")
         assert restored.transformer._hybrid_initialization == result["initialization"]
+        assert result["initialization"]["phases"][0]["skip_learning_rate_multiplier"] == .25
+        assert "skip_learning_rate_multiplier" not in result["initialization"]["phases"][1]
         assert restored.artifact.profile == profile
     else:
         with pytest.raises(InitializationCancelled if outcome.startswith("cancel") else OSError):

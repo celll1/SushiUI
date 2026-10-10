@@ -46,7 +46,9 @@ def validate_record(value, current_spec):
     if not isinstance(phases, list) or not 1 <= len(phases) <= 32:
         raise ValueError("Hybrid initialization requires bounded fitting phases")
     for phase in phases:
-        if not isinstance(phase, dict) or set(phase) != {"kind", "updates", "learning_rate"}:
+        required = {"kind", "updates", "learning_rate"}
+        if (not isinstance(phase, dict) or not required <= set(phase)
+                or set(phase) - required - {"skip_learning_rate_multiplier"}):
             raise ValueError("Invalid hybrid initialization phase")
         if phase["kind"] not in ("data_noising", "native_trajectory"):
             raise ValueError("Unsupported hybrid initialization phase")
@@ -54,6 +56,13 @@ def validate_record(value, current_spec):
             raise ValueError("Invalid hybrid initialization update count")
         if type(phase["learning_rate"]) not in (float, int) or not 0 < phase["learning_rate"] <= 1:
             raise ValueError("Invalid hybrid initialization learning rate")
+        if "skip_learning_rate_multiplier" in phase:
+            multiplier = phase["skip_learning_rate_multiplier"]
+            if (type(multiplier) not in (float, int) or not 0 < multiplier <= 1
+                    or phase["learning_rate"] * multiplier <= 0):
+                raise ValueError("Invalid hybrid initialization skip learning-rate multiplier")
+            if multiplier < 1 and not origin["skips"]:
+                raise ValueError("Skip learning-rate multiplier requires compressed skips")
     result = deepcopy(value)
     result["origin_spec"] = origin
     if "recipe" in value:

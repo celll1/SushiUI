@@ -96,6 +96,10 @@ def test_anima_checkpoint_writer_emits_record():
     lambda value: value["phases"][0].update(learning_rate=float("nan")),
     lambda value: value["phases"][0].update(learning_rate=True),
     lambda value: value["phases"][0].update(kind="unknown"),
+    lambda value: value["phases"][0].update(skip_learning_rate_multiplier=0),
+    lambda value: value["phases"][0].update(skip_learning_rate_multiplier=True),
+    lambda value: value["phases"][0].update(skip_learning_rate_multiplier=float("nan")),
+    lambda value: value["phases"][0].update(skip_learning_rate_multiplier=2),
 ])
 def test_invalid_record_refused(mutate):
     value = record()

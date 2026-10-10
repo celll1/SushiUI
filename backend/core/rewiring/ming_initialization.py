@@ -225,7 +225,8 @@ def initialize_loaded_ming(components,source,spec,items,options,progress,cancell
                             condition(pair["conditioning_index"],pair["zero"]),reference),pair["target"].to(device))
 
             for phase in options["phases"]:
-                phases.append(FitPhase(phase["kind"],phase["updates"],phase["learning_rate"],examples(phase["kind"])))
+                phases.append(FitPhase(phase["kind"],phase["updates"],phase["learning_rate"],examples(phase["kind"]),
+                                       phase.get("skip_learning_rate_multiplier")))
             def optimizer(parameters,lr):
                 if options["optimizer"] == "adamw8bit":
                     import bitsandbytes as bnb

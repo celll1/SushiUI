@@ -32,7 +32,7 @@ def test_qwen_initialized_component_retains_payload_and_reloads(tmp_path):
     checksum = hashlib.sha256(source.read_bytes()).hexdigest()
     restore_topology(model,spec)
     example = FitExample((torch.randn(1,8,12,8),),{})
-    fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example])],
+    fit_teacher_modules(model,[FitPhase("data_noising",2,.003,[example,example],.25)],
         lambda module,args,kwargs:_forward(module,args[0]),
         lambda parameters,lr:torch.optim.AdamW(parameters,lr=lr),
         source_sha256=checksum,calibration_sha256="2"*64,sample_count=1,seed=97,clip_norm=1.)
@@ -98,7 +98,7 @@ def prepare(model, root, prefix="net."):
     checksum = hashlib.sha256(source.read_bytes()).hexdigest()
     example = FitExample((torch.ones(1,4,1,8,12), torch.tensor([.5]), torch.ones(1,3,12)),
                          dict(padding_mask=torch.zeros(1,1,8,12)))
-    fit_teacher_modules(model,[FitPhase("data_noising",1,.003,[example])],
+    fit_teacher_modules(model,[FitPhase("data_noising",1,.003,[example],.25)],
                         lambda module,args,kwargs: module(*args,**kwargs),
                         lambda parameters,lr: torch.optim.AdamW(parameters,lr=lr),
                         source_sha256=checksum, calibration_sha256="2"*64, sample_count=1,

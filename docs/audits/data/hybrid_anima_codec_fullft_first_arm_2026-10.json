@@ -1,0 +1,153 @@
+{
+  "rating": "general",
+  "train_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27
+  ],
+  "held_indices": [
+    28,
+    31
+  ],
+  "updates": 1000,
+  "prior_io_updates": 200,
+  "train_resolution": 512,
+  "evaluation_resolution": 1024,
+  "optimizer": "AdamW8bit + stochastic rounding",
+  "group_rates": {
+    "body": 5e-07,
+    "structural": 5e-06,
+    "io_bridge": 5e-05
+  },
+  "limits": [
+    "Matched exposures, not equal GPU time or broad quality acceptance.",
+    "Same retained public-step2 body/mixed U-Net; calibration-specific saved IO200 is the intended starting difference.",
+    "Target/TE encodes reused; no real image processing outside the verified general cohort.",
+    "Private final model snapshots, not public artifact/optimizer/dataset resume acceptance.",
+    "No owner run, checkpoint or default changed.",
+    "Second arm has not completed in this record.",
+    "Long-training recovery or failure is not established by this bounded probe.",
+    "No image pixels, captions, model weights or optimizer tensors committed."
+  ],
+  "stage": "First arm completed1000; matched native-moment arm pending.",
+  "arm": {
+    "arm": "independent_spatial",
+    "body_before": "e8d4ef62183464de2a77ebda84d92d0e3c4e05579b08b08e372b76d0aa97782d",
+    "structural_before": "ee0ea49f188c016ec3f27edeb7eb99a930c36007d6703a3d1e9450959f1eaeda",
+    "initial_io_sha256": "74bf2c1e6f18247fb96bc9dcbe913d12e4afaf1a06e1e7d46e87c8b97189fcc8",
+    "group_counts": [
+      565,
+      67,
+      6
+    ],
+    "trainable_parameters": 1992894592,
+    "training_seconds": 718.9470000048168,
+    "peak_allocated_gib": 11.792992115020752,
+    "optimizer_counters": [
+      1000
+    ],
+    "body_after": "29040b44661a62af6013c4ae268c229c67989e37e769eaee2f92c9157b67e3e1",
+    "structural_after": "0a21a4b770b2d8f6196c7f033b46437ae580f0ca8f759b8e15c3ad03ad050755",
+    "snapshot_bytes": 4257784555,
+    "samples": [
+      {
+        "index": 28,
+        "step": 500,
+        "sha256": "b770f553d41c0a4b75e492d497bcfa53bf8cecb38a5433df1436e25b93fea3cb"
+      },
+      {
+        "index": 31,
+        "step": 500,
+        "sha256": "7420bed90ec7d200a01f45ba11c36476d5e55eb3fe8d8e7faddaa7cba01fff4a"
+      },
+      {
+        "index": 28,
+        "step": 1000,
+        "sha256": "3a08f1368d6f560431ec9e91c65bb9e38bd6e22fe2417e4943efa539e9e8409d"
+      },
+      {
+        "index": 31,
+        "step": 1000,
+        "sha256": "69bade9ed8899aa40c6777aa09cfd099931de7d488ad0fd88d03ca8b25343a47"
+      }
+    ],
+    "loss_windows": [
+      {
+        "first_step": 1,
+        "last_step": 100,
+        "mean": 0.9481820771098137
+      },
+      {
+        "first_step": 101,
+        "last_step": 200,
+        "mean": 0.8936092954874039
+      },
+      {
+        "first_step": 201,
+        "last_step": 300,
+        "mean": 0.7869084343314171
+      },
+      {
+        "first_step": 301,
+        "last_step": 400,
+        "mean": 0.7953018972277641
+      },
+      {
+        "first_step": 401,
+        "last_step": 500,
+        "mean": 0.6765016999840736
+      },
+      {
+        "first_step": 501,
+        "last_step": 600,
+        "mean": 0.5903250548243523
+      },
+      {
+        "first_step": 601,
+        "last_step": 700,
+        "mean": 0.7294179648160934
+      },
+      {
+        "first_step": 701,
+        "last_step": 800,
+        "mean": 0.6232497552037239
+      },
+      {
+        "first_step": 801,
+        "last_step": 900,
+        "mean": 0.6816049635410308
+      },
+      {
+        "first_step": 901,
+        "last_step": 1000,
+        "mean": 0.5507982084155083
+      }
+    ]
+  },
+  "visual_review": "Direct initial/500/1000 review at1024px, CFG4, seed63: p28 clothing/background areas remain more continuous than initially and improve further from500 to1000. p31 retains face/hand/food structure, but1000 has stronger clipping and fine fragmentation than500. Overall prompt-dependent tendency; no monotonic or broad quality improvement claim."
+}

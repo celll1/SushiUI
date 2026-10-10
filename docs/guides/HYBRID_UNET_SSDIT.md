@@ -2282,6 +2282,16 @@ Numeric evidence and initial/intermediate image hashes are recorded in
 `docs/audits/data/hybrid_anima_codec_fullft_interim_2026-10.json`; no images or
 weights are committed, and no owner run or production default is changed.
 
+That first arm subsequently completes1000 updates: p28 clothing/background
+areas improve further from500, while p31 shows stronger clipping and fine
+fragmentation than at500. Face/hand/food structure remains recognizable, but
+the tendency is prompt-dependent rather than monotonic. All638 optimizer
+entries reach1000 and native body weights change; the caption bridge stays
+frozen. Compute totals718.947 seconds, peak allocated11.793 GiB. Last100 mean
+loss is0.55080 versus0.94818 for the first100; this does not override the mixed
+visual result. The native-moment comparator remains pending. See
+`docs/audits/data/hybrid_anima_codec_fullft_first_arm_2026-10.json`.
+
 The experimental calibrator adds `match_native_covariance`, accepted only with
 orthogonal input selection. The latter selects an initial row space; covariance
 matching then rescales/rotates it, so the final rows need not be orthonormal.

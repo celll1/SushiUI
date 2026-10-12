@@ -99,6 +99,40 @@ low-noise velocity errors. Direct composition of learned input/output bridges
 also need not be identity; its poor synthetic roundtrip is not evidence of an
 unavoidable bottleneck because the trained backbone sits between them.
 
+### Known-target denoising loops (2026-10-12 follow-up)
+
+The step-122519 checkpoint was tested using **production `sample_img2img`**,
+not a single-step reconstruction. One revalidated general target (512x768),
+its tag conditioning and the same seed-73 BF16 noise were held fixed. Exact
+start sigmas .02/.05/.1/.2/.35/.5/.7/.9/1 were prepended to suffixes of one
+resolution-shifted 200-step Euler grid. The low-noise grid was also refined
+to maximum spacing .0025 at sigma <= .2; every arm ended at exactly zero.
+CFG 1 and 7 were tested. Noise correction and codec normalization use the
+same production paths as training samples. UI denoising strength selects an
+index in a shifted schedule and is not numerically identical to start sigma.
+
+The visual onset is gradual: .02 stays close to the codec reference, .05-.1
+starts disturbing fine lines, .2 has clear angular/polygonal contours, and
+.35-.5 and above lose considerably more detail. CFG 1 already exhibits this;
+CFG 7 can amplify it. Changes in pose or reference pixel MSE at high noise
+are not by themselves failures: the contour artifacts were inspected separately.
+
+Fine integration with BF16 state adds numerical drift. A control retaining
+the identical BF16 initial state/noise and BF16 model boundary but integrating
+in FP32 reduced final latent MSE at start .1/.2/.5/.9 from
+.01858/.04747/.13724/.42210 to .01443/.03395/.12091/.39863. It does **not**
+remove the visible artifacts. In the FP32 start-.5 trajectory, predicted x0
+MSE rises from .08482 initially to .11160 near sigma .1 and .12091 at clean.
+Distortion is already present at intermediate noise and is not repaired by
+the tail; this is not evidence that only the extreme low-noise band is deficient.
+Increasing low-noise coverage remains an untested remedy, not a diagnosed
+single cause. All settings/weights were preserved and the owner run resumed.
+
+Numeric checkpoints and precision controls:
+`docs/audits/data/anima_owner176_loop_2026-10.json`.
+Private full traces, final/snapshot images and plots:
+`local/verification/owner176_loop_{diagnostic,refined,fp32}/`.
+
 ## Wiring and persistence
 
 - Install the adapter before optimizer construction; include its parameters in

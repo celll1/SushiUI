@@ -103,6 +103,7 @@ Shared training memory/iteration audit and equivalent snapshot fixes:
 | [docs/decisions/VAE_SWAP_BRIDGE_REDESIGN.md](../decisions/VAE_SWAP_BRIDGE_REDESIGN.md) | Proposed invertible-basis bridge, learnable latent IO and training-scale calibration; primary fix for swap jaggies. |
 | [docs/audits/VAE_SWAP_SAMPLING_METHOD_VALIDATION_2026-10.md](../audits/VAE_SWAP_SAMPLING_METHOD_VALIDATION_2026-10.md) | CPU oracle and bounded Anima/Qwen VAE inference validation; long-training acceptance deferred. |
 | [docs/audits/ANIMA_OWNER176_BRIDGE_CAPACITY_2026-10.md](../audits/ANIMA_OWNER176_BRIDGE_CAPACITY_2026-10.md) | Actual learned bridge updates, fixed convolution capacity and normalized output-head limitations. |
+| [docs/audits/ANIMA_OWNER176_FULL_PASSTHROUGH_LEARNING_2026-10.md](../audits/ANIMA_OWNER176_FULL_PASSTHROUGH_LEARNING_2026-10.md) | New direct-path gradient/update evidence and a measured BF16 bridge-bias stagnation case. |
 | [backend/core/training/API_REFERENCE.md](../../backend/core/training/API_REFERENCE.md) | Training API reference. |
 | [backend/core/training/TRAINING_PARAMS_GUIDE.md](../../backend/core/training/TRAINING_PARAMS_GUIDE.md) | Training parameters and configuration. |
 | [backend/core/training/MODEL_ARCHITECTURES.md](../../backend/core/training/MODEL_ARCHITECTURES.md) | Per-architecture training internals. |

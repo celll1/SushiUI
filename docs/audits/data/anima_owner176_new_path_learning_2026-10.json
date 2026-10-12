@@ -1,0 +1,619 @@
+{
+  "initial_step": 136490,
+  "current_step": 138000,
+  "steps_since_conversion": 1510,
+  "weights": {
+    "input_source": {
+      "initial": {
+        "rms": 0.013525079004466534,
+        "l2": 4.896617889404297,
+        "max_abs": 0.1875,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.013525158166885376,
+        "l2": 4.896646022796631,
+        "max_abs": 0.1875,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 3.1158018828136846e-05,
+        "l2": 0.011280405335128307,
+        "max_abs": 0.0006875991821289062,
+        "nonzero_fraction": 0.1169281005859375,
+        "finite": true
+      },
+      "changed_fraction": 0.1169281005859375,
+      "relative_l2_change": 0.0023037136223224143
+    },
+    "input_new_direct_target_0_15": {
+      "initial": {
+        "rms": 0.0,
+        "l2": 0.0,
+        "max_abs": 0.0,
+        "nonzero_fraction": 0.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.00059168366715312,
+        "l2": 0.21421270072460175,
+        "max_abs": 0.00775146484375,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.00059168366715312,
+        "l2": 0.21421270072460175,
+        "max_abs": 0.00775146484375,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "changed_fraction": 1.0,
+      "relative_l2_change": null
+    },
+    "input_inherited_direct_target_16_63": {
+      "initial": {
+        "rms": 0.0013188052689656615,
+        "l2": 0.8269938230514526,
+        "max_abs": 0.1328125,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.0015980920288711786,
+        "l2": 1.00212824344635,
+        "max_abs": 0.1328125,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.0005634549888782203,
+        "l2": 0.3533281087875366,
+        "max_abs": 0.00665283203125,
+        "nonzero_fraction": 0.9950332641601562,
+        "finite": true
+      },
+      "changed_fraction": 0.9950332641601562,
+      "relative_l2_change": 0.4272439514527714
+    },
+    "input_all_direct": {
+      "initial": {
+        "rms": 0.0011421188246458769,
+        "l2": 0.8269938230514526,
+        "max_abs": 0.1328125,
+        "nonzero_fraction": 0.75,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.0014152547810226679,
+        "l2": 1.0247684717178345,
+        "max_abs": 0.1328125,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.0005706431111320853,
+        "l2": 0.413194477558136,
+        "max_abs": 0.00775146484375,
+        "nonzero_fraction": 0.9962749481201172,
+        "finite": true
+      },
+      "changed_fraction": 0.9962749481201172,
+      "relative_l2_change": 0.4996342971867983
+    },
+    "input_direct_channel_norms": [
+      0.05381780117750168,
+      0.04947049915790558,
+      0.04125576838850975,
+      0.056014224886894226,
+      0.06435071676969528,
+      0.05405852571129799,
+      0.061391640454530716,
+      0.054297804832458496,
+      0.0504009872674942,
+      0.04665660485625267,
+      0.04817963391542435,
+      0.05302286520600319,
+      0.05564185231924057,
+      0.056068114936351776,
+      0.05880015715956688,
+      0.04874635860323906,
+      0.08397100865840912,
+      0.10255802422761917,
+      0.10910573601722717,
+      0.11027192324399948,
+      0.11542921513319016,
+      0.12182821333408356,
+      0.14341257512569427,
+      0.08987649530172348,
+      0.1604374498128891,
+      0.18940095603466034,
+      0.10322583466768265,
+      0.11534321308135986,
+      0.11174452304840088,
+      0.1328272968530655,
+      0.14349177479743958,
+      0.10237867385149002,
+      0.2276376187801361,
+      0.17928433418273926,
+      0.21144674718379974,
+      0.11241546273231506,
+      0.13825157284736633,
+      0.15523380041122437,
+      0.1412741243839264,
+      0.09292963147163391,
+      0.1382838934659958,
+      0.17041178047657013,
+      0.15438348054885864,
+      0.15030992031097412,
+      0.12290853261947632,
+      0.16675633192062378,
+      0.10964664816856384,
+      0.17998209595680237,
+      0.12466612458229065,
+      0.18702395260334015,
+      0.129738450050354,
+      0.13959169387817383,
+      0.0833033099770546,
+      0.24506622552871704,
+      0.10076213628053665,
+      0.15296392142772675,
+      0.16998261213302612,
+      0.1379680633544922,
+      0.13992582261562347,
+      0.1389436423778534,
+      0.10837983340024948,
+      0.1934959590435028,
+      0.12712423503398895,
+      0.15631917119026184
+    ],
+    "output_source": {
+      "initial": {
+        "rms": 0.005571897607296705,
+        "l2": 2.0172500610351562,
+        "max_abs": 0.080078125,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.005571947433054447,
+        "l2": 2.0172672271728516,
+        "max_abs": 0.080078125,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 4.813029590877704e-05,
+        "l2": 0.017424991354346275,
+        "max_abs": 0.000751495361328125,
+        "nonzero_fraction": 0.615692138671875,
+        "finite": true
+      },
+      "changed_fraction": 0.615692138671875,
+      "relative_l2_change": 0.008637992726298198
+    },
+    "output_new_direct_target_0_15": {
+      "initial": {
+        "rms": 0.0,
+        "l2": 0.0,
+        "max_abs": 0.0,
+        "nonzero_fraction": 0.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.001769582275301218,
+        "l2": 0.640658974647522,
+        "max_abs": 0.00927734375,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.001769582275301218,
+        "l2": 0.640658974647522,
+        "max_abs": 0.00927734375,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "changed_fraction": 1.0,
+      "relative_l2_change": null
+    },
+    "output_inherited_direct_target_16_63": {
+      "initial": {
+        "rms": 0.0017707723891362548,
+        "l2": 1.1104000806808472,
+        "max_abs": 0.0078125,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.0025924877263605595,
+        "l2": 1.625701665878296,
+        "max_abs": 0.010009765625,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.0013157918583601713,
+        "l2": 0.8251050114631653,
+        "max_abs": 0.008209228515625,
+        "nonzero_fraction": 0.9965388178825378,
+        "finite": true
+      },
+      "changed_fraction": 0.9965388178825378,
+      "relative_l2_change": 0.7430700211740332
+    },
+    "output_all_direct": {
+      "initial": {
+        "rms": 0.0015335340285673738,
+        "l2": 1.1104000806808472,
+        "max_abs": 0.0078125,
+        "nonzero_fraction": 0.75,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.0024132137186825275,
+        "l2": 1.7473896741867065,
+        "max_abs": 0.010009765625,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.0014426838606595993,
+        "l2": 1.0446362495422363,
+        "max_abs": 0.00927734375,
+        "nonzero_fraction": 0.9974040985107422,
+        "finite": true
+      },
+      "changed_fraction": 0.9974040985107422,
+      "relative_l2_change": 0.9407746520530803
+    },
+    "output_direct_channel_norms": [
+      0.17574924230575562,
+      0.17342497408390045,
+      0.1457846760749817,
+      0.15284892916679382,
+      0.18705549836158752,
+      0.1517818421125412,
+      0.17785845696926117,
+      0.16354647278785706,
+      0.15784357488155365,
+      0.12323453277349472,
+      0.15963438153266907,
+      0.14923329651355743,
+      0.14318108558654785,
+      0.17757797241210938,
+      0.1459376960992813,
+      0.16512252390384674,
+      0.25689658522605896,
+      0.23426257073879242,
+      0.22408437728881836,
+      0.24064800143241882,
+      0.237722709774971,
+      0.2300666868686676,
+      0.23336078226566315,
+      0.23037484288215637,
+      0.2151930034160614,
+      0.23059318959712982,
+      0.24781399965286255,
+      0.2413574457168579,
+      0.23826463520526886,
+      0.23684079945087433,
+      0.25467026233673096,
+      0.2260533571243286,
+      0.24547842144966125,
+      0.24631954729557037,
+      0.221991166472435,
+      0.24825100600719452,
+      0.2607717216014862,
+      0.2175586223602295,
+      0.24561099708080292,
+      0.22957462072372437,
+      0.24361065030097961,
+      0.21952280402183533,
+      0.24272239208221436,
+      0.2263408750295639,
+      0.2306118607521057,
+      0.23142646253108978,
+      0.22009964287281036,
+      0.2140808403491974,
+      0.2234547734260559,
+      0.2307177484035492,
+      0.2335927039384842,
+      0.22604133188724518,
+      0.20585697889328003,
+      0.2100277841091156,
+      0.24700896441936493,
+      0.23190197348594666,
+      0.23173221945762634,
+      0.22647151350975037,
+      0.25036919116973877,
+      0.24387246370315552,
+      0.2528250813484192,
+      0.22625017166137695,
+      0.2392660528421402,
+      0.24566885828971863
+    ],
+    "net.vae_latent_bridge.input.projection.bias": {
+      "initial": {
+        "rms": 0.20266464352607727,
+        "l2": 1.812687635421753,
+        "max_abs": 0.96875,
+        "nonzero_fraction": 0.800000011920929,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.20266513526439667,
+        "l2": 1.8126921653747559,
+        "max_abs": 0.96875,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.00038846407551318407,
+        "l2": 0.0034745284356176853,
+        "max_abs": 0.00141143798828125,
+        "nonzero_fraction": 0.75,
+        "finite": true
+      },
+      "changed_fraction": 0.75,
+      "relative_l2_change": 0.0019167827747714936
+    },
+    "net.vae_latent_bridge.input.projection.weight": {
+      "initial": {
+        "rms": 0.03833752125501633,
+        "l2": 8.229621887207031,
+        "max_abs": 1.0,
+        "nonzero_fraction": 0.8003472089767456,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.03833814337849617,
+        "l2": 8.229755401611328,
+        "max_abs": 1.0,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.00023342120402958244,
+        "l2": 0.05010650306940079,
+        "max_abs": 0.00153350830078125,
+        "nonzero_fraction": 0.6839409470558167,
+        "finite": true
+      },
+      "changed_fraction": 0.6839409470558167,
+      "relative_l2_change": 0.00608855470593266
+    },
+    "net.vae_latent_bridge.output.projection.bias": {
+      "initial": {
+        "rms": 0.7060815691947937,
+        "l2": 5.64865255355835,
+        "max_abs": 1.7265625,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.7060815691947937,
+        "l2": 5.64865255355835,
+        "max_abs": 1.7265625,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.0,
+        "l2": 0.0,
+        "max_abs": 0.0,
+        "nonzero_fraction": 0.0,
+        "finite": true
+      },
+      "changed_fraction": 0.0,
+      "relative_l2_change": 0.0
+    },
+    "net.vae_latent_bridge.output.projection.weight": {
+      "initial": {
+        "rms": 0.07045111805200577,
+        "l2": 15.123226165771484,
+        "max_abs": 1.0,
+        "nonzero_fraction": 0.8003472089767456,
+        "finite": true
+      },
+      "current": {
+        "rms": 0.07045140117406845,
+        "l2": 15.123257637023926,
+        "max_abs": 1.0,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "difference": {
+        "rms": 0.00021284779359120876,
+        "l2": 0.0456903837621212,
+        "max_abs": 0.001953125,
+        "nonzero_fraction": 0.5034939050674438,
+        "finite": true
+      },
+      "changed_fraction": 0.5034939050674438,
+      "relative_l2_change": 0.003021206140891591
+    }
+  },
+  "optimizer": {
+    "transformer.x_embedder.proj.1.weight_fresh": {
+      "group": "vae_swap_io",
+      "lr": 5e-05,
+      "step": 1510,
+      "first_moment": {
+        "rms": 0.00010594603372737765,
+        "l2": 0.07671095430850983,
+        "max_abs": 0.002062364714220166,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "second_moment": {
+        "rms": 1.7462618870922597e-06,
+        "l2": 0.0012644118396565318,
+        "max_abs": 0.00010735168325481936,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "quantization_blocksize": 256
+    },
+    "transformer.final_layer.linear.weight_fresh": {
+      "group": "vae_swap_io",
+      "lr": 5e-05,
+      "step": 1510,
+      "first_moment": {
+        "rms": 2.3014183170744218e-05,
+        "l2": 0.016663793474435806,
+        "max_abs": 0.0005961173446848989,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "second_moment": {
+        "rms": 1.9961390762546216e-08,
+        "l2": 1.4452684808929916e-05,
+        "max_abs": 6.255992843762215e-07,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "quantization_blocksize": 256
+    },
+    "transformer.vae_latent_bridge.output.projection.bias": {
+      "group": "vae_swap_bridge",
+      "lr": 5e-06,
+      "step": 138000,
+      "first_moment": {
+        "rms": 5.0445898523321375e-05,
+        "l2": 0.000403567188186571,
+        "max_abs": 0.00011539999104570597,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "second_moment": {
+        "rms": 3.453030572586613e-08,
+        "l2": 2.7624244580692903e-07,
+        "max_abs": 5.287336080073146e-08,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "quantization_blocksize": null
+    },
+    "transformer.vae_latent_bridge.input.projection.weight": {
+      "group": "vae_swap_bridge.fresh",
+      "lr": 5e-06,
+      "step": 1510,
+      "first_moment": {
+        "rms": 0.00011935670772800222,
+        "l2": 0.025621403008699417,
+        "max_abs": 0.0012183219660073519,
+        "nonzero_fraction": 0.9999783039093018,
+        "finite": true
+      },
+      "second_moment": {
+        "rms": 1.3923495316703338e-06,
+        "l2": 0.0002988825144711882,
+        "max_abs": 2.4360071620321833e-05,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "quantization_blocksize": 256
+    },
+    "transformer.vae_latent_bridge.input.projection.bias": {
+      "group": "vae_swap_bridge.fresh",
+      "lr": 5e-06,
+      "step": 1510,
+      "first_moment": {
+        "rms": 7.111825834726915e-05,
+        "l2": 0.0006361010600812733,
+        "max_abs": 0.00027768337167799473,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "second_moment": {
+        "rms": 1.0067070661534672e-06,
+        "l2": 9.004261301015504e-06,
+        "max_abs": 5.834227067680331e-06,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "quantization_blocksize": null
+    },
+    "transformer.vae_latent_bridge.output.projection.weight": {
+      "group": "vae_swap_bridge.fresh",
+      "lr": 5e-06,
+      "step": 1510,
+      "first_moment": {
+        "rms": 2.9225742764538154e-05,
+        "l2": 0.0062736705876886845,
+        "max_abs": 0.00017997849499806762,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "second_moment": {
+        "rms": 1.3417821520533835e-08,
+        "l2": 2.8803028726542834e-06,
+        "max_abs": 9.603888173614905e-08,
+        "nonzero_fraction": 1.0,
+        "finite": true
+      },
+      "quantization_blocksize": 256
+    }
+  },
+  "gradient_observations": {
+    "transformer.vae_latent_bridge.input.projection.weight": {
+      "observed_steps": 61,
+      "min_norm": 1.130487084388733,
+      "median_norm": 5.683538436889648,
+      "max_norm": 47.43620681762695,
+      "last_step": 138720,
+      "last_norm": 5.186211585998535
+    },
+    "transformer.vae_latent_bridge.input.projection.bias": {
+      "observed_steps": 19,
+      "min_norm": 0.14173513650894165,
+      "median_norm": 0.7109847664833069,
+      "max_norm": 1.7798833847045898,
+      "last_step": 138570,
+      "last_norm": 0.9252026677131653
+    },
+    "transformer.x_embedder.proj.1.weight_fresh": {
+      "observed_steps": 217,
+      "min_norm": 1.451140284538269,
+      "median_norm": 14.295068740844727,
+      "max_norm": 328.4974060058594,
+      "last_step": 138730,
+      "last_norm": 2.5114989280700684
+    },
+    "transformer.vae_latent_bridge.output.projection.bias": {
+      "observed_steps": 4,
+      "min_norm": 0.01631082035601139,
+      "median_norm": 0.030731625854969025,
+      "max_norm": 0.04502929002046585,
+      "last_step": 137680,
+      "last_norm": 0.01631082035601139
+    },
+    "transformer.vae_latent_bridge.output.projection.weight": {
+      "observed_steps": 3,
+      "min_norm": 0.44060778617858887,
+      "median_norm": 0.577492892742157,
+      "max_norm": 0.5791622400283813,
+      "last_step": 138380,
+      "last_norm": 0.44060778617858887
+    }
+  },
+  "gpu_used": false,
+  "optimizer_class": "AdamW8bit",
+  "output_bias_rounding_probe": {
+    "description": "Stored-moment AdamW proposal, not an observed next live update",
+    "saved_dtype": "torch.bfloat16",
+    "fp32_delta": {
+      "rms": 1.3863565300198388e-06,
+      "l2": 1.109085224015871e-05,
+      "max_abs": 3.129243850708008e-06,
+      "nonzero_fraction": 1.0,
+      "finite": true
+    },
+    "bf16_changed_fraction": 0.0
+  },
+  "gradient_log_samples_since_conversion": 225,
+  "gradient_log_limit": "Top-k only; absence is not evidence of zero gradient. Norms are pre-clipping."
+}

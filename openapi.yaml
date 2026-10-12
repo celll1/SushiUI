@@ -29602,6 +29602,22 @@ components:
           enum: [128, 256, 512]
           default: 256
           description: Target image/video calibration crop size; unused for ACE-Step audio calibration. The target VAE grid owns the token count. Image VAE teachers with stronger target spatial compression encode a smaller image at target crop size multiplied by source scale divided by target scale, preserving their native latent grid instead of pooling encoded features. Equal-scale, expanded-grid, RGB pixel and video teacher paths retain latent resampling as needed. Saved calibrated bridges restore without recalibration.
+        vae_swap_io_lr_factor:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 1000
+          default: 10.0
+          example: 10.0
+          description: Full fine-tune only, Anima full-passthrough spatial swaps (more target than source channels). Multiplies the transformer learning rate for the latent input columns and output rows that carry the target codec channels; these start at zero. Other swaps and architectures ignore it. Checkpoints keep the merged weight layout.
+        vae_swap_bridge_lr_factor:
+          type: number
+          exclusiveMinimum: true
+          minimum: 0
+          maximum: 1000
+          default: 1.0
+          example: 1.0
+          description: Full fine-tune only, Anima full-passthrough spatial swaps. Multiplies the transformer learning rate for the trainable codec bridge convolutions. Other swaps and architectures ignore it.
         sensenova_gen_patch:
           type: 'integer'
           minimum: 0

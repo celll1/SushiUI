@@ -294,16 +294,28 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         attn_mlp_factor = float(trainer.config.get("anima_attn_mlp_lr_factor", 1.0))
         mod_factor = float(trainer.config.get("anima_mod_lr_factor", 1.0))
         adapter_factor = float(trainer.config.get("anima_llm_adapter_lr_factor", 1.0))
+        from api.param_defaults import TRAINING_DEFAULTS
+        from core.models.anima.vae_alignment import split_passthrough_io
+        passthrough = split_passthrough_io(trainer.transformer)
+        io_factor = float(trainer.config.get("vae_swap_io_lr_factor", TRAINING_DEFAULTS["vae_swap_io_lr_factor"]))
+        bridge_factor = float(trainer.config.get("vae_swap_bridge_lr_factor",
+                                                 TRAINING_DEFAULTS["vae_swap_bridge_lr_factor"]))
 
         # Bucket parameters by named-path prefix.
         base_params: List[nn.Parameter] = []
         attn_mlp_params: List[nn.Parameter] = []
         mod_params: List[nn.Parameter] = []
         adapter_params: List[nn.Parameter] = []
+        io_params: List[nn.Parameter] = []
+        bridge_params: List[nn.Parameter] = []
         for name, p in trainer.transformer.named_parameters():
             if not p.requires_grad:
                 continue
-            if name.startswith("llm_adapter"):
+            if passthrough and name.endswith(".weight_fresh"):
+                io_params.append(p)
+            elif passthrough and name.startswith("vae_latent_bridge."):
+                bridge_params.append(p)
+            elif name.startswith("llm_adapter"):
                 adapter_params.append(p)
             elif ".adaln_modulation_" in name or name.startswith("adaln_modulation_"):
                 mod_params.append(p)
@@ -329,12 +341,19 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
                            "lr": float(adapter_lr) if adapter_lr is not None else base_lr * adapter_factor,
                            "name": "llm_adapter",
                            "component": "adapter" if adapter_lr is not None else "unet"})
+        if io_params:
+            groups.append({"params": io_params, "lr": base_lr * io_factor,
+                           "name": "vae_swap_io", "component": "unet"})
+        if bridge_params:
+            groups.append({"params": bridge_params, "lr": base_lr * bridge_factor,
+                           "name": "vae_swap_bridge", "component": "unet"})
 
         total = sum(sum(p.numel() for p in g["params"]) for g in groups)
         print(f"[AnimaFullParameterAdapter] {len(groups)} param group(s), "
               f"{total:,} trainable params total "
               f"(base={len(base_params)} | attn_mlp={len(attn_mlp_params)} | "
-              f"mod={len(mod_params)} | adapter={len(adapter_params)})")
+              f"mod={len(mod_params)} | adapter={len(adapter_params)} | "
+              f"vae_swap_io={len(io_params)} | vae_swap_bridge={len(bridge_params)})")
         return groups
 
     def write_checkpoint(self, step: int, epoch: int, output_path: Path):

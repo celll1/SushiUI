@@ -139,7 +139,8 @@ def preflight_artifact(path, latent_channels=None, *, include_alignment=False):
             raise ValueError("Aligned Anima requires native config metadata")
         if latent_channels and int(latent_channels)!=alignment["new_channels"]:
             raise ValueError("Anima codec declaration disagrees with spatial alignment")
-        width=max(alignment["old_channels"],alignment["new_channels"])
+        from core.models.components.latent_adapter import backbone_width
+        width=backbone_width(alignment)
         if config["in_channels"]!=width or config["out_channels"]!=width:
             raise ValueError("Aligned Anima native config disagrees with internal latent width")
     elif latent_channels:

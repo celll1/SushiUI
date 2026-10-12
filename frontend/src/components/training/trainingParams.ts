@@ -131,7 +131,7 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   // vae_swap_source is the current key; sdxl_vae_type stays listed so an older
   // run still restores its (read-only) alias.
   "vae_swap_source", "vae_swap_new_channel_init", "vae_swap_calibration_samples",
-  "vae_swap_calibration_resolution", "sdxl_vae_type", "sensenova_gen_patch",
+  "vae_swap_calibration_resolution", "vae_swap_io_lr_factor", "vae_swap_bridge_lr_factor", "sdxl_vae_type", "sensenova_gen_patch",
   "sensenova_latent_refiner", "sensenova_refiner_width",
   "sensenova_refiner_depth", "sensenova_refiner_training_mode",
   "sensenova_refiner_lr_factor", "sensenova_refiner_detach_mode",

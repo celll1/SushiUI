@@ -3148,6 +3148,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "vae_swap_new_channel_init": "auto",
     "vae_swap_calibration_samples": 32,
     "vae_swap_calibration_resolution": 256,
+    # Full-passthrough spatial swaps (Anima): LR multipliers on the body LR for the
+    # zero-initialized latent IO rows/columns and for the codec bridges.
+    "vae_swap_io_lr_factor": 10.0,
+    "vae_swap_bridge_lr_factor": 1.0,
     # SenseNova VAE swap only: the generation patch in LATENT cells. 0 = inherit
     # (keep the base checkpoint's own patch; 4 for a pixel-space base), which is
     # the default because a positive value REBUILDS the generation ViT's patch

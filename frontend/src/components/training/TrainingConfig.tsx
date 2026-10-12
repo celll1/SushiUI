@@ -4500,6 +4500,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           {[128, 256, 512].map(size => <option key={size} value={size}>{size}</option>)}
                         </select>
                       </label>}
+                      {baseModelArch === "anima" && (["vae_swap_io_lr_factor", "vae_swap_bridge_lr_factor"] as const).map(key => (
+                        <label key={key} className="block text-xs text-gray-400">
+                          {key === "vae_swap_io_lr_factor" ? "New latent IO LR factor" : "Codec bridge LR factor"}
+                          <input type="number" min={0} step={0.1}
+                            value={params[key] ?? ""}
+                            placeholder="Default"
+                            onChange={(e) => updateParam(key, e.target.value === "" ? undefined : Number(e.target.value))}
+                            className="ml-2 w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1" />
+                        </label>
+                      ))}
+                      {baseModelArch === "anima" && (
+                        <p className="text-xs text-gray-400">
+                          Applies when the target VAE has more latent channels than the source: every target
+                          channel gets a direct input/output path, and these factors multiply the transformer LR.
+                        </p>
+                      )}
                     </div>
                   )}
 

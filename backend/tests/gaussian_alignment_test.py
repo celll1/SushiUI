@@ -207,3 +207,43 @@ def test_zimage_sampler_supplies_cfg_noise_and_updates_inpaint_anchor(mode):
             assert not torch.equal(seen[1][:,:,:,:,:4],seen[0][:,:,:,:,:4])
         else:torch.testing.assert_close(seen[1],seen[0],rtol=0,atol=0)
         assert not torch.cuda.is_initialized()
+
+
+def full_pair():
+    torch.manual_seed(218)
+    value = SpatialAlignmentPair(dict(declaration(3, 5), noise_policy=POLICY, passthrough="full"))
+    incoming, outgoing = SpatialLatentBridge(5, 3), SpatialLatentBridge(3, 5)
+    for bridge in (incoming, outgoing):
+        bridge.initialize(torch.randn(bridge.source_channels*9, bridge.target_channels)*.1,
+                          torch.randn(bridge.target_channels)*.1)
+    value.initialize_from_pair(incoming, outgoing)
+    return value, incoming, outgoing
+
+
+def test_full_passthrough_reaches_every_target_channel_and_keeps_step_zero():
+    value, incoming, outgoing = full_pair()
+    legacy = SpatialAlignmentPair(dict(declaration(3, 5), noise_policy=POLICY))
+    legacy.initialize_from_pair(incoming, outgoing)
+    assert value.input.projection.out_channels == value.output.projection.in_channels == 8
+    clean = torch.randn(2, 5, 8, 12)
+    torch.testing.assert_close(value.input(clean)[:, :3], incoming(clean))
+    torch.testing.assert_close(value.input(clean)[:, 3:], clean)
+    internal = torch.zeros(2, 8, 8, 12)
+    internal[:, 3:] = clean
+    torch.testing.assert_close(value.output.epsilon(internal), clean)
+    # Untrained new channels emit zero, so the source path and noise complement equal the legacy pair.
+    noise = torch.randn(2, 5, 8, 12)
+    native = torch.zeros(2, 8, 8, 12)
+    native[:, :3] = torch.randn(2, 3, 8, 12)
+    expected = legacy.flow_velocity(native[:, :5], convention="eps_minus_x0", noise=noise)
+    torch.testing.assert_close(value.flow_velocity(native, convention="eps_minus_x0", noise=noise), expected)
+    sigma = torch.tensor([.3, .9])
+    state = value.flow_state(clean, sigma, noise=noise)
+    torch.testing.assert_close(state[:, :3], legacy.flow_state(clean, sigma, noise=noise)[:, :3])
+    torch.testing.assert_close(state[:, 3:], clean)
+
+
+@pytest.mark.parametrize("change", [dict(passthrough="index"), dict(new_channels=3), dict(old_channels=6)])
+def test_full_passthrough_declaration_rules(change):
+    with pytest.raises(ValueError):
+        validate_declaration(dict(declaration(3, 5), passthrough="full") | change)

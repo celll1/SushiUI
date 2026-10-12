@@ -31,10 +31,30 @@ def initialize_swap(trainer,resolved,*,handler):
     source_wiring=handler.resolve_wiring(trainer)
     noise_policy=(POLICY if resolved.scale_factor>source_wiring.vae_scale_factor
                   and resolved.latent_channels>=model.in_channels else None)
+    passthrough="full" if resolved.latent_channels>model.in_channels else None
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.in_channels,source_wiring=source_wiring,
         patch_size=2,resize=resize,pending_key="_anima_vae_calibration_source",
-        topology_config=lambda:native_config(model),noise_policy=noise_policy)
+        topology_config=lambda:native_config(model),noise_policy=noise_policy,
+        passthrough=passthrough)
+
+
+def split_passthrough_io(model):
+    """Give full-passthrough latent IO its own Parameters; checkpoints keep merged weights."""
+    pair=getattr(model,"vae_latent_bridge",None)
+    if pair is None or pair.declaration.get("passthrough")!="full":
+        return False
+    from core.models.components.split_linear import SplitLinear
+    old,width=pair.declaration["old_channels"],model.in_channels
+    phases=model.patch_spatial**2*model.patch_temporal
+    if not isinstance(model.x_embedder.proj[1],SplitLinear):
+        # Input columns are (c r m n); output rows are (p1 p2 t C).
+        model.x_embedder.proj[1]=SplitLinear(model.x_embedder.proj[1],
+            [c*phases+k for c in range(old,width) for k in range(phases)],axis=1)
+    if not isinstance(model.final_layer.linear,SplitLinear):
+        model.final_layer.linear=SplitLinear(model.final_layer.linear,
+            [k*width+c for k in range(phases) for c in range(old,width)],axis=0)
+    return True
 
 
 def calibrate(trainer,datasets):

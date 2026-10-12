@@ -191,6 +191,24 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
     assert vae_decode_latents(trainer.vae,sampled)[0].size==image.size
     from core.training.adapters.anima_adapter import AnimaFullParameterAdapter
     from core.models.anima import anima_loader
+    if new_c>old_c:
+        before={k:v.clone() for k,v in value.state_dict().items()}
+        trainer.unet_lr=2e-6
+        trainer.config.update(vae_swap_io_lr_factor=5.,vae_swap_bridge_lr_factor=3.)
+        groups={g["name"]:g for g in AnimaFullParameterAdapter(trainer).arch_param_groups()}
+        assert list(value.state_dict())==list(before)
+        for key,tensor in before.items():
+            assert torch.equal(value.state_dict()[key],tensor)
+        embed,head=value.x_embedder.proj[1],value.final_layer.linear
+        # The split selects exactly the zero-initialized target-channel columns and rows.
+        assert embed.weight_fresh.shape[1]==head.weight_fresh.shape[0]==new_c*4
+        assert not embed.weight_fresh.any() and not head.weight_fresh.any()
+        assert embed.weight_kept.abs().sum(0).all() and head.weight_kept.abs().sum(1).all()
+        assert groups["vae_swap_io"]["lr"]==pytest.approx(1e-5)
+        assert {id(p) for p in groups["vae_swap_io"]["params"]}=={id(embed.weight_fresh),id(head.weight_fresh)}
+        assert groups["vae_swap_bridge"]["lr"]==pytest.approx(6e-6)
+        assert {id(p) for p in groups["vae_swap_bridge"]["params"]}=={
+            id(p) for p in value.vae_latent_bridge.parameters()}
     trainer.bundle_vae=True
     trainer.config["vae_swap_source"]=resolved.source
     path=AnimaFullParameterAdapter(trainer).write_checkpoint(7,0,tmp_path/"full.safetensors")
@@ -201,7 +219,8 @@ def test_native_teacher_calibration_and_coarse_training_encode(tmp_path,old_c,ne
             assert torch.equal(tensor,loaded_bf16.vae_latent_bridge.noise_alignment.state_dict()[key])
         del loaded_bf16
     assert restored.vae_latent_bridge.ready
-    assert restored.in_channels==max(old_c,new_c)
+    assert restored.in_channels==(old_c+new_c if new_c>old_c else old_c)
+    assert (value.vae_latent_bridge.declaration.get("passthrough")=="full")==(new_c>old_c)
     assert restored._residual_unet_spec==value._residual_unet_spec
     for key,tensor in value.state_dict().items():
         torch.testing.assert_close(restored.state_dict()[key],tensor,rtol=0,atol=0)

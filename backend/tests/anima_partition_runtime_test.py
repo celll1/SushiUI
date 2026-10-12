@@ -23,7 +23,8 @@ from core.rewiring.spec import build_spec, OPERATORS
 @pytest.mark.parametrize("swap", [False, True])
 @pytest.mark.parametrize("recon_weight", [0.0, .2])
 @pytest.mark.parametrize("debug", [False, True])
-def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap, recon_weight, debug):
+@pytest.mark.parametrize("crop_aux", [False, True])
+def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, monkeypatch, swap, recon_weight, debug, crop_aux):
     torch.manual_seed(113)
     channels = 64 if swap else 4
     model = Anima(max_img_h=64, max_img_w=64, max_frames=1,
@@ -62,6 +63,14 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap, rec
     owner = SimpleNamespace(config=config, transformer=model, device=torch.device("cpu"),
         training_dtype=torch.float32, reconstruction_loss_weight=recon_weight, mixed_precision=False,
         _collect_concept_sample_loss=True, _current_epoch=2, _current_batch_position=5)
+    if crop_aux:
+        from crop_decode_loss_multi_arch_test import MockVAE
+        owner.vae = MockVAE(channels, scale=2)
+        owner.crop_decode_loss_enable = True
+        owner.crop_decode_loss_weight = .2
+        owner.crop_decode_loss_metric = "mse"
+        owner.crop_decode_loss_margin_cells = 4
+        owner.crop_decode_loss_out_cells = 4
     metrics = {}
     owner.log_extra_metric = lambda name, value: metrics.__setitem__(name, value)
     clean = torch.randn(2, channels, 32, 48)
@@ -87,8 +96,12 @@ def test_real_nested_unet_global_backward_and_stitched_debug(tmp_path, swap, rec
                for name, p in model.named_parameters() if not name.startswith(NAME))
     assert [block.gradient_checkpoint_mode for block in model.blocks] == ["standard"]*3 + ["none"]*4
     assert result[2] > 0
-    if recon_weight == 0:
+    if recon_weight == 0 and not crop_aux:
         assert result[0] == result[1]
+    if crop_aux:
+        assert metrics['crop_decode_loss'] > 0
+        assert all(p.grad is None and not p.requires_grad for p in owner.vae.parameters())
+        assert owner.vae.decoder.conv.weight.device.type == 'cpu'
     if not debug:
         assert not list(tmp_path.glob('latents_*.pt'))
         return

@@ -133,9 +133,10 @@ def test_api_config_keeps_anima_partition_global_and_checkpoint_settings():
     assert AnimaArchHandler().dit_partition_adapter() is not None
     bad = request.model_dump()
     bad["crop_decode_loss_enable"] = True
-    with pytest.raises(ValueError, match="crop_decode"):
-        _build_train_section(bad, total_steps=1, epochs=None,
-            train_unet=True, train_text_encoder=False, arch="anima")
+    bad["crop_decode_loss_weight"] = .1
+    crop_section = _build_train_section(bad, total_steps=1, epochs=None,
+        train_unet=True, train_text_encoder=False, arch="anima")
+    assert crop_section["crop_decode_loss_enable"] and crop_section["crop_decode_loss_weight"] == .1
     bad = request.model_dump()
     bad["training_method"] = "lora"
     with pytest.raises(ValueError, match="full_finetune"):
@@ -186,7 +187,7 @@ def test_core_backward_matches_full_canvas_and_shared_conditioning_graph(weight,
     combined = (1 - weight) * pred_items + weight * recon_items
     (combined.mean() * .25).backward()
     torch.testing.assert_close(torch.tensor(actual), torch.stack((combined.mean(), pred_items.mean(),
-        recon_items.mean() if weight else torch.tensor(0.))).detach())
+        recon_items.mean())).detach())
     torch.testing.assert_close(actual_grads[0], owner.transformer.scale.grad)
     torch.testing.assert_close(actual_grads[1], conditioning_parameter.grad)
     torch.testing.assert_close(owner._pending_concept_sample_loss, combined.detach())

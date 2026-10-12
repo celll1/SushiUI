@@ -34,7 +34,7 @@ def validate_training_options(config, *, method=None):
             raise ValueError("Anima global summaries require partition training and train_unet")
     if not config_value(config, "training_enabled"):
         return
-    for name in ("repa_enable", "tread_enable", "blockskip_enable", "crop_decode_loss_enable"):
+    for name in ("repa_enable", "tread_enable", "blockskip_enable"):
         if config.get(name, TRAINING_DEFAULTS[name]):
             raise ValueError(f"Anima partition training does not support {name}")
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
@@ -69,6 +69,11 @@ def training_plan(trainer, clean):
     model = getattr(trainer.transformer, "module", trainer.transformer)
     topology = getattr(model, "_residual_unet_spec", None)
     halo = value("halo_tokens")
+    from core.training.ops.crop_decode_loss import crop_decode_loss_active
+    if crop_decode_loss_active(trainer):
+        margin = getattr(trainer, "crop_decode_loss_margin_cells",
+                         trainer.config.get("crop_decode_loss_margin_cells", TRAINING_DEFAULTS["crop_decode_loss_margin_cells"]))
+        halo = max(halo, 2 * math.ceil(max(0, margin) / 4))
     if (topology or {}).get("method") == "hybrid_unet_ssdit":
         from core.rewiring.hybrid_partition import resolved_partition_halo, spatial_codec_radius
         codec_radius = spatial_codec_radius(getattr(model, "vae_latent_bridge", None), model.patch_spatial)
@@ -91,7 +96,7 @@ def training_plan(trainer, clean):
     return replace(plan, regions=regions)
 
 
-def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
+def _backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                      plan, backward_scale, debug_save_path=None, debug_captions=None,
                      debug_reference_image_paths=None):
     """Accumulate exact core-weighted velocity loss without retaining tile graphs."""
@@ -127,9 +132,16 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
     debug_recon = clean.new_zeros((), dtype=torch.float32)
     from .partition_timing import AnimaPartitionTiming
     timing = AnimaPartitionTiming(trainer, clean)
+    from core.training.ops.crop_decode_loss import crop_decode_loss_active, compute_crop_decode_loss
+    selected_region = None
+    regions = list(plan.regions)
+    if crop_decode_loss_active(trainer):
+        probabilities = torch.tensor([r.core.tokens for r in regions], dtype=torch.float64)
+        selected_region = regions.pop(int(torch.multinomial(probabilities, 1)))
+        regions.append(selected_region)
     with partition_scope(model, trainer.config):
         checkpoint_blocks = sum(block.gradient_checkpoint_mode != "none" for block in model.blocks) if model.training else 0
-        for index, region in enumerate(plan.regions):
+        for index, region in enumerate(regions):
             local = crop(noisy, region.input)
             context = (torch.autocast(device_type=clean.device.type, dtype=trainer.training_dtype)
                        if trainer.mixed_precision else nullcontext())
@@ -143,7 +155,8 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                     **noise_kwargs(model, crop(noise, region.input)))
             if prediction.ndim != 5 or prediction.shape[2] != 1:
                 raise ValueError("Anima partition prediction must be a singleton image frame")
-            prediction = crop(prediction.squeeze(2), region.core_in_input)
+            local_prediction = prediction.squeeze(2)
+            prediction = crop(local_prediction, region.core_in_input)
             expected = crop(target, region.core)
             if prediction.shape != expected.shape:
                 raise ValueError("Anima partition prediction disagrees with its supervised core")
@@ -158,18 +171,32 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                 del recovered
             combined = (1 - weight) * per_item + weight * recon_items
             fraction = region.core.tokens / plan.full_tokens
-            scaled = combined.mean() * fraction * backward_scale
+            region_loss = combined.mean() * fraction
+            aux_loss = None
+            if region is selected_region:
+                box = region.core_in_input
+                aux_loss, _ = compute_crop_decode_loss(
+                    trainer, local_prediction, local, sigma, crop(clean, region.input),
+                    noise_process="flow", prediction_target="velocity",
+                    noise_scheduler=getattr(trainer, "noise_scheduler", None), velocity_sign="eps_minus_x0",
+                    predicted_latent=local.float() - sigma_view.float() * local_prediction.float(),
+                    main_loss=combined.mean(),
+                    crop_bounds=(2*box.top, 2*box.bottom, 2*box.left, 2*box.right))
+                if aux_loss is not None:
+                    # Area-proportional selection already weights this auxiliary estimator.
+                    region_loss = region_loss + aux_loss
+            scaled = region_loss * backward_scale
             retain = shared_graph and index + 1 < len(plan.regions)
             with timing.measure("backward"):
                 if getattr(trainer, "use_grad_scaler", False):
                     trainer.grad_scaler.scale(scaled).backward(retain_graph=retain)
                 else:
                     scaled.backward(retain_graph=retain)
-            totals += fraction * torch.stack((combined.mean().detach(), per_item.mean().detach(),
-                                             recon_items.mean().detach()))
+            totals += torch.stack((region_loss.detach(), fraction * per_item.mean().detach(),
+                                  fraction * recon_items.mean().detach()))
             pred_items += fraction * per_item.detach()
             loss_items += fraction * combined.detach()
-            del prediction, expected, per_item, combined, scaled, recon_items
+            del prediction, local_prediction, expected, per_item, combined, scaled, recon_items, region_loss, aux_loss
     timing.finish(plan, checkpoint_blocks)
     trainer._last_loss_per_sample = pred_items
     if getattr(trainer, "_collect_concept_sample_loss", False):
@@ -207,3 +234,11 @@ def backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
             from .training_debug import queue_debug_previews
             queue_debug_previews(trainer, path, data)
     return tuple(float(value) for value in totals)
+
+
+def backward_regions(trainer, **kwargs):
+    from core.training.ops.crop_decode_loss import crop_decode_loss_active, preserve_crop_vae_residency
+    if crop_decode_loss_active(trainer):
+        with preserve_crop_vae_residency(trainer):
+            return _backward_regions(trainer, **kwargs)
+    return _backward_regions(trainer, **kwargs)

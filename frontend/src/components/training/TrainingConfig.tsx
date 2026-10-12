@@ -6784,7 +6784,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           />
                         </div>
                         <p className="col-span-2 text-xs text-gray-500">
-                          Carries learned global content into each tile. {isAnimaModel(baseModelPath) ? "Saved with full-parameter checkpoints and restored for full-frame generation." : isMingImageModel ? "Saved with LoRA or full-parameter checkpoints; Layer summaries include every target layer. Full-frame generation ignores the summary branch." : "Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch."}
+                          Carries learned global content into each tile, only when the batch is split. {isAnimaModel(baseModelPath) ? "Saved with full-parameter checkpoints. Non-partitioned training and full-frame generation bypass the adapter." : isMingImageModel ? "Saved with LoRA or full-parameter checkpoints; Layer summaries include every target layer. Full-frame generation ignores the summary branch." : "Saved with the LoRA checkpoint; full-frame generation ignores this training-only branch."}
                         </p>
                       </>
                     )}

@@ -1,0 +1,16 @@
+{
+  "run_id": 176,
+  "checkpoint_step": 129414,
+  "global_application": "partition_only",
+  "timestep_distribution": "uniform",
+  "min_timestep": 0,
+  "max_timestep": 1,
+  "morph_enabled": false,
+  "only_param_change": "timestep_sampling.distribution",
+  "backend_restart_via_api": true,
+  "weights_and_optimizer_preserved": true,
+  "resume_from_checkpoint": "latest",
+  "loaded_model_after_restart": {
+    "loaded": false
+  }
+}

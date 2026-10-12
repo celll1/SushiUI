@@ -37,7 +37,8 @@ Dataset, optimizer, sample, exposure and dropout settings inherit #173 at creati
 5. Compute the global summary from the same full noisy canvas. Map through the
    VAE bridge with the actual full exposure noise before native-channel processing.
    A zero-initialized output projection adds a patch-embedding residual without
-   altering the initial native prediction.
+   altering the initial native prediction. Apply it only on the partition path
+   (`partition_box` present); full-frame training and generation bypass it.
 6. Recompute the small global-adapter graph per tile. Backpropagate sequentially,
    weighting each core loss by its area / full canvas area. Preserve batch means,
    gradient accumulation, GradScaler and the shared conditioning graph lifetime.
@@ -53,6 +54,35 @@ It preserves adapter weights, metadata, optimizer parameter identities and
 zero-start behavior, so existing checkpoints resume without conversion.
 See [the attention precision audit](../audits/ANIMA_OWNER176_ATTENTION_PRECISION_2026-10.md)
 for the BF16 cancellation measurements that motivated the change.
+
+Saved Anima artifacts declare `sushi.anima.partition_global_application=partition_only`.
+Earlier artifacts without this marker remain loadable and use the same new
+partition-only execution policy. This intentionally changes their full-frame
+predictions: an already-trained always-on adapter is now bypassed. Its weights
+and optimizer moments remain available for partitioned batches. Non-partitioned
+backward leaves adapter gradients unset, preventing momentum/weight-decay updates
+when no accumulated partition gradient exists. Switching an existing run requires
+owner authorization to accept adaptation; #176 was explicitly authorized.
+
+The 2026-10-12 change passed 63 CPU regressions, including unchanged full-frame
+outputs with a nonzero installed adapter in train/eval, no adapter invocation or
+momentum/weight-decay update without a partition gradient, legacy artifact load,
+partitioned U-Net/swapped-codec backward and checkpoint optimizer restoration.
+New artifacts carry the application marker; old adapter tensor names are retained.
+Frontend helper text now states that summaries apply only when a batch is split;
+types/defaults/config restoration are unchanged. Owner frontend build/type-check
+was not run.
+
+#176 was saved/stopped at step 129414 and resumed through a backend API restart.
+Only `timestep_sampling.distribution` changed, from `logit_normal` to `uniform`;
+the existing interval is [0,1], morph is disabled and adaptive mode is off. A
+regression verifies that resume keeps the newly configured uniform law rather
+than the checkpoint's old law when morph is disabled. Model/optimizer state,
+dataset, seed/order, LR, exposure/dropout, partition threshold and crop settings
+were preserved. No quality acceptance is inferred from this policy change.
+The live timestep-distribution endpoint reports effective `uniform`, bounds
+[0,1], optimizer update 129414 and no active morph after the restart.
+[Deployment record](../audits/data/anima_owner176_partition_only_uniform_2026-10.json).
 
 Reconstruction metrics always report latent-space predicted-x0 MSE, including
 when `reconstruction_loss_weight=0`; only a positive weight adds its gradient

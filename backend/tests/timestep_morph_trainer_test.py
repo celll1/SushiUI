@@ -76,6 +76,17 @@ def _target(config=LOGIT):
     return TimestepSampler.from_config(dict(config))
 
 
+def test_uniform_resume_replaces_checkpoint_logit_normal_without_morph():
+    trainer = _StubTrainer()
+    trainer._resume_optimizer_update_step = 123
+    trainer._resume_timestep_sampler = sampler_expr(_target(LOGIT))
+    target = _target(UNIFORM)
+    effective = trainer._arm_timestep_morph(target, {**UNIFORM, "morph": {"enabled": False}}, "t0")
+    assert effective is target and trainer._optimizer_update_step == 123
+    quantiles = torch.linspace(0, 1, 101)
+    torch.testing.assert_close(effective.icdf(quantiles), quantiles, rtol=0, atol=0)
+
+
 def _morph_config(target=LOGIT, **morph):
     block = {"enabled": True, "steps": 100, "curve": "linear",
              "interpolation": "quantile", "from": None}

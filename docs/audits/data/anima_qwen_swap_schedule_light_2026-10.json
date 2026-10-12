@@ -1,0 +1,93 @@
+{
+  "checkpoint_step": 134052,
+  "architecture": "anima",
+  "unet": false,
+  "vae_channels": 64,
+  "vae_scale": 16,
+  "image_rating": "general",
+  "size": [
+    1472,
+    896
+  ],
+  "cfg": 1,
+  "seed": 73,
+  "state_dtype": "fp32",
+  "model_and_timestep_dtype": "bf16",
+  "method": "Diagnostic velocity callback using production Anima/noise-alignment code; not a shipped new solver.",
+  "start_grid_note": "At sigma .2 the current-shift shape is scaled to the exact start for equal 40 NFE; it is not a production img2img suffix.",
+  "budget_nfe": 40,
+  "results": [
+    {
+      "name": "sigma0.2_current_euler",
+      "start_sigma": 0.2,
+      "solver": "current_euler",
+      "nfe": 40,
+      "seconds": 3.155999999959022,
+      "peak_allocated_gib": 4.001698017120361,
+      "latent_distance_to_known_target": 0.04105197638273239,
+      "last_evaluation_sigma": 0.017656125128269196,
+      "pixel_distance_to_codec_reference": 0.003678048960864544,
+      "edge_distance_to_codec_reference": 0.002540679881349206
+    },
+    {
+      "name": "sigma0.2_euler_tail35",
+      "start_sigma": 0.2,
+      "solver": "euler_tail35",
+      "nfe": 40,
+      "seconds": 3.155999999959022,
+      "peak_allocated_gib": 4.00236177444458,
+      "latent_distance_to_known_target": 0.041428372263908386,
+      "last_evaluation_sigma": 0.0050000000000000044,
+      "pixel_distance_to_codec_reference": 0.0037270274478942156,
+      "edge_distance_to_codec_reference": 0.0025715988595038652
+    },
+    {
+      "name": "sigma0.2_midpoint_tail35",
+      "start_sigma": 0.2,
+      "solver": "midpoint_tail35",
+      "nfe": 40,
+      "seconds": 3.155999999959022,
+      "peak_allocated_gib": 4.002926349639893,
+      "latent_distance_to_known_target": 0.04186497628688812,
+      "last_evaluation_sigma": 0.0050000000000000044,
+      "pixel_distance_to_codec_reference": 0.0037784231826663017,
+      "edge_distance_to_codec_reference": 0.002603396773338318
+    },
+    {
+      "name": "sigma1.0_current_euler",
+      "start_sigma": 1.0,
+      "solver": "current_euler",
+      "nfe": 40,
+      "seconds": 3.1570000001229346,
+      "peak_allocated_gib": 4.001698017120361,
+      "latent_distance_to_known_target": 1.6160284280776978,
+      "last_evaluation_sigma": 0.08828062564134598,
+      "pixel_distance_to_codec_reference": 0.11442886292934418,
+      "edge_distance_to_codec_reference": 0.0086734713986516
+    },
+    {
+      "name": "sigma1.0_euler_tail35",
+      "start_sigma": 1.0,
+      "solver": "euler_tail35",
+      "nfe": 40,
+      "seconds": 3.171000000089407,
+      "peak_allocated_gib": 4.001698017120361,
+      "latent_distance_to_known_target": 1.4757381677627563,
+      "last_evaluation_sigma": 0.01428571428571429,
+      "pixel_distance_to_codec_reference": 0.08739671111106873,
+      "edge_distance_to_codec_reference": 0.00725365849211812
+    },
+    {
+      "name": "sigma1.0_midpoint_tail35",
+      "start_sigma": 1.0,
+      "solver": "midpoint_tail35",
+      "nfe": 40,
+      "seconds": 3.203999999910593,
+      "peak_allocated_gib": 4.002926349639893,
+      "latent_distance_to_known_target": 1.5414167642593384,
+      "last_evaluation_sigma": 0.01428571428571429,
+      "pixel_distance_to_codec_reference": 0.09806738793849945,
+      "edge_distance_to_codec_reference": 0.008241194300353527
+    }
+  ]
+}

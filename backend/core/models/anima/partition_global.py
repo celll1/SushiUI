@@ -7,6 +7,7 @@ from core.training.partition import PartitionBox
 
 NAME = "anima_partition_global_adapter"
 METADATA_KEY = "sushi.anima.partition_global"
+APPLICATION_METADATA_KEY = "sushi.anima.partition_global_application"
 
 
 class AnimaPartitionGlobalAdapter(nn.Module):
@@ -84,7 +85,10 @@ def install(model, declaration, *, dtype=None):
 def metadata(model):
     import json
     adapter = getattr(model, NAME, None)
-    return {} if adapter is None else {METADATA_KEY: json.dumps(adapter.metadata(), sort_keys=True)}
+    return {} if adapter is None else {
+        METADATA_KEY: json.dumps(adapter.metadata(), sort_keys=True),
+        APPLICATION_METADATA_KEY: "partition_only",
+    }
 
 
 def validate_loaded(model, missing, unexpected):

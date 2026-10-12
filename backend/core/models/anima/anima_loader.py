@@ -213,13 +213,16 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
 
     from .residual_unet import preflight_artifact, restore_topology
     from core.models.components.spatial_swap import install,validate_loaded
-    from .partition_global import install as install_global, METADATA_KEY
+    from .partition_global import install as install_global, METADATA_KEY, APPLICATION_METADATA_KEY
     from core.models.common.single_file_format import read_metadata
     import json
     global_declaration = None
     artifact_metadata = {}
     if Path(dit_path).exists() or Path(str(dit_path)+".index.json").is_file():
         artifact_metadata = read_metadata(dit_path)
+        application = artifact_metadata.get(APPLICATION_METADATA_KEY)
+        if application is not None and application != "partition_only":
+            raise ValueError(f"Unsupported Anima global adapter application: {application!r}")
         if METADATA_KEY in artifact_metadata:
             global_declaration = json.loads(artifact_metadata[METADATA_KEY])
     alignment=None

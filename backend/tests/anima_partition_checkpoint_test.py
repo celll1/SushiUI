@@ -18,7 +18,7 @@ torch.set_num_threads(1)
 def test_full_writer_and_real_loader_preserve_combined_partition_predictions(tmp_path):
     from core.models.anima.anima_models import Anima
     from core.models.anima.anima_loader import load_anima_dit
-    from core.models.anima.partition_global import configure_training, METADATA_KEY
+    from core.models.anima.partition_global import configure_training, METADATA_KEY, APPLICATION_METADATA_KEY
     from core.models.anima.residual_unet import native_config, restore_topology
     from core.models.anima.partition_training import training_plan
     from core.models.components.spatial_swap import install, META_KEY
@@ -65,6 +65,7 @@ def test_full_writer_and_real_loader_preserve_combined_partition_predictions(tmp
     with safe_open(str(path), framework="pt") as handle:
         metadata = handle.metadata()
         assert json.loads(metadata[METADATA_KEY])["rank"] == 4
+        assert metadata[APPLICATION_METADATA_KEY] == "partition_only"
         assert json.loads(metadata[META_KEY])["new_scale"] == 16
         assert metadata["step"] == "13" and metadata["epoch"] == "4"
     restored = load_anima_dit(str(path), dtype=torch.float32)

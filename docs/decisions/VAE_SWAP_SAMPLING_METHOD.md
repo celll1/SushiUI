@@ -4,6 +4,14 @@ Status: design decision, 2026-10-12. Production implementation is pending.
 The numerical and bounded inference validation is complete; long-training
 quality acceptance is explicitly deferred to owner runs.
 
+Update 2026-10-12: run 176's jagged detail is reproduced by the
+paired_spatial bridge alone, without the DiT and without any sampler. The
+primary fix is the [bridge redesign](VAE_SWAP_BRIDGE_REDESIGN.md). This
+document remains the plan for sampling profiles. Its native-schedule baseline
+(Anima shift 3 instead of the latent-area heuristic) is still a separate
+native-generation defect. Grid and solver work is not expected to fix the swap
+artifacts.
+
 ## Scope and confirmed facts
 
 The primary problem is persistent jagged detail in **Anima with the Qwen-Image

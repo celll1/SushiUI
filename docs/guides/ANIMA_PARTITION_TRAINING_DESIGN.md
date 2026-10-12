@@ -51,6 +51,54 @@ weight supervised cores by area. Debug `recon_loss` describes the first image,
 while `recon_loss_batch_mean` matches the training metric. This is independent
 of VAE preview decoding. Historical zero metrics are not backfilled.
 
+### Swapped-codec fine-detail diagnostic (2026-10-12)
+
+Run #176 was cooperatively saved/stopped at step 122404. This is **native Anima,
+not residual/hybrid U-Net**, with Qwen 2.1 64-channel/16x VAE, paired-spatial
+bridges and global summaries. Current DiT LR was `5e-6`. Diagnostics did not
+change training settings or weights. Numeric evidence is in
+`docs/audits/data/anima_owner176_detail_2026-10.json`; images remain private in
+`local/verification/owner176_detail_diagnostic/`.
+
+- `components.wiring.ANIMA_LATENT_IO` preserves the channel-major input order and
+  position-major output order used by native patchify/unpatchify. A token
+  spans 2x2 external latents (32x32 pixels), but independently predicts
+  4x64 values. The saved output head is 256x2048, numerical rank 256 at
+  relative tolerance 1e-5; added-channel rows have nonzero norm 1.101.
+  Learned input/output bridge matrices have rank 64 at DC and checkerboard
+  spatial frequencies. These probes exclude a forced channel/phase collapse;
+  they do not prove uniform conditioning or easy optimization at every frequency.
+- The actual decoder contains spatial upsampling/residual convolutions and a
+  final 3x3 convolution; it does not assign a constant RGB block per latent.
+  Synthetic 1/2/4/8px lines and one revalidated rating:general illustration
+  reconstruct sharply through the checkpoint-declared Qwen codec. Posterior
+  sampling adds normalized-latent RMS 3.29e-5 on that illustration; it does not
+  produce the reported jaggies in the training targets.
+- Fixed-seed 1472x896 Euler samples retain jaggies at CFG 1/3/7, 40/80 steps,
+  and CFG 3 with 160 steps and an FP32 integration state. The latter preserves
+  the original BF16 initial noise, BF16 DiT inputs and timestep precision.
+  BF16 full/tiled decode of the **same** latent retains the same defects
+  (pixel MSE 11.24 on 0..255 RGB); FP32 tiled decode also retains them.
+  These are bounded comparisons, not an exhaustive sampler/attention audit.
+- Known-target denoising through the same trained DiT/bridges preserves fine
+  lines at sigma .02. At sigma .1/.5/.9, latent x0 MSE is
+  .00904/.08260/.27908, with progressively poorer detail. This supports an
+  upstream denoiser/latent-distribution problem during noise-to-image generation,
+  rather than inability of the codec/head to express sub-16px detail.
+  At sigma .02 the input still contains 98% of the clean latent; this test
+  demonstrates compatibility, not learning to invent or repair fine lines.
+
+The configured logit-normal mean 1/std 1.5 devotes only 1.65% probability to
+sigma < .1, and 5.58% to sigma < .2. Stratification preserves this distribution;
+it does not give low-noise intervals equal exposure. Increasing low-noise
+coverage and assessing decoder-sensitive detail loss are candidates for a
+controlled continuation, not verified fixes. Do not infer a single root cause
+from one target/prompt or simply increase reconstruction-loss mixing: for this
+flow, x0 MSE = sigma squared times velocity MSE, so that mix further discounts
+low-noise velocity errors. Direct composition of learned input/output bridges
+also need not be identity; its poor synthetic roundtrip is not evidence of an
+unavoidable bottleneck because the trained backbone sits between them.
+
 ## Wiring and persistence
 
 - Install the adapter before optimizer construction; include its parameters in

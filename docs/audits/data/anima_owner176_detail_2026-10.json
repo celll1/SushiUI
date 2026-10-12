@@ -1,0 +1,123 @@
+{
+  "saved_step": 122404,
+  "capacity": {
+    "channels": [
+      64,
+      64
+    ],
+    "head_shape": [
+      256,
+      2048
+    ],
+    "head_rank": 256,
+    "head_min_singular": 0.016725461930036545,
+    "old_rows_norm": 2.0166261196136475,
+    "extra_rows_norm": 1.1010406017303467,
+    "patch_size": 2,
+    "codec_scale": 16,
+    "has_unet": false,
+    "input": {
+      "dc": {
+        "rank": 64,
+        "min_singular": 0.00010261389252264053,
+        "max_singular": 1.3057841062545776
+      },
+      "checker": {
+        "rank": 64,
+        "min_singular": 0.003967835567891598,
+        "max_singular": 1.34552800655365
+      }
+    },
+    "output": {
+      "dc": {
+        "rank": 64,
+        "min_singular": 0.013062329031527042,
+        "max_singular": 10.547682762145996
+      },
+      "checker": {
+        "rank": 64,
+        "min_singular": 0.010593214072287083,
+        "max_singular": 5.380228519439697
+      }
+    }
+  },
+  "arms": {
+    "cfg7_steps40": {
+      "denoise_seconds": 6.125,
+      "latent_std": 1.0719982385635376,
+      "latent_max_abs": 4.65625
+    },
+    "cfg3_steps40": {
+      "denoise_seconds": 6.094000000040978,
+      "latent_std": 1.0064550638198853,
+      "latent_max_abs": 4.46875
+    },
+    "cfg1_steps40": {
+      "denoise_seconds": 3.0929999998770654,
+      "latent_std": 0.9237026572227478,
+      "latent_max_abs": 4.375
+    },
+    "cfg3_steps80": {
+      "denoise_seconds": 12.484999999869615,
+      "latent_std": 1.0310132503509521,
+      "latent_max_abs": 4.40625
+    }
+  },
+  "synthetic": {
+    "roundtrip_mse_pixels": 115.52313232421875,
+    "latent_shape": [
+      1,
+      64,
+      32,
+      32
+    ],
+    "bridge_latent_mse": 1.2760263681411743
+  },
+  "bf16_full_vs_tiled_pixel_mse": 11.240880966186523,
+  "precision": {
+    "cfg7_steps40_fp32state": {
+      "dtype": "torch.float32",
+      "seconds": 6.109999999869615
+    },
+    "cfg3_steps40_fp32state": {
+      "dtype": "torch.float32",
+      "seconds": 6.094000000040978
+    },
+    "cfg3_steps160_fp32state": {
+      "dtype": "torch.float32",
+      "seconds": 24.921000000089407
+    }
+  },
+  "posterior": {
+    "sample_minus_mode_mse": 1.0795739857627495e-09,
+    "sample_minus_mode_rms": 3.285687125753611e-05,
+    "sampled_pixel_vs_mode_mse": 0.2157050222158432
+  },
+  "low_noise_probabilities": {
+    "0.02": 0.0005546823210884066,
+    "0.1": 0.016524683625773195,
+    "0.2": 0.05582021592253322,
+    "0.5": 0.25249253754692297
+  },
+  "known_target_results": {
+    "general_target_sigma0.02": {
+      "velocity_mse": 2.5006086826324463,
+      "x0_mse": 0.001000243122689426
+    },
+    "general_target_sigma0.1": {
+      "velocity_mse": 0.9039636850357056,
+      "x0_mse": 0.009039638563990593
+    },
+    "general_target_sigma0.5": {
+      "velocity_mse": 0.3303903639316559,
+      "x0_mse": 0.08259759098291397
+    },
+    "general_target_sigma0.9": {
+      "velocity_mse": 0.34454044699668884,
+      "x0_mse": 0.27907776832580566
+    }
+  },
+  "model": "native Anima + Qwen2.1 VAE, no U-Net",
+  "date": "2026-10-12",
+  "qualification": "One fixed seed/prompt, one revalidated rating:general target and synthetic fine-detail patterns; no long-training remediation tested."
+}

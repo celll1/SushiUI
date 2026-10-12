@@ -3413,8 +3413,8 @@ def main():
             optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
             optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
             optimizer_use_radam = train_config.get('optimizer_use_radam', False)
-            # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers)
-            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', False)
+            # Stochastic rounding for BF16 parameter updates; on unless explicitly off.
+            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', True)
 
             # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
@@ -3859,8 +3859,8 @@ def main():
             optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
             optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
             optimizer_use_radam = train_config.get('optimizer_use_radam', False)
-            # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers)
-            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', False)
+            # Stochastic rounding for BF16 parameter updates; on unless explicitly off.
+            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', True)
 
             # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
@@ -4298,7 +4298,7 @@ def main():
             optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
             optimizer_use_radam = train_config.get('optimizer_use_radam', False)
 
-            # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers).
+            # Stochastic rounding for BF16 parameter updates; on unless explicitly off.
             # Full fine-tuning is where this matters: the block above forces
             # weight_dtype=bf16 for Z-Image, Anima, Ideogram 4, MiniT2I, Krea 2
             # and the bf16-native models (Lens / LTX-2.3 / ACE-Step), and BF16
@@ -4308,7 +4308,7 @@ def main():
             # keep the configured weight dtype (fp16 by default). fp16 has the
             # same failure with a threshold of |w| <= 2048*lr, but stochastic
             # rounding as implemented applies to bf16 parameters only.
-            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', False)
+            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', True)
 
             trainer = FullParameterTrainer(
                 model_path=run.base_model_path,
@@ -4745,8 +4745,8 @@ def main():
             optimizer_schedule_free_r = train_config.get('optimizer_schedule_free_r', 0.0)
             optimizer_schedule_free_weight_lr_power = train_config.get('optimizer_schedule_free_weight_lr_power', 2.0)
             optimizer_use_radam = train_config.get('optimizer_use_radam', False)
-            # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers)
-            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', False)
+            # Stochastic rounding for BF16 parameter updates; on unless explicitly off.
+            optimizer_stochastic_rounding = train_config.get('optimizer_stochastic_rounding', True)
 
             trainer = ControlNetTrainer(
                 model_path=run.base_model_path,

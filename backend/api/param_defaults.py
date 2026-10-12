@@ -2691,8 +2691,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "optimizer_schedule_free_r": 0.0,
     "optimizer_schedule_free_weight_lr_power": 2.0,
     "optimizer_use_radam": False,
-    # Tri-state: None ("not specified") lets the architecture decide (e.g.
-    # SenseNova full fine-tune forces it on, but refuses an explicit False).
+    # Tri-state: None ("not specified") resolves to on for every route (see
+    # resolve_stochastic_rounding); only an explicit False turns it off, and
+    # SenseNova/YuE2 full fine-tunes refuse that.
     "optimizer_stochastic_rounding": None,
     # Ring-buffer optimizers only (adamw8bit_ringbuffer, lion8bit_ringbuffer):
     # allocate their 8-bit state as pinned host memory instead of on the GPU
@@ -3719,6 +3720,11 @@ FULL_FINETUNE_FORCED_STOCHASTIC_ROUNDING_BY_ARCH: Dict[str, bool] = {
     "sensenova": True,
     "yue2": True,
 }
+
+
+def resolve_stochastic_rounding(value) -> bool:
+    """BF16 updates use stochastic rounding unless the run explicitly sets it off."""
+    return value is not False
 
 
 def full_finetune_forces_stochastic_rounding(arch: str) -> bool:

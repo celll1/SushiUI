@@ -688,7 +688,7 @@ class FlagWiringTest(unittest.TestCase):
 
         signature = inspect.signature(BaseTrainer.__init__)
         self.assertIn("optimizer_stochastic_rounding", signature.parameters)
-        self.assertIs(signature.parameters["optimizer_stochastic_rounding"].default, False)
+        self.assertIs(signature.parameters["optimizer_stochastic_rounding"].default, True)
 
     def test_factory_forwards_it_to_both_ringbuffer_optimizers(self):
         from core.training.optimizer_factory import OptimizerFactory

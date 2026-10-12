@@ -27927,14 +27927,13 @@ components:
           nullable: true
           default: null
           description: |
-            Tri-state. `true`/`false` are explicit user choices; `null` (the
-            default, or an omitted field) means "not specified", letting the
-            architecture decide -- some full fine-tune routes (e.g. SenseNova)
-            force this on by themselves when unspecified, because their
-            trainable weights are bf16 with no fp32 master and
-            round-to-nearest leaves a measured 84.5% of elements frozen at any
-            step count. An explicit `false` on such a route is refused rather
-            than silently overridden.
+            Tri-state. `null` (the default, or an omitted field) and `true`
+            enable stochastic rounding of BF16 parameter updates; only an
+            explicit `false` disables it. Trainable weights stored in BF16 have
+            no FP32 master, and round-to-nearest discards every update below
+            half a BF16 step, so those elements never change. Parameters in
+            other dtypes are unaffected. SenseNova and YuE2 full fine-tunes
+            refuse an explicit `false`.
           example: null
         optimizer_state_host_resident:
           type: 'boolean'

@@ -320,7 +320,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const optimizerScheduleFreeR = localScheduleFreeRText;
   const optimizerScheduleFreeWeightLrPower = localScheduleFreeWeightLrPowerText;
   const optimizerUseRadam = params.optimizer_use_radam ?? false;
-  // Tri-state: "auto" (null/undefined, architecture decides), "on", "off".
+  // Tri-state: "auto" (null/undefined, resolves to on), "on", "off".
   const optimizerStochasticRounding: "auto" | "on" | "off" =
     params.optimizer_stochastic_rounding === true ? "on"
     : params.optimizer_stochastic_rounding === false ? "off"
@@ -5405,13 +5405,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         }}
                         className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                       >
-                        <option value="auto">Not specified (architecture decides)</option>
+                        <option value="auto">Default (On)</option>
                         <option value="on">On</option>
                         <option value="off">Off</option>
                       </select>
                       <p className="text-xs text-gray-500 mt-1">
                         {bf16Params
-                          ? "Rounds each BF16 parameter update up or down with probability equal to its fractional part. Without it, an update smaller than half a BF16 step is rounded away every step and the weight never changes. Some full fine-tune routes force this on when not specified and refuse an explicit Off."
+                          ? "Rounds each BF16 parameter update up or down with probability equal to its fractional part. Without it, an update smaller than half a BF16 step is rounded away every step and the weight never changes. On unless set to Off; SenseNova and YuE2 full fine-tunes refuse Off."
                           : `Unavailable: this run's parameters are ${weightDtype.toUpperCase()}. Stochastic rounding applies to BF16 parameters only. Set the weight or training dtype to BF16 to enable it.`}
                       </p>
                     </div>

@@ -2602,8 +2602,8 @@ class BaseTrainer(ABC):
         optimizer_schedule_free_r: float = 0.0,
         optimizer_schedule_free_weight_lr_power: float = 2.0,
         optimizer_use_radam: bool = False,
-        # Stochastic rounding for BF16 parameter updates (RingBuffer optimizers only)
-        optimizer_stochastic_rounding: bool = False,
+        # Stochastic rounding for BF16 parameter updates; None (unset) means on
+        optimizer_stochastic_rounding: Optional[bool] = True,
         # Resume training
         resume_from_checkpoint: Optional[str] = None,
         # The full train_config dict from the YAML. Stored as self.config so
@@ -2942,8 +2942,9 @@ class BaseTrainer(ABC):
         # Stochastic rounding for BF16 parameter updates. BF16 round-to-nearest
         # drops every update below half a ULP, so with a BF16 weight_dtype most
         # elements never move; stochastic rounding keeps those updates alive in
-        # expectation. Honoured by the RingBuffer optimizers only.
-        self.optimizer_stochastic_rounding = optimizer_stochastic_rounding
+        # expectation. On unless explicitly False.
+        from api.param_defaults import resolve_stochastic_rounding
+        self.optimizer_stochastic_rounding = resolve_stochastic_rounding(optimizer_stochastic_rounding)
 
         # Two diagnostics/mode switches with NO API surface, deliberately: they
         # are config-channel only (this dict), so the UI and the OpenAPI schema
@@ -8587,6 +8588,10 @@ class BaseTrainer(ABC):
 
         groups = getattr(self, "fused_optimizer_groups", None)
         optimizers = list(groups.optimizers) if groups is not None else [self.optimizer]
+        # Attachment is harmless for other dtypes (each update checks its own
+        # parameter); only the coverage messages need BF16 parameters to matter.
+        has_bf16 = any(parameter.dtype == torch.bfloat16 for optimizer in optimizers if optimizer is not None
+                       for group in optimizer.param_groups for parameter in group["params"])
 
         # transformers' Adafactor updates every parameter inside one step() with
         # no per-parameter entry point, but the fused variant this repo already
@@ -8614,11 +8619,11 @@ class BaseTrainer(ABC):
         for optimizer in optimizers:
             covered.extend(attach_stochastic_rounding(optimizer))
 
-        if covered:
+        if has_bf16 and covered:
             print(f"{self.log_prefix} Stochastic rounding attached to '{optimizer_type}' "
                   f"({', '.join(sorted(set(covered)))}); BF16 parameter updates below "
                   f"half a ULP are now carried in expectation instead of discarded")
-        else:
+        elif has_bf16:
             print(f"{self.log_prefix} WARNING: optimizer_stochastic_rounding is NOT applied: "
                   f"'{optimizer_type}' updates all of its parameters inside one call and "
                   f"exposes no per-parameter seam to interpose on. Its BF16 updates below "
@@ -8626,7 +8631,7 @@ class BaseTrainer(ABC):
                   f"Choose adamw8bit, lion8bit, adafactor, adamw8bit_ringbuffer or "
                   f"lion8bit_ringbuffer for a covered optimizer.")
 
-        if self.weight_dtype != torch.bfloat16:
+        if has_bf16 and self.weight_dtype != torch.bfloat16:
             print(f"{self.log_prefix} NOTE: stochastic rounding applies to BF16 parameters "
                   f"only; weight dtype is {self.weight_dtype}, so parameters in that dtype "
                   f"are updated unchanged")

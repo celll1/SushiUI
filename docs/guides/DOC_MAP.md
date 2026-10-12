@@ -99,6 +99,8 @@ Shared training memory/iteration audit and equivalent snapshot fixes:
 | [docs/guides/VAE_DECODE_BEHAVIOR.md](VAE_DECODE_BEHAVIOR.md) | VAE tiled-decode behavior and measured non-locality. |
 | [docs/guides/VAE_TRAINING_RESOLUTION.md](VAE_TRAINING_RESOLUTION.md) | VAE crop/resolution semantics and measurements. |
 | [docs/guides/VAE_SWAP_MIGRATION_DESIGN.md](VAE_SWAP_MIGRATION_DESIGN.md) | Implemented VAE replacement and compatibility contract. |
+| [docs/decisions/VAE_SWAP_SAMPLING_METHOD.md](../decisions/VAE_SWAP_SAMPLING_METHOD.md) | Proposed sampling profiles after VAE replacement; separates integration error from learned-field quality. |
+| [docs/audits/VAE_SWAP_SAMPLING_METHOD_VALIDATION_2026-10.md](../audits/VAE_SWAP_SAMPLING_METHOD_VALIDATION_2026-10.md) | CPU oracle and bounded Anima/Qwen VAE inference validation; long-training acceptance deferred. |
 | [backend/core/training/API_REFERENCE.md](../../backend/core/training/API_REFERENCE.md) | Training API reference. |
 | [backend/core/training/TRAINING_PARAMS_GUIDE.md](../../backend/core/training/TRAINING_PARAMS_GUIDE.md) | Training parameters and configuration. |
 | [backend/core/training/MODEL_ARCHITECTURES.md](../../backend/core/training/MODEL_ARCHITECTURES.md) | Per-architecture training internals. |

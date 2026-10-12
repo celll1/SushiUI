@@ -1,0 +1,103 @@
+{
+  "checkpoint": "M:\\sushiUI\\training\\Anima_Full_NativeDiT_Qwen21VAE_Global\\Anima_Full_NativeDiT_Qwen21VAE_Global_step_127030.safetensors",
+  "sigma": 0.5,
+  "rating": "general",
+  "size": [
+    3072,
+    1536
+  ],
+  "regions": 2,
+  "real_partition_loss": [
+    0.9033459424972534,
+    0.9033459424972534,
+    0.22583940625190735
+  ],
+  "real_backward_finite": true,
+  "training_backward_peak_gib": 10.200552940368652,
+  "arms": {
+    "old": {
+      "output_dtype": "torch.bfloat16",
+      "forward": {
+        "relative_l2": 0.0016357006666434077,
+        "cosine": 0.9999986900479845,
+        "max_abs": 0.001392311907778554,
+        "reference_l2": 97.26295717690749,
+        "finite": true
+      },
+      "gradients": {
+        "summary_query": {
+          "relative_l2": 0.0029735664178440683,
+          "cosine": 0.9999958343144615,
+          "max_abs": 4.244359023765431e-08,
+          "reference_l2": 0.0001251594832271373,
+          "finite": true
+        },
+        "key": {
+          "relative_l2": 0.003525106462778454,
+          "cosine": 0.9999941533566108,
+          "max_abs": 5.324212590860303e-10,
+          "reference_l2": 5.550074093245771e-06,
+          "finite": true
+        },
+        "value": {
+          "relative_l2": 0.0022030659430255645,
+          "cosine": 0.9999978950165653,
+          "max_abs": 1.4693671889345694e-08,
+          "reference_l2": 0.00045714523969180384,
+          "finite": true
+        },
+        "local_query": {
+          "relative_l2": 0.07073285613949909,
+          "cosine": 0.9985874567894923,
+          "max_abs": 1.9712369515077817e-09,
+          "reference_l2": 1.1364578641190826e-07,
+          "finite": true
+        }
+      },
+      "attention_fwd_bwd_median_ms": 0.7582559883594513,
+      "incremental_peak_mib": 2.2265625
+    },
+    "fp32": {
+      "output_dtype": "torch.bfloat16",
+      "forward": {
+        "relative_l2": 0.001551031141809767,
+        "cosine": 0.9999990243034313,
+        "max_abs": 0.0009434005400218992,
+        "reference_l2": 97.26295717690749,
+        "finite": true
+      },
+      "gradients": {
+        "summary_query": {
+          "relative_l2": 0.0016935573508963554,
+          "cosine": 0.999998570086173,
+          "max_abs": 2.9717619616537888e-08,
+          "reference_l2": 0.0001251594832271373,
+          "finite": true
+        },
+        "key": {
+          "relative_l2": 0.0016625781981500908,
+          "cosine": 0.9999986179238942,
+          "max_abs": 2.323794724865685e-10,
+          "reference_l2": 5.550074093245771e-06,
+          "finite": true
+        },
+        "value": {
+          "relative_l2": 0.0016930319064048815,
+          "cosine": 0.9999985668242874,
+          "max_abs": 7.450245302498513e-09,
+          "reference_l2": 0.00045714523969180384,
+          "finite": true
+        },
+        "local_query": {
+          "relative_l2": 0.0016975099224954232,
+          "cosine": 0.9999985624951763,
+          "max_abs": 5.668620161575936e-11,
+          "reference_l2": 1.1364578641190826e-07,
+          "finite": true
+        }
+      },
+      "attention_fwd_bwd_median_ms": 0.9825280010700226,
+      "incremental_peak_mib": 5.69140625
+    }
+  }
+}

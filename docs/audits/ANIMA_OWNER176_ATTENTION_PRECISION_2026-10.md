@@ -89,3 +89,49 @@ Private reproducibility scripts and complete replay logs are under
 `local/verification/owner176_global_attention_audit.py`. No image or Q/K/V
 tensor payload is committed. The default backend and run configuration remain
 unchanged; resume uses `latest`, step 123701.
+
+## Subsequent precision repair
+
+Anima, Qwen 2.1 and Ming now share
+`core.models.components.global_summary_attention`: both QK/softmax/PV stages
+and the intermediate summaries run with autocast disabled in FP32 (FP64 inputs
+retain FP64). Projected inputs and the final context retain their configured
+dtype at the boundary. Parameter names/shapes/order, checkpoint metadata and
+optimizer restoration are unchanged. This applies in generation as well as
+training; existing BF16 predictions can change slightly because the arithmetic
+is intentionally more precise.
+
+Compilation and CUDA-stubbed real imports passed. The 89 CPU tests cover FP64
+forward/backward references under autocast, FP16/BF16/FP32/FP64 dtype boundaries,
+all three adapter paths, zero initialization, full-canvas gradients, saved
+artifacts, and Anima nested U-Net/swapped-codec region backward.
+
+The repair GPU probe uses the later owner checkpoint **127030**, the same
+revalidated general image fitted to 3072x1536, the actual two-region plan,
+sigma 0.5 and checkpointed model backward. All model gradients were finite
+and every global-adapter parameter received a nonzero gradient. No optimizer
+update was performed. Replay old/new attention on identical BF16 inputs and
+the real gradient arriving at its final context, against a full two-stage FP64
+reference. This differs from the earlier separate-stage capture above.
+
+| Gradient | Old relative L2 | Repaired relative L2 |
+|---|---:|---:|
+| Summary query | 0.297% | 0.169% |
+| Full-canvas key | 0.353% | 0.166% |
+| Full-canvas value | 0.220% | 0.169% |
+| Local query | **7.073%** | **0.170%** |
+
+The repaired minimum cosine is 0.9999986. The remaining error includes the
+unavoidable final BF16 gradient cast; it must not be compared directly to the
+earlier control that retained FP32 gradients.
+
+Ten warmed CUDA-event timings of the **attention helper only**, forward plus
+backward, give median 0.758ms old versus 0.983ms repaired. Incremental allocated
+peak for that replay is 2.227 versus 5.691MiB: +0.224ms and +3.465MiB for one
+region. These measurements exclude feature/linear projections, optimizer,
+codec, and the rest of the model; they are not end-to-end iteration benchmarks.
+No claim of image-quality recovery is made.
+
+[Repair measurements](data/anima_global_summary_fp32_fix_2026-10.json).
+The backend was restarted through its REST endpoint; #176 resumes from
+`latest`, step 127030, with its parameters unchanged, including crop loss OFF.

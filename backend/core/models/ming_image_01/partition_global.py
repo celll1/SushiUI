@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 import torch
 from torch import nn
+from core.models.components.global_summary_attention import global_summary_attention
 from core.training.partition import PartitionBox
 
 
@@ -46,13 +47,8 @@ class MingPartitionGlobalAdapter(nn.Module):
         if not torch.is_autocast_enabled(full.device.type):
             full,local=full.to(self.key.weight.dtype),local.to(self.key.weight.dtype)
         keys,values=self.key(full),self.value(full)
-        weights=torch.softmax(torch.einsum("sr,bnr->bsn",self.summary_queries,keys)*self.rank**-.5,
-            dim=-1,dtype=torch.float32).to(values.dtype)
-        summaries=torch.einsum("bsn,bnr->bsr",weights,values)
         queries=self.query(local)
-        weights=torch.softmax(torch.einsum("bnr,bsr->bns",queries,summaries)*self.rank**-.5,
-            dim=-1,dtype=torch.float32).to(summaries.dtype)
-        return self.out(torch.einsum("bns,bsr->bnr",weights,summaries))
+        return self.out(global_summary_attention(self.summary_queries,keys,values,queries))
 
     def branch_tensors(self):
         return {"key.weight":self.key.weight,"value.weight":self.value.weight,"query.weight":self.query.weight,

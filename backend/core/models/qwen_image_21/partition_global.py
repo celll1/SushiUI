@@ -6,6 +6,7 @@ from typing import Mapping, TYPE_CHECKING
 
 import torch
 import torch.nn as nn
+from core.models.components.global_summary_attention import global_summary_attention
 
 if TYPE_CHECKING:
     from core.training.partition import PartitionBox
@@ -63,20 +64,8 @@ class QwenPartitionGlobalAdapter(nn.Module):
             local = local.to(parameter_dtype)
         keys = self.key(full)
         values = self.value(full)
-        scale = self.rank**-0.5
-        summary_weights = torch.softmax(
-            torch.einsum("sr,bnr->bsn", self.summary_queries, keys) * scale,
-            dim=-1,
-            dtype=torch.float32,
-        ).to(values.dtype)
-        summaries = torch.einsum("bsn,bnr->bsr", summary_weights, values)
         queries = self.query(local)
-        local_weights = torch.softmax(
-            torch.einsum("bnr,bsr->bns", queries, summaries) * scale,
-            dim=-1,
-            dtype=torch.float32,
-        ).to(summaries.dtype)
-        context = torch.einsum("bns,bsr->bnr", local_weights, summaries)
+        context = global_summary_attention(self.summary_queries, keys, values, queries)
         return self.out(context)
 
     def branch_tensors(self) -> dict[str, torch.Tensor]:

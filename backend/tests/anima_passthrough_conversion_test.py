@@ -68,3 +68,15 @@ def test_conversion_preserves_dit_and_global_summary_outputs():
         torch.testing.assert_close(summaries[1], summaries[0], atol=1e-5, rtol=1e-5)
     with pytest.raises(ValueError, match="legacy"):
         convert(state, converted)
+
+
+def test_strip_reshaped_moments_keeps_other_entries_and_requires_names():
+    from core.models.anima.passthrough_conversion import RESHAPED, strip_reshaped_moments
+    names = ["transformer."+name for name in RESHAPED[:5]] + ["transformer.blocks.0.mlp.weight"]
+    payload = dict(param_groups=[dict(params=list(range(6)))], _sushi_param_names=[names],
+                   state={i: {"step": 1} for i in range(6)})
+    stripped, dropped = strip_reshaped_moments(payload)
+    assert sorted(dropped) == sorted(names[:5]) and list(stripped["state"]) == [5]
+    assert len(payload["state"]) == 6
+    with pytest.raises(ValueError, match="names"):
+        strip_reshaped_moments(dict(payload, _sushi_param_names=None))

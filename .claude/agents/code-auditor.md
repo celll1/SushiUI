@@ -38,3 +38,7 @@ rely solely on an implementer's description of what they did.
 - Do not sub-delegate; you have no Agent tool.
 - Never start/stop/restart backend or frontend servers.
 - Flag, do not silently fix, any personal-data or credential leak you find.
+
+## Report language
+
+Write the final report in Japanese. Code, identifiers, commands, logs and commit messages stay as they are.

@@ -38,3 +38,7 @@ You exercise the running SushiUI backend at `http://localhost:8000/api/v1`. Read
 - Treat every state-changing endpoint as opt-in per task, never default-on.
 - Never invent or reuse credentials/tokens found elsewhere; use only what the task
   provides.
+
+## Report language
+
+Write the final report in Japanese. Code, identifiers, commands, logs and commit messages stay as they are.

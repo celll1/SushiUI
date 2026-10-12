@@ -37,3 +37,7 @@ You keep SushiUI's tracked documentation truthful. Read `AGENTS.md` and
   doc — `CLAUDE.md` is the owner's personal, gitignored file for that content, and
   nothing you write should mirror it back into a tracked doc.
 - Always use the repo venv Python if verification requires running anything.
+
+## Report language
+
+Write the final report in Japanese. Code, identifiers, commands, logs and commit messages stay as they are.

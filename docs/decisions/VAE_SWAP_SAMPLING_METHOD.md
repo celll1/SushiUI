@@ -34,6 +34,12 @@ The new validation is recorded in
 [VAE_SWAP_SAMPLING_METHOD_VALIDATION_2026-10.md](../audits/VAE_SWAP_SAMPLING_METHOD_VALIDATION_2026-10.md).
 No globally optimal sigma grid, solver or final training quality is claimed.
 
+The subsequent [learned bridge/head audit](../audits/ANIMA_OWNER176_BRIDGE_CAPACITY_2026-10.md)
+confirms kernel updates and a detailed fixed-convolution witness, but does not
+establish equivalent detail through the actual normalized-head domain. Poor
+bridge conditioning remains a measured concern; treat output-path capacity as
+an unresolved gate, not merely a long-training question.
+
 ## Decision
 
 Use a **model/codec/noise-contract sampling profile**, selected against an

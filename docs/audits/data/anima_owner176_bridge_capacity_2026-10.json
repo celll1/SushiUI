@@ -1,0 +1,325 @@
+{
+  "checkpoint_step": 134832,
+  "geometry": {
+    "old_channels": 16,
+    "new_channels": 64,
+    "scale": 16,
+    "input_spec": {
+      "source_channels": 64,
+      "target_channels": 64,
+      "source_pack": 1,
+      "target_pack": 1
+    },
+    "output_spec": {
+      "source_channels": 64,
+      "target_channels": 64,
+      "source_pack": 1,
+      "target_pack": 1
+    }
+  },
+  "updates": {
+    "input": {
+      "initial_weight_source": "Frozen original calibration buffers plus declared identity extra channels",
+      "initial": {
+        "norm": 7.188389778137207,
+        "max_abs": 1.0,
+        "rms": 0.037439532577991486
+      },
+      "current": {
+        "norm": 7.192121982574463,
+        "max_abs": 1.0,
+        "rms": 0.037458982318639755
+      },
+      "difference": {
+        "norm": 0.23407277464866638,
+        "max_abs": 0.0039520263671875,
+        "rms": 0.0012191361747682095
+      },
+      "changed_fraction": 0.7832844853401184,
+      "extra_channels_difference": {
+        "norm": 0.22997340559959412,
+        "max_abs": 0.00390625,
+        "rms": 0.001383083057589829
+      },
+      "changed_fraction_after_initial_dtype_rounding": 0.7832844853401184,
+      "weight_sha256": "bb27312e90a5fea6c2441c5a067da87a93451bfe3b7665ca764be4d8cd320c90",
+      "bias_current": {
+        "norm": 1.8126875162124634,
+        "max_abs": 0.96875,
+        "rms": 0.22658593952655792
+      }
+    },
+    "output": {
+      "initial_weight_source": "Frozen original calibration buffers plus declared identity extra channels",
+      "initial": {
+        "norm": 14.580986022949219,
+        "max_abs": 1.0,
+        "rms": 0.07594269514083862
+      },
+      "current": {
+        "norm": 14.584638595581055,
+        "max_abs": 1.0,
+        "rms": 0.07596159726381302
+      },
+      "difference": {
+        "norm": 0.32583174109458923,
+        "max_abs": 0.0078125,
+        "rms": 0.0016970443539321423
+      },
+      "changed_fraction": 0.7545844316482544,
+      "extra_channels_difference": {
+        "norm": 0.3249185383319855,
+        "max_abs": 0.0078125,
+        "rms": 0.001954088220372796
+      },
+      "changed_fraction_after_initial_dtype_rounding": 0.7545844316482544,
+      "weight_sha256": "057284cafa36ff4ceba26d555464d0c8365af121ecc08b2bbe493bbb14b0ad39",
+      "bias_current": {
+        "norm": 5.64865255355835,
+        "max_abs": 1.7265625,
+        "rms": 0.7060815691947937
+      }
+    }
+  },
+  "optimizer": {
+    "transformer.vae_latent_bridge.input.projection.weight": {
+      "step": 134832,
+      "learning_rate": 5e-06,
+      "state1": {
+        "norm": 28140.458984375,
+        "max_abs": 255.0,
+        "rms": 146.56666564941406
+      },
+      "state2": {
+        "norm": 38503.91015625,
+        "max_abs": 255.0,
+        "rms": 200.54190063476562
+      },
+      "absmax1": {
+        "norm": 0.00897934753447771,
+        "max_abs": 0.0027903716545552015,
+        "rms": 0.0007482789806090295
+      },
+      "absmax2": {
+        "norm": 0.00012420580605976284,
+        "max_abs": 5.290053377393633e-05,
+        "rms": 1.035048444464337e-05
+      }
+    },
+    "transformer.vae_latent_bridge.input.projection.bias": {
+      "step": 134832,
+      "learning_rate": 5e-06,
+      "state1": {
+        "norm": 0.0014514715876430273,
+        "max_abs": 0.0008175757830031216,
+        "rms": 0.00018143393390346318
+      },
+      "state2": {
+        "norm": 2.0458865037653595e-05,
+        "max_abs": 1.2843654076277744e-05,
+        "rms": 2.5573581297066994e-06
+      },
+      "absmax1": null,
+      "absmax2": null
+    },
+    "transformer.vae_latent_bridge.output.projection.weight": {
+      "step": 134832,
+      "learning_rate": 5e-06,
+      "state1": {
+        "norm": 28253.345703125,
+        "max_abs": 255.0,
+        "rms": 147.15464782714844
+      },
+      "state2": {
+        "norm": 28167.052734375,
+        "max_abs": 255.0,
+        "rms": 146.7051544189453
+      },
+      "absmax1": {
+        "norm": 0.0019061090424656868,
+        "max_abs": 0.0004724696045741439,
+        "rms": 0.0001588424202054739
+      },
+      "absmax2": {
+        "norm": 1.812169216464099e-06,
+        "max_abs": 4.338663757152972e-07,
+        "rms": 1.5101410610895982e-07
+      }
+    },
+    "transformer.vae_latent_bridge.output.projection.bias": {
+      "step": 134832,
+      "learning_rate": 5e-06,
+      "state1": {
+        "norm": 0.0005181385786272585,
+        "max_abs": 0.00022535758034791797,
+        "rms": 6.47673150524497e-05
+      },
+      "state2": {
+        "norm": 3.9687907360530517e-07,
+        "max_abs": 1.0778838088754128e-07,
+        "rms": 4.9609884200663146e-08
+      },
+      "absmax1": null,
+      "absmax2": null
+    }
+  },
+  "frequency": {
+    "input": {
+      "grid": [
+        17,
+        17
+      ],
+      "min_rank_relative_1e_6": 64,
+      "minimum_singular": 6.674936434385223e-06,
+      "maximum_singular": 1.6469197873273156,
+      "maximum_condition": 195498.72984143093,
+      "note": "Circular Fourier symbol, not finite padded convolution rank."
+    },
+    "output": {
+      "grid": [
+        17,
+        17
+      ],
+      "min_rank_relative_1e_6": 64,
+      "minimum_singular": 0.001042592726395063,
+      "maximum_singular": 11.229542267657505,
+      "maximum_condition": 8749.4029131652,
+      "note": "Circular Fourier symbol, not finite padded convolution rank."
+    }
+  },
+  "fits": {
+    "general": {
+      "output_fit": {
+        "iterations": 6000,
+        "rhs_rmse": 0.0079053845256567,
+        "rhs_rms": 2.0514299869537354,
+        "internal": {
+          "norm": 3792.840576171875,
+          "max_abs": 73.08252716064453,
+          "rms": 6.605210781097412
+        }
+      },
+      "post_adaln_features": {
+        "norm": 62204.11328125,
+        "max_abs": 535.6140747070312,
+        "rms": 38.299774169921875
+      },
+      "fp32_head_projection_relative_error": 3.8688573738616215e-07,
+      "fp32_bridge_clean_rmse": 0.0079053845256567,
+      "bf16_head_bridge_clean_rmse": 0.03500685095787048,
+      "minimum_required_normalized_rms": {
+        "min": 5.728783130645752,
+        "median": 11.046813011169434,
+        "max": 39.09375762939453,
+        "unit_variance_feasible_fraction": 0.0
+      },
+      "actual_normalized_head_clean_rmse": 1.755088448524475,
+      "normalized_head_optimization": {
+        "iterations": 2500,
+        "start_velocity_mse": 3.0803356170654297,
+        "final_velocity_mse": 0.01786639541387558,
+        "clean_rmse": 0.13366523385047913
+      },
+      "input_inverse": {
+        "iterations": 1600,
+        "rhs_rmse": 4.15488138969522e-05,
+        "rhs_rms": 1.2308140993118286,
+        "internal": {
+          "norm": 726.260009765625,
+          "max_abs": 5.3302998542785645,
+          "rms": 1.2647777795791626
+        }
+      },
+      "input_inverse_clean_rmse": 0.09495826065540314,
+      "fixed_bridge": {
+        "pixel_rmse": 0.0035172379575669765,
+        "edge_rmse": 0.0040631769225001335
+      },
+      "fixed_head_bridge": {
+        "pixel_rmse": 0.0035174391232430935,
+        "edge_rmse": 0.00406337296590209
+      },
+      "actual_normalized_head_bridge": {
+        "pixel_rmse": 0.4080769717693329,
+        "edge_rmse": 0.08601950109004974
+      },
+      "optimized_normalized_head_bridge": {
+        "pixel_rmse": 0.04484536498785019,
+        "edge_rmse": 0.04474933445453644
+      },
+      "bf16_head_bridge": {
+        "pixel_rmse": 0.014450067654252052,
+        "edge_rmse": 0.01430943701416254
+      }
+    },
+    "synthetic": {
+      "output_fit": {
+        "iterations": 6000,
+        "rhs_rmse": 0.012466591782867908,
+        "rhs_rms": 2.0088722705841064,
+        "internal": {
+          "norm": 1761.944091796875,
+          "max_abs": 49.99357223510742,
+          "rms": 6.882594108581543
+        }
+      },
+      "post_adaln_features": {
+        "norm": 30622.650390625,
+        "max_abs": 363.3153991699219,
+        "rms": 42.291961669921875
+      },
+      "fp32_head_projection_relative_error": 3.3560820619894493e-07,
+      "fp32_bridge_clean_rmse": 0.012466592714190483,
+      "bf16_head_bridge_clean_rmse": 0.03998666629195213,
+      "minimum_required_normalized_rms": {
+        "min": 7.927903175354004,
+        "median": 12.728300094604492,
+        "max": 23.80835723876953,
+        "unit_variance_feasible_fraction": 0.0
+      },
+      "actual_normalized_head_clean_rmse": 1.7546751499176025,
+      "normalized_head_optimization": {
+        "iterations": 2500,
+        "start_velocity_mse": 3.0788848400115967,
+        "final_velocity_mse": 0.014235187321901321,
+        "clean_rmse": 0.11931130290031433
+      },
+      "input_inverse": {
+        "iterations": 1600,
+        "rhs_rmse": 3.089295933023095e-05,
+        "rhs_rms": 1.1878591775894165,
+        "internal": {
+          "norm": 318.71368408203125,
+          "max_abs": 4.454318523406982,
+          "rms": 1.2449753284454346
+        }
+      },
+      "input_inverse_clean_rmse": 0.044348470866680145,
+      "fixed_bridge": {
+        "pixel_rmse": 0.009161554276943207,
+        "edge_rmse": 0.011867344379425049
+      },
+      "fixed_head_bridge": {
+        "pixel_rmse": 0.009161706082522869,
+        "edge_rmse": 0.011867771856486797
+      },
+      "actual_normalized_head_bridge": {
+        "pixel_rmse": 0.41945311427116394,
+        "edge_rmse": 0.16246314346790314
+      },
+      "optimized_normalized_head_bridge": {
+        "pixel_rmse": 0.07419642806053162,
+        "edge_rmse": 0.08221207559108734
+      },
+      "bf16_head_bridge": {
+        "pixel_rmse": 0.02603062614798546,
+        "edge_rmse": 0.032269325107336044
+      }
+    }
+  },
+  "image_rating": "general",
+  "sigma": 1.0,
+  "seed": 73,
+  "weights_updated_by_probe": false,
+  "limits": "Only free pre-bridge/post-AdaLN features are solved, not DiT trunk or sampled output. Fourier grid is not a full finite-operator rank proof."
+}

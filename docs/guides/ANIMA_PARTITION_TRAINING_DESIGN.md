@@ -44,6 +44,16 @@ Dataset, optimizer, sample, exposure and dropout settings inherit #173 at creati
 7. Stitch detached core predictions only when debug output requires a full canvas.
    Normal training must not retain full tile activation graphs or predictions.
 
+Global-summary attention uses the shared
+`core.models.components.global_summary_attention` implementation with autocast
+disabled for QK, softmax, PV and the intermediate summaries. Linear projections
+retain their configured dtype; the local context returns to that dtype before
+the output projection. Anima, Qwen 2.1 and Ming use this same precision policy.
+It preserves adapter weights, metadata, optimizer parameter identities and
+zero-start behavior, so existing checkpoints resume without conversion.
+See [the attention precision audit](../audits/ANIMA_OWNER176_ATTENTION_PRECISION_2026-10.md)
+for the BF16 cancellation measurements that motivated the change.
+
 Reconstruction metrics always report latent-space predicted-x0 MSE, including
 when `reconstruction_loss_weight=0`; only a positive weight adds its gradient
 to the objective. Full-frame metrics average the batch; partition metrics also

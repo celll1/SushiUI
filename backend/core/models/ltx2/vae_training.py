@@ -92,13 +92,13 @@ def calibrate(trainer, datasets):
     pending = getattr(trainer, PENDING, None)
     if pending is None:
         return
-    from api.param_defaults import TRAINING_DEFAULTS
+    from api.param_defaults import TRAINING_DEFAULTS, VAE_SWAP_CALIBRATION_RESOLUTIONS
     from core.training.optimizer_residency import encoder_refill_residency, park_optimizer_state
     from core.training.base_trainer import all_optimizers
     from core.models.components.vae_registry import normalize
     count = trainer.config.get("vae_swap_calibration_samples", TRAINING_DEFAULTS["vae_swap_calibration_samples"])
     side = trainer.config.get("vae_swap_calibration_resolution", TRAINING_DEFAULTS["vae_swap_calibration_resolution"])
-    if type(count) is not int or not 2 <= count <= 256 or side not in (128, 256, 512):
+    if type(count) is not int or not 2 <= count <= 256 or side not in VAE_SWAP_CALIBRATION_RESOLUTIONS:
         raise ValueError("Invalid LTX VAE calibration count/resolution")
     samples = {}
     for dataset in datasets:

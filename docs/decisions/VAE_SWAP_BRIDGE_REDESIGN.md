@@ -1,7 +1,7 @@
 # Spatial VAE swap bridge redesign
 
-Status: design decision, 2026-10-12. D1 and D2 are implemented for Anima; D3
-and the run 176 conversion are pending. Supersedes the sampling profile work as
+Status: design decision, 2026-10-12. D1 and D2 are implemented for Anima, and
+D3 for every calibration path; the run 176 conversion is pending. Supersedes the sampling profile work as
 the primary fix for run 176's jagged detail; that work stays a separate,
 lower-priority track ([sampling decision](VAE_SWAP_SAMPLING_METHOD.md)).
 
@@ -146,10 +146,10 @@ Implemented for Anima full fine-tuning on full-passthrough swaps.
 
 ### D3. Calibration at training scale
 
-Pending.
+Implemented.
 
-- Extend `vae_swap_calibration_resolution` beyond 128/256/512 (768/1024/1536)
-  for every codec path that reads it. Keep half-side source encoding for 16x
+- `vae_swap_calibration_resolution` accepts 128/256/512/768/1024/1536
+  (`VAE_SWAP_CALIBRATION_RESOLUTIONS`) for every codec path that reads it. Keep half-side source encoding for 16x
   over 8x.
 - Keep the global default at 256. Video calibration shares this key, and a
   larger default would raise its memory. Anima Qwen 2.1 runs should set the
@@ -196,7 +196,7 @@ base checkpoint" stays for any other codec change.
 ## Implementation order
 
 1. D1 + D2 for Anima, with tests. Done.
-2. D3 calibration scale.
+2. D3 calibration scale. Done.
 3. Run 176 conversion tool.
 4. G5 on GPU when the owner frees it.
 5. Extend D1/D2 to other image architectures as needed.

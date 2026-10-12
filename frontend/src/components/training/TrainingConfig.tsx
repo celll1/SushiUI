@@ -4494,10 +4494,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         Target calibration resolution
                         <select value={params.vae_swap_calibration_resolution ?? ""}
                           onChange={(e) => updateParam("vae_swap_calibration_resolution",
-                            e.target.value === "" ? undefined : Number(e.target.value) as 128 | 256 | 512)}
+                            e.target.value === "" ? undefined : Number(e.target.value) as 128 | 256 | 512 | 768 | 1024 | 1536)}
                           className="ml-2 bg-gray-800 border border-gray-600 rounded px-2 py-1">
                           <option value="">Default</option>
-                          {[128, 256, 512].map(size => <option key={size} value={size}>{size}</option>)}
+                          {[128, 256, 512, 768, 1024, 1536].map(size => <option key={size} value={size}>{size}</option>)}
                         </select>
                       </label>}
                       {baseModelArch === "anima" && (["vae_swap_io_lr_factor", "vae_swap_bridge_lr_factor"] as const).map(key => (

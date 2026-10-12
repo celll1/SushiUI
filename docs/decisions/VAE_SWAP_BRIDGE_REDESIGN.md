@@ -177,23 +177,39 @@ function-preserving and needs no recalibration:
 | Bridge output columns | same split | same remapping |
 | `x_embedder` columns, `final_layer` rows, global-adapter key/query/value columns | channel `k` | channel `k` for `k < 16`, `16 + k` for `k >= 16`; channels `16..31` zero |
 
-Tool: `tools/convert_anima_full_passthrough.py SOURCE OUTPUT [--execute]`
-(module `core/models/anima/passthrough_conversion.py`). It runs on the CPU and
-refuses to overwrite. Rewired, hybrid-initialized and non-Gaussian swaps are
-refused.
+Tool: `tools/convert_anima_full_passthrough.py` (module
+`core/models/anima/passthrough_conversion.py`). It runs on the CPU and writes
+nothing without `--execute`. Rewired, hybrid-initialized and non-Gaussian swaps
+are refused.
 
+- `file SOURCE OUTPUT` writes a converted checkpoint for use as the
+  `base_model_path` of a new run. It refuses to overwrite.
+- `run RUN_DIR` converts a stopped run in place, so the run resumes with its
+  step, dataset position, concept exposure and LR schedule.
+  1. The latest checkpoint, optimizer and state files are moved to a sibling
+     `<run>_legacy_passthrough_backup_step_<N>` directory.
+  2. The converted checkpoint is written under the original name.
+  3. The optimizer state is written without the moments of the eight reshaped
+     tensors (`RESHAPED`).
+  4. On resume, the named optimizer restore keeps every other moment and marks
+     those tensors fresh, and targeted re-warmup re-arms them.
+  5. Restoring the backup files undoes the conversion.
+
+Verification:
 - On the real run-176 step-136000 checkpoint, the legacy and converted files,
   loaded through `load_anima_dit` in BF16, give bit-identical DiT outputs
   (max abs difference 0.0).
+- A copy of run 176 at step 136490 was converted in `run` mode. Through
+  `BaseTrainer._load_one_optimizer_state`, the live AdamW8bit restored 686
+  tensors by name, and exactly 10 started fresh: the split embedding/head
+  halves, three bridge tensors, and three global-adapter tensors.
+- The groups were base, attn_mlp, mod, llm_adapter, vae_swap_io (5e-5) and
+  vae_swap_bridge (5e-6).
 - A synthetic test also checks the global-summary adapter, and fails on wrong
   head, mask or coordinate layouts.
 
-Use the converted file as `base_model_path` of a new full fine-tune with the
-same `vae_swap_source`. The codec and bridges are restored without
-recalibration, and the optimizer starts fresh. Resuming run 176's own folder
-from a converted checkpoint is not supported, because its saved optimizer
-state has the legacy shapes. The guard "Changing an aligned Anima VAE requires
-a fresh base checkpoint" stays for any other codec change.
+The guard "Changing an aligned Anima VAE requires a fresh base checkpoint"
+stays for any other codec change.
 
 ## Acceptance gates
 

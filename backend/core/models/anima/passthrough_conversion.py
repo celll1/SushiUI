@@ -14,6 +14,32 @@ from core.models.components.spatial_swap import META_KEY, read_declaration
 from .partition_global import METADATA_KEY as GLOBAL_KEY
 
 PREFIX = "net."
+CONVERSION_KEY = "sushi.anima.passthrough_conversion"
+# Latent-facing tensors the conversion reshapes; their saved optimizer moments no longer fit.
+RESHAPED = ("x_embedder.proj.1.weight", "final_layer.linear.weight",
+            "vae_latent_bridge.input.projection.weight", "vae_latent_bridge.input.projection.bias",
+            "vae_latent_bridge.output.projection.weight",
+            "anima_partition_global_adapter.key.weight", "anima_partition_global_adapter.query.weight",
+            "anima_partition_global_adapter.value.weight")
+
+
+def strip_reshaped_moments(payload, *, owner="transformer."):
+    """Drop saved moments of reshaped tensors so a named optimizer restore marks them fresh."""
+    names = payload.get("_sushi_param_names")
+    if not names or len(names) != len(payload["param_groups"]):
+        raise ValueError("Optimizer state lacks parameter names; a partial restore cannot be targeted")
+    wanted = {owner + name for name in RESHAPED}
+    state, dropped = dict(payload["state"]), []
+    for group_names, group in zip(names, payload["param_groups"]):
+        for name, saved_id in zip(group_names, group["params"]):
+            if name in wanted:
+                for key in (saved_id, str(saved_id)):
+                    if state.pop(key, None) is not None:
+                        dropped.append(name)
+    missing = {owner + name for name in RESHAPED[:5]} - set(dropped)
+    if missing:
+        raise ValueError(f"Optimizer state has no moments for {sorted(missing)}")
+    return dict(payload, state=state), dropped
 
 
 def _channel_index(old, legacy_width):
@@ -88,6 +114,7 @@ def convert(state, metadata):
 
     metadata = dict(metadata)
     metadata[META_KEY] = json.dumps(full, sort_keys=True, allow_nan=False)
+    metadata[CONVERSION_KEY] = json.dumps(dict(from_width=legacy_width, to_width=width), sort_keys=True)
     metadata["transformer_config"] = json.dumps(dict(config, in_channels=width, out_channels=width))
     if GLOBAL_KEY in metadata:
         metadata[GLOBAL_KEY] = json.dumps(dict(json.loads(metadata[GLOBAL_KEY]), latent_channels=width), sort_keys=True)

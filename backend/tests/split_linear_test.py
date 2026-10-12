@@ -30,3 +30,12 @@ def test_rejects_bias_and_improper_subsets():
         SplitLinear(nn.Linear(4, 4), [1], axis=0)
     with pytest.raises(ValueError):
         SplitLinear(nn.Linear(4, 4, bias=False), [0, 1, 2, 3], axis=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+def test_wraps_a_cuda_linear():
+    linear = nn.Linear(8, 4, bias=False).cuda()
+    split = SplitLinear(linear, [1, 2], axis=1)
+    value = torch.randn(3, 8, device="cuda")
+    torch.testing.assert_close(split(value), linear(value))
+    assert split.state_dict()["weight"].device.type == "cuda"

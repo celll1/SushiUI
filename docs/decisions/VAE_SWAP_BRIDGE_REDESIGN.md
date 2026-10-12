@@ -1,7 +1,8 @@
 # Spatial VAE swap bridge redesign
 
-Status: design decision, 2026-10-12. D1 and D2 are implemented for Anima, and
-D3 for every calibration path; the run 176 conversion is pending. Supersedes the sampling profile work as
+Status: design decision, 2026-10-12. D1 and D2 are implemented for Anima, D3
+for every calibration path, and the legacy-checkpoint conversion. Real-model GPU
+training (G5) and the owner quality gate (G6) are pending. Supersedes the sampling profile work as
 the primary fix for run 176's jagged detail; that work stays a separate,
 lower-priority track ([sampling decision](VAE_SWAP_SAMPLING_METHOD.md)).
 
@@ -167,7 +168,7 @@ schedule work is not expected to fix the jaggies.
 
 ## Migration of run 176
 
-Pending. Legacy checkpoints keep loading and generating. The conversion is
+Implemented. Legacy checkpoints keep loading and generating. The conversion is
 function-preserving and needs no recalibration:
 
 | Tensor | Legacy (width 64) | Full passthrough (width 80) |
@@ -176,11 +177,23 @@ function-preserving and needs no recalibration:
 | Bridge output columns | same split | same remapping |
 | `x_embedder` columns, `final_layer` rows, global-adapter key/query/value columns | channel `k` | channel `k` for `k < 16`, `16 + k` for `k >= 16`; channels `16..31` zero |
 
-The converted model computes the same function as the legacy checkpoint at
-conversion time. It writes a new checkpoint with the updated declaration.
-Optimizer moments for reshaped tensors start fresh, through the named
-optimizer restore. The guard "Changing an aligned Anima VAE requires a fresh
-base checkpoint" stays for any other codec change.
+Tool: `tools/convert_anima_full_passthrough.py SOURCE OUTPUT [--execute]`
+(module `core/models/anima/passthrough_conversion.py`). It runs on the CPU and
+refuses to overwrite. Rewired, hybrid-initialized and non-Gaussian swaps are
+refused.
+
+- On the real run-176 step-136000 checkpoint, the legacy and converted files,
+  loaded through `load_anima_dit` in BF16, give bit-identical DiT outputs
+  (max abs difference 0.0).
+- A synthetic test also checks the global-summary adapter, and fails on wrong
+  head, mask or coordinate layouts.
+
+Use the converted file as `base_model_path` of a new full fine-tune with the
+same `vae_swap_source`. The codec and bridges are restored without
+recalibration, and the optimizer starts fresh. Resuming run 176's own folder
+from a converted checkpoint is not supported, because its saved optimizer
+state has the legacy shapes. The guard "Changing an aligned Anima VAE requires
+a fresh base checkpoint" stays for any other codec change.
 
 ## Acceptance gates
 
@@ -197,6 +210,6 @@ base checkpoint" stays for any other codec change.
 
 1. D1 + D2 for Anima, with tests. Done.
 2. D3 calibration scale. Done.
-3. Run 176 conversion tool.
+3. Run 176 conversion tool. Done.
 4. G5 on GPU when the owner frees it.
 5. Extend D1/D2 to other image architectures as needed.

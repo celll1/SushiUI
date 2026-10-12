@@ -75,7 +75,7 @@ def restored_image_codec(module, resolved, declaration):
 
 def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
                           source_wiring, patch_size, resize, pending_key, topology_config=None,
-                          noise_policy=None):
+                          noise_policy=None, passthrough=None):
     """Install target-native bridges before optimizer construction; geometry stays arch-owned."""
     from core.models.common.module_identity import module_fingerprint
     from core.models.common.vae_source import normalization_config
@@ -87,7 +87,8 @@ def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
     if identity == module_fingerprint(target) and normalization_config(old.config) == normalization_config(target.config):
         return ResizeReport((), old_channels, old_channels, old_channels, 0, 0)
     declaration = codec.declaration(source=resolved.source, source_identity=identity,
-        target_identity=resolved.latent_hash, old_channels=old_channels, old_scale=source_wiring.vae_scale_factor)
+        target_identity=resolved.latent_hash, old_channels=old_channels, old_scale=source_wiring.vae_scale_factor,
+        passthrough=passthrough)
     if noise_policy is not None:
         declaration["noise_policy"] = noise_policy
         validate_declaration(declaration)

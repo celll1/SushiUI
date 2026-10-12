@@ -1,8 +1,9 @@
 # Spatial VAE swap bridge redesign
 
-Status: design decision, 2026-10-12. Not implemented. Supersedes the sampling
-profile work as the primary fix for run 176's jagged detail; that work stays a
-separate, lower-priority track ([sampling decision](VAE_SWAP_SAMPLING_METHOD.md)).
+Status: design decision, 2026-10-12. D1 and D2 are implemented for Anima; D3
+and the run 176 conversion are pending. Supersedes the sampling profile work as
+the primary fix for run 176's jagged detail; that work stays a separate,
+lower-priority track ([sampling decision](VAE_SWAP_SAMPLING_METHOD.md)).
 
 ## Problem
 
@@ -49,6 +50,13 @@ channels, so its output stays near the bridge's regression.
 Sample-gradient periodicity at 16/32px shows no consistent boundary phase, so
 the texture is not a token seam.
 
+The independent [bridge capacity audit](../audits/ANIMA_OWNER176_BRIDGE_CAPACITY_2026-10.md)
+agrees from another side. With all 64 backbone channels free, the learned
+convolutions can transmit a detailed target. However, the input map has sampled
+condition numbers up to 195,499, and fitting through the real normalized final
+head leaves roughness. Both point to conditioning of the output path rather
+than codec capacity.
+
 ## Root causes
 
 Current construction is in `SpatialAlignmentPair.initialize_from_pair`
@@ -78,76 +86,76 @@ per final-layer projection. This is not changed here.
 
 ## Design
 
-### D1. Invertible target basis (declaration version 2)
+### D1. Full passthrough (declaration field `passthrough: "full"`)
 
-Applies when `new > old`. Let `A_c` be the `old x new` center tap of the
-calibrated input bridge, with SVD `A_c = U Σ Vᵀ` and `W = U Vᵀ`, the existing
-whitening map. Let `V⊥` (`new x (new-old)`) be an orthonormal complement of
-`V`.
-
-Input (backbone state `b`):
+Implemented. Applies when `new > old`. The backbone width becomes `old + new`
+instead of `max(old, new)`:
 
 ```
-b[:old]  = A_in · y                     (unchanged calibrated 3x3, source-like)
-b[old:]  = V⊥ᵀ · y                      (1x1, frozen buffer, replaces index copy)
+b[:old] = A_in · y        (calibrated 3x3, source-like, unchanged)
+b[old:] = y               (every target channel, gain 1, center tap)
+v_y     = A_out · v_b[:old] + v_b[old:] + (ε − A_out W ε)
 ```
 
-Output (target velocity):
+- Every target channel has its own identity input and output path. The ceiling
+  from root cause 1 disappears, and the path has condition number 1.
+- The noise complement is unchanged. As in the legacy layout, the new channels
+  predict the clean correction, and the frozen residual supplies the noise not
+  carried through the source channels.
+- When the new IO is zero, the output equals the legacy pair exactly. Step-0
+  generation and the noise endpoint are therefore unchanged (unit tested).
+- Root cause 2 is not removed: the source channels' `W ε` is still a mix of the
+  same `ε` the new channels see. This is redundancy, not missing information.
+  The source channels still see unit white noise, so the pretrained body's
+  input distribution is kept.
 
-```
-v_y = G · v_b[:old] + V⊥ · v_b[old:] + R(ε)
-```
+A complement-basis variant (`b[old:] = V⊥ᵀ y`, width 64) was rejected. Measured
+on run 176's frozen calibration, the 16 directions it leaves to `A_out` have
+DC-gain singular values from 4.94 down to 0.114 (condition number about 43).
+Full passthrough avoids that. It also lets run 176 convert exactly: legacy
+channel `k >= 16` becomes channel `16 + k`.
 
-- `G` is a 3x3 conv `old -> new` fitted by ridge regression on calibration data
-  so that `G(A_in y) ≈ V Vᵀ y`. This is the component of `y` that lies in the
-  source-like subspace. If `A_in` were 1x1, this would be exact as
-  `V Σ⁻¹ Uᵀ`. `G` replaces the current `A_out`.
-- `V⊥` is frozen. The target-native round trip `y -> b -> y` is then near
-  identity for every target direction, including the directions current
-  channels `0..old` could not reach.
-- `R(ε) = V Vᵀ ε − G(W ε)` is the frozen noise complement. It replaces
-  `ε − A_out W ε`.
-- Backbone noise is `[W ε; V⊥ᵀ ε]`, an orthogonal transform of `ε`, so all
-  backbone channels see independent unit Gaussian noise. `GaussianNoiseAlignment`
-  keeps the input delta for `b[:old]` and stores `V⊥` plus the new residual.
-
-Step-0 behaviour is the same as v1: new IO weights are zero, so output equals
-`G·v_b[:old] + R`, which matches the current regression path. Version 2 does
-not change the initial image. It removes the structural ceiling and the noise
-coupling.
-
-Scope: shared component, used by every arch that calls `initialize_image_swap`
-or `SpatialAlignmentPair`. Version 1 declarations keep their current behaviour
-and continue to load. New swaps with `new > old` default to version 2.
-`new <= old` is unchanged.
+Code:
+- `backbone_width()`, validation, and the pair layout are in
+  [latent_adapter.py](../../backend/core/models/components/latent_adapter.py).
+- Anima opts in through `initialize_image_swap(..., passthrough="full")`.
+- Other architectures keep the legacy `max(old, new)` layout. Their loaders
+  still hard-code that width, so extending the field to them needs per-arch work.
+- Saved legacy declarations load and behave as before.
 
 ### D2. Learnable latent IO
 
-- Split the latent-facing modules into source and new parts. `x_embedder` keeps
-  its pretrained columns, and a separate `Linear` holds the new-channel columns
-  and is summed. `final_layer.linear` keeps its pretrained rows, and a separate
-  `Linear` holds the new rows, concatenated in the declared `(p1 p2 t C)` order.
-  Merge the parts back into the original tensors on save and export, so
-  checkpoint keys and shapes are unchanged.
-- Add optimizer groups and parameters `vae_swap_io_lr_factor` and
-  `vae_swap_bridge_lr_factor`, both multiplying the body LR. Defaults go in
-  `param_defaults.TRAINING_DEFAULTS`. Follow the OpenAPI-first and frontend
-  threading rules, and preserve the factors on resume.
-- Keep zero initialization. Zero output is the correct "no information" state,
-  and D1 gives the new path a real target.
-- Implement per arch through `LatentIOSpec`. Anima is first; other image
-  backbones follow the same spec.
+Implemented for Anima full fine-tuning on full-passthrough swaps.
+
+- `SplitLinear` ([split_linear.py](../../backend/core/models/components/split_linear.py))
+  replaces `x_embedder.proj.1` and `final_layer.linear` when the optimizer
+  groups are built.
+  - The target-channel columns (`(c r m n)` order) and rows (`(p1 p2 t C)`
+    order) become `weight_fresh`. The rest is `weight_kept`.
+  - `state_dict` hooks present the merged `weight`, so checkpoint keys,
+    shapes and loaders are unchanged.
+- Optimizer groups:
+  - `vae_swap_io`: the fresh parts, at the body LR × `vae_swap_io_lr_factor`
+    (default 10).
+  - `vae_swap_bridge`: both bridge convolutions, at the body LR ×
+    `vae_swap_bridge_lr_factor` (default 1).
+  - The factors are threaded through `param_defaults`, OpenAPI, the request
+    model, the YAML builder, and the frontend config.
+- Zero initialization is kept. The default factor of 10 is a starting value,
+  not a measured optimum.
 
 ### D3. Calibration at training scale
 
-- Allow `vae_swap_calibration_resolution` up to the largest training base
-  resolution (at least 1024 and 1536). Keep half-side source encoding for 16x
+Pending.
+
+- Extend `vae_swap_calibration_resolution` beyond 128/256/512 (768/1024/1536)
+  for every codec path that reads it. Keep half-side source encoding for 16x
   over 8x.
-- Default the resolution to the run's smallest `base_resolutions` entry instead
-  of 256. Raise the default sample count to 64.
-- Memory is encode-only and streamed into the existing Gram accumulators. The
-  input regressor for 64ch x 9 taps needs at least ~10x its 576 features in
-  observations. Each 1024px image gives 4096, so 64 images is ample.
+- Keep the global default at 256. Video calibration shares this key, and a
+  larger default would raise its memory. Anima Qwen 2.1 runs should set the
+  smallest training base resolution explicitly.
+- Memory is encode-only and streamed into the existing Gram accumulators.
+  A 1024px image gives 4096 observations for the 576-feature input regressor.
 
 ### Separate track: native Anima schedule
 
@@ -159,39 +167,36 @@ schedule work is not expected to fix the jaggies.
 
 ## Migration of run 176
 
-Version 1 checkpoints keep loading and generating. To continue run 176's body
-under version 2, provide an explicit re-alignment step:
+Pending. Legacy checkpoints keep loading and generating. The conversion is
+function-preserving and needs no recalibration:
 
-1. Keep the body, the source columns/rows of the latent IO, and the LLM adapter.
-2. Recalibrate `A_in` and `G` at training scale and build `V⊥`.
-3. Reset the new IO parts to zero. They are near zero now, so little is lost.
+| Tensor | Legacy (width 64) | Full passthrough (width 80) |
+|---|---|---|
+| Bridge input rows | `0..15` calibrated, `16..63` index identity (trained) | `0..15` unchanged, `32..79` = legacy `16..63`, `16..31` = identity of target `0..15` |
+| Bridge output columns | same split | same remapping |
+| `x_embedder` columns, `final_layer` rows, global-adapter key/query/value columns | channel `k` | channel `k` for `k < 16`, `16 + k` for `k >= 16`; channels `16..31` zero |
 
-This is a declared conversion with its own metadata, not a silent reload. The
-existing guard "Changing an aligned Anima VAE requires a fresh base
-checkpoint" stays for any other codec change. Optimizer state for the new IO
-parts starts fresh.
+The converted model computes the same function as the legacy checkpoint at
+conversion time. It writes a new checkpoint with the updated declaration.
+Optimizer moments for reshaped tensors start fresh, through the named
+optimizer restore. The guard "Changing an aligned Anima VAE requires a fresh
+base checkpoint" stays for any other codec change.
 
 ## Acceptance gates
 
-| Gate | Check | Pass |
+| Gate | Check | Status |
 |---|---|---|
-| G1 Bridge round trip | Probe arm `y -> b -> y` with D1 at x1 and x2, calibration at training scale | R² ≥ 0.99 on all 64 channels; decode visually equal to the codec round trip |
-| G2 Noise | Backbone noise covariance from 10⁴ draws | Within sampling error of I; no cross-group correlation |
-| G3 Step 0 | Same seed/prompt as v1 at step 0 | No worse than v1 |
-| G4 Smoke | ~3 training steps, version 2 + D2 groups, FP32/BF16 production dtype | Finite loss; new IO parts receive non-zero updates at their factor |
-| G5 Resume/export | Save, reload, resume; merged keys equal v1 layout | Optimizer groups restored; generation works |
-| G6 Owner run | Compare frozen checkpoints under identical seed/prompt/NFE | Contours improve over run 176 at matched steps; new IO norms grow |
-
-G1-G5 run without long training. G6 is the owner's gate. A falling loss alone
-does not pass G6.
+| G1 Reachability | Every target channel has a gain-1 input and output path | Passed: unit tests |
+| G2 Step 0 | Untrained full passthrough equals the legacy pair, including the noise endpoint | Passed: unit tests |
+| G3 Layout | Split IO selects exactly the zero-initialized columns/rows; merged state dict is unchanged; save/load round trip is exact | Passed: Anima swap integration test |
+| G4 Smoke | 3 BF16 optimizer steps on a small Anima | Passed: finite loss; fresh parts move at their own LR |
+| G5 Real model | Real Anima/Qwen 2.1 swap: calibration, a few GPU steps, save, resume, generation | Pending: GPU occupied by run 176 |
+| G6 Owner run | Frozen checkpoints at identical seed/prompt/NFE vs run 176 | Owner gate; a falling loss alone does not pass |
 
 ## Implementation order
 
-1. D1 in the shared bridge, plus a probe arm for G1/G2. Commit.
-2. D3 calibration scale. Commit.
-3. D2 for Anima: split IO, optimizer groups, merge-on-save, API parameters.
-   Commit.
-4. Run 176 re-alignment conversion. Commit.
-5. Extend D2 to other image arches as needed.
-
-The comparison review in CLAUDE.md applies to steps 1 and 3.
+1. D1 + D2 for Anima, with tests. Done.
+2. D3 calibration scale.
+3. Run 176 conversion tool.
+4. G5 on GPU when the owner frees it.
+5. Extend D1/D2 to other image architectures as needed.

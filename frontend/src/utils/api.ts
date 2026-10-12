@@ -7497,6 +7497,9 @@ export interface TrainingRunCreateRequest {
   vae_swap_new_channel_init?: "auto" | "zero" | "paired_spatial" | "paired_temporal";
   vae_swap_calibration_samples?: number;
   vae_swap_calibration_resolution?: 128 | 256 | 512;
+  // Anima full-passthrough swaps only: LR multipliers for new latent IO / codec bridges.
+  vae_swap_io_lr_factor?: number;
+  vae_swap_bridge_lr_factor?: number;
   // SenseNova only: the generation patch in LATENT cells. 0 (the default)
   // inherits the base checkpoint's own patch; a positive multiple of 4
   // rebuilds the latent I/O layers, which only a full fine-tune can train.

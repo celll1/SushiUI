@@ -50,12 +50,21 @@ class ImageCodecContract:
             raise ValueError("Image codec normalization is unsupported")
         return value
 
-    def declaration(self, *, source, source_identity, target_identity, old_channels, old_scale):
-        return dict(validate_declaration(dict(version=1, method="paired_spatial", token_policy="target_native",
+    def declaration(self, *, source, source_identity, target_identity, old_channels, old_scale, passthrough=None):
+        value = dict(version=1, method="paired_spatial", token_policy="target_native",
             source=source, source_identity=source_identity, target_identity=target_identity,
             old_channels=old_channels, old_scale=old_scale, new_channels=self.latent_channels,
             new_scale=self.spatial_scale, ndim=self.latent_rank, norm=self.normalization,
-            norm_pack=self.normalization_pack, input_channels=self.pixel_channels)))
+            norm_pack=self.normalization_pack, input_channels=self.pixel_channels)
+        if passthrough is not None:
+            value["passthrough"] = passthrough
+        return dict(validate_declaration(value))
+
+
+def backbone_width(declaration):
+    """Internal latent width: "full" passthrough appends every target channel after the source channels."""
+    old, new = declaration["old_channels"], declaration["new_channels"]
+    return old + new if declaration.get("passthrough") == "full" else max(old, new)
 
 
 def validate_declaration(value):
@@ -81,6 +90,11 @@ def validate_declaration(value):
         if (patch_noise.get("channels") != value.get("new_channels") or
                 patch_noise.get("bridge_channels") != max(value.get("old_channels", 0), value.get("new_channels", 0))):
             raise ValueError("Patch noise geometry disagrees with the codec declaration")
+    passthrough = value.get("passthrough")
+    if passthrough not in (None, "full"):
+        raise ValueError("Unsupported spatial VAE passthrough")
+    if passthrough == "full" and (patch_noise is not None or value["new_channels"] <= value["old_channels"]):
+        raise ValueError("Full passthrough requires more target than source channels and no patch noise")
     if value["input_channels"] not in (3, 4) or value.get("ndim") not in (4, 5):
         raise ValueError("Spatial alignment requires an RGB/RGBA image-capable codec")
     if value["old_scale"] % value["new_scale"] and value["new_scale"] % value["old_scale"]:
@@ -113,7 +127,7 @@ class SpatialSwapPlan:
             raise ValueError("Patch/downsample factors must be positive integers")
         # Factors are cumulative grid divisors, not stage-local reductions.
         divisor = lcm(1, *downsample_factors)
-        return cls(value["new_channels"], max(value["old_channels"], value["new_channels"]),
+        return cls(value["new_channels"], backbone_width(value),
                    value["new_scale"], value["new_scale"] * lcm(patch_size * divisor, value["norm_pack"]))
 
 
@@ -122,7 +136,7 @@ class SpatialAlignmentPair(nn.Module):
         super().__init__()
         self.declaration = dict(validate_declaration(declaration))
         old, new = declaration["old_channels"], declaration["new_channels"]
-        width = max(old, new)
+        width = backbone_width(self.declaration)
         self.input = SpatialLatentBridge(new, width)
         self.output = SpatialLatentBridge(width, new)
         if declaration.get("noise_policy") is not None:
@@ -219,14 +233,17 @@ class SpatialAlignmentPair(nn.Module):
             raise ValueError("Calibration directions disagree with the alignment declaration")
         if any(bridge.source_pack != 1 or bridge.target_pack != 1 for bridge in (incoming, outgoing)):
             raise ValueError("Target-native calibration must not repack the token grid")
-        width = max(old, new)
+        width = backbone_width(self.declaration)
         iw = incoming.projection.weight.new_zeros(width, new, 3, 3)
         ow = outgoing.projection.weight.new_zeros(new, width, 3, 3)
         ib = incoming.projection.bias.new_zeros(width)
         iw[:old], ib[:old] = incoming.projection.weight, incoming.projection.bias
         ow[:, :old] = outgoing.projection.weight
+        # Full passthrough gives every target channel its own gain-1 path; the legacy
+        # layout copies only target channels with index >= old.
+        offset = old if self.declaration.get("passthrough") == "full" else 0
         for c in range(old, width):
-            iw[c, c, 1, 1] = ow[c, c, 1, 1] = 1
+            iw[c, c-offset, 1, 1] = ow[c-offset, c, 1, 1] = 1
         self.input.initialize(iw.flatten(1).T, ib)
         self.output.initialize(ow.flatten(1).T, outgoing.projection.bias)
         noise = getattr(self, "noise_alignment", None)

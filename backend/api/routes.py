@@ -16025,6 +16025,8 @@ class TrainingRunCreateRequest(BaseModel):
     ]
     vae_swap_calibration_samples: int = Field(TRAINING_DEFAULTS["vae_swap_calibration_samples"], ge=2, le=256)
     vae_swap_calibration_resolution: Literal[128, 256, 512] = TRAINING_DEFAULTS["vae_swap_calibration_resolution"]
+    vae_swap_io_lr_factor: float = Field(TRAINING_DEFAULTS["vae_swap_io_lr_factor"], gt=0, le=1000)
+    vae_swap_bridge_lr_factor: float = Field(TRAINING_DEFAULTS["vae_swap_bridge_lr_factor"], gt=0, le=1000)
     # 0 = inherit the base checkpoint's own generation patch (4 for a
     # pixel-space base); a positive multiple of 4 rebuilds the grid.
     sensenova_gen_patch: int = Field(

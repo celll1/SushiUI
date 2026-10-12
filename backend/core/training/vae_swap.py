@@ -462,8 +462,8 @@ def validate_latent_io(trainer) -> list:
             else getattr(trainer, handler.latent_io_root_attr, None))
     if spec is not None and root is not None and wiring.latent_channels:
         pair = latent_alignment_pair(root)
-        channels = (max(pair.declaration["old_channels"], pair.declaration["new_channels"])
-                    if pair is not None else wiring.latent_channels)
+        from core.models.components.latent_adapter import backbone_width
+        channels = backbone_width(pair.declaration) if pair is not None else wiring.latent_channels
         problems.extend(verify_latent_io(root, spec, channels))
     problems.extend(_verify_vae_geometry(trainer, wiring))
     return problems

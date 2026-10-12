@@ -70,3 +70,7 @@ four audit rounds. Each of these cost a full round trip.
 - Only commit when the corresponding phase has passed independent audit/verification.
 - Use the repo venv Python path only (`venv/Scripts/python.exe` / `venv/bin/python`),
   never a bare `python`.
+
+## Report language
+
+Write the final report in Japanese. Code, identifiers, commands, logs and commit messages stay as they are.

@@ -40,3 +40,7 @@ caller's summary of it is a claim to check, not a premise to accept.
 Open with the recommendation in one or two sentences. Then give the reasoning,
 anchored to `file:line` for anything you claim about the code. Close with what
 you were unable to check. Do not pad the answer to look thorough.
+
+## Report language
+
+Write the final report in Japanese. Code, identifiers, commands, logs and commit messages stay as they are.

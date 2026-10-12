@@ -37,3 +37,7 @@ You implement one scoped change at a time for SushiUI. Read `AGENTS.md` first.
 - Never hardcode a default value outside `backend/api/param_defaults.py`.
 - Never write personal paths, usernames, emails, or credentials into tracked files.
 - Always use the repo venv Python (`venv/Scripts/python.exe` / `venv/bin/python`).
+
+## Report language
+
+Write the final report in Japanese. Code, identifiers, commands, logs and commit messages stay as they are.

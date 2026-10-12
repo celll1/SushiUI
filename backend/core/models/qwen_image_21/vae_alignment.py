@@ -147,7 +147,7 @@ def calibrate(trainer,datasets):
     old = getattr(trainer,"_qwen_vae_calibration_source",None)
     if old is None:
         return
-    from api.param_defaults import TRAINING_DEFAULTS
+    from api.param_defaults import TRAINING_DEFAULTS, VAE_SWAP_CALIBRATION_RESOLUTIONS
     from PIL import Image, ImageOps
     import numpy as np
     from core.models.components.latent_adapter import PairedSpatialCalibration, calibration_source_side
@@ -157,7 +157,7 @@ def calibrate(trainer,datasets):
     from core.training.base_trainer import all_optimizers
     count = trainer.config.get("vae_swap_calibration_samples",TRAINING_DEFAULTS["vae_swap_calibration_samples"])
     side = trainer.config.get("vae_swap_calibration_resolution",TRAINING_DEFAULTS["vae_swap_calibration_resolution"])
-    if type(count) is not int or not 2 <= count <= 256 or side not in (128,256,512):
+    if type(count) is not int or not 2 <= count <= 256 or side not in VAE_SWAP_CALIBRATION_RESOLUTIONS:
         raise ValueError("Invalid VAE spatial calibration count/resolution")
     paths = list(dict.fromkeys(item["image_path"] for dataset in datasets for item in dataset.items if item.get("image_path")))
     if not paths:

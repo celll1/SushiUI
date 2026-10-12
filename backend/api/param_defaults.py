@@ -2559,6 +2559,9 @@ DATASET_DEFAULTS: Dict[str, Any] = {
 # Authoritative source: backend Pydantic model.
 # Frontend DEFAULT_PARAMS is aligned to these values.
 
+# Accepted vae_swap_calibration_resolution values (target crop side in pixels).
+VAE_SWAP_CALIBRATION_RESOLUTIONS = (128, 256, 512, 768, 1024, 1536)
+
 TRAINING_DEFAULTS: Dict[str, Any] = {
     # Dataset
     "dataset_configs": [],

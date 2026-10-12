@@ -29599,7 +29599,7 @@ components:
           description: Dataset samples used for first-swap paired calibration (images or clips for LTX; audio clips for ACE-Step). ACE auto selects paired_temporal with three taps on the target codec grid and keeps RVQ conditioning on the original codec. ACE requires unquantized full_finetune, train_unet=true and a bundled 48kHz stereo Oobleck codec; explicit zero and paired_spatial are refused. Calibration audio uses the native timbre window and is read only up to that duration. Calibration media are not embedded in checkpoints; resume does not recalibrate. Official full-weight quality and throughput acceptance remains pending.
         vae_swap_calibration_resolution:
           type: integer
-          enum: [128, 256, 512]
+          enum: [128, 256, 512, 768, 1024, 1536]
           default: 256
           description: Target image/video calibration crop size; unused for ACE-Step audio calibration. The target VAE grid owns the token count. Image VAE teachers with stronger target spatial compression encode a smaller image at target crop size multiplied by source scale divided by target scale, preserving their native latent grid instead of pooling encoded features. Equal-scale, expanded-grid, RGB pixel and video teacher paths retain latent resampling as needed. Saved calibrated bridges restore without recalibration.
         vae_swap_io_lr_factor:

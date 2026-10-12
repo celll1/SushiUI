@@ -7496,7 +7496,7 @@ export interface TrainingRunCreateRequest {
   vae_swap_source?: string;
   vae_swap_new_channel_init?: "auto" | "zero" | "paired_spatial" | "paired_temporal";
   vae_swap_calibration_samples?: number;
-  vae_swap_calibration_resolution?: 128 | 256 | 512;
+  vae_swap_calibration_resolution?: 128 | 256 | 512 | 768 | 1024 | 1536;
   // Anima full-passthrough swaps only: LR multipliers for new latent IO / codec bridges.
   vae_swap_io_lr_factor?: number;
   vae_swap_bridge_lr_factor?: number;

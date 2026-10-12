@@ -14,11 +14,11 @@ class SplitLinear(nn.Module):
         super().__init__()
         if type(linear) is not nn.Linear or linear.bias is not None or axis not in (0, 1):
             raise ValueError("SplitLinear wraps a bias-free nn.Linear along rows (0) or columns (1)")
-        size = linear.weight.shape[axis]
-        fresh = torch.as_tensor(sorted(set(int(i) for i in fresh)), dtype=torch.long)
+        size, device = linear.weight.shape[axis], linear.weight.device
+        fresh = torch.as_tensor(sorted(set(int(i) for i in fresh)), dtype=torch.long, device=device)
         if not len(fresh) or fresh[0] < 0 or fresh[-1] >= size or len(fresh) == size:
             raise ValueError("SplitLinear needs a proper non-empty subset of indices")
-        mask = torch.zeros(size, dtype=torch.bool)
+        mask = torch.zeros(size, dtype=torch.bool, device=device)
         mask[fresh] = True
         kept = torch.nonzero(~mask).flatten()
         order = torch.cat([kept, fresh])

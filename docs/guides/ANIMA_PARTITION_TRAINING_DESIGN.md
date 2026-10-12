@@ -135,6 +135,33 @@ Private full traces, final/snapshot images and plots:
 
 ## Wiring and persistence
 
+Anima crop decode auxiliary loss now supports partition training. One region
+is sampled in proportion to its supervised core area and evaluated last.
+Its auxiliary loss is added once, without a second area factor; ordinary
+velocity/reconstruction terms still sum with their existing core weights.
+The output crop is sampled inside that core, while predicted/target decode
+uses the region's real halo. The halo expands to cover the configured decoder
+margin in external VAE latent cells and retains topology alignment. These
+geometric contracts also apply to target-native VAE swaps and hybrid U-Net.
+
+Region backward restores the VAE's original device/dtype after consuming its
+decode graph, including on errors. Weight zero skips the new region RNG and
+halo expansion. SNR-ineligible batches skip loss-bank initialization and VAE
+placement. Torch RNG checkpoint restoration reproduces region/crop selection;
+there is no new persistent state. The existing UI fields, `/params` restoration
+and request pass-through cover all six crop options; OpenAPI now documents them.
+Ming's current native region path does not consume this shared crop-decode loss;
+this change does not advertise Ming support or enable the loss on owner runs.
+
+Verification includes real small-model U-Net/global/VAE-swap backward and a
+GPU step using owner #176's step-123218 Anima/Qwen21 artifact, frozen VAE and
+synthetic [1,64,32,32] latents, four regions, 28 checkpointed blocks, 8-cell
+output crop and 4-cell margin. At sigma .2, MSE auxiliary raw loss was .03554;
+weight .1 added .00355 to total loss and changed the output-head gradient by
+L2 .40083. Peak allocated VRAM was 7.73 GiB without auxiliary / 11.22 GiB with
+auxiliary, **without optimizer state**. The VAE returned to CPU. These are
+function/gradient checks, not evidence that contour quality improves in training.
+
 - Install the adapter before optimizer construction; include its parameters in
   Full FT and preserve the existing trainable-component learning-rate ownership.
 - Export versioned adapter dimensions and weights with native model config,

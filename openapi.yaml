@@ -28119,6 +28119,36 @@ components:
         crop_plan_seed:
           type: 'integer'
           default: 0
+        crop_decode_loss_enable:
+          type: boolean
+          default: false
+          description: Enable differentiable pixel-space crop reconstruction on architectures declaring support. Anima supports full-frame and partition training, including VAE swap and U-Net topology. Partition training samples one core by area, provides a decoder-context halo, and restores the VAE device after backward.
+          example: true
+        crop_decode_loss_weight:
+          type: number
+          minimum: 0
+          default: 0.0
+          description: Additive coefficient of the auxiliary crop loss; zero disables decode work and region sampling.
+          example: 0.1
+        crop_decode_loss_margin_cells:
+          type: integer
+          minimum: 0
+          default: 16
+          description: Decoder context margin in target-codec latent cells. Anima partition halos are expanded to retain this margin around sampled output crops.
+        crop_decode_loss_out_cells:
+          type: integer
+          minimum: 4
+          default: 32
+          description: Output crop size in target-codec latent cells, clipped to the available supervised core. Pixel size scales with the selected VAE compression ratio.
+        crop_decode_loss_metric:
+          type: string
+          default: lpips
+          description: Auxiliary decoded-crop metric. Recognized values are lpips, l1, mse and ycbcr_dc; unrecognized values fall back to lpips.
+        crop_decode_loss_snr_range:
+          type: string
+          default: ''
+          description: Optional minimum,maximum SNR band. Empty applies to all samples; batches with no eligible samples skip VAE initialization and decode.
+          example: '1,100'
         reconstruction_loss_weight:
           type: 'number'
           format: 'float'

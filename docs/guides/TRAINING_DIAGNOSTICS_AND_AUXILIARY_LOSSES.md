@@ -53,6 +53,12 @@ Ideogram 4, and SenseNova consume the loss. MiniT2I, LTX-2.3, MiniMax-H3, and
 ACE-Step refuse it. SenseNova scores its pixel-space prediction without a VAE
 and requires an output size compatible with its patch grid.
 
+Anima also supports this loss during partition training, with one area-sampled
+core crop per batch, a decoder-context halo and VAE device restoration after
+backward. It composes with VAE swap and U-Net topology; see
+`ANIMA_PARTITION_TRAINING_DESIGN.md` for geometry and verification. Ming's
+current native training path does not consume this auxiliary loss.
+
 ## REPA target source
 
 REPA uses the existing pixel teacher by default. `repa_target_source` may select

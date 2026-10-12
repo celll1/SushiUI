@@ -20,6 +20,7 @@ Measures and logs:
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -45,6 +46,28 @@ def parse_snr_range(snr_str: str) -> Tuple[Optional[float], Optional[float]]:
         snr_max = float(parts[1]) if parts[1].lower() not in ("none", "") else None
         return snr_min, snr_max
     return None, None
+
+
+def crop_decode_loss_active(trainer: Any) -> bool:
+    from api.param_defaults import TRAINING_DEFAULTS
+    config = getattr(trainer, "config", {})
+    value = lambda name: getattr(trainer, name, config.get(name, TRAINING_DEFAULTS[name]))
+    return bool(value("crop_decode_loss_enable")) and float(value("crop_decode_loss_weight") or 0.) > 0
+
+
+@contextmanager
+def preserve_crop_vae_residency(trainer: Any):
+    """Keep the decoder on its original device after region backward completes."""
+    vae = getattr(trainer, "vae", None)
+    parameter = next(vae.parameters(), None) if vae is not None else None
+    original = (parameter.device, parameter.dtype) if parameter is not None else None
+    try:
+        yield
+    finally:
+        if original is not None:
+            parameter = next(vae.parameters())
+            if (parameter.device, parameter.dtype) != original:
+                vae.to(device=original[0], dtype=original[1])
 
 
 class CropDecodeLossModule(nn.Module):
@@ -176,6 +199,7 @@ def compute_crop_decode_loss(
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
     predicted_latent: Optional[torch.Tensor] = None,
     main_loss: Optional[torch.Tensor] = None,
+    crop_bounds: Optional[Tuple[int, int, int, int]] = None,
 ) -> Tuple[Optional[torch.Tensor], float]:
     """Compute crop decode auxiliary loss and log gradient norm diagnostics (Phase 3-2 & 3-3).
 
@@ -202,6 +226,15 @@ def compute_crop_decode_loss(
     if vae is None:
         return None, 0.0
 
+    snr_min, snr_max = parse_snr_range(getattr(trainer, "crop_decode_loss_snr_range", ""))
+    mask = None
+    if snr_min is not None or snr_max is not None:
+        mask = snr_band_mask(noise_process=noise_process, timesteps=timesteps,
+            noise_scheduler=noise_scheduler, snr_min=snr_min, snr_max=snr_max,
+            alphas_cumprod_cached=alphas_cumprod_cached)
+        if not mask.any():
+            return None, 0.0
+
     # Lazy initialization of module on trainer (or re-init if VAE instance changed via VAE swap)
     loss_module: Optional[CropDecodeLossModule] = getattr(trainer, "_crop_decode_loss_module", None)
     if loss_module is None or getattr(loss_module, "vae", None) is not vae:
@@ -222,17 +255,7 @@ def compute_crop_decode_loss(
             loss_module.vae.to(device=trainer.device, dtype=getattr(trainer, "vae_dtype", None))
 
     # SNR Band Filtering
-    if loss_module.snr_min is not None or loss_module.snr_max is not None:
-        mask = snr_band_mask(
-            noise_process=noise_process,
-            timesteps=timesteps,
-            noise_scheduler=noise_scheduler,
-            snr_min=loss_module.snr_min,
-            snr_max=loss_module.snr_max,
-            alphas_cumprod_cached=alphas_cumprod_cached,
-        )
-        if not mask.any():
-            return None, 0.0
+    if mask is not None:
         # Subset batch to samples in band
         model_pred_sub = model_pred[mask]
         noisy_latents_sub = noisy_latents[mask]
@@ -285,14 +308,17 @@ def compute_crop_decode_loss(
     out_c = loss_module.out_cells
     margin = loss_module.margin_cells
 
-    c_h = min(out_c, lat_h)
-    c_w = min(out_c, lat_w)
+    by0, by1, bx0, bx1 = crop_bounds if crop_bounds is not None else (0, lat_h, 0, lat_w)
+    if not (0 <= by0 < by1 <= lat_h and 0 <= bx0 < bx1 <= lat_w):
+        raise ValueError("Crop decode bounds must be nonempty and inside the supplied latent grid")
+    c_h = min(out_c, by1 - by0)
+    c_w = min(out_c, bx1 - bx0)
 
     # Random crop location (consistent across batch elements for efficient decode)
-    max_y = max(0, lat_h - c_h)
-    max_x = max(0, lat_w - c_w)
-    y0 = int(torch.randint(0, max_y + 1, (1,)).item()) if max_y > 0 else 0
-    x0 = int(torch.randint(0, max_x + 1, (1,)).item()) if max_x > 0 else 0
+    max_y = by1 - by0 - c_h
+    max_x = bx1 - bx0 - c_w
+    y0 = by0 + (int(torch.randint(0, max_y + 1, (1,)).item()) if max_y > 0 else 0)
+    x0 = bx0 + (int(torch.randint(0, max_x + 1, (1,)).item()) if max_x > 0 else 0)
     y1 = y0 + c_h
     x1 = x0 + c_w
     rect = make_crop_rect(lat_h, lat_w, y0, y1, x0, x1, margin_cells=margin)

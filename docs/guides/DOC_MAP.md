@@ -115,6 +115,7 @@ Shared training memory/iteration audit and equivalent snapshot fixes:
 | [docs/plans/DIT_PARTITION_MEMORY_EXECUTION_PLAN_2026-09.md](../plans/DIT_PARTITION_MEMORY_EXECUTION_PLAN_2026-09.md) | Separates activation prediction, offload, batch reduction, checkpoint depth, and quantized-base prefetch. |
 | [backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md](../../backend/core/training/optimizers/RINGBUFFER_OPTIMIZERS.md) | Ring-buffer optimizer contracts. |
 | [docs/audits/ATTENTION_ARCHITECTURE_RESEARCH_2026-09.md](../audits/ATTENTION_ARCHITECTURE_RESEARCH_2026-09.md) | Attention control-plane audit and dense/sparse acceleration roadmap through 2026-09. |
+| [docs/audits/ANIMA_OWNER176_ATTENTION_PRECISION_2026-10.md](../audits/ANIMA_OWNER176_ATTENTION_PRECISION_2026-10.md) | Real Anima partition-loss attention gradients against FP64; FA2/SDPA and global-adapter BF16 precision. |
 | [docs/audits/SOL_ATTN_GPU_VALIDATION_2026-09.md](../audits/SOL_ATTN_GPU_VALIDATION_2026-09.md) | Sol-Attn correctness, synthetic GPU measurements, and remaining full-H3 quality gate. |
 | [docs/audits/ACTIVATION_DISPATCH_ARCH_COVERAGE_REPORT_2026-09.md](../audits/ACTIVATION_DISPATCH_ARCH_COVERAGE_REPORT_2026-09.md) | Static coverage and architecture boundaries. |
 | [docs/audits/ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md](../audits/ACTIVATION_DISPATCH_GPU_VALIDATION_SUMMARY_2026-09.md) | Scope of completed GPU validation. |

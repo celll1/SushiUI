@@ -157,7 +157,7 @@ def dispatch_attention(
     Returns:
         Attention output in the SAME layout as the inputs.
     """
-    if query.is_cuda and torch.is_autocast_enabled(query.device.type):
+    if query.device.type in ("cuda", "cpu") and torch.is_autocast_enabled(query.device.type):
         # Like SDPA under autocast: element-wise ops with FP32 parameters (norms)
         # promote q/k to FP32 while projections stay in the autocast dtype.
         compute = torch.get_autocast_dtype(query.device.type)

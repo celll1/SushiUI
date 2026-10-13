@@ -116,7 +116,10 @@ class AsyncActivationOffloader:
                 self._d2h_stream, self._h2d_stream, self.stats)
         return True
 
-    def pack(self, tensor: torch.Tensor) -> Optional[_AsyncSavedTensor]:
+    def pack(self, tensor: torch.Tensor, source: Optional[torch.Tensor] = None) -> Optional[_AsyncSavedTensor]:
+        # ``source`` is the autograd-saved tensor when ``tensor`` is a view of it;
+        # it keeps the in-place modification check tied to an object that lives on.
+        source = tensor if source is None else source
         if not self._active or not self._ensure_runtime(tensor.device):
             return None
         nbytes = tensor.numel() * tensor.element_size()
@@ -126,7 +129,7 @@ class AsyncActivationOffloader:
         if offset + nbytes > persistent:
             if self.staging is not None:
                 saved = _AsyncSavedTensor(cpu=None, device=tensor.device,
-                    source=weakref.ref(tensor), version=tensor._version)
+                    source=weakref.ref(source), version=source._version)
                 if self.staging.pack(tensor, saved):
                     self.staging.register(saved)
                     return saved
@@ -141,7 +144,7 @@ class AsyncActivationOffloader:
         tensor.record_stream(self._d2h_stream)
         self._offset = offset + nbytes
         saved = _AsyncSavedTensor(cpu=cpu, device=tensor.device, d2h_ready=ready,
-            source=weakref.ref(tensor), version=tensor._version)
+            source=weakref.ref(source), version=source._version)
         if self.staging is not None:
             self.staging.register(saved)
         return saved
@@ -242,6 +245,26 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
         saved_tensors[key] = (weakref.ref(tensor, expired), saved)
         return saved
 
+    def pack_dense(t: torch.Tensor, source: torch.Tensor):
+        """Transfer a contiguous view of ``source``; returns the inner saved form."""
+        nbytes = t.numel() * t.element_size()
+        if engine is not None:
+            saved = engine.pack(t, source)
+            if saved is not None:
+                if stats is not None:
+                    stats["bytes"] = stats.get("bytes", 0) + nbytes
+                    stats["async_bytes"] = stats.get("async_bytes", 0) + nbytes
+                return ("async_cpu", saved)
+        cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=use_pinned)
+        cpu.copy_(t, non_blocking=False)
+        if stats is not None:
+            stats["bytes"] = stats.get("bytes", 0) + nbytes
+            if engine is not None:
+                stats["sync_fallback_bytes"] = stats.get("sync_fallback_bytes", 0) + nbytes
+        if engine is not None and engine.staging is not None:
+            return ("async_cpu", engine.register_pageable(cpu, t.device))
+        return ("cpu", cpu, t.device)
+
     def pack(t: torch.Tensor):
         if (t.is_cuda and t.is_floating_point() and not t.is_leaf
                 and t.numel() * t.element_size() >= threshold_bytes):
@@ -251,32 +274,26 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
                 if stats is not None:
                     stats["deduplicated_bytes"] = stats.get("deduplicated_bytes", 0) + t.numel() * t.element_size()
                 return previous[1]
-            if engine is not None:
-                saved = engine.pack(t)
-                if saved is not None:
-                    if stats is not None:
-                        stats["bytes"] = stats.get("bytes", 0) + t.numel() * t.element_size()
-                        stats["async_bytes"] = stats.get("async_bytes", 0) + (
-                            t.numel() * t.element_size()
-                        )
-                    return remember(t, key, ("async_cpu", saved))
-            cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=use_pinned)
-            cpu.copy_(t, non_blocking=False)
-            if stats is not None:
-                stats["bytes"] = stats.get("bytes", 0) + t.numel() * t.element_size()
-                if engine is not None:
-                    stats["sync_fallback_bytes"] = stats.get(
-                        "sync_fallback_bytes", 0
-                    ) + t.numel() * t.element_size()
-            if engine is not None and engine.staging is not None:
-                return remember(t, key, ("async_cpu", engine.register_pageable(cpu, t.device)))
-            return remember(t, key, ("cpu", cpu, t.device))
+            # Backward kernels may depend on a saved tensor's strides (SDPA's
+            # memory-efficient attention output gives NaN or illegal accesses when
+            # restored contiguous). Transfer the memory-order view and permute back.
+            order = sorted(range(t.dim()), key=lambda d: (-t.stride(d), d))
+            dense = t.permute(order)
+            if not dense.is_contiguous():
+                return ("gpu", t)
+            inverse = [order.index(d) for d in range(t.dim())]
+            return remember(t, key, ("permuted", pack_dense(dense, t), inverse))
         return ("gpu", t)
 
-    def unpack(p):
+    def unpack_dense(p):
         if p[0] == "async_cpu":
             return engine.unpack(p[1])
-        return p[1].to(p[2], non_blocking=False) if p[0] == "cpu" else p[1]
+        return p[1].to(p[2], non_blocking=False)
+
+    def unpack(p):
+        if p[0] == "permuted":
+            return unpack_dense(p[1]).permute(p[2])
+        return p[1]
 
     try:
         with torch.autograd.graph.saved_tensors_hooks(pack, unpack):

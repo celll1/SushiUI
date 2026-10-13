@@ -21029,13 +21029,27 @@ class BaseTrainer(ABC):
                                 else:
                                     # Normal flow without GradScaler
                                     grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
-                                    self._clip_nonfused_parameters()
-                                    if max_grad_norm > 0:
-                                        self._clip_global_grad_norm(max_grad_norm)
-                                    self.optimizer.step()
-                                    self.optimizer.zero_grad()
-                                    self._update_ema()
-                                    _weights_updated = True
+                                    if not math.isfinite(float(grad_norm_total)):
+                                        # A non-finite gradient would write NaN into every
+                                        # parameter whose optimizer state is not quantized.
+                                        self.optimizer.zero_grad()
+                                        self._nonfinite_steps_skipped = getattr(self, "_nonfinite_steps_skipped", 0) + 1
+                                        message = (f"Step {global_step}: gradient norm is {grad_norm_total}; the "
+                                                   f"optimizer update was skipped "
+                                                   f"({self._nonfinite_steps_skipped} skipped in this process)")
+                                        if self._nonfinite_steps_skipped <= 3:
+                                            emit_training_warning(message, code="nonfinite_gradient_step_skipped",
+                                                                  prefix=self.log_prefix)
+                                        else:
+                                            print(f"{self.log_prefix} {message}")
+                                    else:
+                                        self._clip_nonfused_parameters()
+                                        if max_grad_norm > 0:
+                                            self._clip_global_grad_norm(max_grad_norm)
+                                        self.optimizer.step()
+                                        self.optimizer.zero_grad()
+                                        self._update_ema()
+                                        _weights_updated = True
                             else:
                                 # Fused backward/groups flow: the hooks have already
                                 # stepped and cleared the grads, so the norms come

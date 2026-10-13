@@ -213,8 +213,9 @@ def sample_filename(step: int, sample_index: int,
     """The samples/ filename for a scheduled (request_id=None) or on-demand
     sample. An on-demand sample at the same global_step as a scheduled one must
     not overwrite it, and GET /training/runs/{id}/samples parses both forms."""
+    from api.training_media import SAMPLE_SUFFIX
     base = f"step_{step:06d}_sample_{sample_index}"
-    return f"{base}.png" if not request_id else f"{base}_ondemand_{request_id}.png"
+    return f"{base}{SAMPLE_SUFFIX}" if not request_id else f"{base}_ondemand_{request_id}{SAMPLE_SUFFIX}"
 
 
 def blank_on_failure_note(arch: Optional[str]) -> Optional[str]:

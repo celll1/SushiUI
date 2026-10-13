@@ -7293,8 +7293,8 @@ paths:
         takes at most one request per batch.
 
         The image appears in `GET /training/runs/{run_id}/samples` under a
-        filename of the form `step_{step:06d}_sample_{i}_ondemand_{request_id}.png`,
-        which cannot collide with the scheduled `step_{step:06d}_sample_{i}.png`
+        filename of the form `step_{step:06d}_sample_{i}_ondemand_{request_id}.webp`,
+        which cannot collide with the scheduled `step_{step:06d}_sample_{i}.webp`
         at the same step.
       parameters:
         - name: run_id
@@ -7377,7 +7377,7 @@ paths:
                   - request_id: "0ac31b77f9d24e80"
                     ok: true
                     step: 4210
-                    files: ["step_004210_sample_0_ondemand_0ac31b77f9d24e80.png"]
+                    files: ["step_004210_sample_0_ondemand_0ac31b77f9d24e80.webp"]
                     seeds: [1188223401]
                     architecture: sdxl
                     error: null
@@ -8231,7 +8231,7 @@ paths:
     get:
       tags: [training]
       summary: Get a training sample image
-      description: Returns the immutable original PNG; panel views should use the sized WebP preview endpoint.
+      description: Returns the immutable original sample (WebP; PNG for samples written before WebP storage). Generation parameters are embedded as XMP in WebP and as text chunks in PNG. Panel views should use the sized WebP preview endpoint.
       parameters:
         - name: run_id
           in: path
@@ -8252,6 +8252,10 @@ paths:
         '200':
           description: Sample image file
           content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
             image/png:
               schema:
                 type: string

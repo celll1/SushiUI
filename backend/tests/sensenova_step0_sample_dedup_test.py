@@ -90,7 +90,7 @@ def test_first_launch_generates_and_saves_the_step0_sample(tmp_path):
         trainer._run_step0_sample_if_due(**_kwargs())
 
     dispatch.assert_called_once()
-    saved = tmp_path / "samples" / "step_000000_sample_0.png"
+    saved = tmp_path / "samples" / "step_000000_sample_0.webp"
     assert saved.exists()
 
 
@@ -112,38 +112,38 @@ def test_step0_forwards_conditioning_and_embeds_generation_metadata(tmp_path):
     assert dispatch.call_args.kwargs["condition_image_path"] == "condition.png"
     assert dispatch.call_args.kwargs["reference_image_path"] == "reference.png"
 
-    saved = tmp_path / "samples" / "step_000000_sample_0.png"
-    with Image.open(saved) as sample:
-        assert sample.text == {
-            "sample_settings_revision": "0",
-            "prompt": "a cat",
-            "negative_prompt": "blurry",
-            "steps": "4",
-            "cfg_scale": "4.0",
-            "seed": "1",
-            "width": "64",
-            "height": "64",
-            "sampler": "euler",
-            "schedule_type": "uniform",
-            "cfg_schedule_type": "constant",
-            "cfg_schedule_min": "1.0",
-            "cfg_schedule_max": "None",
-            "cfg_schedule_power": "2.0",
-            "cfg_rescale_snr_alpha": "0.0",
-            "dynamic_threshold_percentile": "0.0",
-            "dynamic_threshold_mimic_scale": "7.0",
-            "nag_enable": "False",
-            "nag_scale": "5.0",
-            "nag_tau": "3.5",
-            "nag_alpha": "0.25",
-            "nag_sigma_end": "3.0",
-            "nag_negative_prompt": "",
-            "sensenova_timestep_shift": "3.0",
-            "sensenova_img_cfg_scale": "1.0",
-            "sensenova_cfg_norm": "global",
-            "condition_image_path": "condition.png",
-            "reference_image_path": "reference.png",
-        }
+    saved = tmp_path / "samples" / "step_000000_sample_0.webp"
+    from api.training_media import cached_sample_params
+    assert cached_sample_params(saved) == {
+        "sample_settings_revision": "0",
+        "prompt": "a cat",
+        "negative_prompt": "blurry",
+        "steps": "4",
+        "cfg_scale": "4.0",
+        "seed": "1",
+        "width": "64",
+        "height": "64",
+        "sampler": "euler",
+        "schedule_type": "uniform",
+        "cfg_schedule_type": "constant",
+        "cfg_schedule_min": "1.0",
+        "cfg_schedule_max": "None",
+        "cfg_schedule_power": "2.0",
+        "cfg_rescale_snr_alpha": "0.0",
+        "dynamic_threshold_percentile": "0.0",
+        "dynamic_threshold_mimic_scale": "7.0",
+        "nag_enable": "False",
+        "nag_scale": "5.0",
+        "nag_tau": "3.5",
+        "nag_alpha": "0.25",
+        "nag_sigma_end": "3.0",
+        "nag_negative_prompt": "",
+        "sensenova_timestep_shift": "3.0",
+        "sensenova_img_cfg_scale": "1.0",
+        "sensenova_cfg_norm": "global",
+        "condition_image_path": "condition.png",
+        "reference_image_path": "reference.png",
+    }
 
 
 def test_relaunch_with_no_checkpoint_skips_the_already_saved_sample(tmp_path):
@@ -202,7 +202,7 @@ def test_a_none_sample_is_not_saved_and_leaves_no_file_to_dedup_against(tmp_path
         trainer._run_step0_sample_if_due(**_kwargs())
 
     dispatch.assert_called_once()
-    assert not (tmp_path / "samples" / "step_000000_sample_0.png").exists()
+    assert not (tmp_path / "samples" / "step_000000_sample_0.webp").exists()
 
     with patch.object(trainer, "_dispatch_sample", return_value=None) as dispatch2:
         trainer._run_step0_sample_if_due(**_kwargs())
@@ -237,7 +237,7 @@ def test_marker_missing_regenerates_even_though_the_png_exists(tmp_path):
 
     trainer = _trainer(tmp_path, run_id=1)
     (tmp_path / "samples").mkdir(parents=True)
-    (tmp_path / "samples" / "step_000000_sample_0.png").write_bytes(b"not a real png")
+    (tmp_path / "samples" / "step_000000_sample_0.webp").write_bytes(b"not a real png")
 
     image = Image.new("RGB", (8, 8))
     with patch.object(trainer, "_dispatch_sample", return_value=image) as dispatch:

@@ -95,8 +95,8 @@ def publish_training_sample(sample, path, metadata):
     from .results import MingGenerationOutput
     group = getattr(sample, "_ming_result_group", None)
     if group is None:
-        from api.training_media import publish_sample_png
-        publish_sample_png(sample, path, metadata)
+        from api.training_media import publish_sample_image
+        publish_sample_image(sample, path, metadata)
         return [path]
     MingGenerationOutput((group,)).validate()
     path = Path(path)
@@ -112,7 +112,8 @@ def publish_training_sample(sample, path, metadata):
                                "ming_frame_index": index, "ming_target_frames": group.target_frames,
                                "ming_requested_layers": group.requested_layers}.items():
                 info.add_text(key, str(value))
-            image.save(staging / str(index), format="PNG", pnginfo=info)
+            from api.training_media import sample_image_format, save_sample_image
+            save_sample_image(image, staging / str(index), info, sample_image_format(path))
         try:
             for index, destination in enumerate(paths):
                 if destination.exists():

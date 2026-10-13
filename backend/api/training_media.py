@@ -56,12 +56,54 @@ def file_fingerprint(path: Path) -> str:
     return f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
 
 
-def publish_sample_png(image: Any, path: Path, pnginfo: Any) -> None:
-    """Expose a training sample only after its PNG encoder has finished."""
+# Training samples are written as WebP with the same encoder settings as decoded
+# debug latents. Older runs keep PNG samples, which stay readable.
+SAMPLE_SUFFIX = ".webp"
+SAMPLE_SUFFIXES = (".webp", ".png")
+_WEBP_OPTIONS = {"quality": 80, "method": 4}
+_XMP_NAMESPACE = "https://sushiui.invalid/ns/training-sample/1.0/"
+
+
+class SampleMetadata(dict):
+    """Generation parameters stored in a sample; ``add_text`` mirrors PngInfo."""
+
+    def add_text(self, key: Any, value: Any) -> None:
+        self[str(key)] = str(value)
+
+
+def _xmp_packet(metadata: dict[str, str]) -> bytes:
+    import json
+    from xml.sax.saxutils import quoteattr
+    return (
+        '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF '
+        'xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description '
+        f'xmlns:sushi="{_XMP_NAMESPACE}" sushi:params={quoteattr(json.dumps(metadata, ensure_ascii=False))}/>'
+        '</rdf:RDF></x:xmpmeta>'
+    ).encode("utf-8")
+
+
+def save_sample_image(image: Any, target: Any, metadata: dict[str, str], image_format: str) -> None:
+    """Write ``image`` as PNG (text chunks) or WebP (XMP) with ``metadata``."""
+    if image_format == "WEBP":
+        image.save(target, format="WEBP", xmp=_xmp_packet(dict(metadata)), **_WEBP_OPTIONS)
+        return
+    from PIL import PngImagePlugin
+    info = PngImagePlugin.PngInfo()
+    for key, value in metadata.items():
+        info.add_text(key, value)
+    image.save(target, format="PNG", pnginfo=info)
+
+
+def sample_image_format(path: Path) -> str:
+    return "WEBP" if Path(path).suffix.lower() == ".webp" else "PNG"
+
+
+def publish_sample_image(image: Any, path: Path, metadata: dict[str, str]) -> None:
+    """Expose a training sample only after its encoder has finished."""
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
-        image.save(pending, format="PNG", pnginfo=pnginfo)
+        save_sample_image(image, pending, metadata, sample_image_format(path))
         os.replace(pending, path)
     finally:
         pending.unlink(missing_ok=True)
@@ -83,16 +125,35 @@ def immutable_headers(etag: str) -> dict[str, str]:
 
 
 @lru_cache(maxsize=2048)
-def _png_text_for_version(path: str, version: str) -> dict[str, str] | None:
+def _sample_params_for_version(path: str, version: str) -> dict[str, str] | None:
     del version
     from PIL import Image
 
     with Image.open(path) as image:
+        if image.format == "WEBP":
+            return _params_from_xmp(image.info.get("xmp"))
         return dict(image.text) if getattr(image, "text", None) else None
 
 
-def cached_png_text(path: Path) -> dict[str, str] | None:
-    return _png_text_for_version(str(path), file_fingerprint(path))
+def _params_from_xmp(packet: Any) -> dict[str, str] | None:
+    import json
+    import xml.etree.ElementTree as ElementTree
+    if not packet:
+        return None
+    try:
+        root = ElementTree.fromstring(packet)
+    except ElementTree.ParseError:
+        return None
+    for element in root.iter():
+        value = element.attrib.get(f"{{{_XMP_NAMESPACE}}}params")
+        if value is not None:
+            params = json.loads(value)
+            return params if isinstance(params, dict) else None
+    return None
+
+
+def cached_sample_params(path: Path) -> dict[str, str] | None:
+    return _sample_params_for_version(str(path), file_fingerprint(path))
 
 
 def find_debug_latent_file(debug_dir: Path, timestep: float | None) -> Path:

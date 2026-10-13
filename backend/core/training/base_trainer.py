@@ -21038,8 +21038,10 @@ class BaseTrainer(ABC):
                                                    f"optimizer update was skipped "
                                                    f"({self._nonfinite_steps_skipped} skipped in this process)")
                                         if self._nonfinite_steps_skipped <= 3:
-                                            emit_training_warning(message, code="nonfinite_gradient_step_skipped",
-                                                                  prefix=self.log_prefix)
+                                            # Module-qualified: train() imports this name locally further down.
+                                            from core.training import training_events
+                                            training_events.emit_training_warning(
+                                                message, code="nonfinite_gradient_step_skipped", prefix=self.log_prefix)
                                         else:
                                             print(f"{self.log_prefix} {message}")
                                     else:

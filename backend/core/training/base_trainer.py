@@ -20,7 +20,7 @@ import torch.nn.functional as F
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List, Mapping, Tuple, Union, Sequence
 from io import BytesIO
-from PIL import Image, PngImagePlugin
+from PIL import Image
 from tqdm import tqdm
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
@@ -14114,7 +14114,8 @@ class BaseTrainer(ABC):
         from api.arch_capabilities import training_sample_key_supported
         _arch_name = getattr(getattr(self, "arch", None), "name", None)
 
-        metadata = PngImagePlugin.PngInfo()
+        from api.training_media import SampleMetadata
+        metadata = SampleMetadata()
         for key, value in {
             "prompt": prompt,
             "negative_prompt": negative_prompt,
@@ -14157,8 +14158,8 @@ class BaseTrainer(ABC):
                 metadata.add_text(key, value)
             publish_training_sample(sample, sample_path, metadata)
         else:
-            from api.training_media import publish_sample_png
-            publish_sample_png(sample, sample_path, metadata)
+            from api.training_media import publish_sample_image
+            publish_sample_image(sample, sample_path, metadata)
 
     def _run_step0_sample_if_due(
         self,
@@ -14199,7 +14200,7 @@ class BaseTrainer(ABC):
         """
         if not (sample_every_n_steps > 0 and global_step == 0):
             return
-        step0_sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
+        step0_sample_path = self.output_dir / "samples" / sample_rpc.sample_filename(0, 0)
         if self._step0_sample_done_for_this_run(step0_sample_path):
             print(f"{self.log_prefix} [Step 0] Skipping sample: {step0_sample_path.name} "
                   f"was already produced by this run (run_id={self.run_id}; marker matches).")
@@ -21263,7 +21264,7 @@ class BaseTrainer(ABC):
                         # pre-loop call so this can't re-overwrite THIS run's
                         # own already-saved step-0 sample.
                         if batch_start_step <= 0:
-                            step0_sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
+                            step0_sample_path = self.output_dir / "samples" / sample_rpc.sample_filename(0, 0)
                             if not self._step0_sample_done_for_this_run(step0_sample_path):
                                 should_generate_sample = True
                                 sample_step = 0
@@ -21417,7 +21418,7 @@ class BaseTrainer(ABC):
                                         f"returned no image")
                                     continue
 
-                                # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
+                                # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.webp
                                 # Use sample_step (which accounts for MNT batch range) for consistent naming
                                 sample_name = sample_rpc.sample_filename(
                                     sample_step, sample_idx, on_demand_id)

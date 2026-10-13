@@ -464,10 +464,11 @@ def test_random_sample_seed_is_concrete_and_matches_saved_metadata(tmp_path, mon
     assert trainer._dispatch_sample.call_args.kwargs["seed"] == 123456789
     assert trainer._dispatch_sample.call_args.kwargs["cfg_schedule_type"] == "cosine"
     assert trainer._dispatch_sample.call_args.kwargs["nag_negative_prompt"] == "bad anatomy"
-    with Image.open(tmp_path / "samples" / "step_000000_sample_0.png") as saved:
-        assert saved.info["seed"] == "123456789"
-        assert saved.info["dynamic_threshold_percentile"] == "99.5"
-        assert saved.info["nag_enable"] == "True"
+    from api.training_media import cached_sample_params
+    saved = cached_sample_params(tmp_path / "samples" / "step_000000_sample_0.webp")
+    assert saved["seed"] == "123456789"
+    assert saved["dynamic_threshold_percentile"] == "99.5"
+    assert saved["nag_enable"] == "True"
 
 
 def test_random_sample_seed_draws_separately_for_prompts(monkeypatch):

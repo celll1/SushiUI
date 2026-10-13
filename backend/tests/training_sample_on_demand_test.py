@@ -206,12 +206,12 @@ def test_stale_requests_are_cleared_before_the_next_run_is_spawned():
 def test_on_demand_filename_does_not_collide_with_a_scheduled_one():
     scheduled = rpc.sample_filename(4210, 0)
     on_demand = rpc.sample_filename(4210, 0, "9f1c2ab4d7e05613")
-    assert scheduled == "step_004210_sample_0.png"
-    assert on_demand == "step_004210_sample_0_ondemand_9f1c2ab4d7e05613.png"
+    assert scheduled == "step_004210_sample_0.webp"
+    assert on_demand == "step_004210_sample_0_ondemand_9f1c2ab4d7e05613.webp"
     assert scheduled != on_demand
     # Both are found by the listing endpoint's glob.
     for name in (scheduled, on_demand):
-        assert Path(name).match("step_*_sample_*.png")
+        assert Path(name).match("step_*_sample_*.webp")
 
 
 def _read_api_pattern():
@@ -241,7 +241,7 @@ def test_read_api_returns_both_grouped_under_the_same_step(tmp_path):
         (samples_dir / name).write_text("x")
 
     by_step = {}
-    for file in samples_dir.glob("step_*_sample_*.png"):
+    for file in samples_dir.glob("step_*_sample_*.webp"):
         m = pattern.match(file.name)
         assert m, file.name
         by_step.setdefault(int(m.group(1)), []).append(
@@ -251,7 +251,7 @@ def test_read_api_returns_both_grouped_under_the_same_step(tmp_path):
     images = sorted(by_step[4210],
                     key=lambda x: (x["on_demand"], x["sample_index"], x["path"]))
     assert [i["on_demand"] for i in images] == [False, True]
-    assert images[0]["path"] == "step_004210_sample_0.png"
+    assert images[0]["path"] == "step_004210_sample_0.webp"
     assert images[1]["request_id"] == "abc123"
 
 

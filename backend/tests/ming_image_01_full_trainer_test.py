@@ -59,11 +59,12 @@ def test_real_full_trainer_step(tmp_path, monkeypatch, latent_mode, text_mode, g
         enable_bucketing=False, base_resolutions=[64],
         latent_encoding_mode=latent_mode, text_encoding_mode=text_mode)
     if text_mode == "cpu_prefetch":
-        samples = list(owner.output_dir.rglob("step_*_sample_*.png"))
+        from api.training_media import cached_sample_params
+        samples = list(owner.output_dir.rglob("step_*_sample_*.webp"))
         assert samples, "Scheduled native previews were not persisted"
         for path in samples:
             with Image.open(path) as image:
-                assert image.mode == "RGBA" and image.info["ming_frame_role"] == "image"
+                assert image.mode == "RGBA" and cached_sample_params(path)["ming_frame_role"] == "image"
     assert not torch.equal(before, owner.transformer.layers[0].attention.to_q.weight)
     if groups:
         current = dict(owner.text_encoder.named_parameters())
@@ -145,15 +146,16 @@ def test_real_layer_training_routes_ordered_supervision(tmp_path, monkeypatch, g
         enable_bucketing=False, base_resolutions=[64],
         latent_encoding_mode="swap_onthefly", text_encoding_mode="swap_onthefly")
     if not groups:
-        previews = list((owner.output_dir / "samples").glob("*.png"))
+        from api.training_media import cached_sample_params
+        previews = list((owner.output_dir / "samples").glob("*.webp"))
         assert len(previews) == 6
         roles = []
         for path in previews:
             with Image.open(path) as image:
                 assert image.mode == "RGBA"
                 from core.rewiring.spec import read_checkpoint_metadata
-                assert read_checkpoint_metadata(image.info) == topology
-                roles.append(image.info["ming_frame_role"])
+                assert read_checkpoint_metadata(cached_sample_params(path)) == topology
+                roles.append(cached_sample_params(path)["ming_frame_role"])
         assert sorted(roles) == sorted(["auxiliary_canvas", "layer_1", "layer_2"] * 2)
     assert len(calls) == 2
     assert all(int(state["step"]) == 1 for state in owner.optimizer.state.values())

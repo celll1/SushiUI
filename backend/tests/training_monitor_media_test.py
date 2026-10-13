@@ -21,7 +21,9 @@ debug_image_urls = _MEDIA.debug_image_urls
 debug_display_resolution = _MEDIA.debug_display_resolution
 file_fingerprint = _MEDIA.file_fingerprint
 find_debug_latent_file = _MEDIA.find_debug_latent_file
-publish_sample_png = _MEDIA.publish_sample_png
+publish_sample_image = _MEDIA.publish_sample_image
+SampleMetadata = _MEDIA.SampleMetadata
+cached_sample_params = _MEDIA.cached_sample_params
 PreviewSize = _MEDIA.PreviewSize
 
 _REPO = Path(__file__).parents[2]
@@ -43,25 +45,25 @@ def test_sample_preview_is_sized_versioned_and_reused(tmp_path: Path):
     assert preview.stat().st_size < source.stat().st_size
 
 
-def test_sample_png_appears_only_after_encoding(tmp_path: Path):
-    from PIL import PngImagePlugin
-
-    target = tmp_path / "step_000100_sample_0.png"
-    info = PngImagePlugin.PngInfo()
-    info.add_text("prompt", "test prompt")
+@pytest.mark.parametrize("suffix,image_format", [(".webp", "WEBP"), (".png", "PNG")])
+def test_sample_appears_only_after_encoding(tmp_path: Path, suffix, image_format):
+    target = tmp_path / f"step_000100_sample_0{suffix}"
+    info = SampleMetadata()
+    info.add_text("prompt", 'test "prompt" <with> & markup')
 
     class ObservedImage:
         def save(self, pending, **kwargs):
             assert not target.exists()
             assert pending.suffix == ".tmp"
-            assert kwargs["format"] == "PNG"
+            assert kwargs["format"] == image_format
             Image.new("RGB", (8, 8), "red").save(pending, **kwargs)
             assert not target.exists()
 
-    publish_sample_png(ObservedImage(), target, info)
+    publish_sample_image(ObservedImage(), target, info)
     assert list(tmp_path.iterdir()) == [target]
     with Image.open(target) as image:
-        assert image.text["prompt"] == "test prompt"
+        assert image.format == image_format
+    assert cached_sample_params(target) == {"prompt": 'test "prompt" <with> & markup'}
 
 
 def test_failed_sample_png_keeps_previous_complete_file(tmp_path: Path):
@@ -74,7 +76,7 @@ def test_failed_sample_png_keeps_previous_complete_file(tmp_path: Path):
             raise OSError("encoder failed")
 
     with pytest.raises(OSError, match="encoder failed"):
-        publish_sample_png(FailedImage(), target, None)
+        publish_sample_image(FailedImage(), target, SampleMetadata())
     assert list(tmp_path.iterdir()) == [target]
     with Image.open(target) as image:
         assert image.getpixel((0, 0)) == (0, 0, 255)

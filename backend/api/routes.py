@@ -20650,13 +20650,14 @@ async def get_training_samples(
     if not samples_dir.exists():
         return {"samples": []}
 
-    # Scheduled: step_{step:06d}_sample_{i}.png
+    # Scheduled: step_{step:06d}_sample_{i}.webp (.png in older runs)
     # On-demand ("sample now"): the same plus _ondemand_{request_id}, so the two
     # cannot overwrite each other at the same step.
-    sample_files = list(samples_dir.glob("step_*_sample_*.png"))
+    from api.training_media import SAMPLE_SUFFIXES
+    sample_files = [file for suffix in SAMPLE_SUFFIXES for file in samples_dir.glob(f"step_*_sample_*{suffix}")]
 
     samples_by_step = {}
-    pattern = re.compile(r"step_(\d+)_sample_(\d+)(?:_ondemand_([0-9a-fA-F]+))?\.png$")
+    pattern = re.compile(r"step_(\d+)_sample_(\d+)(?:_ondemand_([0-9a-fA-F]+))?\.(?:png|webp)$")
 
     # Build sample file list using run.output_dir (not UserSettings.training_dir)
     for file in sample_files:
@@ -20682,8 +20683,8 @@ async def get_training_samples(
 
             img_params = None
             try:
-                from api.training_media import cached_png_text
-                img_params = cached_png_text(file)
+                from api.training_media import cached_sample_params
+                img_params = cached_sample_params(file)
             except Exception:
                 pass
 
@@ -20748,7 +20749,8 @@ async def get_training_sample_image(
     headers = immutable_headers(etag)
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304, headers=headers)
-    return FileResponse(file_path, media_type="image/png", headers=headers)
+    media_type = "image/webp" if file_path.suffix.lower() == ".webp" else "image/png"
+    return FileResponse(file_path, media_type=media_type, headers=headers)
 
 
 @router.get("/training/runs/{run_id}/samples/{filename}/preview")

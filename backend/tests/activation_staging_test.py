@@ -111,7 +111,8 @@ def test_strided_staging_preserves_repeated_backward_and_checkpoint(checkpointed
             torch.testing.assert_close(leaf.grad, first, rtol=0, atol=0)
         gradients.append(first.cpu())
     torch.testing.assert_close(gradients[0], gradients[1], rtol=0, atol=0)
-    assert stats["staged_layout_bytes"] > 0
+    # Strided saves are staged as their contiguous memory-order view.
+    assert stats["staged_bytes"] > 0 and stats.get("staged_layout_bytes", 0) == 0
     assert stats.get("sync_fallback_bytes", 0) == 0
     assert stats["staged_gpu_peak_bytes"] <= 8*1024**2
 

@@ -157,6 +157,12 @@ def dispatch_attention(
     Returns:
         Attention output in the SAME layout as the inputs.
     """
+    if query.is_cuda and torch.is_autocast_enabled(query.device.type):
+        # Like SDPA under autocast: element-wise ops with FP32 parameters (norms)
+        # promote q/k to FP32 while projections stay in the autocast dtype.
+        compute = torch.get_autocast_dtype(query.device.type)
+        query, key, value = (t if t.dtype == compute or not t.is_floating_point() else t.to(compute)
+                             for t in (query, key, value))
     validate_dense_qkv(
         query, key, value, layout=layout, attn_mask=attn_mask, is_causal=is_causal
     )

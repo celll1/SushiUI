@@ -50,6 +50,12 @@ def load_components(trainer) -> None:
     )
 
     trainer.transformer = components["transformer"]
+    if trainer.weight_dtype == torch.float32:
+        # The loader keeps each stored tensor's dtype; FP32 training weights need all
+        # of them in FP32. The frozen text encoder stays at the compute dtype.
+        trainer.transformer.to(dtype=torch.float32)
+        if components["text_encoder"] is not None:
+            components["text_encoder"].to(dtype=trainer.training_dtype)
     trainer.transformer_original = trainer.transformer  # No wrapper for Anima.
     trainer.vae = components["vae"]
     trainer.text_encoder = components["text_encoder"]

@@ -4210,18 +4210,25 @@ def main():
             training_dtype = dtype_config.get('training', 'fp16')
             output_dtype = dtype_config.get('save', 'fp32')
             vae_dtype = dtype_config.get('vae', 'fp16')
+            # These architectures need BF16 compute; their trainable weights are plain
+            # Parameters, so an explicit FP32 weight request is kept as FP32 storage
+            # (an FP32 master copy updated exactly) while compute stays BF16.
+            fp32_weights_requested = dtype_config.get('weight') == 'fp32'
+            fp32_weights_supported = False
 
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
                 print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+                fp32_weights_supported = True
             # Anima (Cosmos-Predict2 DiT) is also trained in bf16 — force it
             # whenever the model path or arch metadata says so.
             if 'anima' in run.base_model_path.lower():
                 print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+                fp32_weights_supported = True
             # Ideogram 4 (flow-matching DiT, fp8 base) is trained in bf16.
             if 'ideogram4' in run.base_model_path.lower() or 'ideogram-4' in run.base_model_path.lower():
                 print("[TrainRunner] Ideogram 4 model detected: forcing training_dtype=bf16")
@@ -4232,11 +4239,13 @@ def main():
                 print("[TrainRunner] MiniT2I model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+                fp32_weights_supported = True
             # Krea 2 (single-stream flow-matching MMDiT) is trained in bf16.
             if _is_krea2_base_model(run.base_model_path):
                 print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+                fp32_weights_supported = True
             # Lens / LTX-2.3 / ACE-Step (bf16-native DiT / audio) are trained in bf16 too
             # -- backend enforcement so API-created runs (not just the frontend preset)
             # get bf16, avoiding the fp16 Full-FT rejection.
@@ -4244,6 +4253,10 @@ def main():
                 print("[TrainRunner] bf16-native model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+                fp32_weights_supported = False
+            if fp32_weights_requested and fp32_weights_supported:
+                print("[TrainRunner] Keeping requested weight_dtype=fp32 (FP32 weights, BF16 compute)")
+                weight_dtype = 'fp32'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)

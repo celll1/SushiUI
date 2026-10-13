@@ -108,6 +108,9 @@ temp/
 
 # トレーニングキャッシュ
 backend/cache/
+# Runtime cache root (previews, dataset previews, registries, prompt stores, render jobs).
+# Nothing under it is tracked; the per-subdirectory entries below predate this line.
+/cache/
 cache/datasets/
 **/cache_info.json
 *.latent

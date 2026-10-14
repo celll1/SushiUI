@@ -47,11 +47,12 @@ network, so the network never reads it.
 
 ## Decision
 
-1. A wide Anima swap declares `noise_estimate: gaussian_posterior_v1`.
+1. A wide Anima swap declares `noise_estimate: wiener_radial_v1`.
    - Input side: the backbone receives the alignment computed from
-     `eps_hat = sigma / ((1 - sigma)^2 + sigma^2) * x_t`. This is the posterior mean of
-     the noise for a standard-normal latent, a function of `x_t` alone. The same applies
-     to the partition global canvas.
+     `eps_hat = E[eps | x_t]`. This is a fixed Wiener filter of `x_t`, built from a
+     per-channel mean and radially averaged power spectrum of the clean target latents,
+     measured on the calibration images during swap initialization. It is a function of
+     `x_t` alone. The same applies to the partition global canvas.
    - Output side: the residual keeps the exposure noise in training and the initial
      noise at inference, as before.
 2. Training refuses a model whose declaration has a noise policy, no noise estimate and a
@@ -70,13 +71,19 @@ network, so the network never reads it.
 | Old: exposure noise on both sides | yes | character intact, blurred |
 | No alignment | no | uniform noise; the noise complement is never removed |
 | Estimate on both sides | no | faint silhouette in noise |
-| Estimate on input, exposure noise on output (chosen) | no | character, colours and layout present; green blob artefacts |
+| Standard-normal estimate on input, exposure noise on output | no | character, colours and layout present; green blob artefacts |
+| Wiener estimate on input, exposure noise on output (chosen) | no | close to the old init: character, colours and layout intact, slightly hazier |
+
+Relative error of the source-channel input term against the true noise (48 real
+latents, fit/test split):
+
+| sigma | 0.3 | 0.5 | 0.7 | 0.9 |
+|---|---|---|---|---|
+| standard-normal prior | 0.994 | 0.786 | 0.305 | 0.026 |
+| Wiener prior | 0.490 | 0.215 | 0.077 | 0.010 |
 
 ## Open items
 
-- The standard-normal prior is crude at mid noise, and the blob artefacts trace back to
-  it. A per-channel, frequency-aware prior (a Wiener filter from calibration latents)
-  remains a function of `x_t` and should close most of the gap.
 - Port the input estimate to Z-Image, FLUX.2, Krea 2, Lens, SD1.5/SDXL, Qwen-Image 2.1
   and Ming. Their wide swaps are refused at training start until then.
 - Leaked runs restart from the original base with a fresh swap initialization.

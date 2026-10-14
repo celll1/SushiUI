@@ -8,7 +8,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from core.models.components.gaussian_alignment import POLICY
 from core.models.components.latent_adapter import (
-    NOISE_ESTIMATE, backbone_width, estimated_noise, leaks_exposure_noise, validate_declaration)
+    NOISE_ESTIMATE, SpatialAlignmentPair, backbone_width, leaks_exposure_noise, validate_declaration)
+from core.models.components.noise_prior import RadialNoisePrior
 
 
 def _declaration(old, new, *, noise, passthrough=None, estimate=False):
@@ -40,11 +41,39 @@ def test_noise_estimate_requires_the_gaussian_policy():
         _declaration(16, 64, noise=False, passthrough="full", estimate=True)
 
 
-def test_estimated_noise_is_the_standard_normal_posterior_mean():
+def _smooth_latents(count, channels=4, side=32):
+    """Latents with a falling spectrum, like a VAE's, and a per-channel offset."""
+    raw = torch.randn(count, channels, side, side)
+    smooth = torch.nn.functional.avg_pool2d(raw, 5, stride=1, padding=2) * 3
+    return smooth + torch.arange(channels).view(1, -1, 1, 1) * .5
+
+
+def test_wiener_prior_beats_the_flat_prior_and_sees_only_x_t():
     torch.manual_seed(0)
-    x0, eps = torch.randn(20000), torch.randn(20000)
-    for s in (.3, .7, .95):
+    prior = RadialNoisePrior(4)
+    prior.capture([_smooth_latents(64)])
+    x0 = _smooth_latents(32)
+    for s in (.3, .5, .7):
+        eps = torch.randn_like(x0)
         x_t = (1 - s) * x0 + s * eps
-        estimate = estimated_noise(x_t[None], torch.tensor([s]))[0]
-        slope = (eps * x_t).mean() / x_t.square().mean()
-        assert float(estimate[0] / x_t[0]) == pytest.approx(float(slope), rel=.05)
+        sigma = torch.full((32,), s)
+        estimate = prior.estimate(x_t, sigma)
+        flat = s / ((1 - s) ** 2 + s ** 2) * x_t
+        assert (estimate - eps).square().mean() < .6 * (flat - eps).square().mean()
+    assert torch.equal(prior.estimate(x_t, sigma), estimate)
+
+
+def test_noise_prior_survives_a_state_dict_round_trip_and_needs_calibration():
+    with pytest.raises(RuntimeError):
+        RadialNoisePrior(4).estimate(torch.zeros(1, 4, 8, 8), torch.tensor([.5]))
+    prior = RadialNoisePrior(4)
+    prior.capture([_smooth_latents(8, side=16), _smooth_latents(8, side=24)])
+    restored = RadialNoisePrior(4)
+    restored.load_state_dict(prior.state_dict())
+    x_t = torch.randn(2, 4, 1, 20, 20)
+    torch.testing.assert_close(restored.estimate(x_t, torch.tensor([.4, .8])), prior.estimate(x_t, torch.tensor([.4, .8])))
+
+
+def test_a_wide_pair_with_an_estimate_owns_a_noise_prior():
+    pair = SpatialAlignmentPair(_declaration(16, 64, noise=True, passthrough="full", estimate=True))
+    assert isinstance(pair.noise_prior, RadialNoisePrior)

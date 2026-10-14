@@ -180,7 +180,30 @@ phases 1 and 2.
      `apply_cfg_null_collated` on the selected rows, so ops bodies still never
      rewrite the batch by label. MiniT2I uses noise level `1 - t`.
 5. **SD1.5 / SDXL.** Noise-level mapping test against the scheduler.
+
+   Implementation notes:
+   - DDPM timesteps map to the flow sigma of equal SNR, `s / (a + s)` with
+     `a = sqrt(abar)`, `s = sqrt(1 - abar)`. The sigma schedule and the weight
+     ramp therefore mean the same as on flow archs.
+   - The cap converts a difference to clean space with the target's own
+     `d(x0)/d(prediction)`: `s/a` for epsilon, `s` for v, 1 for sample.
+   - The guided loss is per sample, so Min-SNR weighting and the dual
+     reconstruction path apply to it unchanged.
+   - ControlNet training runs its own step and is refused.
 6. **Ideogram 4 and SenseNova.**
+
+   Implementation notes:
+   - Ideogram 4: the teacher is the separate unconditional transformer on the
+     image-only inputs, exactly as the inference uncond branch runs it. It is
+     loaded and kept resident, with its own block-swap conductor, whenever the
+     loss is active. This roughly doubles transformer VRAM unless block swap is
+     on.
+   - SenseNova: the null is the text-only uncond prefix, encoded once per run.
+     With a frozen understanding tower it is constant, and the generation loop
+     reads it without updating it. The teacher runs one row at a time because
+     the null prefix is single-prompt. Reference runs (`use_reference_images`)
+     are refused, and ti2i batches keep ordinary MSE, because inference blends
+     them against img_cond rather than the text-only null.
 
 ### Phase 2 comparison review
 

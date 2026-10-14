@@ -2309,6 +2309,7 @@ def train_step(
     debug_captions: Optional[List[str]] = None,
     debug_reference_image_paths: Optional[List[Optional[str]]] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, float, float]:
     """Run one B1 pixel-space flow-matching forward pass.
 
@@ -2426,6 +2427,26 @@ def train_step(
         transformer, shape, z_image, t if batch > 1 else t[0], noise_scale,
         enable_grad=fm_trainable, exposure_noise=noise * noise_scale,
     )
+    # Guidance-target teacher (noise level 1 - t), before the training forward
+    # stashes its REPA tap. ti2i batches blend against img_cond at inference, not
+    # the text-only null, so they keep ordinary MSE.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = None
+    if getattr(trainer, "_sensenova_batch_task", None) == "ti2i":
+        if _guidance.active(trainer.config) and not getattr(trainer, "_guidance_ti2i_noted", False):
+            trainer._guidance_ti2i_noted = True
+            print(f"{trainer.log_prefix} Guidance loss: ti2i batches keep ordinary MSE")
+    else:
+        guidance_plan = _guidance.plan(trainer, 1.0 - t, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        null_prefix, _ = _guidance.null_encoding(trainer)
+        uncond_prediction = _guidance.null_prediction(
+            guidance_plan, transformer.patchify(x0, geometry.patch),
+            lambda indices: _guidance_null_velocity(
+                transformer, geometry, null_prefix, z_image[indices], t[indices],
+                (noise * noise_scale)[indices], noise_scale, shape, height, width, dtype))
+
     packed_gen = None
     if prefix.packed is None:
         indexes = transformer._build_t2i_image_indexes(
@@ -2500,6 +2521,10 @@ def train_step(
         v_target = (x0_tokens - z) / denominator
         loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float())
         recon_loss = torch.nn.functional.mse_loss(x0_pred.float(), x0_tokens.float())
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, v_pred, v_target, uncond_prediction, 1.0 - t)
+        if guided_loss is not None:
+            loss = guided_loss
 
     value = loss.detach()
     recon_value = recon_loss.detach()
@@ -2593,6 +2618,41 @@ def train_step(
             print(f"{trainer.log_prefix} [debug_latents] save failed: {debug_error}")
 
     return loss, value, recon_value
+
+
+@torch.no_grad()
+def _guidance_null_velocity(transformer, geometry, null_prefix, z_image, t, scaled_noise, noise_scale,
+                            shape, height, width, dtype):
+    """Velocity under the cached null prefix, one row at a time (the prefix is single-prompt)."""
+    from core.models.sensenova.sensenova_pipeline_ops import _build_step_context
+    from core.models.sensenova.vae_alignment import input_state, output_x0
+
+    row_shape = SimpleNamespace(**{**vars(shape), "batch_size": 1})
+    token_h, token_w, patch = shape.token_h, shape.token_w, geometry.patch
+    device_type = z_image.device.type
+    rows = []
+    for row in range(z_image.shape[0]):
+        step_t = t[row:row + 1]
+        z, image_embeds, _ = _build_step_context(
+            transformer, row_shape, z_image[row:row + 1], step_t[0], noise_scale,
+            enable_grad=False, exposure_noise=scaled_noise[row:row + 1])
+        indexes = transformer._build_t2i_image_indexes(
+            token_h, token_w, null_prefix.text_length, device=z.device)
+        with torch.autocast(device_type=device_type, dtype=dtype,
+                            enabled=device_type == "cuda" and dtype in (torch.float16, torch.bfloat16)):
+            hidden = forward_gen_decoder_layers(
+                transformer.language_model.model, image_embeds, indexes=indexes,
+                prefix_cache=null_prefix.cache)
+            decoded = transformer.fm_modules["fm_head"](
+                hidden.view(1, token_h, token_w, -1).permute(0, 3, 1, 2).contiguous())
+            if "fm_refiner" in transformer.fm_modules:
+                from core.models.sensenova.latent_refiner import apply_latent_refiner
+                z_grid = input_state(transformer, transformer.unpatchify(z, patch, height, width), step_t)
+                decoded = apply_latent_refiner(transformer.fm_modules["fm_refiner"], decoded, z_grid,
+                                               step_t, noise_scale, checkpoint_blocks=False)
+            x0_pred = transformer.patchify(output_x0(transformer, decoded), patch)
+        rows.append((x0_pred - z) / (1 - step_t).view(1, 1, 1).clamp_min(transformer.config.t_eps))
+    return torch.cat(rows)
 
 
 def prepare_i2t_example(trainer: Any, item: Dict[str, Any], epoch: int) -> Dict[str, Any]:

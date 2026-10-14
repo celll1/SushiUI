@@ -12341,6 +12341,7 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 repa_pixels=mnt_repa_pixels,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_sensenova_sdxl_chimera:
@@ -19115,6 +19116,7 @@ class BaseTrainer(ABC):
                         raise RuntimeError(
                             f"SenseNova batch is not task-homogeneous: {sorted(_sensenova_tasks)}"
                         )
+                    self._sensenova_batch_task = next(iter(_sensenova_tasks), None)
                     _sensenova_task_batch_started = (
                         time.perf_counter()
                         if self.is_sensenova and _sensenova_tasks else None

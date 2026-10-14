@@ -120,7 +120,7 @@ def test_training_passes_scaled_exposure_noise_and_trains_bridges(monkeypatch):
         seen.append(kwargs['exposure_noise'].clone())
         return original(*args, **kwargs)
     monkeypatch.setattr(ops, '_build_step_context', record)
-    trainer = SimpleNamespace(transformer=model, device=torch.device('cpu'), training_dtype=torch.float32,
+    trainer = SimpleNamespace(config={}, transformer=model, device=torch.device('cpu'), training_dtype=torch.float32,
                               gradient_checkpointing=False, defer_extra_metric=lambda *args: None)
     cache = _Cache()
     loss, _, _ = train_step(trainer, images=image, prefix=SenseNovaTrainingPrefix(cache, text_length=3),

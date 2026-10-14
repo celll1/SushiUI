@@ -18243,7 +18243,10 @@ class BaseTrainer(ABC):
                 if concept_config and not _ledger_resume and epoch == start_epoch and resume_training_state is not None:
                     saved_plan = resume_training_state.get("concept_batch_plan")
                     if saved_plan != self._concept_batch_plan_state or len(batches) != saved_plan["batch_count"]:
-                        raise ValueError("Cannot resume concept batch order: batch plan changed")
+                        changed = sorted(key for key in set(saved_plan) | set(self._concept_batch_plan_state)
+                                         if saved_plan.get(key) != self._concept_batch_plan_state.get(key))
+                        raise ValueError("Cannot resume concept batch order: batch plan changed "
+                                         f"({', '.join(changed) or 'batch count'})")
                     if not 0 <= resume_batch_idx <= len(batches):
                         raise ValueError("Cannot resume concept batch order: batch cursor out of range")
                     batches = batches[resume_batch_idx:]

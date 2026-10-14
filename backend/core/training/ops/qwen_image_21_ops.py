@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from api.param_defaults import TRAINING_DEFAULTS
+from core.training import guidance_loss as _guidance
 
 
 def partition_region_count(trainer, *, latent_h=None, latent_w=None) -> int:
@@ -43,39 +44,17 @@ def partition_training_enabled(trainer, *, latent_h=None, latent_w=None) -> bool
     return partition_region_count(trainer, latent_h=latent_h, latent_w=latent_w) > 1
 
 
-def resolve_guidance_weight_schedule(config, low_weight: float):
-    kind = str(config.get(
-        "qwen_guidance_loss_weight_schedule",
-        TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"],
-    ))
-    high = float(config.get(
-        "qwen_guidance_loss_high_noise_weight",
-        TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"],
-    ))
-    start = float(config.get(
-        "qwen_guidance_loss_ramp_start", TRAINING_DEFAULTS["qwen_guidance_loss_ramp_start"]
-    ))
-    end = float(config.get(
-        "qwen_guidance_loss_ramp_end", TRAINING_DEFAULTS["qwen_guidance_loss_ramp_end"]
-    ))
-    if kind not in {"constant", "high_noise_smoothstep"}:
-        raise ValueError(f"Invalid Qwen guidance weight schedule: {kind}")
-    if not 0 <= high <= 1 or not 0 <= start < end <= 1:
-        raise ValueError("Qwen guidance weight ramp requires 0 <= high <= 1 and 0 <= start < end <= 1")
-    if kind == "high_noise_smoothstep" and high < low_weight:
-        raise ValueError("Qwen high-noise guidance weight must be at least the low-noise weight")
-    return kind, high, start, end
-
-
-def _guidance_mix_weight(sigma, low_weight, kind, high, start, end):
-    if kind == "constant":
-        return torch.full_like(sigma.float(), low_weight)
-    t = ((sigma.float() - start) / (end - start)).clamp(0, 1)
-    return low_weight + (high - low_weight) * t.square() * (3 - 2 * t)
+# The objective lives in core.training.guidance_loss; these names are kept for
+# existing callers (Ming, base_trainer, tests).
+resolve_guidance_weight_schedule = _guidance.resolve_weight_schedule
+_guidance_mix_weight = _guidance.mix_weight
+_guidance_mix_for_condition = _guidance.mix_for_condition
+_guidance_selection = _guidance.selection
+_capped_guidance_scale = _guidance.capped_scale
 
 
 def sigma_null_drop_mask(config, sigma, max_rate):
-    low = float(config.get("qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]))
+    low = _guidance.weight(config)
     kind, high, start, end = resolve_guidance_weight_schedule(config, low)
     guided_probability = _guidance_mix_weight(
         sigma.detach().float().cpu(), low, kind, high, start, end
@@ -106,112 +85,41 @@ def apply_sigma_null_condition(features, mask, drop_mask, blank_encoding):
     return features, mask
 
 
-def _guidance_mix_for_condition(sigma, condition):
-    _, _, eligible, weight, _, _, *weight_schedule = condition
-    kind, high, start, end = weight_schedule or ("constant", weight, 0.5, 0.8)
-    return _guidance_mix_weight(sigma, weight, kind, high, start, end) * eligible.float()
-
-
-def _guidance_selection(trainer, sigma, condition):
-    probability = _guidance_mix_for_condition(sigma, condition)
-    mode = str(trainer.config.get(
-        "qwen_guidance_loss_mix_mode", "blend"
-    ))
-    if mode == "stochastic":
-        draw = getattr(trainer, "_qwen_guidance_draw", None)
-        if draw is None:
-            draw = torch.rand_like(probability)
-        selected = (draw.to(device=probability.device) < probability) & condition[2]
-        return selected.float(), selected
-    if mode == "blend":
-        return probability, probability > 0
-    raise ValueError(f"Invalid Qwen guidance loss mix mode: {mode}")
-
-
 def _guidance_condition(trainer, batch: int, cfg_drop_mask, device, dtype):
-    weight = float(trainer.config.get(
-        "qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]
-    ) or 0.0)
-    if not 0 <= weight <= 1:
-        raise ValueError("qwen_guidance_loss_weight must be between 0 and 1")
+    # Qwen keeps its original activation: a zero weight disables guidance even
+    # when the high-noise ramp is configured.
+    if _guidance.weight(trainer.config) == 0:
+        return None
     eligible = torch.ones(batch, dtype=torch.bool, device=device)
     if cfg_drop_mask is not None:
         eligible &= ~cfg_drop_mask.to(device=device, dtype=torch.bool)
-    if weight == 0 or not bool(eligible.any()):
+    if not bool(eligible.any()):
         return None
-    scale = float(trainer.config.get(
-        "qwen_guidance_loss_scale", TRAINING_DEFAULTS["qwen_guidance_loss_scale"]
-    ))
-    schedule = str(trainer.config.get(
-        "qwen_guidance_loss_schedule", TRAINING_DEFAULTS["qwen_guidance_loss_schedule"]
-    ))
-    if not 1 <= scale <= 10 or schedule not in {"constant", "sigma"}:
-        raise ValueError("Qwen guidance loss requires scale in [1, 10] and schedule constant/sigma")
-    weight_schedule = resolve_guidance_weight_schedule(trainer.config, weight)
     blank = getattr(trainer, "_qwen_guidance_blank_encoding", None)
     if blank is None:
+        _guidance.scale_and_schedule(trainer.config)
         raise RuntimeError("Qwen guidance loss requires a cached empty-prompt encoding")
     features, mask = blank
-    return (
+    return _guidance.condition(
+        trainer.config, eligible,
         features.to(device=device, dtype=dtype).expand(batch, -1, -1),
         mask.to(device=device).expand(batch, -1) if mask.ndim == 2 else mask.to(device=device).unsqueeze(0).expand(batch, -1),
-        eligible, weight, scale, schedule, *weight_schedule,
     )
 
 
 def _extrapolation_cap(trainer):
-    cap = float(trainer.config.get(
-        "qwen_guidance_loss_extrapolation_max_rms",
-        TRAINING_DEFAULTS["qwen_guidance_loss_extrapolation_max_rms"],
-    ))
-    if not math.isfinite(cap) or cap < 0:
-        raise ValueError("Qwen guidance extrapolation RMS cap must be finite and nonnegative")
-    return cap
-
-
-@torch.no_grad()
-def _capped_guidance_scale(sigma, condition, distance_squared, cap):
-    scale, schedule = condition[4:6]
-    base = (torch.full_like(sigma, scale, dtype=torch.float32) if schedule == "constant"
-            else 1 + (scale - 1) * sigma.float())
-    distance = distance_squared.detach().float().clamp_min(0).sqrt()
-    return 1 + torch.minimum(base - 1, cap / distance.clamp_min(torch.finfo(torch.float32).tiny))
+    return _guidance.extrapolation_cap(trainer.config)
 
 
 def _log_extrapolation_cap(trainer, sigma, condition, selected, distance_squared, effective):
-    scale, schedule = condition[4:6]
-    base = (torch.full_like(sigma, scale, dtype=torch.float32) if schedule == "constant"
-            else 1 + (scale - 1) * sigma.float())
-    values = torch.stack([
-        effective[selected].mean(), effective[selected].min(),
-        (effective[selected] < base[selected]).float().mean(),
-        distance_squared[selected].clamp_min(0).sqrt().mean(),
-    ]).detach().tolist()
-    for name, value in zip(("effective_scale_mean", "effective_scale_min", "capped_fraction", "null_clean_rms"), values):
-        trainer.log_extra_metric(f"qwen_guidance_{name}", value)
+    _guidance.log_extrapolation_cap(trainer, sigma, condition, selected, distance_squared, effective,
+                                    prefix="qwen_guidance")
 
 
 def _guidance_loss(prediction, target, uncond_prediction, sigma, condition, selection=None, sample_losses=None,
                    guide_scale_override=None):
-    _, _, eligible, _, scale, schedule, *_ = condition
-    guide_scale = scale if schedule == "constant" else 1 + (scale - 1) * sigma.float()
-    if guide_scale_override is not None:
-        guide_scale = guide_scale_override.detach()
-    while isinstance(guide_scale, torch.Tensor) and guide_scale.ndim < target.ndim:
-        guide_scale = guide_scale.unsqueeze(-1)
-    guided_target = uncond_prediction.float() + guide_scale * (
-        target.float() - uncond_prediction.float()
-    )
-    normal = (prediction.float() - target.float()).square().flatten(1).mean(1)
-    guided = (prediction.float() - guided_target).square().flatten(1).mean(1)
-    mix = (_guidance_mix_for_condition(sigma, condition) if selection is None else selection).to(dtype=normal.dtype)
-    per_image = (1 - mix) * normal + mix * guided
-    loss = per_image.mean()
-    if sample_losses is not None:
-        sample_losses.append(per_image.detach())
-    used = eligible & (mix > 0)
-    guided_metric = guided[used].mean() if bool(used.any()) else guided.new_zeros(())
-    return loss, normal.mean().detach(), guided_metric.detach()
+    return _guidance.objective(prediction, target, uncond_prediction, sigma, condition, mix=selection,
+                               sample_losses=sample_losses, guide_scale_override=guide_scale_override)
 
 
 @torch.no_grad()

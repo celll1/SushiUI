@@ -63,7 +63,7 @@ def test_missing_mix_mode_key_keeps_blend_for_saved_runs():
 
 def test_capability_table_gates_architectures():
     from api.arch_capabilities import TRAINING_DECLARED_ARCHS, training_feature_unsupported_reason
-    supported = {"qwen_image_21", "ming_image_01", "anima", "zimage", "krea2", "flux2"}
+    supported = {"qwen_image_21", "ming_image_01", "anima", "zimage", "krea2", "flux2", "sensenova_sdxl_chimera"}
     for arch in supported:
         assert training_feature_unsupported_reason(arch, "guidance_loss") is None
     for arch in TRAINING_DECLARED_ARCHS - supported:

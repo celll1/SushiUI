@@ -100,6 +100,17 @@ class SenseNovaSDXLChimeraArchHandler(ArchHandler):
 
         return ops.vae_decode(trainer, latents, **kwargs)
 
+    def guidance_loss_refusal(self, trainer):
+        from core.training.ops import sensenova_sdxl_chimera_ops as ops
+
+        if ops.training_stage(trainer) == "bridge_align":
+            return "the bridge_align stage has no denoising loss"
+        prediction = getattr(trainer, "chimera_prediction", {"type": "flow_velocity"})["type"]
+        if prediction != "flow_velocity":
+            return (f"only the flow_velocity prediction is supported, not {prediction}: inference CFG "
+                    "is not verified to be linear in this parameterization")
+        return None
+
     def train_step(self, trainer, ctx: TrainStepContext):
         from core.training.ops import sensenova_sdxl_chimera_ops as ops
 

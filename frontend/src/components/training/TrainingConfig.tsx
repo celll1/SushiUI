@@ -10,7 +10,7 @@ import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
-import QwenTrainingObjective from "./QwenTrainingObjective";
+import TrainingObjective from "./TrainingObjective";
 import MingConditionerTraining from "./MingConditionerTraining";
 import DiTRewiringEditor from "./DiTRewiringEditor";
 import type { DiTRewiringSpec } from "@/utils/api";
@@ -686,6 +686,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     ((isFlux2Model(baseModelPath) || isSenseNovaModel(baseModelPath)) && useReferenceImages)
   );
   const textEncoderTrainingUnsupported = unsupportedTrainingFeature("text_encoder_training");
+  const guidanceLossUnsupported = unsupportedTrainingFeature("guidance_loss");
   const repaUnsupported = unsupportedTrainingFeature("repa");
   const trainingSamplesUnsupported = unsupportedTrainingFeature("training_samples");
   const trainingSampleArch = getModelArchitecture(baseModelPath);
@@ -991,7 +992,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       training_export_format: (isQwenImage21Model || isMingImageModel) && trainingMethod === "full_finetune"
         ? params.training_export_format : undefined,
       train_text_encoder: textEncoderTrainingUnsupported ? false : params.train_text_encoder,
-      qwen_guidance_loss_weight: (isQwenImage21Model || isMingImageModel) ? params.qwen_guidance_loss_weight : 0,
+      guidance_loss_weight: guidanceLossUnsupported ? 0 : params.guidance_loss_weight,
+      guidance_loss_weight_schedule: guidanceLossUnsupported ? "constant" : params.guidance_loss_weight_schedule,
       qwen_cfg_null_sigma_schedule: (isQwenImage21Model || isMingImageModel) &&
         (params.cfg_uncond_drop_rate ?? cfgUncondDropDefaultRate ?? 0) > 0
         ? params.qwen_cfg_null_sigma_schedule : false,
@@ -1139,7 +1141,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     params,
     // Non-params form state
     datasetConfigs, runName, trainingMethod, baseModelPath, availableModels,
-    textEncoderTrainingUnsupported, cfgUncondDropDefaultRate, useEpochs,
+    textEncoderTrainingUnsupported, guidanceLossUnsupported, cfgUncondDropDefaultRate, useEpochs,
     // Local text states (numeric-input helpers; written on blur but read here)
     localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
@@ -1572,7 +1574,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       ?? trainingGuidanceLossDefaultsByArch["_default"];
     lastGuidanceLossModelRef.current = baseModelPath;
     if (weight !== undefined) {
-      setParams(prev => ({ ...prev, qwen_guidance_loss_weight: weight }));
+      setParams(prev => ({ ...prev, guidance_loss_weight: weight }));
     }
   }, [baseModelPath, trainingGuidanceLossDefaultsByArch, trainingDefaults, availableModels]);
 
@@ -5747,9 +5749,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       qwen_cfg_null_sigma_schedule: (isQwenImage21Model || isMingImageModel) &&
                         (prev.cfg_uncond_drop_rate ?? cfgUncondDropDefaultRate ?? 0) <= 0 &&
                         (rate ?? cfgUncondDropDefaultRate ?? 0) > 0 &&
-                        prev.qwen_guidance_loss_mix_mode === "stochastic" &&
-                        (prev.qwen_guidance_loss_weight ?? 0) > 0 &&
-                        (prev.qwen_guidance_loss_weight ?? 0) < 1
+                        prev.guidance_loss_mix_mode === "stochastic" &&
+                        (prev.guidance_loss_weight ?? 0) > 0 &&
+                        (prev.guidance_loss_weight ?? 0) < 1
                         ? true : prev.qwen_cfg_null_sigma_schedule,
                     }));
                   }}
@@ -6367,9 +6369,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         )}
 
-        {(isQwenImage21Model || isMingImageModel) && (
-          <QwenTrainingObjective
-            ming={isMingImageModel}
+        {baseModelPath && !guidanceLossUnsupported && (
+          <TrainingObjective
+            arch={getModelArchitecture(baseModelPath) ?? ""}
+            archLabel={archDisplayName(archCapabilities, getModelArchitecture(baseModelPath) ?? "")}
             params={params}
             defaults={trainingDefaults}
             onChange={(patch) => setParams(prev => ({ ...prev, ...patch }))}

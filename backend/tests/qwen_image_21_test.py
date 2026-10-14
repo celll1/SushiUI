@@ -221,7 +221,7 @@ def test_qwen_stochastic_selection_reuses_recovery_draw(monkeypatch):
     condition = (None, None, torch.tensor([True, True]), 0.5, 3.0, "sigma")
     trainer = SimpleNamespace(
         config={"qwen_guidance_loss_mix_mode": "stochastic"},
-        _qwen_guidance_draw=torch.tensor([0.2, 0.8]),
+        _guidance_draw=torch.tensor([0.2, 0.8]),
     )
     first = qwen_image_21_ops._guidance_selection(
         trainer, torch.tensor([0.5, 0.5]), condition
@@ -283,7 +283,7 @@ def test_qwen_sigma_null_drop_is_nested_under_ordinary_selection(monkeypatch):
     )
     trainer = SimpleNamespace(
         config={"qwen_guidance_loss_mix_mode": "stochastic"},
-        _qwen_guidance_draw=draw,
+        _guidance_draw=draw,
     )
     _, guided = qwen_image_21_ops._guidance_selection(
         trainer, torch.tensor([0.2, 0.2, 0.2]), condition
@@ -373,7 +373,7 @@ def test_qwen_legacy_guidance_config_keeps_blend_on_resume_and_edit():
     params = _extract_request_params_from_yaml(
         {"train": {"qwen_guidance_loss_weight": 0.25}}, "lora"
     )
-    assert params["qwen_guidance_loss_mix_mode"] == "blend"
+    assert params["guidance_loss_mix_mode"] == "blend"
     condition = (None, None, torch.tensor([True]), 0.25, 3.0, "sigma")
     selection, guided = qwen_image_21_ops._guidance_selection(
         SimpleNamespace(config={}), torch.tensor([0.5]), condition
@@ -446,7 +446,7 @@ def test_guidance_cap_partition_matches_whole_image_and_reuses_null(dtype, weigh
                     "qwen_guidance_loss_extrapolation_max_rms": cap},
             _active_mnt_noise=torch.arange(256).reshape(2, 32, 4).to(dtype) / 32,
             _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
-            _qwen_guidance_draw=torch.tensor([0.8, 0.1]),
+            _guidance_draw=torch.tensor([0.8, 0.1]),
             reconstruction_loss_weight=0.0, _collect_concept_sample_loss=True,
             log_extra_metric=lambda key, value: metrics.__setitem__(key, value),
         )
@@ -495,8 +495,8 @@ def test_guidance_cap_rejects_invalid_api_and_yaml(cap):
 
 def test_guidance_cap_survives_api_yaml_roundtrip():
     from core.training.training_config import _build_train_section, train_section_key_vocabulary
-    key = "qwen_guidance_loss_extrapolation_max_rms"
-    request = routes.TrainingRunCreateRequest(base_model_path="unused", training_method="lora", **{key: 0.5})
+    legacy, key = "qwen_guidance_loss_extrapolation_max_rms", "guidance_loss_extrapolation_max_rms"
+    request = routes.TrainingRunCreateRequest(base_model_path="unused", training_method="lora", **{legacy: 0.5})
     train = _build_train_section(request.model_dump(), total_steps=20, epochs=None,
                                  train_unet=True, train_text_encoder=False, arch="qwen_image_21")
     assert train[key] == 0.5
@@ -598,14 +598,14 @@ def test_qwen_hybrid_and_debug_view_survive_config_generation():
         train_unet=True, train_text_encoder=False, arch="qwen_image_21",
     )
     for key, expected in (
-        ("qwen_guidance_loss_weight", 0.25),
+        ("guidance_loss_weight", 0.25),
         ("qwen_cfg_null_sigma_schedule", True),
-        ("qwen_guidance_loss_scale", 3.0),
-        ("qwen_guidance_loss_schedule", "sigma"),
-        ("qwen_guidance_loss_weight_schedule", "high_noise_smoothstep"),
-        ("qwen_guidance_loss_high_noise_weight", 1.0),
-        ("qwen_guidance_loss_ramp_start", 0.5),
-        ("qwen_guidance_loss_ramp_end", 0.8),
+        ("guidance_loss_scale", 3.0),
+        ("guidance_loss_schedule", "sigma"),
+        ("guidance_loss_weight_schedule", "high_noise_smoothstep"),
+        ("guidance_loss_high_noise_weight", 1.0),
+        ("guidance_loss_ramp_start", 0.5),
+        ("guidance_loss_ramp_end", 0.8),
         ("qwen_debug_latent_view", "pixel"),
     ):
         assert train[key] == expected
@@ -687,7 +687,7 @@ def test_debug_uncond_reuses_forward_and_only_saves_computed_first_image(tmp_pat
             arch=QwenImage21ArchHandler(), log_prefix="[test]",
             config={"dit_partition_fixed_count": 2, "qwen_guidance_loss_weight": 0 if mode == "normal" else 0.25,
                     "qwen_guidance_loss_mix_mode": "stochastic" if mode == "first_not_selected" else "blend"},
-            _qwen_guidance_draw=torch.tensor([0.9, 0.0]),
+            _guidance_draw=torch.tensor([0.9, 0.0]),
             _qwen_guidance_blank_encoding=(torch.zeros(1, 3, 4), torch.ones(3, dtype=torch.bool)),
             _active_mnt_noise=torch.ones(2, 32, 4), log_extra_metric=lambda *_args: None,
         )

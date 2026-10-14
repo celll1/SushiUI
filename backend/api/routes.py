@@ -31,6 +31,7 @@ from core.extensions.controlnet_manager import controlnet_manager
 from core.extensions.controlnet_preprocessor import controlnet_preprocessor
 from core.extensions.tipo_manager import tipo_manager
 from core.extensions.tagger_manager import tagger_manager
+from core.training.guidance_loss import NAMES as GUIDANCE_LOSS_SETTING_NAMES
 from core.training.training_config import TrainingConfigGenerator
 from core.training.training_process import training_process_manager
 from core.utils.tensorboard_manager import tensorboard_manager
@@ -15861,48 +15862,87 @@ class TrainingRunCreateRequest(BaseModel):
     qwen_convrot_backward_prefetch_depth: int = Field(
         default=TRAINING_DEFAULTS["qwen_convrot_backward_prefetch_depth"], ge=0, le=7
     )
-    qwen_guidance_loss_weight: float = Field(
+    guidance_loss_weight: float = Field(
+        default=TRAINING_DEFAULTS["guidance_loss_weight"], ge=0, le=1
+    )
+    guidance_loss_mix_mode: Literal["stochastic", "blend"] = TRAINING_DEFAULTS[
+        "guidance_loss_mix_mode"
+    ]
+    guidance_loss_scale: float = Field(
+        default=TRAINING_DEFAULTS["guidance_loss_scale"], ge=1, le=10
+    )
+    guidance_loss_extrapolation_max_rms: float = Field(
+        default=TRAINING_DEFAULTS["guidance_loss_extrapolation_max_rms"],
+        ge=0, allow_inf_nan=False,
+    )
+    guidance_loss_schedule: Literal["constant", "sigma"] = TRAINING_DEFAULTS[
+        "guidance_loss_schedule"
+    ]
+    guidance_loss_weight_schedule: Literal[
+        "constant", "high_noise_smoothstep"
+    ] = TRAINING_DEFAULTS["guidance_loss_weight_schedule"]
+    guidance_loss_high_noise_weight: float = Field(
+        default=TRAINING_DEFAULTS["guidance_loss_high_noise_weight"], ge=0, le=1
+    )
+    guidance_loss_ramp_start: float = Field(
+        default=TRAINING_DEFAULTS["guidance_loss_ramp_start"], ge=0, le=1
+    )
+    guidance_loss_ramp_end: float = Field(
+        default=TRAINING_DEFAULTS["guidance_loss_ramp_end"], ge=0, le=1
+    )
+    # Legacy aliases of the guidance_loss_* fields.
+    qwen_guidance_loss_weight: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_weight"], ge=0, le=1
     )
-    qwen_guidance_loss_mix_mode: Literal["stochastic", "blend"] = TRAINING_DEFAULTS[
+    qwen_guidance_loss_mix_mode: Optional[Literal["stochastic", "blend"]] = TRAINING_DEFAULTS[
         "qwen_guidance_loss_mix_mode"
     ]
-    qwen_cfg_null_sigma_schedule: bool = TRAINING_DEFAULTS["qwen_cfg_null_sigma_schedule"]
-    qwen_guidance_loss_scale: float = Field(
+    qwen_guidance_loss_scale: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_scale"], ge=1, le=10
     )
-    qwen_guidance_loss_extrapolation_max_rms: float = Field(
+    qwen_guidance_loss_extrapolation_max_rms: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_extrapolation_max_rms"],
         ge=0, allow_inf_nan=False,
     )
-    qwen_guidance_loss_schedule: Literal["constant", "sigma"] = TRAINING_DEFAULTS[
+    qwen_guidance_loss_schedule: Optional[Literal["constant", "sigma"]] = TRAINING_DEFAULTS[
         "qwen_guidance_loss_schedule"
     ]
-    qwen_guidance_loss_weight_schedule: Literal[
+    qwen_guidance_loss_weight_schedule: Optional[Literal[
         "constant", "high_noise_smoothstep"
-    ] = TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"]
-    qwen_guidance_loss_high_noise_weight: float = Field(
+    ]] = TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"]
+    qwen_guidance_loss_high_noise_weight: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"], ge=0, le=1
     )
-    qwen_guidance_loss_ramp_start: float = Field(
+    qwen_guidance_loss_ramp_start: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_ramp_start"], ge=0, le=1
     )
-    qwen_guidance_loss_ramp_end: float = Field(
+    qwen_guidance_loss_ramp_end: Optional[float] = Field(
         default=TRAINING_DEFAULTS["qwen_guidance_loss_ramp_end"], ge=0, le=1
     )
+    qwen_cfg_null_sigma_schedule: bool = TRAINING_DEFAULTS["qwen_cfg_null_sigma_schedule"]
 
     @model_validator(mode="after")
-    def _qwen_guidance_ramp_valid(self):
-        if self.qwen_guidance_loss_ramp_start >= self.qwen_guidance_loss_ramp_end:
-            raise ValueError("Qwen guidance ramp start must be below ramp end")
+    def _guidance_loss_valid(self):
+        explicit = self.model_fields_set
+        for name in GUIDANCE_LOSS_SETTING_NAMES:
+            canonical, legacy = "guidance_loss_" + name, "qwen_guidance_loss_" + name
+            legacy_value = getattr(self, legacy)
+            if legacy_value is None:
+                continue
+            if canonical in explicit and getattr(self, canonical) != legacy_value:
+                raise ValueError(f"{canonical} conflicts with {legacy}")
+            setattr(self, canonical, legacy_value)
+            setattr(self, legacy, None)
+        if self.guidance_loss_ramp_start >= self.guidance_loss_ramp_end:
+            raise ValueError("Guidance loss ramp start must be below ramp end")
         if (
-            self.qwen_guidance_loss_weight_schedule == "high_noise_smoothstep"
-            and self.qwen_guidance_loss_high_noise_weight < self.qwen_guidance_loss_weight
+            self.guidance_loss_weight_schedule == "high_noise_smoothstep"
+            and self.guidance_loss_high_noise_weight < self.guidance_loss_weight
         ):
-            raise ValueError("Qwen high-noise guidance weight must be at least the low-noise weight")
+            raise ValueError("Guidance loss high-noise weight must be at least the low-noise weight")
         if (
             self.qwen_cfg_null_sigma_schedule
-            and self.qwen_guidance_loss_mix_mode != "stochastic"
+            and self.guidance_loss_mix_mode != "stochastic"
         ):
             raise ValueError(
                 "Qwen sigma-dependent CFG-null drop requires stochastic guidance loss selection"
@@ -16975,8 +17015,15 @@ def _extract_request_params_from_yaml(process_config: dict, job: str) -> Dict[st
             # Legacy recipes omit exposure fields; preserve every saved value.
             value = {**default.model_dump(), **value}
 
-        if field_name == "qwen_guidance_loss_mix_mode" and field_name not in train:
-            value = "blend"
+        if field_name.startswith("guidance_loss_") and field_name not in train:
+            legacy_value = train.get("qwen_" + field_name)
+            if legacy_value is not None:
+                value = legacy_value
+            elif field_name == "guidance_loss_mix_mode":
+                # A YAML without a mix-mode key predates stochastic selection.
+                value = "blend"
+        if field_name.startswith("qwen_guidance_loss_"):
+            value = None
 
         # An explicit `key:` with no value reads as null, which a non-nullable
         # field rejects. Treat it as the absent key it is written like.

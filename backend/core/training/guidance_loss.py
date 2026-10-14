@@ -13,16 +13,18 @@ from api.param_defaults import TRAINING_DEFAULTS
 
 LEGACY_PREFIX = "qwen_guidance_loss_"
 PREFIX = "guidance_loss_"
+NAMES = ("weight", "mix_mode", "scale", "extrapolation_max_rms", "schedule",
+         "weight_schedule", "high_noise_weight", "ramp_start", "ramp_end")
 
 
 def setting(config, name: str):
     """Canonical ``guidance_loss_<name>``, else legacy ``qwen_guidance_loss_<name>``, else default."""
     canonical, legacy = PREFIX + name, LEGACY_PREFIX + name
-    if canonical in config:
+    if config.get(canonical) is not None:
         return config[canonical]
-    if legacy in config:
+    if config.get(legacy) is not None:
         return config[legacy]
-    return TRAINING_DEFAULTS[canonical] if canonical in TRAINING_DEFAULTS else TRAINING_DEFAULTS[legacy]
+    return TRAINING_DEFAULTS[canonical]
 
 
 def resolve_weight_schedule(config, low_weight: float):
@@ -85,7 +87,7 @@ def selection(trainer, sigma, condition):
     probability = mix_for_condition(sigma, condition)
     mode = str(setting(trainer.config, "mix_mode")) if _has_mode(trainer.config) else "blend"
     if mode == "stochastic":
-        draw = getattr(trainer, "_qwen_guidance_draw", None)
+        draw = getattr(trainer, "_guidance_draw", None)
         if draw is None:
             draw = torch.rand_like(probability)
         selected = (draw.to(device=probability.device) < probability) & condition[2]
@@ -97,7 +99,7 @@ def selection(trainer, sigma, condition):
 
 def _has_mode(config) -> bool:
     # A saved YAML without a mix-mode key predates stochastic selection and keeps blend.
-    return PREFIX + "mix_mode" in config or LEGACY_PREFIX + "mix_mode" in config
+    return config.get(PREFIX + "mix_mode") is not None or config.get(LEGACY_PREFIX + "mix_mode") is not None
 
 
 def condition(config, eligible, null_features=None, null_mask=None):

@@ -59,3 +59,23 @@ def test_missing_mix_mode_key_keeps_blend_for_saved_runs():
     mix, selected = guidance.selection(trainer, torch.tensor([0.3, 0.7]), condition)
     torch.testing.assert_close(mix, torch.tensor([0.5, 0.5]))
     assert selected.all()
+
+
+def test_capability_table_gates_architectures():
+    from api.arch_capabilities import TRAINING_DECLARED_ARCHS, training_feature_unsupported_reason
+    for arch in ("qwen_image_21", "ming_image_01"):
+        assert training_feature_unsupported_reason(arch, "guidance_loss") is None
+    for arch in TRAINING_DECLARED_ARCHS - {"qwen_image_21", "ming_image_01"}:
+        assert training_feature_unsupported_reason(arch, "guidance_loss")
+    assert "distilled" in training_feature_unsupported_reason("minimax_h3", "guidance_loss")
+
+
+def test_legacy_yaml_round_trips_to_canonical_request():
+    from api.routes import TrainingRunCreateRequest, _extract_request_params_from_yaml
+    legacy = {"qwen_guidance_loss_weight": 0.25, "qwen_guidance_loss_scale": 4.0}
+    params = _extract_request_params_from_yaml({"train": legacy}, "lora")
+    assert params["guidance_loss_weight"] == 0.25 and params["guidance_loss_scale"] == 4.0
+    assert params["guidance_loss_mix_mode"] == "blend"
+    assert all(params[guidance.LEGACY_PREFIX + name] is None for name in guidance.NAMES)
+    request = TrainingRunCreateRequest(**{**params, "training_method": "lora", "base_model_path": "offline"})
+    assert request.guidance_loss_weight == 0.25

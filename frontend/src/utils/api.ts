@@ -7619,16 +7619,17 @@ export interface TrainingRunCreateRequest {
   qwen_convrot_training_forward?: "auto" | "cached_bf16" | "prefetch_bf16" | "transient_bf16" | "dequant";
   qwen_convrot_backward_cache_blocks?: number;
   qwen_convrot_backward_prefetch_depth?: number;
-  qwen_guidance_loss_weight?: number;
-  qwen_guidance_loss_mix_mode?: "stochastic" | "blend";
+  // Guidance-target loss; offered where training_feature_unsupported has no guidance_loss entry.
+  guidance_loss_weight?: number;
+  guidance_loss_mix_mode?: "stochastic" | "blend";
+  guidance_loss_scale?: number;
+  guidance_loss_extrapolation_max_rms?: number;
+  guidance_loss_schedule?: "constant" | "sigma";
+  guidance_loss_weight_schedule?: "constant" | "high_noise_smoothstep";
+  guidance_loss_high_noise_weight?: number;
+  guidance_loss_ramp_start?: number;
+  guidance_loss_ramp_end?: number;
   qwen_cfg_null_sigma_schedule?: boolean;
-  qwen_guidance_loss_scale?: number;
-  qwen_guidance_loss_extrapolation_max_rms?: number;
-  qwen_guidance_loss_schedule?: "constant" | "sigma";
-  qwen_guidance_loss_weight_schedule?: "constant" | "high_noise_smoothstep";
-  qwen_guidance_loss_high_noise_weight?: number;
-  qwen_guidance_loss_ramp_start?: number;
-  qwen_guidance_loss_ramp_end?: number;
   multi_noise_timesteps?: number;
   multi_noise_mode?: "independent" | "shared" | "trajectory" | "antithetic";
   stratified_timesteps?: boolean;  // One timestep per equal-probability stratum across the MNT window (default true)

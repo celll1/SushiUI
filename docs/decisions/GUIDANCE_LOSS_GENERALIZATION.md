@@ -72,8 +72,11 @@ Owns everything that is not architecture-specific. It is moved out of
 
 ### Architecture contract (`ArchHandler`)
 
-- `guidance_loss_support`: `None` when supported, or a refusal string. The trainer
-  refuses an active setting with that reason before the model load.
+- Support is declared as the `guidance_loss` feature of
+  `api/arch_capabilities.py` (`TRAINING_FEATURE_UNSUPPORTED`), not as a new
+  handler attribute. The training form already hides features from that table,
+  and the trainer refuses an active setting with its reason. An architecture is
+  enabled by adding it to `GUIDANCE_LOSS_ARCHS`.
 - `guidance_noise_level(trainer, timesteps)`. Default: flow sigma. DDPM
   architectures override it with sigma_t mapped from the scheduler's
   `alphas_cumprod`, normalised to [0, 1].
@@ -152,6 +155,21 @@ phases 1 and 2.
 4. **Remaining flow architectures**, one commit each, same unit gate.
 5. **SD1.5 / SDXL.** Noise-level mapping test against the scheduler.
 6. **Ideogram 4 and SenseNova.**
+
+### Phase 2 comparison review
+
+| Behaviour | Before | After |
+|---|---|---|
+| Keys | `qwen_guidance_loss_*` only | canonical `guidance_loss_*`; legacy keys alias them (request, YAML, Edit Config, presets); a conflicting pair is rejected |
+| Saved YAML without a mix-mode key | blend | blend (unchanged) |
+| New YAML | writes `qwen_guidance_loss_*` | writes `guidance_loss_*` only |
+| Gate | `is_qwen_image_21 or is_ming_image_01` | capability table; refusal names the reason |
+| Activation | Qwen: weight > 0; Ming: weight > 0 or a positive high-noise ramp | both: weight > 0 or a positive high-noise ramp |
+| Metrics | `qwen_guidance_loss_*`, `ming_guidance_*` | unchanged for Qwen/Ming; generic `guidance_loss_*` registered for new archs |
+
+Breaking edge: a Qwen run with weight 0 and an active high-noise ramp now counts
+as active, so it requires a frozen text encoder and caches the blank encoding.
+Its loss is unchanged, because the Qwen condition still returns None at weight 0.
 
 The quality acceptance stays the owner's: paired fixed-seed CFG 1 / 3 / 7 grids
 at weights 0, 0.1 and 0.25, as in the Qwen guide. A lower training loss is not

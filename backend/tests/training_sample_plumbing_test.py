@@ -251,18 +251,30 @@ def test_qwen_guidance_default_and_explicit_ordinary_loss():
     resolved = resolve_training_guidance_loss_defaults(
         params.model_dump(), params.model_fields_set, "qwen_image_21"
     )
-    assert resolved["qwen_guidance_loss_weight"] == 1.0
+    assert resolved["guidance_loss_weight"] == 1.0
     assert resolve_training_guidance_loss_defaults(
         params.model_dump(), params.model_fields_set, "sdxl"
-    )["qwen_guidance_loss_weight"] == 0.0
+    )["guidance_loss_weight"] == 0.0
 
-    explicit = TrainingRunCreateRequest(
-        training_method="lora", base_model_path=r"M:\model\qwen21\original",
-        qwen_guidance_loss_weight=0.0,
+    for key in ("guidance_loss_weight", "qwen_guidance_loss_weight"):
+        explicit = TrainingRunCreateRequest(
+            training_method="lora", base_model_path=r"M:\model\qwen21\original", **{key: 0.0},
+        )
+        assert resolve_training_guidance_loss_defaults(
+            explicit.model_dump(), explicit.model_fields_set, "qwen_image_21"
+        )["guidance_loss_weight"] == 0.0
+
+
+def test_legacy_guidance_keys_alias_and_conflict():
+    request = TrainingRunCreateRequest(
+        training_method="lora", base_model_path="offline",
+        qwen_guidance_loss_scale=5.0, qwen_guidance_loss_mix_mode="blend",
     )
-    assert resolve_training_guidance_loss_defaults(
-        explicit.model_dump(), explicit.model_fields_set, "qwen_image_21"
-    )["qwen_guidance_loss_weight"] == 0.0
+    assert (request.guidance_loss_scale, request.guidance_loss_mix_mode) == (5.0, "blend")
+    assert request.qwen_guidance_loss_scale is None
+    with pytest.raises(ValueError):
+        TrainingRunCreateRequest(training_method="lora", base_model_path="offline",
+                                 guidance_loss_scale=4.0, qwen_guidance_loss_scale=5.0)
 
 
 def test_qwen_config_uses_full_guidance_only_for_new_omitted_loss(monkeypatch):
@@ -280,16 +292,16 @@ def test_qwen_config_uses_full_guidance_only_for_new_omitted_loss(monkeypatch):
         output_dir="output", dataset_path="dataset",
     )
     train = yaml.safe_load(text)["config"]["process"][0]["train"]
-    assert train["qwen_guidance_loss_weight"] == 1.0
-    assert train["qwen_guidance_loss_mix_mode"] == "stochastic"
+    assert train["guidance_loss_weight"] == 1.0
+    assert train["guidance_loss_mix_mode"] == "stochastic"
 
-    payload["qwen_guidance_loss_weight"] = 0.0
-    payload["_explicit_fields"].append("qwen_guidance_loss_weight")
+    payload["guidance_loss_weight"] = 0.0
+    payload["_explicit_fields"].append("guidance_loss_weight")
     ordinary = TrainingConfigGenerator.generate_lora_config(
         payload, run_name="qwen-ordinary-explicit", base_model_path=request.base_model_path,
         output_dir="output", dataset_path="dataset",
     )
-    assert yaml.safe_load(ordinary)["config"]["process"][0]["train"]["qwen_guidance_loss_weight"] == 0.0
+    assert yaml.safe_load(ordinary)["config"]["process"][0]["train"]["guidance_loss_weight"] == 0.0
 
 
 def test_dispatch_and_sd_handlers_forward_sampler_and_schedule():

@@ -117,11 +117,11 @@ export const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
   "dit_partition_global_tokens",
   "qwen_full_kv_query_chunk_tokens", "qwen_convrot_training_forward",
   "qwen_convrot_backward_cache_blocks", "qwen_convrot_backward_prefetch_depth",
-  "qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode", "qwen_cfg_null_sigma_schedule",
-  "qwen_guidance_loss_scale", "qwen_guidance_loss_schedule",
-  "qwen_guidance_loss_extrapolation_max_rms",
-  "qwen_guidance_loss_weight_schedule", "qwen_guidance_loss_high_noise_weight",
-  "qwen_guidance_loss_ramp_start", "qwen_guidance_loss_ramp_end",
+  "guidance_loss_weight", "guidance_loss_mix_mode", "qwen_cfg_null_sigma_schedule",
+  "guidance_loss_scale", "guidance_loss_schedule",
+  "guidance_loss_extrapolation_max_rms",
+  "guidance_loss_weight_schedule", "guidance_loss_high_noise_weight",
+  "guidance_loss_ramp_start", "guidance_loss_ramp_end",
   "multi_noise_timesteps", "multi_noise_mode", "stratified_timesteps",
   "grad_timestep_cosine_probe", "grad_timestep_cosine_sketch_dim", "trajectory_blend_alpha",
   "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
@@ -336,6 +336,12 @@ export function presetConfigToParams(config: Record<string, any>): Record<string
     if (snake !== undefined && incoming[snake] === undefined) put(snake, value);
   }
 
+  // Presets saved before the guidance loss was generalized spell it qwen_guidance_loss_*.
+  for (const [key, value] of entries) {
+    if (!key.startsWith("qwen_guidance_loss_") || value === null) continue;
+    const canonical = key.slice("qwen_".length);
+    if (incoming[canonical] === undefined) put(canonical, value);
+  }
   if (Object.keys(timestep).length > 0) {
     incoming.timestep_sampling = { ...timestep, ...(incoming.timestep_sampling || {}) };
   }

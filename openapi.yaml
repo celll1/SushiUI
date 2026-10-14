@@ -27646,7 +27646,7 @@ components:
           maximum: 7
           default: 1
           description: Number of earlier backward blocks scheduled ahead; must be smaller than cache blocks.
-        qwen_guidance_loss_weight:
+        guidance_loss_weight:
           type: number
           format: float
           minimum: 0
@@ -27654,20 +27654,92 @@ components:
           default: 0.0
           example: 0.25
           description: >-
-            Qwen-Image 2.1 and Ming-Image 0.1. Probability of selecting guidance-target MSE
-            in stochastic mode, or guided-loss fraction in blend mode, for
-            conditional items. Zero disables the extra null forward. Ming zeros both native conditioning streams and preserves reference latents; Layer loss follows frame supervision weights.
-            CFG-null items always retain ordinary MSE. Omission resolves to
-            1.0 for a new Qwen run and 0.0 for other architectures; explicit
-            0.0 remains ordinary MSE. Existing YAML values are preserved.
-        qwen_guidance_loss_mix_mode:
+            Guidance-target loss on architectures without a guidance_loss entry
+            in GET /schema/arch-capabilities training_feature_unsupported.
+            Probability of selecting guidance-target MSE in stochastic mode, or
+            guided-loss fraction in blend mode, for conditional items. Selected
+            items add one no-gradient forward under the inference null
+            condition. Ming zeros both native conditioning streams and
+            preserves reference latents; Layer loss follows frame supervision
+            weights. CFG-null items always retain ordinary MSE. Omission
+            resolves to 1.0 for a new Qwen run and 0.0 for other
+            architectures; explicit 0.0 remains ordinary MSE. Existing YAML
+            values are preserved. Requires a frozen text encoder.
+        guidance_loss_mix_mode:
           type: string
           enum: [stochastic, blend]
           default: stochastic
           example: stochastic
           description: >-
             Choose guided or ordinary loss independently per logical image,
-            or blend both losses as in earlier Qwen training runs.
+            or blend both losses. A saved config without this key uses blend.
+        guidance_loss_scale:
+          type: number
+          format: float
+          minimum: 1
+          maximum: 10
+          default: 3.0
+          example: 3.0
+          description: >-
+            Extrapolation factor g of the guided target u + g * (v - u), where u
+            is the no-gradient null-condition prediction and v the ordinary
+            training target, in the architecture's own prediction space.
+        guidance_loss_schedule:
+          type: string
+          enum: [constant, sigma]
+          default: sigma
+          example: sigma
+          description: >-
+            Sigma schedule uses effective scale 1 + (scale - 1) * sigma
+            (sigma = noise level in [0, 1]), avoiding full extrapolation at
+            nearly clean timesteps.
+        guidance_loss_extrapolation_max_rms:
+          type: number
+          format: float
+          minimum: 0
+          default: 0.0
+          example: 0.5
+          description: >-
+            Cap on the per-image clean-latent RMS distance of the extrapolated
+            target from the ordinary target. Zero disables the cap. Positive
+            tau uses g_eff = 1 + min(g_base - 1, tau / d), where d is the
+            detached RMS error of the null-condition clean estimate.
+            Partitioned training measures d across all non-overlapping cores
+            before backward and uses one factor per image. Ordinary MSE and
+            CFG-null training samples are unaffected; no extra model forwards.
+        guidance_loss_weight_schedule:
+          type: string
+          enum: [constant, high_noise_smoothstep]
+          default: constant
+          example: high_noise_smoothstep
+          description: >-
+            Guidance probability/weight schedule. Constant keeps the low-noise
+            value; high_noise_smoothstep transitions from it at low sigma to
+            guidance_loss_high_noise_weight at high sigma.
+        guidance_loss_high_noise_weight:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          example: 1.0
+          description: Guided-loss probability or blend fraction at and above the high-noise ramp end.
+        guidance_loss_ramp_start:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.5
+          example: 0.5
+          description: Sigma below which the configured low-noise probability/weight applies unchanged.
+        guidance_loss_ramp_end:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          default: 0.8
+          example: 0.8
+          description: Sigma at or above which the high-noise probability/weight applies.
         qwen_cfg_null_sigma_schedule:
           type: boolean
           default: false
@@ -27679,69 +27751,80 @@ components:
             (1-p(sigma))*q_max. Requires stochastic loss selection, a positive
             guidance weight, and a positive CFG-null drop rate. For MNT>1,
             cfg_uncond_drop_per_mnt must be true.
+        qwen_guidance_loss_weight:
+          type: number
+          format: float
+          nullable: true
+          minimum: 0
+          maximum: 1
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_weight; fills it when that field is not given. A different explicit value is rejected.
+        qwen_guidance_loss_mix_mode:
+          type: string
+          nullable: true
+          enum: [stochastic, blend, null]
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_mix_mode; fills it when that field is not given. A different explicit value is rejected.
         qwen_guidance_loss_scale:
           type: number
           format: float
+          nullable: true
           minimum: 1
           maximum: 10
-          default: 3.0
-          example: 3.0
-          description: Extrapolation factor from current empty-prompt velocity toward the ordinary flow target.
-        qwen_guidance_loss_schedule:
-          type: string
-          enum: [constant, sigma]
-          default: sigma
-          example: sigma
-          description: >-
-            Sigma schedule uses effective scale 1 + (scale - 1) * sigma,
-            avoiding full extrapolation at nearly clean timesteps.
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_scale; fills it when that field is not given. A different explicit value is rejected.
         qwen_guidance_loss_extrapolation_max_rms:
           type: number
           format: float
+          nullable: true
           minimum: 0
-          default: 0.0
-          example: 0.5
-          description: >-
-            Qwen guidance-only cap on the per-image clean-latent RMS distance
-            of the extrapolated target from the ordinary target. Zero disables
-            the cap. Positive tau uses g_eff = 1 + min(g_base - 1, tau / d),
-            where d is the detached RMS error of the empty-prompt clean estimate.
-            Partitioned training measures d across all non-overlapping cores
-            before backward and uses one factor per image. Ordinary MSE and
-            CFG-null training samples are unaffected; no extra model forwards.
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_extrapolation_max_rms; fills it when that field is not given. A different explicit value is rejected.
+        qwen_guidance_loss_schedule:
+          type: string
+          nullable: true
+          enum: [constant, sigma, null]
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_schedule; fills it when that field is not given. A different explicit value is rejected.
         qwen_guidance_loss_weight_schedule:
           type: string
-          enum: [constant, high_noise_smoothstep]
-          default: constant
-          example: high_noise_smoothstep
-          description: >-
-            Qwen-only guidance probability/weight schedule. Constant keeps the
-            low-noise value; high_noise_smoothstep transitions from it at low
-            sigma to qwen_guidance_loss_high_noise_weight at high sigma.
+          nullable: true
+          enum: [constant, high_noise_smoothstep, null]
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_weight_schedule; fills it when that field is not given. A different explicit value is rejected.
         qwen_guidance_loss_high_noise_weight:
           type: number
           format: float
+          nullable: true
           minimum: 0
           maximum: 1
-          default: 1.0
-          example: 1.0
-          description: Guided-loss probability or blend fraction at and above the high-noise ramp end.
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_high_noise_weight; fills it when that field is not given. A different explicit value is rejected.
         qwen_guidance_loss_ramp_start:
           type: number
           format: float
+          nullable: true
           minimum: 0
           maximum: 1
-          default: 0.5
-          example: 0.5
-          description: Sigma below which the configured low-noise probability/weight applies unchanged.
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_ramp_start; fills it when that field is not given. A different explicit value is rejected.
         qwen_guidance_loss_ramp_end:
           type: number
           format: float
+          nullable: true
           minimum: 0
           maximum: 1
-          default: 0.8
-          example: 0.8
-          description: Sigma at or above which the high-noise probability/weight applies.
+          default: null
+          deprecated: true
+          description: Legacy alias of guidance_loss_ramp_end; fills it when that field is not given. A different explicit value is rejected.
         krea2_lora_scope:
           type: string
           default: "attn,mlp"

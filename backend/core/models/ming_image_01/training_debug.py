@@ -4,6 +4,7 @@ import numpy as np
 from PIL import Image
 import torch
 from api.param_defaults import TRAINING_DEFAULTS
+from core.training import guidance_loss as _guidance
 from core.training.latent_debug_dump import video_filmstrip
 
 
@@ -26,7 +27,7 @@ def save_debug(trainer,path,*,clean,noisy,target,prediction,sigma,frame_weights,
                     batch_size=int(clean.shape[0]),scheduler_type='FlowMatching',model_type='ming_image_01',
                     native_frame_count=frames,frame_roles=roles,frame_weights=frame_weights[0].detach().float().cpu().tolist(),
                     partition_count=1 if plan is None else len(plan.regions))
-        if float(trainer.config.get('qwen_guidance_loss_weight',TRAINING_DEFAULTS['qwen_guidance_loss_weight']) or 0)>0:
+        if _guidance.weight(trainer.config)>0:
             data['uncond_prediction_status']='computed' if unconditional is not None else 'not_selected'
         if unconditional is not None:
             tensors['uncond_predicted_latent']=tensors['noisy_latents']+first_sigma*unconditional[:1].detach().float().cpu()

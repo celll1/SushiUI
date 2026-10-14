@@ -33,7 +33,7 @@ def test_metric_matches_actual_x0_error_without_changing_loss(tmp_path, monkeypa
     model = Predictor()
     clean, noise = torch.randn(2, 4, 8, 12), torch.randn(2, 4, 8, 12)
     sigma = torch.tensor([.2, .8])
-    trainer = SimpleNamespace(device=torch.device('cpu'), training_dtype=torch.float32,
+    trainer = SimpleNamespace(config={}, device=torch.device('cpu'), training_dtype=torch.float32,
         transformer=model, transformer_original=model, reconstruction_loss_weight=weight,
         mixed_precision=False, _active_mnt_noise=noise, log_prefix='[test]')
     loss, pred, recon = train_step(trainer, latents=clean, prompt_embeds=torch.zeros(2, 3, 6),

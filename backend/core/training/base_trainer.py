@@ -10106,6 +10106,27 @@ class BaseTrainer(ABC):
             text_emb = self.encode_prompt(caption, requires_grad=requires_grad)
             return text_emb, None
 
+    def _encode_cfg_null_on_gpu(self):
+        """Encode the inference CFG null condition once, as a CPU (embedding, aux) pair.
+
+        A text encoder parked on CPU is staged to the GPU for this encode and
+        parked again afterwards.
+        """
+        encoder = getattr(self, "text_encoder", None)
+        parameter = next(encoder.parameters(), None) if encoder is not None else None
+        staged = parameter is not None and parameter.device.type != self.device.type
+        if staged:
+            self.move_text_encoder_to_gpu()
+        try:
+            with torch.no_grad():
+                embedding, auxiliary = self.encode_caption("", cfg_null=True)
+        finally:
+            if staged:
+                self.move_text_encoder_to_cpu()
+        if isinstance(embedding, torch.Tensor):
+            embedding = embedding.detach().cpu()
+        return embedding, self._aux_to_cpu(auxiliary)
+
     @staticmethod
     def _aux_to_cpu(auxiliary_data):
         """Move caption auxiliary data to CPU, tolerating every arch's shape.
@@ -12380,6 +12401,7 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
                 repa_pixels=mnt_repa_pixels,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_ltx2:
@@ -16411,6 +16433,7 @@ class BaseTrainer(ABC):
         _cfg_null_rate = self.cfg_null_drop_rate()
         self._cfg_null_blank_encoding = None
         self._qwen_guidance_blank_encoding = None
+        self._guidance_null_encoding = None
         from core.training import guidance_loss as _guidance
         _guidance_weight = _guidance.weight(self.config)
         _guidance_active = _guidance.active(self.config)
@@ -16443,6 +16466,8 @@ class BaseTrainer(ABC):
             _guidance_scale, _guidance_schedule = _guidance.scale_and_schedule(self.config)
             _weight_schedule = _guidance.resolve_weight_schedule(self.config, _guidance_weight)
             _guidance.extrapolation_cap(self.config)
+            if not self.is_qwen_image_21 and self.arch.cfg_null_stage in ("caption", "encode"):
+                self._guidance_null_encoding = self._encode_cfg_null_on_gpu()
             if self.is_qwen_image_21:
                 blank_emb, blank_mask = self.encode_caption("")
                 self._qwen_guidance_blank_encoding = (

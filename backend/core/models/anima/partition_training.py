@@ -39,6 +39,9 @@ def validate_training_options(config, *, method=None):
             raise ValueError(f"Anima partition training does not support {name}")
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
         raise ValueError("Anima partition training does not support block_skip_rate")
+    from core.training import guidance_loss
+    if guidance_loss.active(config):
+        raise ValueError("Anima partition training does not support the guidance-target loss")
 
 
 def region_count(trainer, clean):

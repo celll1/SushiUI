@@ -39,9 +39,6 @@ def validate_training_options(config, *, method=None):
             raise ValueError(f"Anima partition training does not support {name}")
     if float(config.get("block_skip_rate", TRAINING_DEFAULTS["block_skip_rate"])) > 0:
         raise ValueError("Anima partition training does not support block_skip_rate")
-    from core.training import guidance_loss
-    if guidance_loss.active(config):
-        raise ValueError("Anima partition training does not support the guidance-target loss")
 
 
 def region_count(trainer, clean):
@@ -101,7 +98,7 @@ def training_plan(trainer, clean):
 
 def _backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
                      plan, backward_scale, debug_save_path=None, debug_captions=None,
-                     debug_reference_image_paths=None):
+                     debug_reference_image_paths=None, cfg_drop_mask=None):
     """Accumulate exact core-weighted velocity loss without retaining tile graphs."""
     if not math.isfinite(backward_scale) or backward_scale < 0:
         raise ValueError("Anima partition backward scale must be finite and nonnegative")
@@ -144,6 +141,40 @@ def _backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
         regions.append(selected_region)
     with partition_scope(model, trainer.config):
         checkpoint_blocks = sum(block.gradient_checkpoint_mode != "none" for block in model.blocks) if model.training else 0
+        # Guidance-target teacher over every region first, so the extrapolation
+        # cap measures the whole image and the per-region mixtures add up to the
+        # full-image objective.
+        from core.training import guidance_loss as _guidance
+        guidance_plan = _guidance.plan(trainer, sigma, cfg_drop_mask)
+        uncond = effective = None
+        guidance_totals = clean.new_zeros(2, dtype=torch.float32)
+        if guidance_plan is not None:
+            _guidance.log_selection(trainer, guidance_plan, sigma)
+            if bool(guidance_plan.selected.any()):
+                rows = guidance_plan.selected.nonzero(as_tuple=True)[0]
+                null_context, null_aux = _guidance.null_rows(
+                    trainer, int(rows.numel()), clean.device, trainer.training_dtype)
+                row_noisy, row_noise = noisy[rows], noise[rows]
+                uncond = torch.zeros_like(target)
+                for region in plan.regions:
+                    local = crop(row_noisy, region.input)
+                    context = (torch.autocast(device_type=clean.device.type, dtype=trainer.training_dtype)
+                               if trainer.mixed_precision else nullcontext())
+                    with torch.no_grad(), timing.measure("forward"), context:
+                        prediction = trainer.transformer(
+                            x=local.unsqueeze(2), timesteps=sigma[rows], context=null_context,
+                            padding_mask=local.new_zeros(local.shape[0], 1, *local.shape[-2:]),
+                            target_input_ids=null_aux["t5_input_ids"],
+                            target_attention_mask=null_aux["t5_attn_mask"],
+                            source_attention_mask=null_aux["source_mask"], partition_box=region.input,
+                            partition_full_latents=row_noisy.unsqueeze(2),
+                            partition_full_noise=row_noise.unsqueeze(2),
+                            **noise_kwargs(model, crop(row_noise, region.input)))
+                    box = region.core
+                    uncond[rows, :, 2*box.top:2*box.bottom, 2*box.left:2*box.right] = \
+                        crop(prediction.squeeze(2), region.core_in_input).to(uncond.dtype)
+                    del prediction
+                effective = _guidance.effective_scale(trainer, guidance_plan, target, uncond, sigma)
         for index, region in enumerate(regions):
             local = crop(noisy, region.input)
             context = (torch.autocast(device_type=clean.device.type, dtype=trainer.training_dtype)
@@ -166,7 +197,13 @@ def _backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
             if stitched is not None:
                 box = region.core
                 stitched[..., 2*box.top:2*box.bottom, 2*box.left:2*box.right] = prediction[:1].detach().float().cpu()
-            per_item = (prediction.float() - expected.float()).square().mean((1, 2, 3))
+            if uncond is None:
+                per_item = (prediction.float() - expected.float()).square().mean((1, 2, 3))
+            else:
+                per_item, normal, guided = _guidance.objective(
+                    prediction, expected, crop(uncond, region.core), sigma, guidance_plan.condition,
+                    mix=guidance_plan.mix, guide_scale_override=effective, reduction="none")
+                guidance_totals += region.core.tokens / plan.full_tokens * torch.stack((normal, guided))
             with torch.set_grad_enabled(weight > 0):
                 recovered = crop(noisy, region.core).float() - sigma_view.float() * prediction.float()
                 recon_items = (recovered - crop(clean, region.core).float()).square().mean((1, 2, 3))
@@ -201,6 +238,10 @@ def _backward_regions(trainer, *, clean, prompt_embeds, anima_aux, sigma, noise,
             loss_items += fraction * combined.detach()
             del prediction, local_prediction, expected, per_item, combined, scaled, recon_items, region_loss, aux_loss
     timing.finish(plan, checkpoint_blocks)
+    if uncond is not None:
+        normal, guided = guidance_totals.tolist()
+        trainer.log_extra_metric(_guidance.PREFIX + "normal", normal)
+        trainer.log_extra_metric(_guidance.PREFIX + "guided", guided)
     trainer._last_loss_per_sample = pred_items
     if getattr(trainer, "_collect_concept_sample_loss", False):
         trainer._pending_concept_sample_loss = loss_items

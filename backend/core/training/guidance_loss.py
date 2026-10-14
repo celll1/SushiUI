@@ -218,6 +218,24 @@ def null_prediction(step_plan, like, forward):
     return out
 
 
+def log_selection(trainer, step_plan, sigma):
+    trainer.log_extra_metric(PREFIX + "mix_weight", float(mix_for_condition(sigma, step_plan.condition).mean()))
+    trainer.log_extra_metric(PREFIX + "selected_fraction", float(step_plan.selected.float().mean()))
+
+
+def effective_scale(trainer, step_plan, target, uncond_prediction, sigma, clean_scale=None):
+    """Per-image capped guidance scale over the whole image, or None when the cap is off."""
+    cap = extrapolation_cap(trainer.config)
+    if cap <= 0:
+        return None
+    level = (sigma if clean_scale is None else clean_scale).float().view(-1, *([1] * (target.ndim - 1)))
+    distance_squared = (level * (target.float() - uncond_prediction.float())).square().flatten(1).mean(1)
+    effective = capped_scale(sigma, step_plan.condition, distance_squared, cap)
+    log_extrapolation_cap(trainer, sigma, step_plan.condition, step_plan.selected, distance_squared,
+                          effective, prefix=PREFIX.rstrip("_"))
+    return effective
+
+
 def loss(trainer, step_plan, prediction, target, uncond_prediction, sigma, sample_losses=None,
          clean_scale=None, reduction="mean"):
     """Mixed loss with the optional extrapolation cap, logging guidance metrics.
@@ -228,18 +246,10 @@ def loss(trainer, step_plan, prediction, target, uncond_prediction, sigma, sampl
     is right for flow velocity targets. ``reduction="none"`` returns the
     per-image loss.
     """
-    trainer.log_extra_metric(PREFIX + "mix_weight", float(mix_for_condition(sigma, step_plan.condition).mean()))
-    trainer.log_extra_metric(PREFIX + "selected_fraction", float(step_plan.selected.float().mean()))
+    log_selection(trainer, step_plan, sigma)
     if uncond_prediction is None:
         return None
-    effective = None
-    cap = extrapolation_cap(trainer.config)
-    if cap > 0:
-        level = (sigma if clean_scale is None else clean_scale).float().view(-1, *([1] * (target.ndim - 1)))
-        distance_squared = (level * (target.float() - uncond_prediction.float())).square().flatten(1).mean(1)
-        effective = capped_scale(sigma, step_plan.condition, distance_squared, cap)
-        log_extrapolation_cap(trainer, sigma, step_plan.condition, step_plan.selected, distance_squared,
-                              effective, prefix=PREFIX.rstrip("_"))
+    effective = effective_scale(trainer, step_plan, target, uncond_prediction, sigma, clean_scale)
     value, normal, guided = objective(prediction, target, uncond_prediction, sigma, step_plan.condition,
                                       mix=step_plan.mix, sample_losses=sample_losses,
                                       guide_scale_override=effective, reduction=reduction)

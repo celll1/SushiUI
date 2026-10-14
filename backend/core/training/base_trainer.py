@@ -12386,7 +12386,8 @@ class BaseTrainer(ABC):
                     anima_aux=mnt_attention_mask, timesteps=timesteps, loss_scale=loss_scale,
                     debug_save_path=debug_save_path,
                     debug_captions=batch_captions if debug_save_path else None,
-                    debug_reference_image_paths=batch_reference_paths if debug_save_path else None)
+                    debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
+                    cfg_drop_mask=cfg_drop_mask)
             # Anima carries the LLM-Adapter side payload (source_mask, t5 ids)
             # in mnt_attention_mask, which here holds a dict produced by
             # encode_caption() rather than a single tensor.
@@ -12752,7 +12753,7 @@ class BaseTrainer(ABC):
 
     def _execute_anima_partitioned_forward_backward(self, *, mnt_latents, mnt_text_embeddings,
             anima_aux, timesteps, loss_scale, debug_save_path=None, debug_captions=None,
-            debug_reference_image_paths=None):
+            debug_reference_image_paths=None, cfg_drop_mask=None):
         from core.models.anima.partition_training import backward_regions, training_plan
         from core.training.mnt import training_noise_like
         if fused_backward_active(self):
@@ -12766,7 +12767,7 @@ class BaseTrainer(ABC):
                 anima_aux=anima_aux, sigma=timesteps, noise=noise, plan=plan,
                 backward_scale=float(loss_scale) / float(getattr(self, "_grad_accum_steps", 1) or 1),
                 debug_save_path=debug_save_path, debug_captions=debug_captions,
-                debug_reference_image_paths=debug_reference_image_paths)
+                debug_reference_image_paths=debug_reference_image_paths, cfg_drop_mask=cfg_drop_mask)
             self._flush_fused_group_partials()
             events = getattr(self, "_repa_profile_events", None)
             if events is not None:

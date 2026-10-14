@@ -161,6 +161,25 @@ phases 1 and 2.
      run; a text encoder parked on CPU is staged to the GPU for that one encode.
    - Anima partition training refuses the guidance loss for now.
 4. **Remaining flow architectures**, one commit each, same unit gate.
+
+   Implementation notes (CPU unit gate passed; GPU smoke pending, like Phase 3):
+   - Z-Image, Krea 2, FLUX.2: caption-stage null. FLUX.2 keeps reference
+     latents in the teacher, as its inference uncond branch does.
+   - Guidance-distilled checkpoints are refused after load through
+     `ArchHandler.guidance_loss_refusal` (Krea 2 `krea2_is_distilled`, FLUX.2
+     `is_distilled`). Z-Image Turbo has no flag in the loaded model, so it
+     cannot be told apart from Z-Image base. Enabling the loss on Turbo is the
+     user's choice.
+   - SenseNova SDXL Chimera: only the plain `flow_velocity` contract. The v2
+     and polar contracts and the `bridge_align` stage are refused, because
+     inference CFG has not been verified to be linear in those
+     parameterizations. Noise level is `1 - t` (t1 convention).
+   - LTX-2.3: video loss only, as before. The teacher reuses the step's dummy
+     audio.
+   - Lens, MiniT2I: collated stage. The handler supplies
+     `guidance_null_condition`, which is the arch's own
+     `apply_cfg_null_collated` on the selected rows, so ops bodies still never
+     rewrite the batch by label. MiniT2I uses noise level `1 - t`.
 5. **SD1.5 / SDXL.** Noise-level mapping test against the scheduler.
 6. **Ideogram 4 and SenseNova.**
 

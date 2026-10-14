@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
+from contextlib import nullcontext
 from typing import Optional, Tuple
 
 import torch
@@ -235,6 +236,7 @@ def train_step(
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Krea 2 training step (flow matching, velocity prediction).
 
@@ -302,14 +304,37 @@ def train_step(
             **alignment_kwargs,
         )[0]
 
-    if trainer.mixed_precision:
-        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-            out = _fwd()
-    else:
+    precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                 if trainer.mixed_precision else nullcontext())
+
+    # Guidance-target teacher, before the training forward stashes its REPA tap.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, sigma, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            features, mask = _guidance.null_rows(trainer, int(indices.numel()), trainer.device, t_dtype)
+            with precision:
+                return trainer.transformer(
+                    hidden_states=noisy[indices].to(t_dtype),
+                    encoder_hidden_states=features,
+                    timestep=sigma[indices].to(t_dtype),
+                    position_ids=prepare_position_ids(features.shape[1], latent_h, latent_w, trainer.device),
+                    encoder_attention_mask=mask,
+                    return_dict=False,
+                    **noise_kwargs(trainer.transformer, noise[indices]),
+                )[0].float()
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
+    with precision:
         out = _fwd()
 
     v_pred = out.float()
     loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, v_pred, v_target, uncond_prediction, sigma)
+        if guided_loss is not None:
+            loss = guided_loss
 
     # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
     # convention the UI documents. Computed only when on -- this arch never
@@ -390,7 +415,7 @@ def train_step(
         loss = apply_repa_loss(trainer, loss, tap, repa_pixels, latent_h, latent_w)
 
     # Backward is performed by _execute_forward_backward; do not backward here.
-    del noise, noisy, v_pred, v_target
+    del noise, noisy, v_pred, v_target, uncond_prediction
     return loss, pred_loss_value, recon_loss_value
 
 

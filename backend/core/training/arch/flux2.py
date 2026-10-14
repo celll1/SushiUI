@@ -104,6 +104,11 @@ class Flux2ArchHandler(ArchHandler):
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("flux2.vae_decode: phase P5/P7")
 
+    def guidance_loss_refusal(self, trainer):
+        if getattr(trainer, "is_distilled", False):
+            return "guidance-distilled checkpoint: inference has no CFG uncond branch"
+        return None
+
     def train_step(self, trainer, ctx: TrainStepContext):
         # P6c: verbatim body in ops/flux2_ops.train_step. The ctx-build branch in
         # _execute_forward_backward already produced packed latents / img_ids /
@@ -124,6 +129,7 @@ class Flux2ArchHandler(ArchHandler):
             debug_reference_image_paths=ctx.debug_reference_image_paths,
             profile_vram=ctx.profile_vram,
             alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+            cfg_drop_mask=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

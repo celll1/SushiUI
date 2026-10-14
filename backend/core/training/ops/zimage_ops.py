@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -289,6 +290,7 @@ def train_step(
     debug_reference_image_paths: Optional[List[str]] = None,
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float]:
     """
     Perform single training step (Z-Image).
@@ -354,6 +356,23 @@ def train_step(
     from core.models.zimage_vae_alignment import noise_kwargs
     alignment_kwargs = noise_kwargs(trainer.transformer_original, noise, batch_size, as_list=False)
 
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, timesteps, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            count = int(indices.numel())
+            features, mask = _guidance.null_rows(trainer, count, trainer.device, prompt_embeds.dtype)
+            precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                         if trainer.mixed_precision else nullcontext())
+            with precision:
+                prediction, _ = trainer.transformer(
+                    x=noisy_latents_4d[indices], t=timesteps[indices], cap_feats=features, cap_mask=mask,
+                    **noise_kwargs(trainer.transformer_original, noise[indices], count, as_list=False),
+                )
+            return prediction.squeeze(2)
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
     # Predict velocity using Z-Image Transformer
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
@@ -389,6 +408,10 @@ def train_step(
 
     # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
     mse_loss = loss_per_sample.mean()
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, model_pred, target, uncond_prediction, timesteps)
+        if guided_loss is not None:
+            mse_loss = guided_loss
 
     regularization_loss = torch.tensor(0.0, device=trainer.device)
 

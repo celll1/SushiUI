@@ -30,6 +30,7 @@ from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 import math
 from pathlib import Path
+from contextlib import nullcontext
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -412,6 +413,7 @@ def train_step(
     debug_reference_image_paths: Optional[List[str]] = None,
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Perform single training step (FLUX.2 Klein).
 
@@ -547,6 +549,30 @@ def train_step(
     # it drives the offloader (wait_for_block / submit per block). self.transformer
     # itself is NOT replaced -> optimizer / LoRA / state_dict keep seeing the raw module.
     fwd = trainer.flux2_transformer_wrapper if getattr(trainer, "flux2_transformer_wrapper", None) is not None else trainer.transformer
+
+    # Guidance-target teacher: only the text is nulled; reference latents stay,
+    # as in the inference uncond branch.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, timesteps, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            features, _ = _guidance.null_rows(trainer, int(indices.numel()), trainer.device, trainer.training_dtype)
+            precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                         if trainer.mixed_precision else nullcontext())
+            with precision:
+                prediction = forward_with_noise(fwd, noise[indices],
+                    hidden_states=noisy_latents[indices],
+                    encoder_hidden_states=features,
+                    timestep=timesteps[indices],
+                    img_ids=img_ids[indices] if img_ids.shape[0] == batch_size else img_ids,
+                    txt_ids=trainer._flux2_prepare_text_ids(features).to(trainer.device),
+                    guidance=guidance[indices],
+                    return_dict=False,
+                )[0]
+            return prediction[:, :latents.shape[1], :]
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             output = forward_with_noise(fwd, noise,
@@ -600,6 +626,10 @@ def train_step(
 
     # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
     mse_loss = loss_per_sample.mean()
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, model_pred, target, uncond_prediction, timesteps)
+        if guided_loss is not None:
+            mse_loss = guided_loss
 
     regularization_loss = torch.tensor(0.0, device=trainer.device)
 

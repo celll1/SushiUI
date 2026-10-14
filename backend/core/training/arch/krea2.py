@@ -118,6 +118,11 @@ class Krea2ArchHandler(ArchHandler):
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("krea2.vae_decode: phase P5/P7")
 
+    def guidance_loss_refusal(self, trainer):
+        if getattr(trainer, "krea2_is_distilled", False):
+            return "guidance-distilled checkpoint: inference has no CFG uncond branch"
+        return None
+
     def train_step(self, trainer, ctx: TrainStepContext):
         # P6c: verbatim body in ops/krea2_ops.train_step. ctx fields map 1:1 to
         # the previous train_step_krea2 kwargs bundle.
@@ -132,6 +137,7 @@ class Krea2ArchHandler(ArchHandler):
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
             repa_pixels=ctx.repa_pixels,
+            cfg_drop_mask=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

@@ -12374,6 +12374,7 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_anima:
@@ -12507,6 +12508,7 @@ class BaseTrainer(ABC):
                 latent_h=_lh,
                 latent_w=_lw,
                 repa_pixels=mnt_repa_pixels,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_qwen_image_21:
@@ -12575,6 +12577,7 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif use_condition_images and condition_images_batch is not None:
@@ -16456,7 +16459,8 @@ class BaseTrainer(ABC):
                 raise ValueError("Qwen sigma-dependent CFG-null drop requires cfg_uncond_drop_per_mnt=true with MNT > 1")
         if _guidance_active:
             from api.arch_capabilities import training_feature_unsupported_reason
-            _guidance_refusal = training_feature_unsupported_reason(self.arch.name, "guidance_loss")
+            _guidance_refusal = (training_feature_unsupported_reason(self.arch.name, "guidance_loss")
+                                 or self.arch.guidance_loss_refusal(self))
             if _guidance_refusal:
                 raise ValueError(f"Guidance loss is not available for {self.arch.name}: {_guidance_refusal}")
             _guidance_mode = (_guidance.mix_mode(self.config)

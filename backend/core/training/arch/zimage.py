@@ -105,6 +105,14 @@ class ZImageArchHandler(ArchHandler):
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("zimage.vae_decode: phase P5/P7")
 
+    def guidance_loss_refusal(self, trainer):
+        # Same detection as the cfg_uncond_drop_rate refusal in BaseTrainer.
+        transformer = getattr(trainer, "transformer_original", None)
+        if ("turbo" in str(getattr(trainer, "model_path", "")).lower()
+                or getattr(getattr(transformer, "config", None), "is_distilled", False)):
+            return "guidance-distilled checkpoint: inference has no CFG uncond branch"
+        return None
+
     def train_step(self, trainer, ctx: TrainStepContext):
         # P6b: verbatim body in ops/zimage_ops.train_step. ctx fields map 1:1 to
         # the previous train_step_zimage kwargs bundle (attention_mask is a tensor).

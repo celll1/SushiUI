@@ -208,3 +208,6 @@ def test_distilled_checkpoints_are_refused():
     assert Flux2ArchHandler().guidance_loss_refusal(SimpleNamespace(is_distilled=True))
     assert Flux2ArchHandler().guidance_loss_refusal(SimpleNamespace(is_distilled=False)) is None
     assert Krea2ArchHandler().guidance_loss_refusal(SimpleNamespace(krea2_is_distilled=True))
+    from core.training.arch.zimage import ZImageArchHandler
+    assert ZImageArchHandler().guidance_loss_refusal(SimpleNamespace(model_path="M:/z-image-turbo.safetensors"))
+    assert ZImageArchHandler().guidance_loss_refusal(SimpleNamespace(model_path="M:/z-image.safetensors")) is None

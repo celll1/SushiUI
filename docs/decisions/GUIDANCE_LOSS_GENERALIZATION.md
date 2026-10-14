@@ -167,9 +167,8 @@ phases 1 and 2.
      latents in the teacher, as its inference uncond branch does.
    - Guidance-distilled checkpoints are refused after load through
      `ArchHandler.guidance_loss_refusal` (Krea 2 `krea2_is_distilled`, FLUX.2
-     `is_distilled`). Z-Image Turbo has no flag in the loaded model, so it
-     cannot be told apart from Z-Image base. Enabling the loss on Turbo is the
-     user's choice.
+     `is_distilled`, Z-Image a "turbo" model path or `config.is_distilled`,
+     the same detection as the `cfg_uncond_drop_rate` refusal).
    - SenseNova SDXL Chimera: only the plain `flow_velocity` contract. The v2
      and polar contracts and the `bridge_align` stage are refused, because
      inference CFG has not been verified to be linear in those

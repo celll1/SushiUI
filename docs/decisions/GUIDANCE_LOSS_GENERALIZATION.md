@@ -171,8 +171,20 @@ phases 1 and 2.
    | blend 0.5 (teacher every step) | 1.03–1.31 s | 23,393 MiB |
 
    Loss, guided loss and gradient norms were finite throughout. The teacher
-   costs about 25% step time and no measurable peak VRAM. Run 177's production
-   config uses partition training, which still refuses the loss.
+   costs about 25% step time and no measurable peak VRAM.
+
+   Partition training (`63749492`): the teacher runs over every region before
+   the backward. The cap therefore measures the whole image, and the
+   per-region mixtures sum to the full-image objective. A CPU test checks this
+   against the stitched full-image objective. GPU smoke uses run 177's
+   production config (global summaries on) with fixed 2-way partitions:
+
+   | Arm | Step time | Peak VRAM |
+   |---|---|---|
+   | weight 0 | 1.11–1.21 s | 28,065 MiB |
+   | blend 0.5 | 1.33–3.16 s | 29,843 MiB |
+
+   Two partitions ran on every step. Losses and gradient norms were finite.
 4. **Remaining flow architectures**, one commit each, same unit gate.
 
    Implementation notes (CPU unit gate passed; GPU smoke pending, like Phase 3):

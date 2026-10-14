@@ -160,6 +160,19 @@ phases 1 and 2.
    - The null encoding is `encode_caption("", cfg_null=True)`, cached once per
      run; a text encoder parked on CPU is staged to the GPU for that one encode.
    - Anima partition training refuses the guidance loss for now.
+
+   GPU smoke, 2026-10-14. Setup: run 177's step-34611 checkpoint, FP32 weights
+   / BF16 compute, batch 4, one dataset, partition and global summaries off.
+   The run's YAML carried the legacy `qwen_guidance_loss_*` keys.
+
+   | Arm | Step time | Peak VRAM (nvidia-smi) |
+   |---|---|---|
+   | weight 0 | 0.85–0.88 s | 23,396 MiB |
+   | blend 0.5 (teacher every step) | 1.03–1.31 s | 23,393 MiB |
+
+   Loss, guided loss and gradient norms were finite throughout. The teacher
+   costs about 25% step time and no measurable peak VRAM. Run 177's production
+   config uses partition training, which still refuses the loss.
 4. **Remaining flow architectures**, one commit each, same unit gate.
 
    Implementation notes (CPU unit gate passed; GPU smoke pending, like Phase 3):

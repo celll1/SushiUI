@@ -182,6 +182,7 @@ class Ltx2ArchHandler(ArchHandler):
             debug_reference_image_paths=ctx.debug_reference_image_paths,
             profile_vram=ctx.profile_vram,
             alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+            cfg_drop_mask=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

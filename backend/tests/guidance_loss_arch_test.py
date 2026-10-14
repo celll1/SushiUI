@@ -103,7 +103,32 @@ def _flux2(cfg_drop_mask):
     return model, loss, noise - clean, lambda out: out
 
 
-ARCHS = {"zimage": _zimage, "krea2": _krea2, "flux2": _flux2}
+def _ltx2(cfg_drop_mask):
+    from core.training.ops.ltx2_ops import _pack_latents, train_step
+
+    class Rope:
+        def prepare_video_coords(self, b, t, h, w, device, fps=1.0):
+            return torch.zeros(b, 3, t * h * w, 2)
+
+    class Ltx2(Recorder):
+        rope = Rope()
+
+        def forward(self, hidden_states, audio_hidden_states, encoder_hidden_states, **_kwargs):
+            return self.velocity(hidden_states, encoder_hidden_states, 2), torch.zeros_like(audio_hidden_states)
+
+    model, clean, noise = Ltx2(6), torch.randn(BATCH, 6, 2, 2, 2), torch.randn(BATCH, 6, 2, 2, 2)
+    null = (torch.full((7, 8), -1.0), {"audio_text_embedding": torch.zeros(7, 8),
+                                       "mask": torch.ones(7, dtype=torch.long)})
+    trainer = _trainer(model, noise, _guidance_null_encoding=null, vae=None, tread_config=None,
+                       blockskip_config=None, ltx2_block_loop_wrapper=None)
+    loss, _, _ = train_step(trainer, latents=clean, prompt_embeds=torch.ones(BATCH, 5, 8),
+                            ltx2_aux={"audio_text_embedding": torch.zeros(BATCH, 5, 8),
+                                      "mask": torch.ones(BATCH, 5, dtype=torch.long)},
+                            timesteps=torch.tensor([.3, .7]), cfg_drop_mask=cfg_drop_mask)
+    return model, loss, _pack_latents(noise - clean), lambda out: out
+
+
+ARCHS = {"zimage": _zimage, "krea2": _krea2, "flux2": _flux2, "ltx2": _ltx2}
 
 
 @pytest.mark.parametrize("arch", sorted(ARCHS))

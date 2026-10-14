@@ -555,7 +555,8 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
     if guidance_plan is not None:
         def _null_forward(indices):
             count = int(indices.numel())
-            null_conditioning, null_aux = _guidance.null_rows(trainer, count, latents.device, trainer.training_dtype)
+            null_conditioning, null_aux = _guidance.null_rows(
+                trainer, count, latents.device, trainer.training_dtype, aux_has_batch_axis=True)
             null_mask = null_aux["context_attention_mask"].to(device=latents.device)
             set_chimera_attention_context(trainer.unet, ChimeraAttentionContext(
                 context_positions=null_aux["context_positions"].to(device=latents.device),

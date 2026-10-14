@@ -12421,6 +12421,7 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+                cfg_drop_mask=cfg_drop_mask,
             )
             loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_minimax_h3:

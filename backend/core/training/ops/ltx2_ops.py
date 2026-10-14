@@ -23,6 +23,7 @@ dispatcher calls ``load_components`` directly here; ``setup_block_swap`` /
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import nullcontext
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -554,6 +555,7 @@ def train_step(
     debug_reference_image_paths: Optional[List[str]] = None,
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single LTX-2.3 training step (rectified flow / velocity prediction).
 
@@ -688,6 +690,41 @@ def train_step(
         )
         return out
 
+    # Guidance-target teacher (video only), before TREAD/BlockSkip are attached
+    # so it is the full network.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, sigma, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            null_video, null_aux = _guidance.null_rows(
+                trainer, int(indices.numel()), trainer.device, trainer.training_dtype)
+            null_mask = null_aux["mask"]
+            precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                         if trainer.mixed_precision else nullcontext())
+            with precision:
+                return trainer.transformer(
+                    hidden_states=seq_xt[indices],
+                    audio_hidden_states=dummy_audio[indices],
+                    encoder_hidden_states=null_video,
+                    audio_encoder_hidden_states=null_aux["audio_text_embedding"].to(trainer.training_dtype),
+                    timestep=timestep[indices],
+                    sigma=timestep[indices],
+                    audio_timestep=full_noise_t[indices],
+                    audio_sigma=full_noise_t[indices],
+                    encoder_attention_mask=null_mask,
+                    audio_encoder_attention_mask=null_mask,
+                    num_frames=t_lat,
+                    height=lat_h,
+                    width=lat_w,
+                    video_coords=video_coords[indices],
+                    audio_num_frames=l_audio,
+                    isolate_modalities=True,
+                    use_cross_timestep=use_cross_timestep,
+                    return_dict=False,
+                )[0]
+        uncond_prediction = _guidance.null_prediction(guidance_plan, seq_xt, _null_forward)
+
     # AP3 TREAD token routing: attach the route config to the Ltx2BlockLoopWrapper
     # for THIS training forward only, then clear it in `finally` so any other use
     # of the same wrapper instance never sees a stale config. The wrapper's own
@@ -742,6 +779,10 @@ def train_step(
 
     loss_per_element = F.mse_loss(v_pred_video.float(), target.float(), reduction="none")
     mse_loss = loss_per_element.mean()
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, v_pred_video, target, uncond_prediction, sigma)
+        if guided_loss is not None:
+            mse_loss = guided_loss
     loss = mse_loss
 
     # Optional reconstruction loss (predicted x0 vs GT x0): x0 = x_t - sigma * v.

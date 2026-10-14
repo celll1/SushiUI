@@ -179,25 +179,27 @@ def null_encoding(trainer):
     return cached
 
 
-def null_rows(trainer, count, device, dtype):
+def null_rows(trainer, count, device, dtype, aux_has_batch_axis=False):
     """The cached null encoding repeated for ``count`` rows on ``device``.
 
     The embedding is cast to ``dtype``; the auxiliary (tensor, dict of tensors
-    or None) keeps its dtypes, as the caption batch does. Like the caption
-    collation, a 2-D embedding or 1-D auxiliary gains the batch axis and
-    anything else already carries a leading batch of one.
+    or None) keeps its dtypes, as the caption batch does. As in the caption
+    collation, a 2-D embedding gains the batch axis (higher ranks already carry
+    a leading batch of one); auxiliary tensors gain it unless the arch's
+    encoder returns them batched (``aux_has_batch_axis``).
     """
-    def rows(value, cast, unbatched_ndim):
+    def rows(value, cast, add_axis):
         if isinstance(value, dict):
-            return {key: rows(item, False, unbatched_ndim) for key, item in value.items()}
+            return {key: rows(item, False, add_axis) for key, item in value.items()}
         if isinstance(value, torch.Tensor):
             value = value.to(device=device, dtype=dtype if cast else value.dtype)
-            if value.dim() == unbatched_ndim:
+            if add_axis(value):
                 value = value.unsqueeze(0)
             return value.expand(count, *value.shape[1:])
         return value
     embedding, auxiliary = null_encoding(trainer)
-    return rows(embedding, True, 2), rows(auxiliary, False, 1)
+    return (rows(embedding, True, lambda value: value.dim() == 2),
+            rows(auxiliary, False, lambda value: not aux_has_batch_axis))
 
 
 @torch.no_grad()

@@ -152,6 +152,14 @@ phases 1 and 2.
      ordinary MSE; weight 0 makes no extra forward.
    - A ~3-step GPU smoke in the production dtype (FP32 weights, BF16 compute):
      finite loss, VRAM and iteration time recorded.
+
+   Implementation notes:
+   - The teacher forward runs before the training forward, so it is the full
+     network: TREAD, BlockSkip and stochastic depth are not attached yet, and
+     the REPA tap that the training forward stashes is not overwritten.
+   - The null encoding is `encode_caption("", cfg_null=True)`, cached once per
+     run; a text encoder parked on CPU is staged to the GPU for that one encode.
+   - Anima partition training refuses the guidance loss for now.
 4. **Remaining flow architectures**, one commit each, same unit gate.
 5. **SD1.5 / SDXL.** Noise-level mapping test against the scheduler.
 6. **Ideogram 4 and SenseNova.**

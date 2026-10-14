@@ -6,6 +6,7 @@ supply the prediction, its ordinary target, the no-gradient null-condition
 prediction ``u`` and a noise level in [0, 1] (1 = pure noise).
 """
 import math
+from typing import NamedTuple
 
 import torch
 
@@ -147,6 +148,78 @@ def log_extrapolation_cap(trainer, sigma, condition, selected, distance_squared,
     ]).detach().tolist()
     for name, value in zip(("effective_scale_mean", "effective_scale_min", "capped_fraction", "null_clean_rms"), values):
         trainer.log_extra_metric(f"{prefix}_{name}", value)
+
+
+class Plan(NamedTuple):
+    condition: tuple
+    mix: torch.Tensor
+    selected: torch.Tensor
+
+
+def plan(trainer, sigma, cfg_drop_mask=None):
+    """Per-row guidance choice for one step, or None when nothing is guided.
+
+    Rows drawn for the CFG null keep ordinary MSE.
+    """
+    eligible = torch.ones(sigma.shape[0], dtype=torch.bool, device=sigma.device)
+    if cfg_drop_mask is not None:
+        eligible &= ~cfg_drop_mask.to(device=sigma.device, dtype=torch.bool)
+    guided = condition(trainer.config, eligible)
+    if guided is None:
+        return None
+    mix, selected = selection(trainer, sigma, guided)
+    return Plan(guided, mix, selected)
+
+
+def null_encoding(trainer):
+    """The run's cached inference null-condition encoding (CPU)."""
+    cached = getattr(trainer, "_guidance_null_encoding", None)
+    if cached is None:
+        raise RuntimeError("Guidance loss requires the cached null-condition encoding")
+    return cached
+
+
+@torch.no_grad()
+def null_prediction(step_plan, like, forward):
+    """``forward(indices)`` predicts the null condition for the selected rows only.
+
+    Returns a tensor shaped like ``like`` (zero on unselected rows), or None
+    when no row is selected, so an unguided step costs no extra forward.
+    """
+    if not bool(step_plan.selected.any()):
+        return None
+    indices = step_plan.selected.nonzero(as_tuple=True)[0]
+    selected = forward(indices)
+    out = torch.zeros(like.shape, dtype=selected.dtype, device=selected.device)
+    out[indices] = selected
+    return out
+
+
+def loss(trainer, step_plan, prediction, target, uncond_prediction, sigma, sample_losses=None):
+    """Mixed loss with the optional extrapolation cap, logging guidance metrics.
+
+    Returns None when no row was selected; the caller keeps its ordinary MSE.
+    ``sigma`` is the noise level, and the cap's clean-space distance is
+    ``sigma * (target - u)``, which holds for flow velocity targets.
+    """
+    trainer.log_extra_metric(PREFIX + "mix_weight", float(mix_for_condition(sigma, step_plan.condition).mean()))
+    trainer.log_extra_metric(PREFIX + "selected_fraction", float(step_plan.selected.float().mean()))
+    if uncond_prediction is None:
+        return None
+    effective = None
+    cap = extrapolation_cap(trainer.config)
+    if cap > 0:
+        level = sigma.float().view(-1, *([1] * (target.ndim - 1)))
+        distance_squared = (level * (target.float() - uncond_prediction.float())).square().flatten(1).mean(1)
+        effective = capped_scale(sigma, step_plan.condition, distance_squared, cap)
+        log_extrapolation_cap(trainer, sigma, step_plan.condition, step_plan.selected, distance_squared,
+                              effective, prefix=PREFIX.rstrip("_"))
+    value, normal, guided = objective(prediction, target, uncond_prediction, sigma, step_plan.condition,
+                                      mix=step_plan.mix, sample_losses=sample_losses,
+                                      guide_scale_override=effective)
+    trainer.log_extra_metric(PREFIX + "normal", float(normal))
+    trainer.log_extra_metric(PREFIX + "guided", float(guided))
+    return value
 
 
 def objective(prediction, target, uncond_prediction, sigma, condition, mix=None, sample_losses=None,

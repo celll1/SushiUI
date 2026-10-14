@@ -60,6 +60,7 @@ class ConstantVelocityDiT(nn.Module):
 
 def _make_trainer(transformer):
     return SimpleNamespace(
+        config={},
         log_prefix="[test]",
         device=torch.device("cpu"),
         training_dtype=torch.float32,

@@ -17,6 +17,7 @@ Each body is defined exactly once here and stays byte-identical.
 """
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -380,6 +381,7 @@ def train_step(
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Anima training step (rectified flow / velocity prediction).
 
@@ -435,6 +437,36 @@ def train_step(
         (batch_size, 1, latent_h, latent_w),
         device=trainer.device, dtype=trainer.training_dtype,
     )
+
+    # Guidance-target teacher: the full network under the inference null
+    # condition, run before the training forward attaches TREAD/BlockSkip and
+    # stashes its REPA tap.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, timesteps, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            context, aux = _guidance.null_encoding(trainer)
+            count = int(indices.numel())
+            context = context.to(device=trainer.device, dtype=trainer.training_dtype)
+            context = context.unsqueeze(0).expand(count, *context.shape)
+            aux = {key: value.to(device=trainer.device).unsqueeze(0).expand(count, *value.shape)
+                   for key, value in aux.items()}
+            precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                         if trainer.mixed_precision else nullcontext())
+            with precision:
+                prediction = trainer.transformer(
+                    **noise_kwargs(trainer.transformer_original, noise[indices]),
+                    x=noisy_latents_5d[indices],
+                    timesteps=timesteps[indices],
+                    context=context,
+                    padding_mask=padding_mask[indices],
+                    target_input_ids=aux["t5_input_ids"],
+                    target_attention_mask=aux["t5_attn_mask"],
+                    source_attention_mask=aux["source_mask"],
+                )
+            return prediction.squeeze(2) if prediction.dim() == 5 else prediction
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
 
     if profile_vram:
         print_vram_usage("[train_step_anima] Before DiT forward")
@@ -524,6 +556,10 @@ def train_step(
     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
     loss_per_sample = loss_per_element.mean([1, 2, 3])
     mse_loss = loss_per_sample.mean()
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, model_pred, target, uncond_prediction, timesteps)
+        if guided_loss is not None:
+            mse_loss = guided_loss
 
     loss = mse_loss
 
@@ -627,7 +663,7 @@ def train_step(
         except Exception as _dbg_e:
             print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
 
-    del noise, noisy_latents, noisy_latents_5d, model_pred, target
+    del noise, noisy_latents, noisy_latents_5d, model_pred, target, uncond_prediction
     del loss_per_element, loss_per_sample
     del pred_x0, recon_loss
     return loss, pred_loss_value, recon_loss_value

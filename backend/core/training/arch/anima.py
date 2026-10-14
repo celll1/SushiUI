@@ -193,6 +193,7 @@ class AnimaArchHandler(ArchHandler):
             profile_vram=ctx.profile_vram,
             alphas_cumprod_cached=ctx.alphas_cumprod_cached,
             repa_pixels=ctx.repa_pixels,
+            cfg_drop_mask=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

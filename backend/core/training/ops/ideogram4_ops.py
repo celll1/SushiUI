@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 from pathlib import Path
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 import torch
 
@@ -137,14 +137,19 @@ def load_components(trainer) -> None:
     """Load Ideogram 4 components for LoRA training (conditional branch by default).
 
     The fp8 transformer (Fp8Linear) is loaded frozen; LoRA wraps it. The
-    unconditional transformer is loaded only when `ideogram4_train_uncond` is set.
+    unconditional transformer is loaded only when `ideogram4_train_uncond` or the
+    guidance-target loss needs it (or for a full fine-tune's artifacts).
     """
     print(f"{trainer.log_prefix} Detected Ideogram 4 model")
     print(f"{trainer.log_prefix} Loading Ideogram 4 components from {trainer.model_path}")
 
     trainer.ideogram4_train_uncond = bool(trainer.config.get("ideogram4_train_uncond", False))
     from core.training.ops.training_method import is_full_finetune
-    load_unconditional = trainer.ideogram4_train_uncond or is_full_finetune(trainer)
+    from core.training import guidance_loss
+    # The guidance-target teacher is the unconditional transformer, so it stays
+    # loaded and on the device whenever either branch needs it every step.
+    trainer.ideogram4_uncond_resident = trainer.ideogram4_train_uncond or guidance_loss.active(trainer.config)
+    load_unconditional = trainer.ideogram4_uncond_resident or is_full_finetune(trainer)
     trainer.ideogram4_uncond_loss_weight = float(trainer.config.get("ideogram4_uncond_loss_weight", 1.0))
 
     from core.models.ideogram4.ideogram4_loader import load_ideogram4_components, load_ideogram4_single_file
@@ -237,7 +242,7 @@ def load_components(trainer) -> None:
 
     print(f"{trainer.log_prefix} Moving Ideogram 4 transformer to {trainer.device}")
     trainer.transformer.to(trainer.device)
-    if trainer.transformer_uncond is not None and trainer.ideogram4_train_uncond:
+    if trainer.transformer_uncond is not None and trainer.ideogram4_uncond_resident:
         trainer.transformer_uncond.to(trainer.device)
 
     # Setup attention backend if non-native (use_flash_attention is derived from it)
@@ -276,8 +281,9 @@ def setup_block_swap(trainer) -> None:
     )
     trainer.transformer._layer_offload_conductor = trainer.layer_offload_conductor
     trainer.layer_offload_conductor.register_hooks()
-    # Optional: a second conductor for the unconditional transformer when trained.
-    if getattr(trainer, "transformer_uncond", None) is not None and getattr(trainer, "ideogram4_train_uncond", False):
+    # Optional: a second conductor for the unconditional transformer when it is
+    # trained or is the guidance teacher.
+    if getattr(trainer, "transformer_uncond", None) is not None and getattr(trainer, "ideogram4_uncond_resident", False):
         trainer.layer_offload_conductor_uncond = LayerOffloadConductor(
             layers=trainer.transformer_uncond.layers,
             blocks_to_swap=trainer.blocks_to_swap,
@@ -369,6 +375,7 @@ def train_step(
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Ideogram 4 training step (flow-matching, velocity prediction).
 
@@ -444,6 +451,34 @@ def train_step(
             return_dict=False,
         )[0]
 
+    # Guidance-target teacher: the separate unconditional transformer on the
+    # image-only inputs, exactly as the inference uncond branch runs it. Before
+    # the training forward, which stashes the REPA tap.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, sigma, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        teacher = getattr(trainer, "transformer_uncond", None)
+        if teacher is None:
+            raise RuntimeError("Ideogram 4 guidance loss requires the loaded unconditional transformer")
+
+        def _null_forward(indices):
+            count = int(indices.numel())
+            precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                         if trainer.mixed_precision else nullcontext())
+            with precision:
+                return teacher(
+                    hidden_states=noisy[indices].to(teacher.dtype),
+                    timestep=t_model[indices].to(teacher.dtype),
+                    encoder_hidden_states=torch.zeros(count, N, llm_features.shape[-1], dtype=teacher.dtype,
+                                                      device=trainer.device),
+                    position_ids=cond["position_ids"][indices, max_text:],
+                    segment_ids=cond["segment_ids"][indices, max_text:],
+                    indicator=cond["indicator"][indices, max_text:],
+                    return_dict=False,
+                )[0].float()
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             out = _cond_forward()
@@ -451,6 +486,10 @@ def train_step(
         out = _cond_forward()
     v_pred = out[:, max_text:].float()
     loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, v_pred, v_target, uncond_prediction, sigma)
+        if guided_loss is not None:
+            loss = guided_loss
 
     # Dual reconstruction loss, normalized mixing: (1-w)*pred + w*recon, the
     # convention the UI documents. Mixes the conditional diffusion loss only;

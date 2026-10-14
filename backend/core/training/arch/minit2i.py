@@ -237,6 +237,8 @@ class MiniT2IArchHandler(ArchHandler):
             debug_captions=ctx.debug_captions,
             debug_reference_image_paths=ctx.debug_reference_image_paths,
             repa_pixels=ctx.repa_pixels,
+            null_condition=self.guidance_null_condition(trainer),
+            guidance_ineligible=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

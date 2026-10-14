@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
+from contextlib import nullcontext
 from typing import Optional, Tuple
 
 import torch
@@ -292,6 +293,8 @@ def train_step(
     latent_h: Optional[int] = None,
     latent_w: Optional[int] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    null_condition=None,
+    guidance_ineligible: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single Lens DiT training step (flow-matching, velocity prediction).
 
@@ -373,6 +376,28 @@ def train_step(
     if profile_vram:
         print_vram_usage("[train_step_lens] Before transformer forward")
 
+    # Guidance-target teacher, before the training forward stashes its REPA tap.
+    # ``null_condition`` (from the handler) maps rows to the inference null;
+    # ``guidance_ineligible`` marks rows that already are the null.
+    from core.training import guidance_loss as _guidance
+    guidance_plan = _guidance.plan(trainer, sigma, guidance_ineligible) if null_condition else None
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            null_features, null_mask = null_condition(encoder_features[indices], encoder_mask[indices])
+            precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                         if trainer.mixed_precision else nullcontext())
+            with precision:
+                return trainer.transformer(
+                    hidden_states=noisy_latents[indices],
+                    encoder_hidden_states=[null_features[:, i] for i in range(num_layers)],
+                    encoder_hidden_states_mask=null_mask,
+                    timestep=timestep_input[indices],
+                    img_shapes=img_shapes,
+                    **noise_kwargs(trainer.transformer, noise[indices]),
+                )
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
     if trainer.mixed_precision:
         with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
             v_pred = trainer.transformer(
@@ -398,6 +423,10 @@ def train_step(
 
     # MSE loss on velocity
     mse_loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float(), reduction="mean")
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, v_pred, v_target, uncond_prediction, sigma)
+        if guided_loss is not None:
+            mse_loss = guided_loss
     loss = mse_loss
 
     # Per-item MSE for the CFG-null loss split. Lens batches can be mixed, and

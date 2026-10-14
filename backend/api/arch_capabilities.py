@@ -1558,7 +1558,7 @@ for _a, _stage in CFG_NULL_STAGE_BY_ARCH.items():
                                           _CFG_NULL_ABSENT_REASON)
 
 GUIDANCE_LOSS_ARCHS = frozenset({"qwen_image_21", "ming_image_01", "anima", "zimage", "krea2", "flux2",
-                                 "sensenova_sdxl_chimera", "ltx2"})
+                                 "sensenova_sdxl_chimera", "ltx2", "lens", "minit2i"})
 _GUIDANCE_LOSS_REFUSALS = {
     "minimax_h3": "guidance-distilled: inference has no CFG uncond branch to extrapolate from",
     "acestep": "guidance-distilled: inference has no CFG uncond branch to extrapolate from",

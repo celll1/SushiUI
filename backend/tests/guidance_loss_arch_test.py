@@ -44,7 +44,8 @@ def _trainer(model, noise, **extra):
         transformer=model, transformer_original=model, mixed_precision=False, timestep_sampler=None,
         noise_scheduler=None, snr_regularization_loss=None, energy_regularization_loss=None,
         reconstruction_loss_weight=0.0, _active_mnt_noise=noise, log_prefix="[test]",
-        log_extra_metric=lambda name, value: None, **extra)
+        log_extra_metric=lambda name, value: None,
+        stash_cfg_null_per_sample_loss=lambda prediction, target: None, **extra)
 
 
 def _zimage(cfg_drop_mask):
@@ -128,7 +129,49 @@ def _ltx2(cfg_drop_mask):
     return model, loss, _pack_latents(noise - clean), lambda out: out
 
 
-ARCHS = {"zimage": _zimage, "krea2": _krea2, "flux2": _flux2, "ltx2": _ltx2}
+def _lens(cfg_drop_mask):
+    from core.training.ops import lens_ops
+
+    class Lens(Recorder):
+        def forward(self, hidden_states, encoder_hidden_states, encoder_hidden_states_mask, timestep, img_shapes):
+            return self.velocity(hidden_states, torch.stack(encoder_hidden_states, 1), 2)
+
+    model, clean, noise = Lens(8), torch.randn(BATCH, 9, 8), torch.randn(BATCH, 9, 8)
+    trainer = _trainer(model, noise)
+    null = lambda features, mask: lens_ops.apply_cfg_null_collated(
+        features, mask, torch.ones(features.shape[0], dtype=torch.bool))
+    loss, _, _ = lens_ops.train_step(trainer, latents=clean, encoder_features=torch.ones(BATCH, 2, 5, 4),
+                                     encoder_mask=torch.ones(BATCH, 5, dtype=torch.bool),
+                                     timesteps=torch.tensor([.3, .7]), latent_h=3, latent_w=3,
+                                     null_condition=null, guidance_ineligible=cfg_drop_mask)
+    return model, loss, noise - clean, lambda out: out
+
+
+def _minit2i(cfg_drop_mask):
+    from core.training.ops import minit2i_ops
+
+    class MiniT2I(Recorder):
+        dtype = torch.float32
+
+        def forward(self, x, t, embeds, mask):
+            return self.velocity(x, mask.float().unsqueeze(-1), 1)
+
+    model, images = MiniT2I(3), torch.randn(BATCH, 3, 4, 4)
+    noise = torch.randn(BATCH, 3, 4, 4)
+    trainer = _trainer(model, noise, minit2i_noise_scale=2.0)
+    null = lambda embeds, mask: minit2i_ops.apply_cfg_null_collated(
+        embeds, mask, torch.ones(embeds.shape[0], dtype=torch.bool))
+    t = torch.tensor([.3, .7])
+    loss, _, _ = minit2i_ops.train_step(trainer, images=images, text_embeds=torch.ones(BATCH, 5, 4),
+                                        attention_mask=torch.ones(BATCH, 5, dtype=torch.long),
+                                        timesteps=t, null_condition=null, guidance_ineligible=cfg_drop_mask)
+    x_t = model.calls[-1]["x"]
+    denom = (1 - t).clamp_min(.05).view(-1, 1, 1, 1)
+    return model, loss, (images - x_t) / denom, lambda out: (out - x_t) / denom
+
+
+ARCHS = {"zimage": _zimage, "krea2": _krea2, "flux2": _flux2, "ltx2": _ltx2, "lens": _lens, "minit2i": _minit2i}
+NULL_VALUE = {"lens": 0, "minit2i": 0}
 
 
 @pytest.mark.parametrize("arch", sorted(ARCHS))
@@ -137,7 +180,8 @@ def test_teacher_runs_on_the_null_and_target_is_exact(arch):
     teacher, student = model.calls
     assert not teacher["grad"] and student["grad"]
     assert torch.equal(teacher["x"], student["x"])
-    assert bool((teacher["context"] == -1).all()) and bool((student["context"] == 1).all())
+    null = NULL_VALUE.get(arch, -1)
+    assert bool((teacher["context"] == null).all()) and bool((student["context"] == 1).all())
     prediction, uncond = image(student["out"]), image(teacher["out"])
     guided = uncond + 3 * (target - uncond)
     per_image = .5 * (prediction - target).square().flatten(1).mean(1) + \

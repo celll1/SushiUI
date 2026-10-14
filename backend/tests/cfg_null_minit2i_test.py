@@ -14,6 +14,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
+
 import torch
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -398,7 +400,7 @@ def test_the_handler_hands_the_rewritten_mask_to_the_forward(monkeypatch):
     text = torch.randn(2, 3, 4)
     attn = torch.ones(2, 3)
     handler = MiniT2IArchHandler.__new__(MiniT2IArchHandler)
-    handler.train_step(None, TrainStepContext(
+    handler.train_step(SimpleNamespace(config={}), TrainStepContext(
         latents=torch.zeros(2, 3, 8, 8), text_embeddings=text,
         attention_mask=attn, cfg_drop_mask=torch.tensor([True, False])))
 
@@ -419,7 +421,7 @@ def test_no_drop_mask_leaves_the_conditioning_objects_alone(monkeypatch):
 
     text, attn = torch.randn(1, 2, 3), torch.ones(1, 2)
     handler = MiniT2IArchHandler.__new__(MiniT2IArchHandler)
-    handler.train_step(None, TrainStepContext(
+    handler.train_step(SimpleNamespace(config={}), TrainStepContext(
         latents=torch.zeros(1, 3, 8, 8), text_embeddings=text,
         attention_mask=attn, cfg_drop_mask=None))
     assert seen["text_embeds"] is text

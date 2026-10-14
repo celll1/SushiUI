@@ -154,6 +154,8 @@ class LensArchHandler(ArchHandler):
             latent_h=ctx.latent_h,
             latent_w=ctx.latent_w,
             repa_pixels=ctx.repa_pixels,
+            null_condition=self.guidance_null_condition(trainer),
+            guidance_ineligible=ctx.cfg_drop_mask,
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):

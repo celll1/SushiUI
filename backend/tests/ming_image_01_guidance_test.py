@@ -59,7 +59,7 @@ def test_frame_weighted_guidance_matches_independent_dense_oracle(schedule,cap):
 
 def test_stochastic_guidance_excludes_native_null_labels_and_shares_draw():
     trainer=SimpleNamespace(config={'qwen_guidance_loss_weight':.5,'qwen_guidance_loss_mix_mode':'stochastic'},
-        _qwen_guidance_draw=torch.tensor([.1,.1,.9]))
+        _guidance_draw=torch.tensor([.1,.1,.9]))
     _,selection,selected=prepare_guidance(trainer,torch.tensor([.2,.5,.8]),torch.tensor([False,True,False]))
     assert torch.equal(selected,torch.tensor([True,False,False]))
     assert torch.equal(selection,selected.float())
@@ -194,7 +194,7 @@ def test_guidance_refuses_trainable_conditioner_before_any_forward(tmp_path,monk
 def test_zero_low_weight_high_noise_ramp_still_selects_guidance():
     trainer=SimpleNamespace(config={'qwen_guidance_loss_weight':0.,'qwen_guidance_loss_mix_mode':'stochastic',
         'qwen_guidance_loss_weight_schedule':'high_noise_smoothstep','qwen_guidance_loss_high_noise_weight':1.,
-        'qwen_guidance_loss_ramp_start':.2,'qwen_guidance_loss_ramp_end':.8},_qwen_guidance_draw=torch.full((3,),.1))
+        'qwen_guidance_loss_ramp_start':.2,'qwen_guidance_loss_ramp_end':.8},_guidance_draw=torch.full((3,),.1))
     condition,_,selected=prepare_guidance(trainer,torch.tensor([0.,.5,1.]),None)
     assert condition is not None and torch.equal(selected,torch.tensor([False,True,True]))
 

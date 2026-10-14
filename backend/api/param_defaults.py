@@ -3002,16 +3002,27 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "qwen_convrot_training_forward": "auto",
     "qwen_convrot_backward_cache_blocks": 2,
     "qwen_convrot_backward_prefetch_depth": 1,
-    "qwen_guidance_loss_weight": 0.0,
-    "qwen_guidance_loss_mix_mode": "stochastic",
+    # Guidance-target loss (core/training/guidance_loss.py), any supported arch.
+    "guidance_loss_weight": 0.0,
+    "guidance_loss_mix_mode": "stochastic",
+    "guidance_loss_scale": 3.0,
+    "guidance_loss_extrapolation_max_rms": 0.0,
+    "guidance_loss_schedule": "sigma",
+    "guidance_loss_weight_schedule": "constant",
+    "guidance_loss_high_noise_weight": 1.0,
+    "guidance_loss_ramp_start": 0.5,
+    "guidance_loss_ramp_end": 0.8,
+    # Legacy aliases of the guidance_loss_* keys (None = not given).
+    "qwen_guidance_loss_weight": None,
+    "qwen_guidance_loss_mix_mode": None,
+    "qwen_guidance_loss_scale": None,
+    "qwen_guidance_loss_extrapolation_max_rms": None,
+    "qwen_guidance_loss_schedule": None,
+    "qwen_guidance_loss_weight_schedule": None,
+    "qwen_guidance_loss_high_noise_weight": None,
+    "qwen_guidance_loss_ramp_start": None,
+    "qwen_guidance_loss_ramp_end": None,
     "qwen_cfg_null_sigma_schedule": False,
-    "qwen_guidance_loss_scale": 3.0,
-    "qwen_guidance_loss_extrapolation_max_rms": 0.0,
-    "qwen_guidance_loss_schedule": "sigma",
-    "qwen_guidance_loss_weight_schedule": "constant",
-    "qwen_guidance_loss_high_noise_weight": 1.0,
-    "qwen_guidance_loss_ramp_start": 0.5,
-    "qwen_guidance_loss_ramp_end": 0.8,
     # TREAD token routing (arXiv 2501.04765) — training-only acceleration.
     # Routes a random subset of tokens through a span of transformer blocks;
     # dropped tokens bypass the span (identity transport) and are restored at
@@ -3597,13 +3608,12 @@ TRAINING_SAMPLE_DEFAULTS_BY_ARCH: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# Only Qwen currently implements the guidance/contrastive target. Other
-# architectures retain ordinary MSE; a future distilled model must first have
-# a validated guidance-loss implementation before it can enter this table.
+# New-run guidance_loss_weight per architecture. Only Qwen defaults to the
+# guidance target; every other architecture starts with ordinary MSE.
 TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH: Dict[str, float] = {
-    "_default": TRAINING_DEFAULTS["qwen_guidance_loss_weight"],
+    "_default": TRAINING_DEFAULTS["guidance_loss_weight"],
     "qwen_image_21": 1.0,
-    "ming_image_01": TRAINING_DEFAULTS["qwen_guidance_loss_weight"],
+    "ming_image_01": TRAINING_DEFAULTS["guidance_loss_weight"],
 }
 
 
@@ -3613,8 +3623,8 @@ def resolve_training_guidance_loss_defaults(
     """Resolve a new run's loss without changing explicit or legacy YAML values."""
     resolved = dict(params)
     explicit = set(explicit_fields) if explicit_fields is not None else set(params)
-    if "qwen_guidance_loss_weight" not in explicit:
-        resolved["qwen_guidance_loss_weight"] = (
+    if "guidance_loss_weight" not in explicit and "qwen_guidance_loss_weight" not in explicit:
+        resolved["guidance_loss_weight"] = (
             TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH.get(
                 arch, TRAINING_GUIDANCE_LOSS_DEFAULTS_BY_ARCH["_default"]
             )

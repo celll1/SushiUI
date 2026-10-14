@@ -560,15 +560,23 @@ def _build_train_section(
     for key in (
         "qwen_full_kv_query_chunk_tokens", "qwen_convrot_training_forward",
         "qwen_convrot_backward_cache_blocks",
-        "qwen_convrot_backward_prefetch_depth",
-        "qwen_guidance_loss_weight", "qwen_guidance_loss_mix_mode",
-        "qwen_cfg_null_sigma_schedule", "qwen_guidance_loss_scale",
-        "qwen_guidance_loss_extrapolation_max_rms",
-        "qwen_guidance_loss_schedule",
-        "qwen_guidance_loss_weight_schedule", "qwen_guidance_loss_high_noise_weight",
-        "qwen_guidance_loss_ramp_start", "qwen_guidance_loss_ramp_end",
+        "qwen_convrot_backward_prefetch_depth", "qwen_cfg_null_sigma_schedule",
     ):
         train[key] = p.get(key, _TD[key])
+
+    # Only canonical keys are written; a legacy qwen_ alias fills a missing one.
+    for key in (
+        "guidance_loss_weight", "guidance_loss_mix_mode", "guidance_loss_scale",
+        "guidance_loss_extrapolation_max_rms", "guidance_loss_schedule",
+        "guidance_loss_weight_schedule", "guidance_loss_high_noise_weight",
+        "guidance_loss_ramp_start", "guidance_loss_ramp_end",
+    ):
+        for source in (key, "qwen_" + key):
+            if p.get(source) is not None:
+                train[key] = p[source]
+                break
+        else:
+            train[key] = _TD[key]
 
     # Text/Latent encoding
     train["text_encoding_mode"] = p.get("text_encoding_mode", "swap_onthefly")

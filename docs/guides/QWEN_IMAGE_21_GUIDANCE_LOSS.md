@@ -2,6 +2,11 @@
 
 Status: experimental, opt-in (`qwen_guidance_loss_weight=0` by default).
 
+The options are now spelled `guidance_loss_*`. The `qwen_guidance_loss_*` names
+below are legacy aliases that are still accepted. For the cross-architecture
+generalization, see
+[GUIDANCE_LOSS_GENERALIZATION.md](../decisions/GUIDANCE_LOSS_GENERALIZATION.md).
+
 ## Objective
 
 For a logical image, draw one noise tensor and one flow timestep. With clean

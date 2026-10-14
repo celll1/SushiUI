@@ -43,6 +43,7 @@ def resolve_ownership(config):
 def preflight_training(config, *, method):
     from api.arch_capabilities import TRAINING_UNSUPPORTED
     from api.param_defaults import TRAINING_DEFAULTS
+    from core.training import guidance_loss as _guidance
     from .cache import configured_modes
     from .convrot_training import settings
     settings(config, method=method)
@@ -75,13 +76,13 @@ def preflight_training(config, *, method):
             or not math.isfinite(rate) or rate < 0):
         raise ValueError("Ming caption adapter rate must be finite and nonnegative")
     groups, _ = resolve_ownership(config)
-    guidance=config.get("qwen_guidance_loss_weight",TRAINING_DEFAULTS["qwen_guidance_loss_weight"])
+    guidance=_guidance.setting(config,"weight")
     if not isinstance(guidance,(float,int)) or isinstance(guidance,bool) or not math.isfinite(guidance) or not 0<=guidance<=1:
         raise ValueError("Ming guidance weight must be finite and within [0, 1]")
-    high=config.get("qwen_guidance_loss_high_noise_weight",TRAINING_DEFAULTS["qwen_guidance_loss_high_noise_weight"])
+    high=_guidance.setting(config,"high_noise_weight")
     if not isinstance(high,(float,int)) or isinstance(high,bool) or not math.isfinite(high) or not 0<=high<=1:
         raise ValueError("Ming high-noise guidance weight must be finite and within [0, 1]")
-    ramp=config.get("qwen_guidance_loss_weight_schedule",TRAINING_DEFAULTS["qwen_guidance_loss_weight_schedule"])
+    ramp=_guidance.setting(config,"weight_schedule")
     if groups and (guidance or (ramp=="high_noise_smoothstep" and high>0)):
         raise ValueError("Ming guidance loss requires a frozen text encoder/conditioner")
 

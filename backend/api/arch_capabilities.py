@@ -337,6 +337,9 @@ TRAINING_FEATURE_PARAMS: Dict[str, List[str]] = {
     # architecture without the mechanism has always accepted and ignored it,
     # and listing it here would newly hide a control on runs that carry it.
     "cfg_uncond_drop": ["cfg_uncond_drop_rate"],
+    # Guidance-target loss (core/training/guidance_loss.py). Each arch wires the
+    # no-gradient null-condition forward into its own training step.
+    "guidance_loss": ["guidance_loss_weight", "guidance_loss_weight_schedule"],
     # Layer-wise LR decay. Its depth axis is ArchHandler.depth_blocks, which
     # only exists where the blocks have a forward order to be deep in.
     "lr_layer_decay": ["lr_layer_decay"],
@@ -365,6 +368,7 @@ TRAINING_FEATURE_LABELS: Dict[str, str] = {
     "sensenova_train_generation_norms": "SenseNova generation RMSNorm training",
     "sensenova_latent_refiner": "SenseNova latent-grid refiner",
     "cfg_uncond_drop": "aligned CFG unconditional (null-condition) training",
+    "guidance_loss": "guidance-target loss (train toward a CFG-extrapolated target)",
     "lr_layer_decay": "layer-wise learning-rate decay",
     "repa": "REPA (representation alignment with a frozen vision encoder)",
 }
@@ -1552,6 +1556,16 @@ for _a, _stage in CFG_NULL_STAGE_BY_ARCH.items():
     if _stage is None:
         _add_training_feature_unsupported(_a, "cfg_uncond_drop",
                                           _CFG_NULL_ABSENT_REASON)
+
+GUIDANCE_LOSS_ARCHS = frozenset({"qwen_image_21", "ming_image_01"})
+_GUIDANCE_LOSS_REFUSALS = {
+    "minimax_h3": "guidance-distilled: inference has no CFG uncond branch to extrapolate from",
+    "acestep": "guidance-distilled: inference has no CFG uncond branch to extrapolate from",
+    "yue2": "no diffusion CFG training path",
+}
+for _a in sorted(TRAINING_DECLARED_ARCHS - GUIDANCE_LOSS_ARCHS):
+    _add_training_feature_unsupported(_a, "guidance_loss", _GUIDANCE_LOSS_REFUSALS.get(
+        _a, "the guidance-target loss is not wired into this architecture's training step yet"))
 
 
 # Coverage invariants (same style as core.training.arch's _EXPECTED_ARCH_KEYS):

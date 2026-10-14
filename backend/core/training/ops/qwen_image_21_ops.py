@@ -558,7 +558,7 @@ def _save_debug_latents(
             "model_type": "qwen_image_21",
             "partition_count": int(partition_count),
         }
-        if float(trainer.config.get("qwen_guidance_loss_weight", TRAINING_DEFAULTS["qwen_guidance_loss_weight"]) or 0) > 0:
+        if _guidance.weight(trainer.config) > 0:
             data["uncond_prediction_status"] = "computed" if uncond_prediction is not None else "not_selected"
         if uncond_prediction is not None:
             uncond_grid = image_grid(uncond_prediction)

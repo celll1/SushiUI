@@ -1,40 +1,44 @@
 import { TrainingRunCreateRequest } from "@/utils/api";
 
 type Props = {
-  ming?: boolean;
+  // "qwen_image_21" / "ming_image_01" keep their own notes and the sigma-null option.
+  arch: string;
+  archLabel: string;
   params: TrainingRunCreateRequest;
   defaults: Record<string, unknown> | null;
   onChange: (patch: Partial<TrainingRunCreateRequest>) => void;
 };
 
-export default function QwenTrainingObjective({ params, defaults, onChange, ming }: Props) {
-  const low = params.qwen_guidance_loss_weight ?? Number(defaults?.qwen_guidance_loss_weight ?? 0);
-  const schedule = params.qwen_guidance_loss_weight_schedule ??
-    (defaults?.qwen_guidance_loss_weight_schedule as "constant" | "high_noise_smoothstep" | undefined) ?? "constant";
-  const high = params.qwen_guidance_loss_high_noise_weight ?? Number(defaults?.qwen_guidance_loss_high_noise_weight ?? 1);
+export default function TrainingObjective({ arch, archLabel, params, defaults, onChange }: Props) {
+  const ming = arch === "ming_image_01";
+  const sigmaNullOption = ming || arch === "qwen_image_21";
+  const low = params.guidance_loss_weight ?? Number(defaults?.guidance_loss_weight ?? 0);
+  const schedule = params.guidance_loss_weight_schedule ??
+    (defaults?.guidance_loss_weight_schedule as "constant" | "high_noise_smoothstep" | undefined) ?? "constant";
+  const high = params.guidance_loss_high_noise_weight ?? Number(defaults?.guidance_loss_high_noise_weight ?? 1);
   const objective = schedule === "constant" || low === high
     ? (low === 0 ? "mse" : low === 1 ? "contrastive" : "mixed")
     : "mixed";
-  const mode = params.qwen_guidance_loss_mix_mode ??
-    (defaults?.qwen_guidance_loss_mix_mode as "stochastic" | "blend" | undefined) ?? "stochastic";
+  const mode = params.guidance_loss_mix_mode ??
+    (defaults?.guidance_loss_mix_mode as "stochastic" | "blend" | undefined) ?? "stochastic";
 
   return (
     <div className="break-inside-avoid border border-amber-800/50 rounded p-4 space-y-3">
-      <h3 className="text-sm font-medium text-amber-300">Training Objective · {ming ? "Ming-Image 0.1" : "Qwen-Image 2.1"}</h3>
+      <h3 className="text-sm font-medium text-amber-300">Training Objective · {archLabel}</h3>
       <label className="block text-xs text-gray-300">Objective
         <select
           value={objective}
           onChange={(event) => {
             const choice = event.target.value;
             onChange(choice === "mse"
-              ? { qwen_guidance_loss_weight: 0, qwen_guidance_loss_weight_schedule: "constant",
+              ? { guidance_loss_weight: 0, guidance_loss_weight_schedule: "constant",
                   qwen_cfg_null_sigma_schedule: false }
               : choice === "contrastive"
-                ? { qwen_guidance_loss_weight: 1, qwen_guidance_loss_weight_schedule: "constant",
+                ? { guidance_loss_weight: 1, guidance_loss_weight_schedule: "constant",
                     qwen_cfg_null_sigma_schedule: false }
-                : { qwen_guidance_loss_weight: 0.5, qwen_guidance_loss_weight_schedule: "constant",
-                    qwen_guidance_loss_mix_mode: "stochastic",
-                    qwen_cfg_null_sigma_schedule: (params.cfg_uncond_drop_rate ?? 0) > 0 });
+                : { guidance_loss_weight: 0.5, guidance_loss_weight_schedule: "constant",
+                    guidance_loss_mix_mode: "stochastic",
+                    qwen_cfg_null_sigma_schedule: sigmaNullOption && (params.cfg_uncond_drop_rate ?? 0) > 0 });
           }}
           className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
         >
@@ -48,22 +52,26 @@ export default function QwenTrainingObjective({ params, defaults, onChange, ming
           <>Ming defaults to ordinary MSE. Guided selections reuse a no-gradient
             dual-zero conditioning prediction with the same native reference latents.
             Layer loss follows its target frame weights. Guidance loss requires a frozen conditioner.</>
-        ) : (
+        ) : arch === "qwen_image_21" ? (
           <>Qwen defaults to 100% guidance-target loss. MSE is available for ordinary training.
             Guided selections reuse a no-gradient empty-prompt prediction; the branch shares LoRA weights.</>
+        ) : (
+          <>Defaults to ordinary MSE. Guided selections add one no-gradient forward under the
+            inference null condition on the same noisy input; the branch shares trained weights.
+            Guidance loss requires a frozen text encoder.</>
         )}
       </p>
       {objective !== "mse" && (
         <div className="grid grid-cols-2 gap-2">
           <label className="text-xs text-gray-400">{ming ? "Target extrapolation" : "Target CFG"}
             <input type="number" min={1} max={10} step={0.25}
-              value={params.qwen_guidance_loss_scale ?? Number(defaults?.qwen_guidance_loss_scale ?? 3)}
-              onChange={(event) => onChange({ qwen_guidance_loss_scale: Number(event.target.value) })}
+              value={params.guidance_loss_scale ?? Number(defaults?.guidance_loss_scale ?? 3)}
+              onChange={(event) => onChange({ guidance_loss_scale: Number(event.target.value) })}
               className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
           </label>
           <label className="text-xs text-gray-400">Target CFG schedule
-            <select value={params.qwen_guidance_loss_schedule ?? String(defaults?.qwen_guidance_loss_schedule ?? "sigma")}
-              onChange={(event) => onChange({ qwen_guidance_loss_schedule: event.target.value as "constant" | "sigma" })}
+            <select value={params.guidance_loss_schedule ?? String(defaults?.guidance_loss_schedule ?? "sigma")}
+              onChange={(event) => onChange({ guidance_loss_schedule: event.target.value as "constant" | "sigma" })}
               className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
               <option value="sigma">Sigma tapered</option>
               <option value="constant">Constant</option>
@@ -75,12 +83,12 @@ export default function QwenTrainingObjective({ params, defaults, onChange, ming
         <div className="space-y-1">
           <label className="block text-xs text-gray-400">Max target extrapolation (clean latent RMS; 0 = off)
             <input type="number" min={0} step="any"
-              value={params.qwen_guidance_loss_extrapolation_max_rms ??
-                (typeof defaults?.qwen_guidance_loss_extrapolation_max_rms === "number"
-                  ? defaults.qwen_guidance_loss_extrapolation_max_rms : "")}
+              value={params.guidance_loss_extrapolation_max_rms ??
+                (typeof defaults?.guidance_loss_extrapolation_max_rms === "number"
+                  ? defaults.guidance_loss_extrapolation_max_rms : "")}
               onChange={(event) => {
                 const value = event.target.valueAsNumber;
-                if (Number.isFinite(value) && value >= 0) onChange({ qwen_guidance_loss_extrapolation_max_rms: value });
+                if (Number.isFinite(value) && value >= 0) onChange({ guidance_loss_extrapolation_max_rms: value });
               }}
               className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
           </label>
@@ -95,7 +103,7 @@ export default function QwenTrainingObjective({ params, defaults, onChange, ming
           <label className="block text-xs text-gray-400">How to combine losses
             <select value={mode}
               onChange={(event) => onChange({
-                qwen_guidance_loss_mix_mode: event.target.value as "stochastic" | "blend",
+                guidance_loss_mix_mode: event.target.value as "stochastic" | "blend",
                 ...(event.target.value === "blend" ? { qwen_cfg_null_sigma_schedule: false } : {}),
               })}
               className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
@@ -106,12 +114,12 @@ export default function QwenTrainingObjective({ params, defaults, onChange, ming
           <div className="grid grid-cols-2 gap-2">
             <label className="text-xs text-gray-400">Low-σ guided probability / weight
               <input type="number" min={0} max={1} step={0.05} value={low}
-                onChange={(event) => onChange({ qwen_guidance_loss_weight: Number(event.target.value) })}
+                onChange={(event) => onChange({ guidance_loss_weight: Number(event.target.value) })}
                 className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
             </label>
             <label className="text-xs text-gray-400">Probability / weight schedule
               <select value={schedule}
-                onChange={(event) => onChange({ qwen_guidance_loss_weight_schedule: event.target.value as "constant" | "high_noise_smoothstep" })}
+                onChange={(event) => onChange({ guidance_loss_weight_schedule: event.target.value as "constant" | "high_noise_smoothstep" })}
                 className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200">
                 <option value="constant">Constant</option>
                 <option value="high_noise_smoothstep">High-noise ramp</option>
@@ -122,24 +130,24 @@ export default function QwenTrainingObjective({ params, defaults, onChange, ming
             <div className="grid grid-cols-3 gap-2">
               <label className="text-xs text-gray-400">High-σ weight
                 <input type="number" min={low} max={1} step={0.05} value={high}
-                  onChange={(event) => onChange({ qwen_guidance_loss_high_noise_weight: Number(event.target.value) })}
+                  onChange={(event) => onChange({ guidance_loss_high_noise_weight: Number(event.target.value) })}
                   className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
               </label>
               <label className="text-xs text-gray-400">Ramp starts at σ
                 <input type="number" min={0} max={1} step={0.05}
-                  value={params.qwen_guidance_loss_ramp_start ?? Number(defaults?.qwen_guidance_loss_ramp_start ?? 0.5)}
-                  onChange={(event) => onChange({ qwen_guidance_loss_ramp_start: Number(event.target.value) })}
+                  value={params.guidance_loss_ramp_start ?? Number(defaults?.guidance_loss_ramp_start ?? 0.5)}
+                  onChange={(event) => onChange({ guidance_loss_ramp_start: Number(event.target.value) })}
                   className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
               </label>
               <label className="text-xs text-gray-400">Ramp ends at σ
                 <input type="number" min={0} max={1} step={0.05}
-                  value={params.qwen_guidance_loss_ramp_end ?? Number(defaults?.qwen_guidance_loss_ramp_end ?? 0.8)}
-                  onChange={(event) => onChange({ qwen_guidance_loss_ramp_end: Number(event.target.value) })}
+                  value={params.guidance_loss_ramp_end ?? Number(defaults?.guidance_loss_ramp_end ?? 0.8)}
+                  onChange={(event) => onChange({ guidance_loss_ramp_end: Number(event.target.value) })}
                   className="mt-1 w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200" />
               </label>
             </div>
           )}
-          {mode === "stochastic" && (
+          {mode === "stochastic" && sigmaNullOption && (
             <>
               <label className="flex items-center gap-2 text-xs text-gray-300">
                 <input type="checkbox" checked={(params.cfg_uncond_drop_rate ?? 0) > 0 && !!params.qwen_cfg_null_sigma_schedule}

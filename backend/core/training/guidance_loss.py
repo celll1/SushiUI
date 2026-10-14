@@ -218,12 +218,15 @@ def null_prediction(step_plan, like, forward):
     return out
 
 
-def loss(trainer, step_plan, prediction, target, uncond_prediction, sigma, sample_losses=None):
+def loss(trainer, step_plan, prediction, target, uncond_prediction, sigma, sample_losses=None,
+         clean_scale=None, reduction="mean"):
     """Mixed loss with the optional extrapolation cap, logging guidance metrics.
 
     Returns None when no row was selected; the caller keeps its ordinary MSE.
-    ``sigma`` is the noise level, and the cap's clean-space distance is
-    ``sigma * (target - u)``, which holds for flow velocity targets.
+    ``sigma`` is the noise level. The cap's clean-space distance is
+    ``clean_scale * (target - u)``; ``clean_scale`` defaults to ``sigma``, which
+    is right for flow velocity targets. ``reduction="none"`` returns the
+    per-image loss.
     """
     trainer.log_extra_metric(PREFIX + "mix_weight", float(mix_for_condition(sigma, step_plan.condition).mean()))
     trainer.log_extra_metric(PREFIX + "selected_fraction", float(step_plan.selected.float().mean()))
@@ -232,21 +235,21 @@ def loss(trainer, step_plan, prediction, target, uncond_prediction, sigma, sampl
     effective = None
     cap = extrapolation_cap(trainer.config)
     if cap > 0:
-        level = sigma.float().view(-1, *([1] * (target.ndim - 1)))
+        level = (sigma if clean_scale is None else clean_scale).float().view(-1, *([1] * (target.ndim - 1)))
         distance_squared = (level * (target.float() - uncond_prediction.float())).square().flatten(1).mean(1)
         effective = capped_scale(sigma, step_plan.condition, distance_squared, cap)
         log_extrapolation_cap(trainer, sigma, step_plan.condition, step_plan.selected, distance_squared,
                               effective, prefix=PREFIX.rstrip("_"))
     value, normal, guided = objective(prediction, target, uncond_prediction, sigma, step_plan.condition,
                                       mix=step_plan.mix, sample_losses=sample_losses,
-                                      guide_scale_override=effective)
+                                      guide_scale_override=effective, reduction=reduction)
     trainer.log_extra_metric(PREFIX + "normal", float(normal))
     trainer.log_extra_metric(PREFIX + "guided", float(guided))
     return value
 
 
 def objective(prediction, target, uncond_prediction, sigma, condition, mix=None, sample_losses=None,
-              guide_scale_override=None):
+              guide_scale_override=None, reduction="mean"):
     """Mixed ordinary/guided per-image MSE; returns (loss, mean ordinary, mean guided over used rows)."""
     _, _, eligible, *_ = condition
     guide_scale = base_scale(sigma, condition) if guide_scale_override is None else guide_scale_override.detach()
@@ -261,4 +264,5 @@ def objective(prediction, target, uncond_prediction, sigma, condition, mix=None,
         sample_losses.append(per_image.detach())
     used = eligible & (mix > 0)
     guided_metric = guided[used].mean() if bool(used.any()) else guided.new_zeros(())
-    return per_image.mean(), normal.mean().detach(), guided_metric.detach()
+    value = per_image if reduction == "none" else per_image.mean()
+    return value, normal.mean().detach(), guided_metric.detach()

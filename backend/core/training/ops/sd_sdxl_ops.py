@@ -656,6 +656,25 @@ def repa_tap(trainer, arch_name: str):
                         site_labels=tuple(name for name, _ in sites))
 
 
+def guidance_noise_level(trainer, timesteps, noise_process, prediction_target, alphas_cumprod=None):
+    """(noise level in [0, 1], clean-space scale of a prediction difference).
+
+    DDPM maps to the flow sigma of equal SNR, s / (a + s) with a = sqrt(abar),
+    s = sqrt(1 - abar), so the sigma schedule and weight ramp mean the same as on
+    flow archs. The clean-space scale is d(x0) / d(prediction) at fixed x_t.
+    """
+    if noise_process == "flow":
+        level = timesteps.float()
+        scales = {"epsilon": level / (1 - level).clamp_min(1e-3), "velocity": level,
+                  "sample": torch.ones_like(level)}
+        return level, scales[prediction_target]
+    table = trainer.noise_scheduler.alphas_cumprod if alphas_cumprod is None else alphas_cumprod
+    alpha_bar = table.to(timesteps.device)[timesteps.long()].float()
+    a, s = alpha_bar.sqrt(), (1 - alpha_bar).sqrt()
+    scales = {"epsilon": s / a, "velocity": s, "sample": torch.ones_like(s)}
+    return s / (a + s), scales[prediction_target]
+
+
 def train_step(
     trainer,
     latents: torch.Tensor,
@@ -669,6 +688,7 @@ def train_step(
     profile_vram: bool = False,
     alphas_cumprod_cached: Optional[torch.Tensor] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    cfg_drop_mask: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float]:
     """
     Perform single training step (SD1.5/SDXL).
@@ -791,6 +811,37 @@ def train_step(
     if profile_vram:
         print_vram_usage("[train_step] Before UNet forward")
 
+    # Guidance-target teacher, before the training forward arms its REPA tap.
+    from core.training import guidance_loss as _guidance
+    from core.models.components.sd_vae_alignment import training_coefficients,map_input,map_prediction
+    prediction_target=getattr(trainer,"prediction_target","epsilon")
+    guidance_level, guidance_clean_scale = guidance_noise_level(
+        trainer, timesteps, noise_process, prediction_target, alphas_cumprod_cached)
+    guidance_plan = _guidance.plan(trainer, guidance_level, cfg_drop_mask)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            count = int(indices.numel())
+            null_text, null_pooled = _guidance.null_rows(
+                trainer, count, trainer.device, text_embeddings.dtype, aux_has_batch_axis=True)
+            unet_kwargs = {}
+            if added_cond_kwargs is not None:
+                unet_kwargs["added_cond_kwargs"] = {"text_embeds": null_pooled.to(pooled_embeddings.dtype),
+                                                    "time_ids": added_cond_kwargs["time_ids"][indices]}
+            step = timesteps[indices]
+            alpha, sigma = training_coefficients(trainer.unet, trainer.noise_scheduler, step,
+                noise_process=noise_process, reference=noisy_latents[indices],
+                alphas_cumprod=alphas_cumprod_cached)
+            with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype,
+                                enabled=trainer.mixed_precision):
+                states = map_input(trainer.unet, noisy_latents[indices], alpha=alpha, sigma=sigma,
+                                   noise=noise[indices])
+                prediction = trainer.unet(states, step, null_text, **unet_kwargs).sample
+                return map_prediction(trainer.unet, prediction, noise_process=noise_process,
+                                      prediction_target=prediction_target, sigma=sigma, alpha=alpha,
+                                      noise=noise[indices])
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
     # Enable gradients for gradient checkpointing
     noisy_latents.requires_grad_(True)
     text_embeddings.requires_grad_(True)
@@ -811,8 +862,6 @@ def train_step(
         repa_handle = arm_spatial_tap(trainer._repa_tap_module, _site)
 
     # Predict noise using UNet
-    from core.models.components.sd_vae_alignment import training_coefficients,map_input,map_prediction
-    prediction_target=getattr(trainer,"prediction_target","epsilon")
     try:
         alignment_alpha,alignment_sigma=training_coefficients(trainer.unet,trainer.noise_scheduler,timesteps,
             noise_process=noise_process,reference=noisy_latents,alphas_cumprod=alphas_cumprod_cached)
@@ -871,6 +920,11 @@ def train_step(
 
     loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
     loss_per_sample = loss_per_element.mean([1, 2, 3])
+    if guidance_plan is not None:
+        guided_per_sample = _guidance.loss(trainer, guidance_plan, model_pred, target, uncond_prediction,
+                                           guidance_level, clean_scale=guidance_clean_scale, reduction="none")
+        if guided_per_sample is not None:
+            loss_per_sample = guided_per_sample
 
     # Apply Min-SNR gamma weighting (only for epsilon prediction)
     # Min-SNR was designed for epsilon prediction; applying it to v-prediction is theoretically unsound

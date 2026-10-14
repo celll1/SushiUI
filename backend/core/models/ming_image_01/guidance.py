@@ -1,29 +1,20 @@
 """Qwen-compatible guidance schedules with native Ming frame supervision."""
 import torch
-from api.param_defaults import TRAINING_DEFAULTS
-from core.training.ops.qwen_image_21_ops import (
-    resolve_guidance_weight_schedule,_guidance_selection,_guidance_mix_for_condition,
-    _extrapolation_cap,_capped_guidance_scale,
-)
+from core.training import guidance_loss as _guidance
 
 
 def prepare_guidance(trainer,sigma,drop_mask):
     config=trainer.config
-    weight=float(config.get('qwen_guidance_loss_weight',TRAINING_DEFAULTS['qwen_guidance_loss_weight']) or 0.)
-    if not 0<=weight<=1:raise ValueError('Ming guidance weight must be within [0, 1]')
+    weight=_guidance.weight(config)
     eligible=torch.ones_like(sigma,dtype=torch.bool)
     if drop_mask is not None:
         if drop_mask.dtype!=torch.bool or drop_mask.shape!=sigma.shape:
             raise ValueError('Ming guidance null labels require a boolean [B] mask')
         eligible &= ~drop_mask.to(device=sigma.device)
-    ramp=resolve_guidance_weight_schedule(config,weight)
+    ramp=_guidance.resolve_weight_schedule(config,weight)
     if (not weight and (ramp[0]!='high_noise_smoothstep' or not ramp[1])) or not bool(eligible.any()):return None,None,None
-    scale=float(config.get('qwen_guidance_loss_scale',TRAINING_DEFAULTS['qwen_guidance_loss_scale']))
-    schedule=config.get('qwen_guidance_loss_schedule',TRAINING_DEFAULTS['qwen_guidance_loss_schedule'])
-    if not 1<=scale<=10 or schedule not in {'constant','sigma'}:
-        raise ValueError('Ming guidance requires scale in [1, 10] and constant/sigma schedule')
-    condition=(None,None,eligible,weight,scale,schedule,*ramp)
-    selection,selected=_guidance_selection(trainer,sigma,condition)
+    condition=_guidance.condition(config,eligible)
+    selection,selected=_guidance.selection(trainer,sigma,condition)
     return condition,selection,selected
 
 
@@ -40,7 +31,7 @@ def guidance_loss(trainer,result,uncond,sigma,weights,condition,selection,select
                else 1+(scale-1)*sigma.float())
     requested=effective
     distance=None
-    cap=_extrapolation_cap(trainer)
+    cap=_guidance.extrapolation_cap(trainer.config)
     if effective_scale_override is not None:
         if (effective_scale_override.shape != sigma.shape or not torch.isfinite(effective_scale_override).all()
                 or (effective_scale_override < 1).any()):
@@ -49,7 +40,7 @@ def guidance_loss(trainer,result,uncond,sigma,weights,condition,selection,select
     elif cap>0 and uncond is not None:
         distance=frame_error(sigma.reshape(-1,1,1,1,1)*(result.target.float()-uncond.float()),
                              torch.zeros_like(result.target),weights)
-        effective=_capped_guidance_scale(sigma,condition,distance,cap)
+        effective=_guidance.capped_scale(sigma,condition,distance,cap)
     if bool(selected.any()) and uncond is None:
         raise ValueError('Ming selected guidance requires a native null prediction')
     normal=result.per_item_loss
@@ -61,7 +52,7 @@ def guidance_loss(trainer,result,uncond,sigma,weights,condition,selection,select
         guided=torch.zeros_like(normal);per_item=normal
     trainer.log_extra_metric('ming_guidance_loss_normal',float(normal.detach().mean()))
     trainer.log_extra_metric('ming_guidance_loss_guided',float(guided[selected].detach().mean()) if bool(selected.any()) else 0.)
-    trainer.log_extra_metric('ming_guidance_loss_mix_weight',float(_guidance_mix_for_condition(sigma,condition).mean()))
+    trainer.log_extra_metric('ming_guidance_loss_mix_weight',float(_guidance.mix_for_condition(sigma,condition).mean()))
     trainer.log_extra_metric('ming_guidance_loss_selected_fraction',float(selected.float().mean()))
     if bool(selected.any()):
         trainer.log_extra_metric('ming_guidance_effective_scale_mean',float(effective[selected].mean()))

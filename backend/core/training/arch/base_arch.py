@@ -524,6 +524,14 @@ class ArchHandler(ABC):
     #: ``ops/sd_sdxl_ops.py`` use opposite ends of the sampler range).
     timestep_convention: str = "t0"
 
+    def guidance_loss_refusal(self, trainer: Any) -> Optional[str]:
+        """Why the loaded checkpoint cannot take the guidance-target loss, else None.
+
+        The capability table answers per architecture; this answers for a
+        variant only known after loading (e.g. a guidance-distilled checkpoint).
+        """
+        return None
+
     def resolve_timestep_convention(self, trainer: Any = None) -> str:
         """Returns ``"t0"`` or ``"t1"`` -- see ``timestep_convention``.
 

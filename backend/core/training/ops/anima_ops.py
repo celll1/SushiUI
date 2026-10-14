@@ -446,12 +446,8 @@ def train_step(
     uncond_prediction = None
     if guidance_plan is not None:
         def _null_forward(indices):
-            context, aux = _guidance.null_encoding(trainer)
-            count = int(indices.numel())
-            context = context.to(device=trainer.device, dtype=trainer.training_dtype)
-            context = context.unsqueeze(0).expand(count, *context.shape)
-            aux = {key: value.to(device=trainer.device).unsqueeze(0).expand(count, *value.shape)
-                   for key, value in aux.items()}
+            context, aux = _guidance.null_rows(trainer, int(indices.numel()), trainer.device,
+                                               trainer.training_dtype)
             precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
                          if trainer.mixed_precision else nullcontext())
             with precision:

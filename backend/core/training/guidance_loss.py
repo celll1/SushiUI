@@ -179,6 +179,27 @@ def null_encoding(trainer):
     return cached
 
 
+def null_rows(trainer, count, device, dtype):
+    """The cached null encoding repeated for ``count`` rows on ``device``.
+
+    The embedding is cast to ``dtype``; the auxiliary (tensor, dict of tensors
+    or None) keeps its dtypes, as the caption batch does. Like the caption
+    collation, a 2-D embedding or 1-D auxiliary gains the batch axis and
+    anything else already carries a leading batch of one.
+    """
+    def rows(value, cast, unbatched_ndim):
+        if isinstance(value, dict):
+            return {key: rows(item, False, unbatched_ndim) for key, item in value.items()}
+        if isinstance(value, torch.Tensor):
+            value = value.to(device=device, dtype=dtype if cast else value.dtype)
+            if value.dim() == unbatched_ndim:
+                value = value.unsqueeze(0)
+            return value.expand(count, *value.shape[1:])
+        return value
+    embedding, auxiliary = null_encoding(trainer)
+    return rows(embedding, True, 2), rows(auxiliary, False, 1)
+
+
 @torch.no_grad()
 def null_prediction(step_plan, like, forward):
     """``forward(indices)`` predicts the null condition for the selected rows only.

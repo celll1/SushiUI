@@ -75,7 +75,7 @@ def restored_image_codec(module, resolved, declaration):
 
 def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
                           source_wiring, patch_size, resize, pending_key, topology_config=None,
-                          noise_policy=None, passthrough=None):
+                          noise_policy=None, passthrough=None, noise_estimate=None):
     """Install target-native bridges before optimizer construction; geometry stays arch-owned."""
     from core.models.common.module_identity import module_fingerprint
     from core.models.common.vae_source import normalization_config
@@ -91,6 +91,8 @@ def initialize_image_swap(trainer, resolved, *, handler, model, old_channels,
         passthrough=passthrough)
     if noise_policy is not None:
         declaration["noise_policy"] = noise_policy
+        if noise_estimate is not None:
+            declaration["noise_estimate"] = noise_estimate
         validate_declaration(declaration)
     plan = SpatialSwapPlan.build(declaration, patch_size=patch_size)
     finish_topology = None

@@ -32,11 +32,15 @@ def initialize_swap(trainer,resolved,*,handler):
     noise_policy=(POLICY if resolved.scale_factor>source_wiring.vae_scale_factor
                   and resolved.latent_channels>=model.in_channels else None)
     passthrough="full" if resolved.latent_channels>model.in_channels else None
+    # A wider backbone also sees x_t, so the alignment must not be fed the
+    # exposure noise itself (docs/decisions/VAE_SWAP_NOISE_LEAK.md).
+    from core.models.components.latent_adapter import NOISE_ESTIMATE
+    noise_estimate=NOISE_ESTIMATE if noise_policy is not None and passthrough is not None else None
     return initialize_image_swap(trainer,resolved,handler=handler,model=model,
         old_channels=model.in_channels,source_wiring=source_wiring,
         patch_size=2,resize=resize,pending_key="_anima_vae_calibration_source",
         topology_config=lambda:native_config(model),noise_policy=noise_policy,
-        passthrough=passthrough)
+        passthrough=passthrough,noise_estimate=noise_estimate)
 
 
 def split_passthrough_io(model):

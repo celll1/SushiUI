@@ -9,6 +9,7 @@ from __future__ import annotations
 from api.param_defaults import TRAINING_DEFAULTS as _TRAINING_DEFAULTS
 
 from pathlib import Path
+from contextlib import nullcontext
 from typing import List, Optional, Tuple
 
 import torch
@@ -282,6 +283,8 @@ def train_step(
     debug_captions: Optional[List[str]] = None,
     debug_reference_image_paths: Optional[List[Optional[str]]] = None,
     repa_pixels: Optional[torch.Tensor] = None,
+    null_condition=None,
+    guidance_ineligible: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, float, float]:
     """Single MiniT2I training step (pixel-space flow matching, x0 prediction).
 
@@ -344,14 +347,35 @@ def train_step(
                 mask_eff,
             )
 
-    if trainer.mixed_precision:
-        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
-            x0_pred = _forward()
-    else:
+    precision = (torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype)
+                 if trainer.mixed_precision else nullcontext())
+
+    # Guidance-target teacher on the arch's collated null (noise level 1 - t),
+    # before the training forward stashes its REPA tap. CFG in x0 and in this
+    # velocity is the same combination, as v is affine in x0.
+    from core.training import guidance_loss as _guidance
+    noise_level = 1.0 - t
+    guidance_plan = _guidance.plan(trainer, noise_level, guidance_ineligible) if null_condition else None
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            from core.models.components.image_noise_context import noise_scope
+            null_embeds, null_mask = null_condition(text_embeds[indices], attention_mask[indices])
+            with precision, noise_scope(noise[indices]):
+                x0_null = trainer.transformer(x_t[indices].to(t_dtype), t[indices].to(t_dtype),
+                                              null_embeds.to(t_dtype), null_mask)
+            return (x0_null.float() - x_t[indices].float()) / denom[indices].float()
+        uncond_prediction = _guidance.null_prediction(guidance_plan, images, _null_forward)
+
+    with precision:
         x0_pred = _forward()
 
     v_pred = (x0_pred.float() - x_t.float()) / denom.float()
     loss = torch.nn.functional.mse_loss(v_pred, target.float(), reduction="mean")
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, v_pred, target, uncond_prediction, noise_level)
+        if guided_loss is not None:
+            loss = guided_loss
 
     # Per-item MSE for the CFG-null loss split (see lens_ops for the rationale).
     # Taken before the REPA term is added below, to match pred_loss_value --

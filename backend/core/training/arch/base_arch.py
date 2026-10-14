@@ -826,6 +826,20 @@ class ArchHandler(ABC):
         """
         self._reject_cfg_null("apply_cfg_null_collated", "collated")
 
+    def guidance_null_condition(self, trainer):
+        """For the guidance-target teacher: ``(conditioning, auxiliary)`` rows ->
+        the same rows as the inference null, through this stage's own rewrite.
+        None when guidance is off, so the ops body skips the teacher.
+        """
+        from core.training import guidance_loss
+        if not guidance_loss.active(trainer.config):
+            return None
+
+        def null(conditioning, auxiliary):
+            every_row = torch.ones(conditioning.shape[0], dtype=torch.bool, device=conditioning.device)
+            return self.apply_cfg_null_collated(trainer, conditioning, auxiliary, every_row)
+        return null
+
     def apply_cfg_null_step(self, trainer, ctx, conditioning, auxiliary):
         """THE call site of the collated hook: a handler's own ``train_step``.
 

@@ -326,6 +326,7 @@ class _RecordingTransformer(torch.nn.Module):
 
 
 class _StubTrainer:
+    config = {}
     device = torch.device("cpu")
     training_dtype = torch.float32
     mixed_precision = False

@@ -544,6 +544,34 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         ).repeat(latents.shape[0], 1)
     else:
         time_ids = time_ids.to(device=latents.device, dtype=pooled.dtype)
+
+    # Guidance-target teacher (plain flow velocity only; noise level is 1 - t).
+    from core.training import guidance_loss as _guidance
+    from core.models.components.image_noise_context import noise_scope
+    noise_level = 1.0 - timesteps
+    guidance_plan = (_guidance.plan(trainer, noise_level, getattr(ctx, "cfg_drop_mask", None))
+                     if prediction_type == "flow_velocity" else None)
+    uncond_prediction = None
+    if guidance_plan is not None:
+        def _null_forward(indices):
+            count = int(indices.numel())
+            null_conditioning, null_aux = _guidance.null_rows(trainer, count, latents.device, trainer.training_dtype)
+            null_mask = null_aux["context_attention_mask"].to(device=latents.device)
+            set_chimera_attention_context(trainer.unet, ChimeraAttentionContext(
+                context_positions=null_aux["context_positions"].to(device=latents.device),
+                target_height=height, target_width=width,
+                key_lengths=(int(null_mask.shape[1]),) * count))
+            from core.models.sensenova_sdxl_chimera.vae_alignment import unet_forward
+            with noise_scope(noise[indices]):
+                return unet_forward(
+                    trainer.unet, model_input[indices], timesteps[indices], prediction=prediction_contract,
+                    encoder_hidden_states=null_conditioning, encoder_attention_mask=null_mask,
+                    added_cond_kwargs={"text_embeds": null_aux["pooled_text_embeds"].to(null_conditioning),
+                                       "time_ids": time_ids[indices]},
+                    return_dict=False,
+                )
+        uncond_prediction = _guidance.null_prediction(guidance_plan, latents, _null_forward)
+
     set_chimera_attention_context(
         trainer.unet,
         ChimeraAttentionContext(
@@ -561,7 +589,6 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
 
         site = spatial_tap_sites(trainer.unet)[trainer.repa_align_depth][1]
         repa_handle = arm_spatial_tap(trainer._repa_tap_module, site)
-    from core.models.components.image_noise_context import noise_scope
     try:
         with noise_scope(noise):
             if is_polar:
@@ -613,6 +640,10 @@ def train_step(trainer, ctx) -> tuple[torch.Tensor, float, float]:
         radial_loss_per_item = None
         prediction_loss_per_item = tangent_loss_per_item
     loss = prediction_loss_per_item.mean()
+    if guidance_plan is not None:
+        guided_loss = _guidance.loss(trainer, guidance_plan, prediction, target, uncond_prediction, noise_level)
+        if guided_loss is not None:
+            loss = guided_loss
     if getattr(trainer, "_adaptive_timestep", None) is not None:
         trainer._adaptive_prediction_loss_chunks.append(
             prediction_loss_per_item.detach())

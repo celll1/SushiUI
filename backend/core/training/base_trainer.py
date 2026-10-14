@@ -16435,6 +16435,16 @@ class BaseTrainer(ABC):
         log_timestep_distribution_median(self.log_prefix, timestep_sampler, _convention)
         print(f"{self.log_prefix} Multi Noise-Timesteps (MNT): {multi_noise_timesteps}")
 
+        from core.training.vae_swap import latent_alignment_pair
+        from core.models.components.latent_adapter import leaks_exposure_noise
+        _alignment = (latent_alignment_pair(self)
+                      or latent_alignment_pair(getattr(self, "transformer_original", None)))
+        if _alignment is not None and leaks_exposure_noise(getattr(_alignment, "declaration", {})):
+            raise ValueError(
+                "This VAE swap feeds the exposure noise to a backbone that also sees x_t, "
+                "so training would learn to read the noise (docs/decisions/VAE_SWAP_NOISE_LEAK.md). "
+                "Restart from the original base model with a fresh vae_swap_source initialization.")
+
         # Resolve (and refuse) the aligned CFG null rate before the first batch,
         # not at the first draw inside the loop.
         _cfg_null_rate = self.cfg_null_drop_rate()

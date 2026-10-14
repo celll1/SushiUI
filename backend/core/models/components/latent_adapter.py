@@ -67,6 +67,24 @@ def backbone_width(declaration):
     return old + new if declaration.get("passthrough") == "full" else max(old, new)
 
 
+NOISE_ESTIMATE = "gaussian_posterior_v1"
+
+
+def leaks_exposure_noise(declaration):
+    """Gaussian noise alignment fed the exposure noise beside a second view of x_t
+    (copy or passthrough channels) lets the backbone read that noise, and with it
+    the clean latent (docs/decisions/VAE_SWAP_NOISE_LEAK.md)."""
+    return (declaration.get("noise_policy") is not None
+            and declaration.get("noise_estimate") is None
+            and backbone_width(declaration) > declaration["old_channels"])
+
+
+def estimated_noise(x_t, sigma):
+    """E[eps | x_t] for a standard-normal latent: a function of x_t alone."""
+    level = sigma.float().reshape(-1, *([1] * (x_t.ndim - 1)))
+    return level / ((1 - level).square() + level.square()) * x_t.float()
+
+
 def validate_declaration(value):
     if not isinstance(value, dict) or value.get("version") != 1 or value.get("method") != "paired_spatial":
         raise ValueError("Unsupported VAE alignment declaration")
@@ -75,6 +93,9 @@ def validate_declaration(value):
     from .gaussian_alignment import POLICY
     if value.get("noise_policy") not in (None, POLICY):
         raise ValueError("Unsupported spatial VAE noise policy")
+    if value.get("noise_estimate") not in (None, NOISE_ESTIMATE) or (
+            value.get("noise_estimate") is not None and value.get("noise_policy") is None):
+        raise ValueError("A noise estimate requires the Gaussian noise policy")
     for key in ("old_channels", "new_channels", "old_scale", "new_scale", "input_channels", "norm_pack"):
         if type(value.get(key)) is not int or value[key] < 1:
             raise ValueError(f"Invalid VAE alignment {key}")

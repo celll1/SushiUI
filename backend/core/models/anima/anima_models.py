@@ -1318,7 +1318,18 @@ class Anima(nn.Module):
                                 t5_input_ids=None, t5_attn_mask=None, alignment_noise=None,
                                 partition_box=None, partition_full_latents=None, partition_full_noise=None):
         from .vae_alignment import map_image
-        x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T,noise=alignment_noise)
+        # The input sees only an estimate of the noise from x_t; the exposure noise
+        # itself is used solely by the output residual, which the network cannot read
+        # (docs/decisions/VAE_SWAP_NOISE_LEAK.md).
+        input_noise = alignment_noise
+        pair = getattr(self, "vae_latent_bridge", None)
+        if pair is not None and pair.declaration.get("noise_estimate") is not None:
+            from core.models.components.latent_adapter import estimated_noise
+            sigma = timesteps_B_T.reshape(timesteps_B_T.shape[0], -1)[:, 0]
+            input_noise = estimated_noise(x_B_C_T_H_W, sigma)
+            if partition_full_latents is not None:
+                partition_full_noise = estimated_noise(partition_full_latents, sigma)
+        x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T,noise=input_noise)
         global_adapter = getattr(self, "anima_partition_global_adapter", None)
         if partition_box is None:
             global_adapter = None

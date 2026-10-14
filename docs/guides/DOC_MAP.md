@@ -47,6 +47,7 @@ machine-local working material.
 | [docs/legal/MING_IMAGE_01_PROVENANCE.md](../legal/MING_IMAGE_01_PROVENANCE.md) | File-level Ming vendoring licenses, upstream hashes and local modifications. |
 | [docs/guides/QWEN_IMAGE_21_DESIGN.md](QWEN_IMAGE_21_DESIGN.md) | Qwen-Image 2.1 artifacts, generation/editing, training, quantization, and implementation gates. |
 | [docs/guides/QWEN_IMAGE_21_GUIDANCE_LOSS.md](QWEN_IMAGE_21_GUIDANCE_LOSS.md) | Experimental mixed ordinary/guidance-target Qwen training objective and validation gate. |
+| [docs/decisions/GUIDANCE_LOSS_GENERALIZATION.md](../decisions/GUIDANCE_LOSS_GENERALIZATION.md) | Architecture-independent guidance-target loss: core module, arch contract, canonical keys and per-arch rollout. |
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md](QWEN_IMAGE_21_BRANCH_LORA_DESIGN.md) | Proposed Qwen conditional/empty-branch LoRA separation, loss routing, negative-prompt policy, and checkpoint contract. |
 | [docs/guides/QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md](QWEN_IMAGE_21_BRANCH_LORA_EVALUATION.md) | Paired Run 156 CFG branch-rollout plan and subsequent split-adapter acceptance gates. |
 | [docs/guides/QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md](QWEN_IMAGE_21_PARTITIONED_TRAINING_DESIGN.md) | Proposed complete-coverage partitioned training for Qwen-Image 2.1, including adaptive feasibility, optional halo, and validation gates. |

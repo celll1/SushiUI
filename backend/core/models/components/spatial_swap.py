@@ -217,14 +217,20 @@ def calibrate_images(trainer, datasets, *, model, pending_key,
             if torch.device(trainer.device).type == "cuda":
                 torch.cuda.empty_cache()
             trainer.vae.to(trainer.device)
+            prior = getattr(pair, "noise_prior", None)
+            targets = []
             with torch.no_grad():
                 for i, (path, legacy) in enumerate(zip(paths, paired)):
                     trainer._check_stop_requested()
                     target = encode(trainer.vae, path)
                     fit.add(legacy, target)
+                    if prior is not None:
+                        targets.append(target)
                     if callback:
                         callback(phase="latent_cache", step=len(paths)+i+1, total=2*len(paths))
             fit.finish()
+            if prior is not None:
+                prior.capture(targets)
             if on_complete is not None:
                 on_complete()
             delattr(trainer, pending_key)

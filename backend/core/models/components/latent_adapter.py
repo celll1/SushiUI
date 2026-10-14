@@ -67,7 +67,7 @@ def backbone_width(declaration):
     return old + new if declaration.get("passthrough") == "full" else max(old, new)
 
 
-NOISE_ESTIMATE = "gaussian_posterior_v1"
+from .noise_prior import POLICY as NOISE_ESTIMATE
 
 
 def leaks_exposure_noise(declaration):
@@ -78,11 +78,6 @@ def leaks_exposure_noise(declaration):
             and declaration.get("noise_estimate") is None
             and backbone_width(declaration) > declaration["old_channels"])
 
-
-def estimated_noise(x_t, sigma):
-    """E[eps | x_t] for a standard-normal latent: a function of x_t alone."""
-    level = sigma.float().reshape(-1, *([1] * (x_t.ndim - 1)))
-    return level / ((1 - level).square() + level.square()) * x_t.float()
 
 
 def validate_declaration(value):
@@ -163,6 +158,9 @@ class SpatialAlignmentPair(nn.Module):
         if declaration.get("noise_policy") is not None:
             from .gaussian_alignment import GaussianNoiseAlignment
             self.noise_alignment = GaussianNoiseAlignment(self.declaration)
+        if declaration.get("noise_estimate") is not None:
+            from .noise_prior import RadialNoisePrior
+            self.noise_prior = RadialNoisePrior(new)
         if declaration.get("patch_noise") is not None:
             from .patch_noise_alignment import PatchNoiseAlignment
             self.patch_noise = PatchNoiseAlignment(declaration["patch_noise"])
@@ -171,8 +169,9 @@ class SpatialAlignmentPair(nn.Module):
     def ready(self):
         noise = getattr(self, "noise_alignment", None)
         patch = getattr(self, "patch_noise", None)
+        prior = getattr(self, "noise_prior", None)
         return (self.input._ready and self.output._ready and (noise is None or noise._ready)
-                and (patch is None or patch._ready))
+                and (patch is None or patch._ready) and (prior is None or prior._ready))
 
     def flow_state(self, value, sigma, *, noise=None):
         mapped = self.input.flow_state(value, sigma)

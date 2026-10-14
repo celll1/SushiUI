@@ -1324,11 +1324,10 @@ class Anima(nn.Module):
         input_noise = alignment_noise
         pair = getattr(self, "vae_latent_bridge", None)
         if pair is not None and pair.declaration.get("noise_estimate") is not None:
-            from core.models.components.latent_adapter import estimated_noise
             sigma = timesteps_B_T.reshape(timesteps_B_T.shape[0], -1)[:, 0]
-            input_noise = estimated_noise(x_B_C_T_H_W, sigma)
+            input_noise = pair.noise_prior.estimate(x_B_C_T_H_W, sigma)
             if partition_full_latents is not None:
-                partition_full_noise = estimated_noise(partition_full_latents, sigma)
+                partition_full_noise = pair.noise_prior.estimate(partition_full_latents, sigma)
         x_B_C_T_H_W=map_image(self,x_B_C_T_H_W,sigma=timesteps_B_T,noise=input_noise)
         global_adapter = getattr(self, "anima_partition_global_adapter", None)
         if partition_box is None:

@@ -774,7 +774,14 @@ class SenseNovaArchHandler(ArchHandler):
             debug_captions=ctx.debug_captions,
             debug_reference_image_paths=ctx.debug_reference_image_paths,
             repa_pixels=ctx.repa_pixels,
+            cfg_drop_mask=ctx.cfg_drop_mask,
         )
+
+    def guidance_loss_refusal(self, trainer):
+        if trainer.config.get("use_reference_images"):
+            return ("reference-conditioned generation blends against img_cond, not the "
+                    "text-only null this teacher uses")
+        return None
 
     def sample(self, trainer, sample_ctx: SampleContext):
         from core.training.ops import sensenova_ops

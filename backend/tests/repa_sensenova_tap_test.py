@@ -289,10 +289,10 @@ def test_the_train_step_is_bit_identical_with_the_tap_armed_but_repa_off():
     plain = _toy(seed=5)
     armed = _toy(seed=5)
     armed.decoder._repa_tap_depth = 1
-    trainer_plain = SimpleNamespace(transformer=plain, device=torch.device("cpu"),
+    trainer_plain = SimpleNamespace(config={}, transformer=plain, device=torch.device("cpu"),
                                     training_dtype=torch.float32,
                                     gradient_checkpointing=False)
-    trainer_armed = SimpleNamespace(transformer=armed, device=torch.device("cpu"),
+    trainer_armed = SimpleNamespace(config={}, transformer=armed, device=torch.device("cpu"),
                                     training_dtype=torch.float32,
                                     gradient_checkpointing=False,
                                     repa_enable=False)
